@@ -21962,6 +21962,8 @@ TEST(MetadataTransferApi, TransferConceptDiagnosticsPreserveDescriptiveScopes)
     ASSERT_NE(location, nullptr);
     EXPECT_EQ(location->location_scope, "LocationShown[1]");
     EXPECT_EQ(location->language, "fr-fr");
+    EXPECT_EQ(location->sensitivity,
+              openmeta::MetadataConceptSensitivity::Location);
     EXPECT_TRUE(contains_entry_id(location->source_entries, location_name_id));
 }
 
@@ -21995,6 +21997,11 @@ TEST(MetadataTransferApi, TransferConceptDiagnosticsPreserveRightsRecordScope)
 
     ASSERT_NE(rights, nullptr);
     EXPECT_EQ(rights->record_scope, "Licensor[2]");
+    EXPECT_EQ(rights->record_kind,
+              openmeta::MetadataConceptRecordKind::Licensor);
+    EXPECT_EQ(rights->sensitivity,
+              openmeta::MetadataConceptSensitivity::LegalRights);
+    EXPECT_EQ(rights->hint, openmeta::MetadataConceptTransferHint::Safe);
     EXPECT_TRUE(contains_entry_id(rights->source_entries, licensor_id));
 }
 

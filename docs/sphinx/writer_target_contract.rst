@@ -84,7 +84,10 @@ controls. Hosts may still strip more metadata. For per-candidate preflight UI,
 keep/drop/requires-target-image-spec actions, severity tokens, and default
 message text for a selected transfer mode. Descriptor-aware overloads accept
 ``MetadataRawDataDescriptor`` so RAW-processing diagnostics can account for a
-known stored-RAW or rendered source context.
+known stored-RAW or rendered source context. Candidates and diagnostics also
+report independent ``sensitivity``; ``safe`` means technically portable, not
+safe to publish. Apply host consent/privacy policy to personal-contact,
+person-identity, location, and legal-rights metadata.
 
 When the host or decoder already knows that the source pixel buffer is rendered
 rather than stored RAW samples, set

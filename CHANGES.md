@@ -1,5 +1,35 @@
 # OpenMeta Changes
 
+## 0.4.79 - 2026-07-17
+
+Changes compared with `0.4.78`.
+
+### Added
+
+- Added structured descriptive record kinds and normalized roles for creator
+  contacts, events, people, organizations, products, artwork/objects, encoded
+  rights expressions, rights holders, licensors, licensees, licenses, and
+  model/property releases.
+- Added exact query semantics for contact, event, person, organization,
+  product, artwork, encoded-rights-expression, and release fields.
+- Added an independent sensitivity classification for personal contact,
+  person identity, location, and legal-rights metadata. C++ candidates,
+  transfer diagnostics, and thin Python dictionaries expose the same values.
+- Added interpretation for PLUS license dates, constraints, transaction and
+  project identifiers, terms, conditions, and release status/identifiers.
+
+### Changed
+
+- Structured descriptive conflicts and preference are isolated by record kind,
+  record scope, and language where applicable, so equal roles in different
+  people, products, artwork, license, or release records remain independent.
+- Technical transfer safety and policy sensitivity are reported separately;
+  privacy-sensitive metadata can remain technically portable without being
+  treated as automatically appropriate for publication.
+- Creator-contact, structured editorial, rights-expression, and PLUS fields
+  now participate in exact descriptive query results without consuming new
+  bits from the full legacy `MetadataQueryMatchTerm` mask.
+
 ## 0.4.78 - 2026-07-15
 
 Changes compared with `0.4.77`.

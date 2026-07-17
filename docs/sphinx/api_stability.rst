@@ -144,7 +144,8 @@ Host-facing API map
        Current coverage includes crop/active-area/border margins,
        exposure/gain, white balance, color/profile/source-color-transform,
        lens correction, orientation, descriptive EXIF/IPTC/XMP fields
-       including exact rights/license/credit/source semantics,
+       including exact contact/event/person/organization/product/artwork/
+       rights/license/credit/source/rights-expression/release semantics,
        container-graph evidence for BMFF content-bound metadata and
        multi-image scene policy, and RAW/source-processing metadata across
        standard tags, selected DNG tags,
@@ -279,9 +280,10 @@ Host-facing API map
        credit, and source fields. Localized scalars compare per normalized
        language; creator, keyword, location-identifier, rights-holder, and
        licensor collections preserve distinct values and select one preferred
-       source per duplicate normalized value. Structured PLUS owner/licensor
-       members expose ``record_scope`` so related names and identifiers remain
-       associated. It is intended for
+       source per duplicate normalized value. Structured descriptive members
+       expose ``record_kind`` and ``record_scope`` so related values remain
+       associated, plus policy ``sensitivity`` independent of technical
+       transfer safety. It is intended for
        inspection UI
        and host policy decisions; it does not rewrite metadata or hide
        ambiguity. Python ``Document`` and ``TransferSourceSnapshot`` expose
@@ -417,6 +419,13 @@ Host-facing API map
      - Internal
      - These fields may be useful for tests and diagnostics, but they are not a
        compatibility contract for downstream integrations.
+
+Structured descriptive record kinds cover creator contacts, events, people,
+organizations, products, artwork/objects, rights expressions, rights holders,
+licensors, licensees, licenses, and releases. Sensitivity is mirrored in
+transfer diagnostics and thin Python dictionaries. Hosts must not interpret a
+``safe`` transfer hint as approval to publish personal-contact,
+person-identity, location, or legal-rights metadata.
 
 The bounded BMFF tiled-image field contract covers ``tilC`` version 0 tile
 dimensions, up to eight extra dimensions, ``dref``/``deti`` mapping, internal

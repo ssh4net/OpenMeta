@@ -313,12 +313,80 @@ TEST(MetadataQuery, ReconcilesDescriptiveExifIptcXmpEntries)
     EXPECT_EQ(creator_candidate->normalized_shape,
               MetadataQueryValueShape::Text);
 
-    EXPECT_EQ(find_match_for_entry(result, xmp_contact_city), nullptr);
+    const MetadataQueryMatch* contact_match
+        = find_match_for_entry(result, xmp_contact_city);
+    ASSERT_NE(contact_match, nullptr);
+    EXPECT_EQ(contact_match->semantic, MetadataQuerySemanticKind::Contact);
+    EXPECT_TRUE(contact_match->exact_match);
 
     const MetadataQueryResult dispatched
         = query_metadata(store, MetadataQueryKind::Descriptive);
     EXPECT_EQ(dispatched.kind, MetadataQueryKind::Descriptive);
     EXPECT_EQ(dispatched.matches.size(), result.matches.size());
+}
+
+TEST(MetadataQuery, ClassifiesStructuredEditorialAndLegalEntries)
+{
+    MetaStore store;
+    const std::string_view ext  = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/";
+    const std::string_view plus = "http://ns.useplus.org/ldf/xmp/1.0/";
+    const EntryId event         = add_xmp_text(&store, ext, "Event", "Opening");
+    const EntryId person        = add_xmp_text(&store, ext,
+                                               "PersonInImageWDetails[1]/PersonName",
+                                               "Alex");
+    const EntryId organization  = add_xmp_text(&store, ext,
+                                               "OrganisationInImageName[1]",
+                                               "Example Org");
+    const EntryId product       = add_xmp_text(&store, ext,
+                                               "ProductInImage[1]/ProductName",
+                                               "Example Camera");
+    const EntryId artwork       = add_xmp_text(&store, ext,
+                                               "ArtworkOrObject[1]/AOTitle",
+                                               "Example Artwork");
+    const EntryId rights        = add_xmp_text(&store, ext,
+                                               "EmbdEncRightsExpr[1]/EncRightsExpr",
+                                               "encoded");
+    const EntryId license       = add_xmp_text(&store, plus, "MediaConstraints",
+                                               "Editorial");
+    const EntryId release = add_xmp_text(&store, plus, "ModelReleaseStatus",
+                                         "MR-LMR");
+    store.finalize();
+
+    const MetadataQueryResult result = query_descriptive_metadata(store);
+
+    const MetadataQueryMatch* event_match = find_match_for_entry(result, event);
+    const MetadataQueryMatch* person_match = find_match_for_entry(result,
+                                                                  person);
+    const MetadataQueryMatch* organization_match
+        = find_match_for_entry(result, organization);
+    const MetadataQueryMatch* product_match = find_match_for_entry(result,
+                                                                   product);
+    const MetadataQueryMatch* artwork_match = find_match_for_entry(result,
+                                                                   artwork);
+    const MetadataQueryMatch* rights_match  = find_match_for_entry(result,
+                                                                   rights);
+    const MetadataQueryMatch* license_match = find_match_for_entry(result,
+                                                                   license);
+    const MetadataQueryMatch* release_match = find_match_for_entry(result,
+                                                                   release);
+    ASSERT_NE(event_match, nullptr);
+    ASSERT_NE(person_match, nullptr);
+    ASSERT_NE(organization_match, nullptr);
+    ASSERT_NE(product_match, nullptr);
+    ASSERT_NE(artwork_match, nullptr);
+    ASSERT_NE(rights_match, nullptr);
+    ASSERT_NE(license_match, nullptr);
+    ASSERT_NE(release_match, nullptr);
+    EXPECT_EQ(event_match->semantic, MetadataQuerySemanticKind::Event);
+    EXPECT_EQ(person_match->semantic, MetadataQuerySemanticKind::Person);
+    EXPECT_EQ(organization_match->semantic,
+              MetadataQuerySemanticKind::Organization);
+    EXPECT_EQ(product_match->semantic, MetadataQuerySemanticKind::Product);
+    EXPECT_EQ(artwork_match->semantic, MetadataQuerySemanticKind::Artwork);
+    EXPECT_EQ(rights_match->semantic,
+              MetadataQuerySemanticKind::RightsExpression);
+    EXPECT_EQ(license_match->semantic, MetadataQuerySemanticKind::License);
+    EXPECT_EQ(release_match->semantic, MetadataQuerySemanticKind::Release);
 }
 
 TEST(MetadataQuery, ClassifiesRightsLicenseCreditAndSourceEntries)

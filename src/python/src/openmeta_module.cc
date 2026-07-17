@@ -1189,7 +1189,13 @@ namespace {
         out["kind_name"] = nb::str(metadata_concept_kind_name(candidate.kind));
         out["role"]      = candidate.role;
         out["role_name"] = nb::str(metadata_concept_role_name(candidate.role));
-        out["family"]    = candidate.family;
+        out["record_kind"]      = candidate.record_kind;
+        out["record_kind_name"] = nb::str(
+            metadata_concept_record_kind_name(candidate.record_kind));
+        out["sensitivity"]      = candidate.sensitivity;
+        out["sensitivity_name"] = nb::str(
+            metadata_concept_sensitivity_name(candidate.sensitivity));
+        out["family"]      = candidate.family;
         out["family_name"] = nb::str(
             metadata_concept_source_family_name(candidate.family));
         out["semantic"]      = candidate.semantic;
@@ -1442,6 +1448,12 @@ namespace {
         out["kind_name"] = nb::str(metadata_concept_kind_name(diagnostic.kind));
         out["role"]      = diagnostic.role;
         out["role_name"] = nb::str(metadata_concept_role_name(diagnostic.role));
+        out["record_kind"]      = diagnostic.record_kind;
+        out["record_kind_name"] = nb::str(
+            metadata_concept_record_kind_name(diagnostic.record_kind));
+        out["sensitivity"]      = diagnostic.sensitivity;
+        out["sensitivity_name"] = nb::str(
+            metadata_concept_sensitivity_name(diagnostic.sensitivity));
         out["hint"]      = diagnostic.hint;
         out["hint_name"] = nb::str(
             metadata_concept_transfer_hint_name(diagnostic.hint));
@@ -6239,7 +6251,15 @@ NB_MODULE(_openmeta, m)
         .value("Rights", MetadataQuerySemanticKind::Rights)
         .value("License", MetadataQuerySemanticKind::License)
         .value("Credit", MetadataQuerySemanticKind::Credit)
-        .value("Source", MetadataQuerySemanticKind::Source);
+        .value("Source", MetadataQuerySemanticKind::Source)
+        .value("Contact", MetadataQuerySemanticKind::Contact)
+        .value("Event", MetadataQuerySemanticKind::Event)
+        .value("Person", MetadataQuerySemanticKind::Person)
+        .value("Organization", MetadataQuerySemanticKind::Organization)
+        .value("Product", MetadataQuerySemanticKind::Product)
+        .value("Artwork", MetadataQuerySemanticKind::Artwork)
+        .value("RightsExpression", MetadataQuerySemanticKind::RightsExpression)
+        .value("Release", MetadataQuerySemanticKind::Release);
 
     nb::enum_<MetadataQueryValueShape>(m, "MetadataQueryValueShape")
         .value("Unknown", MetadataQueryValueShape::Unknown)
@@ -6405,7 +6425,73 @@ NB_MODULE(_openmeta, m)
         .value("CreditLine", MetadataConceptRole::CreditLine)
         .value("CreditLineRequired", MetadataConceptRole::CreditLineRequired)
         .value("Source", MetadataConceptRole::Source)
-        .value("DigitalSourceType", MetadataConceptRole::DigitalSourceType);
+        .value("DigitalSourceType", MetadataConceptRole::DigitalSourceType)
+        .value("Name", MetadataConceptRole::Name)
+        .value("Identifier", MetadataConceptRole::Identifier)
+        .value("Address", MetadataConceptRole::Address)
+        .value("PostalCode", MetadataConceptRole::PostalCode)
+        .value("Email", MetadataConceptRole::Email)
+        .value("Telephone", MetadataConceptRole::Telephone)
+        .value("Url", MetadataConceptRole::Url)
+        .value("Characteristic", MetadataConceptRole::Characteristic)
+        .value("Gtin", MetadataConceptRole::Gtin)
+        .value("InventoryNumber", MetadataConceptRole::InventoryNumber)
+        .value("StylePeriod", MetadataConceptRole::StylePeriod)
+        .value("CreatorIdentifier", MetadataConceptRole::CreatorIdentifier)
+        .value("Age", MetadataConceptRole::Age)
+        .value("ContentDescription", MetadataConceptRole::ContentDescription)
+        .value("ContributionDescription",
+               MetadataConceptRole::ContributionDescription)
+        .value("PhysicalDescription", MetadataConceptRole::PhysicalDescription)
+        .value("RightsExpression", MetadataConceptRole::RightsExpression)
+        .value("RightsExpressionEncoding",
+               MetadataConceptRole::RightsExpressionEncoding)
+        .value("RightsExpressionLanguage",
+               MetadataConceptRole::RightsExpressionLanguage)
+        .value("LicenseStartDate", MetadataConceptRole::LicenseStartDate)
+        .value("LicenseEndDate", MetadataConceptRole::LicenseEndDate)
+        .value("MediaConstraint", MetadataConceptRole::MediaConstraint)
+        .value("RegionConstraint", MetadataConceptRole::RegionConstraint)
+        .value("ProductOrServiceConstraint",
+               MetadataConceptRole::ProductOrServiceConstraint)
+        .value("ImageFileConstraint", MetadataConceptRole::ImageFileConstraint)
+        .value("ImageAlterationConstraint",
+               MetadataConceptRole::ImageAlterationConstraint)
+        .value("OtherLicenseRequirement",
+               MetadataConceptRole::OtherLicenseRequirement)
+        .value("OtherCondition", MetadataConceptRole::OtherCondition)
+        .value("LicenseeTransactionIdentifier",
+               MetadataConceptRole::LicenseeTransactionIdentifier)
+        .value("LicensorTransactionIdentifier",
+               MetadataConceptRole::LicensorTransactionIdentifier)
+        .value("LicenseeProjectReference",
+               MetadataConceptRole::LicenseeProjectReference)
+        .value("LicenseTransactionDate",
+               MetadataConceptRole::LicenseTransactionDate)
+        .value("ReleaseStatus", MetadataConceptRole::ReleaseStatus)
+        .value("ReleaseIdentifier", MetadataConceptRole::ReleaseIdentifier);
+
+    nb::enum_<MetadataConceptRecordKind>(m, "MetadataConceptRecordKind")
+        .value("None_", MetadataConceptRecordKind::None)
+        .value("CreatorContact", MetadataConceptRecordKind::CreatorContact)
+        .value("Event", MetadataConceptRecordKind::Event)
+        .value("Person", MetadataConceptRecordKind::Person)
+        .value("Organization", MetadataConceptRecordKind::Organization)
+        .value("Product", MetadataConceptRecordKind::Product)
+        .value("ArtworkOrObject", MetadataConceptRecordKind::ArtworkOrObject)
+        .value("RightsExpression", MetadataConceptRecordKind::RightsExpression)
+        .value("RightsHolder", MetadataConceptRecordKind::RightsHolder)
+        .value("Licensor", MetadataConceptRecordKind::Licensor)
+        .value("Licensee", MetadataConceptRecordKind::Licensee)
+        .value("License", MetadataConceptRecordKind::License)
+        .value("Release", MetadataConceptRecordKind::Release);
+
+    nb::enum_<MetadataConceptSensitivity>(m, "MetadataConceptSensitivity")
+        .value("None_", MetadataConceptSensitivity::None)
+        .value("PersonalContact", MetadataConceptSensitivity::PersonalContact)
+        .value("PersonIdentity", MetadataConceptSensitivity::PersonIdentity)
+        .value("Location", MetadataConceptSensitivity::Location)
+        .value("LegalRights", MetadataConceptSensitivity::LegalRights);
 
     nb::enum_<MetadataConceptDateTimePrecision>(
         m, "MetadataConceptDateTimePrecision")

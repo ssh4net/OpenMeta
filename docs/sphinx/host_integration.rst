@@ -91,12 +91,13 @@ within each scope. Use
 token. Descriptive concepts reconcile standard EXIF, IPTC IIM, Dublin Core,
 XMP Rights, Photoshop, IPTC Core/Extension, and PLUS title/headline,
 description, creator, keyword/subject, location, copyright, rights/license,
-credit, and source fields. Scalar conflicts are isolated by normalized
-language and structured location scope; creator, keyword, location-identifier,
-rights-holder, and licensor values are additive collections whose duplicate
-values select one preferred source. Structured owner/licensor members also
-carry a ``record_scope``, such as ``Licensor[1]``, so hosts can keep associated
-names and identifiers together. Treat this as an inspection and policy input
+credit, source, creator-contact, event, person, organization, product,
+artwork/object, encoded-rights-expression, license-constraint, and release
+fields. Scalar conflicts are isolated by normalized language and structured
+location scope; additive collections retain distinct values. Structured
+members carry both a ``record_kind`` and ``record_scope``, such as ``person``
+plus ``Person[1]``, so hosts can keep associated values together. Treat this as
+an inspection and policy input
 rather than an automatic
 metadata rewrite decision; source-bound color, lens, and RAW-processing values
 still need rendered-transfer safety filtering. Each candidate also carries a
@@ -115,6 +116,12 @@ source color transforms, white balance, lens correction, source RAW
 curves/linearity metadata, source-bound RAW processing, and target-owned image
 properties. Hosts can localize or replace the wording, but they do not need to
 invent the basic safe/drop/rewrite reasons.
+
+``sensitivity`` is a separate policy signal with ``none``,
+``personal_contact``, ``person_identity``, ``location``, and ``legal_rights``
+values. A candidate marked ``safe`` can still be privacy- or policy-sensitive.
+Hosts that publish or share images should review or remove sensitive metadata
+according to their own user-consent, privacy, and rights policies.
 
 Adapter classes
 ---------------

@@ -64,6 +64,14 @@ enum class MetadataQuerySemanticKind : uint8_t {
     License,
     Credit,
     Source,
+    Contact,
+    Event,
+    Person,
+    Organization,
+    Product,
+    Artwork,
+    RightsExpression,
+    Release,
 };
 
 enum class MetadataQueryValueShape : uint8_t {

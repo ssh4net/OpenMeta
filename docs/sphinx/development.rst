@@ -62,23 +62,25 @@ model should stay compact:
        ``SubSecTime*`` date composition with normalized-instant conflict
        checks, separate camera/destination/shown/created GPS roles with
        scope-aware structured-location conflicts,
-       language-aware descriptive scalar roles and additive
-       creator/keyword/location-identifier/rights-holder/licensor collections
-       with structured owner/licensor scopes,
+       language-aware descriptive roles, structured creator-contact/event/
+       person/organization/product/artwork/rights/license/release records,
+       and independent privacy/policy sensitivity,
        computational, thermal, stitch/panorama capture state, and
        vendor-private fields.
-     - High, about 97-98%.
+     - High, about 98-99%.
    * - Query
      - Find entries by name, fuzzy term, or semantic group, then expose
        normalized query candidates, structured interpretation records, and
-       bounded cross-family concept resolutions, transfer hints, and conflict
+       bounded cross-family concept resolutions, transfer hints, sensitivity,
+       and conflict
        flags for crop/border/active-area, exposure/gain,
        color/WB/profile/source-color-transform, orientation, date/time, GPS,
-       descriptive fields including rights/license/credit/source,
+       descriptive fields including contact/event/person/organization/product/
+       artwork/rights/license/release semantics,
        lens-correction, computational/thermal/stitch, and RAW/source-processing
        fields plus BMFF derived-image construction and tiled-image configuration
        evidence across standard and vendor metadata.
-     - Medium-high, about 92-95%.
+     - High, about 96-98%.
    * - Creation
      - Build fresh metadata entries from host-provided values.
      - Medium, about 55-65%.
@@ -179,8 +181,9 @@ candidate source entries, source families, preferred entries, normalized
 compare keys, parsed date/time fields, date/time precision, timezone kind, GPS
 altitude-reference state, distinct destination/shown/created coordinate roles,
 structured-location scope, normalized descriptive language, additive
-collection preference, generic structured-record scope for rights/licensor
-records, canonical geometry origin/size/rect/margins,
+collection preference, structured record kinds and scopes for editorial,
+rights, license, and release records, independent policy sensitivity,
+canonical geometry origin/size/rect/margins,
 normalized exposure values, full normalized value vectors for grouped
 matrix/vector/table records, transfer hints, compatible and rendered safety
 booleans, and same-role conflict flags. This is deliberately an

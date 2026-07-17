@@ -122,6 +122,65 @@ enum class MetadataConceptRole : uint8_t {
     CreditLineRequired,
     Source,
     DigitalSourceType,
+    Name,
+    Identifier,
+    Address,
+    PostalCode,
+    Email,
+    Telephone,
+    Url,
+    Characteristic,
+    Gtin,
+    InventoryNumber,
+    StylePeriod,
+    CreatorIdentifier,
+    Age,
+    ContentDescription,
+    ContributionDescription,
+    PhysicalDescription,
+    RightsExpression,
+    RightsExpressionEncoding,
+    RightsExpressionLanguage,
+    LicenseStartDate,
+    LicenseEndDate,
+    MediaConstraint,
+    RegionConstraint,
+    ProductOrServiceConstraint,
+    ImageFileConstraint,
+    ImageAlterationConstraint,
+    OtherLicenseRequirement,
+    OtherCondition,
+    LicenseeTransactionIdentifier,
+    LicensorTransactionIdentifier,
+    LicenseeProjectReference,
+    LicenseTransactionDate,
+    ReleaseStatus,
+    ReleaseIdentifier,
+};
+
+enum class MetadataConceptRecordKind : uint8_t {
+    None,
+    CreatorContact,
+    Event,
+    Person,
+    Organization,
+    Product,
+    ArtworkOrObject,
+    RightsExpression,
+    RightsHolder,
+    Licensor,
+    Licensee,
+    License,
+    Release,
+};
+
+/// Policy sensitivity is independent from technical transfer safety.
+enum class MetadataConceptSensitivity : uint8_t {
+    None,
+    PersonalContact,
+    PersonIdentity,
+    Location,
+    LegalRights,
 };
 
 enum class MetadataConceptDateTimePrecision : uint8_t {
@@ -185,7 +244,11 @@ struct MetadataConceptCandidate final {
     MetadataConceptSourceFamily family = MetadataConceptSourceFamily::Unknown;
     MetadataQuerySemanticKind semantic = MetadataQuerySemanticKind::Unknown;
     MetadataQueryValueShape shape      = MetadataQueryValueShape::Unknown;
-    EntryId entry_id                   = kInvalidEntryId;
+    /// Normalized structured-record type; `None` for unstructured values.
+    MetadataConceptRecordKind record_kind = MetadataConceptRecordKind::None;
+    /// Host policy signal; independent from technical transfer safety.
+    MetadataConceptSensitivity sensitivity = MetadataConceptSensitivity::None;
+    EntryId entry_id                       = kInvalidEntryId;
     std::vector<EntryId> source_entries;
     uint8_t priority = 0U;
     bool preferred   = false;
@@ -297,6 +360,13 @@ metadata_concept_source_family_name(MetadataConceptSourceFamily family) noexcept
 
 const char*
 metadata_concept_role_name(MetadataConceptRole role) noexcept;
+
+const char*
+metadata_concept_record_kind_name(MetadataConceptRecordKind kind) noexcept;
+
+const char*
+metadata_concept_sensitivity_name(
+    MetadataConceptSensitivity sensitivity) noexcept;
 
 const char*
 metadata_concept_datetime_precision_name(

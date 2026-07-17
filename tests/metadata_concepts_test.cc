@@ -258,6 +258,22 @@ namespace {
         return nullptr;
     }
 
+    static const MetadataConceptCandidate*
+    find_record_role_scope(const MetadataConceptResolution& resolution,
+                           MetadataConceptRecordKind record_kind,
+                           MetadataConceptRole role,
+                           std::string_view record_scope)
+    {
+        for (size_t i = 0U; i < resolution.candidates.size(); ++i) {
+            const MetadataConceptCandidate& candidate = resolution.candidates[i];
+            if (candidate.record_kind == record_kind && candidate.role == role
+                && candidate.record_scope == record_scope) {
+                return &candidate;
+            }
+        }
+        return nullptr;
+    }
+
     static const MetadataConceptCandidate* find_preferred_role_scope_language(
         const MetadataConceptResolution& resolution, MetadataConceptRole role,
         std::string_view scope, std::string_view language)
@@ -1649,6 +1665,192 @@ namespace {
         EXPECT_EQ(license_id->semantic, MetadataQuerySemanticKind::License);
         EXPECT_EQ(license_url->semantic, MetadataQuerySemanticKind::License);
         EXPECT_EQ(credit_required->semantic, MetadataQuerySemanticKind::Credit);
+    }
+
+    TEST(MetadataConcepts, InterpretsStructuredEditorialRecords)
+    {
+        MetaStore store;
+        const std::string_view core
+            = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
+        const std::string_view ext
+            = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/";
+        (void)add_xmp_text(&store, core, "CreatorContactInfo/CiAdrCity",
+                           "Tokyo");
+        (void)add_xmp_text(&store, core, "CreatorContactInfo/CiEmailWork",
+                           "editor@example.test");
+        (void)add_xmp_text(&store, ext, "Event[@xml:lang=x-default]",
+                           "Opening night");
+        (void)add_xmp_text(&store, ext, "EventId[1]", "event-001");
+        (void)add_xmp_text(&store, ext,
+                           "PersonInImageWDetails[1]/PersonName"
+                           "[@xml:lang=x-default]",
+                           "Alex Example");
+        (void)add_xmp_text(&store, ext, "PersonInImageWDetails[1]/PersonId[1]",
+                           "person-001");
+        (void)add_xmp_text(&store, ext, "OrganisationInImageName[1]",
+                           "Example Org");
+        (void)add_xmp_text(&store, ext, "OrganisationInImageCode[1]",
+                           "org-001");
+        (void)add_xmp_text(&store, ext,
+                           "ProductInImage[1]/ProductName"
+                           "[@xml:lang=x-default]",
+                           "Example Camera");
+        (void)add_xmp_text(&store, ext, "ProductInImage[1]/ProductGTIN",
+                           "0123456789012");
+        (void)add_xmp_text(&store, ext,
+                           "ArtworkOrObject[1]/AOTitle"
+                           "[@xml:lang=x-default]",
+                           "Example Artwork");
+        (void)add_xmp_text(&store, ext,
+                           "ArtworkOrObject[1]/AOContentDescription"
+                           "[@xml:lang=x-default]",
+                           "A framed print");
+        (void)add_xmp_text(&store, ext,
+                           "ArtworkOrObject[1]/AOContributionDescription"
+                           "[@xml:lang=x-default]",
+                           "Restored for exhibition");
+        (void)add_xmp_text(&store, ext, "EmbdEncRightsExpr[1]/EncRightsExpr",
+                           "ZXhhbXBsZSByaWdodHM=");
+        (void)add_xmp_text(&store, ext,
+                           "EmbdEncRightsExpr[1]/RightsExprEncType", "base64");
+        (void)add_xmp_text(&store, ext, "EmbdEncRightsExpr[1]/RightsExprLangId",
+                           "en");
+        store.finalize();
+
+        const MetadataConceptResolution descriptive
+            = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+
+        EXPECT_TRUE(descriptive.found);
+        EXPECT_FALSE(descriptive.conflict);
+        const MetadataConceptCandidate* contact = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::CreatorContact,
+            MetadataConceptRole::Email, "CreatorContact");
+        const MetadataConceptCandidate* event
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::Event,
+                                     MetadataConceptRole::Name, "Event");
+        const MetadataConceptCandidate* person
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::Person,
+                                     MetadataConceptRole::Name, "Person[1]");
+        const MetadataConceptCandidate* organization = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::Organization,
+            MetadataConceptRole::Identifier, "Organization[1]");
+        const MetadataConceptCandidate* product
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::Product,
+                                     MetadataConceptRole::Gtin, "Product[1]");
+        const MetadataConceptCandidate* artwork_content
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::ArtworkOrObject,
+                                     MetadataConceptRole::ContentDescription,
+                                     "ArtworkOrObject[1]");
+        const MetadataConceptCandidate* artwork_contribution
+            = find_record_role_scope(
+                descriptive, MetadataConceptRecordKind::ArtworkOrObject,
+                MetadataConceptRole::ContributionDescription,
+                "ArtworkOrObject[1]");
+        const MetadataConceptCandidate* rights = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::RightsExpression,
+            MetadataConceptRole::RightsExpression,
+            "EmbeddedRightsExpression[1]");
+        ASSERT_NE(contact, nullptr);
+        ASSERT_NE(event, nullptr);
+        ASSERT_NE(person, nullptr);
+        ASSERT_NE(organization, nullptr);
+        ASSERT_NE(product, nullptr);
+        ASSERT_NE(artwork_content, nullptr);
+        ASSERT_NE(artwork_contribution, nullptr);
+        ASSERT_NE(rights, nullptr);
+        EXPECT_EQ(contact->semantic, MetadataQuerySemanticKind::Contact);
+        EXPECT_EQ(contact->sensitivity,
+                  MetadataConceptSensitivity::PersonalContact);
+        EXPECT_EQ(event->semantic, MetadataQuerySemanticKind::Event);
+        EXPECT_EQ(event->language, "x-default");
+        EXPECT_EQ(person->semantic, MetadataQuerySemanticKind::Person);
+        EXPECT_EQ(person->sensitivity,
+                  MetadataConceptSensitivity::PersonIdentity);
+        EXPECT_EQ(organization->semantic,
+                  MetadataQuerySemanticKind::Organization);
+        EXPECT_EQ(product->semantic, MetadataQuerySemanticKind::Product);
+        EXPECT_EQ(artwork_content->semantic,
+                  MetadataQuerySemanticKind::Artwork);
+        EXPECT_EQ(rights->semantic,
+                  MetadataQuerySemanticKind::RightsExpression);
+        EXPECT_EQ(rights->sensitivity, MetadataConceptSensitivity::LegalRights);
+        EXPECT_STREQ(metadata_concept_record_kind_name(contact->record_kind),
+                     "creator_contact");
+        EXPECT_STREQ(metadata_concept_sensitivity_name(contact->sensitivity),
+                     "personal_contact");
+        EXPECT_TRUE(artwork_content->preferred);
+        EXPECT_TRUE(artwork_contribution->preferred);
+    }
+
+    TEST(MetadataConcepts, InterpretsPlusLicenseConstraintsAndReleases)
+    {
+        MetaStore store;
+        const std::string_view plus = "http://ns.useplus.org/ldf/xmp/1.0/";
+        (void)add_xmp_text(&store, plus, "LicenseStartDate", "2026-07-01");
+        (void)add_xmp_text(&store, plus, "LicenseEndDate", "2027-07-01");
+        (void)add_xmp_text(&store, plus,
+                           "MediaConstraints[@xml:lang=x-default]",
+                           "Editorial media only");
+        (void)add_xmp_text(&store, plus, "ImageAlterationConstraints[1]",
+                           "AL-CRP");
+        (void)add_xmp_text(&store, plus, "LicensorTransactionID[1]",
+                           "transaction-001");
+        (void)add_xmp_text(&store, plus, "ModelReleaseStatus", "MR-LMR");
+        (void)add_xmp_text(&store, plus, "ModelReleaseID[1]", "model-001");
+        (void)add_xmp_text(&store, plus, "PropertyReleaseStatus", "PR-UPR");
+        (void)add_xmp_text(&store, plus, "PropertyReleaseID[1]",
+                           "property-001");
+        (void)add_xmp_text(&store, plus, "Licensor[1]/LicensorEmail",
+                           "rights@example.test");
+        store.finalize();
+
+        const MetadataConceptResolution descriptive
+            = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+
+        EXPECT_FALSE(descriptive.conflict);
+        const MetadataConceptCandidate* start
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::License,
+                                     MetadataConceptRole::LicenseStartDate, {});
+        const MetadataConceptCandidate* media
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::License,
+                                     MetadataConceptRole::MediaConstraint, {});
+        const MetadataConceptCandidate* transaction = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::License,
+            MetadataConceptRole::LicensorTransactionIdentifier, {});
+        const MetadataConceptCandidate* model_status = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::Release,
+            MetadataConceptRole::ReleaseStatus, "ModelRelease");
+        const MetadataConceptCandidate* property_status
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::Release,
+                                     MetadataConceptRole::ReleaseStatus,
+                                     "PropertyRelease");
+        const MetadataConceptCandidate* licensor_email
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::Licensor,
+                                     MetadataConceptRole::Email, "Licensor[1]");
+        ASSERT_NE(start, nullptr);
+        ASSERT_NE(media, nullptr);
+        ASSERT_NE(transaction, nullptr);
+        ASSERT_NE(model_status, nullptr);
+        ASSERT_NE(property_status, nullptr);
+        ASSERT_NE(licensor_email, nullptr);
+        EXPECT_EQ(start->semantic, MetadataQuerySemanticKind::License);
+        EXPECT_TRUE(start->language.empty());
+        EXPECT_EQ(media->language, "x-default");
+        EXPECT_EQ(model_status->semantic, MetadataQuerySemanticKind::Release);
+        EXPECT_EQ(model_status->sensitivity,
+                  MetadataConceptSensitivity::LegalRights);
+        EXPECT_TRUE(model_status->preferred);
+        EXPECT_TRUE(property_status->preferred);
+        EXPECT_EQ(licensor_email->sensitivity,
+                  MetadataConceptSensitivity::PersonalContact);
     }
 
     TEST(MetadataConcepts, UsesToleranceForGpsCoordinateConflicts)

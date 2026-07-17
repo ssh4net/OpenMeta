@@ -1160,6 +1160,7 @@ namespace {
         case MetadataConceptRole::ActiveArea:
         case MetadataConceptRole::Border:
         case MetadataConceptRole::LensCorrection: break;
+        default: break;
         }
     }
 
@@ -1298,6 +1299,7 @@ namespace {
             case MetadataConceptRole::ActiveArea:
             case MetadataConceptRole::Border:
             case MetadataConceptRole::LensCorrection: break;
+            default: break;
             }
             break;
         case MetadataConceptKind::ColorProfile:
@@ -1393,11 +1395,112 @@ namespace {
             case MetadataConceptRole::MultiImageScene:
             case MetadataConceptRole::DerivedImageConstruction:
             case MetadataConceptRole::TiledImageConfiguration: break;
+            default: break;
             }
             break;
         }
         set_transfer_hint(candidate, MetadataConceptTransferHint::Unknown,
                           false, false);
+    }
+
+    static bool role_is_contact_detail(MetadataConceptRole role) noexcept
+    {
+        return role == MetadataConceptRole::Address
+               || role == MetadataConceptRole::PostalCode
+               || role == MetadataConceptRole::Email
+               || role == MetadataConceptRole::Telephone
+               || role == MetadataConceptRole::Url
+               || role == MetadataConceptRole::City
+               || role == MetadataConceptRole::ProvinceState
+               || role == MetadataConceptRole::CountryName;
+    }
+
+    static bool role_is_legal_rights(MetadataConceptRole role) noexcept
+    {
+        switch (role) {
+        case MetadataConceptRole::CopyrightNotice:
+        case MetadataConceptRole::CopyrightStatus:
+        case MetadataConceptRole::RightsUsageTerms:
+        case MetadataConceptRole::RightsWebStatement:
+        case MetadataConceptRole::RightsCertificate:
+        case MetadataConceptRole::RightsMarked:
+        case MetadataConceptRole::RightsHolderName:
+        case MetadataConceptRole::RightsHolderIdentifier:
+        case MetadataConceptRole::LicenseIdentifier:
+        case MetadataConceptRole::LicenseTermsUrl:
+        case MetadataConceptRole::LicensorName:
+        case MetadataConceptRole::LicensorIdentifier:
+        case MetadataConceptRole::RightsExpression:
+        case MetadataConceptRole::RightsExpressionEncoding:
+        case MetadataConceptRole::RightsExpressionLanguage:
+        case MetadataConceptRole::LicenseStartDate:
+        case MetadataConceptRole::LicenseEndDate:
+        case MetadataConceptRole::MediaConstraint:
+        case MetadataConceptRole::RegionConstraint:
+        case MetadataConceptRole::ProductOrServiceConstraint:
+        case MetadataConceptRole::ImageFileConstraint:
+        case MetadataConceptRole::ImageAlterationConstraint:
+        case MetadataConceptRole::OtherLicenseRequirement:
+        case MetadataConceptRole::OtherCondition:
+        case MetadataConceptRole::LicenseeTransactionIdentifier:
+        case MetadataConceptRole::LicensorTransactionIdentifier:
+        case MetadataConceptRole::LicenseeProjectReference:
+        case MetadataConceptRole::LicenseTransactionDate:
+        case MetadataConceptRole::ReleaseStatus:
+        case MetadataConceptRole::ReleaseIdentifier: return true;
+        default: break;
+        }
+        return false;
+    }
+
+    static bool role_is_location_detail(MetadataConceptRole role) noexcept
+    {
+        return role == MetadataConceptRole::LocationName
+               || role == MetadataConceptRole::Sublocation
+               || role == MetadataConceptRole::City
+               || role == MetadataConceptRole::ProvinceState
+               || role == MetadataConceptRole::CountryName
+               || role == MetadataConceptRole::CountryCode
+               || role == MetadataConceptRole::WorldRegion
+               || role == MetadataConceptRole::LocationIdentifier;
+    }
+
+    static void assign_sensitivity(MetadataConceptCandidate* candidate) noexcept
+    {
+        if (!candidate) {
+            return;
+        }
+        candidate->sensitivity = MetadataConceptSensitivity::None;
+        if (candidate->record_kind == MetadataConceptRecordKind::CreatorContact
+            || ((candidate->record_kind == MetadataConceptRecordKind::Licensor
+                 || candidate->record_kind
+                        == MetadataConceptRecordKind::Licensee)
+                && role_is_contact_detail(candidate->role))) {
+            candidate->sensitivity = MetadataConceptSensitivity::PersonalContact;
+            return;
+        }
+        if (candidate->record_kind == MetadataConceptRecordKind::Person
+            || candidate->role == MetadataConceptRole::Creator
+            || candidate->role == MetadataConceptRole::CreatorIdentifier
+            || candidate->role == MetadataConceptRole::Age) {
+            candidate->sensitivity = MetadataConceptSensitivity::PersonIdentity;
+            return;
+        }
+        if (candidate->kind == MetadataConceptKind::Gps
+            || role_is_location_detail(candidate->role)) {
+            candidate->sensitivity = MetadataConceptSensitivity::Location;
+            return;
+        }
+        if (candidate->record_kind
+                == MetadataConceptRecordKind::RightsExpression
+            || candidate->record_kind == MetadataConceptRecordKind::RightsHolder
+            || candidate->record_kind == MetadataConceptRecordKind::Licensor
+            || candidate->record_kind == MetadataConceptRecordKind::Licensee
+            || candidate->record_kind == MetadataConceptRecordKind::License
+            || candidate->record_kind == MetadataConceptRecordKind::Release
+            || role_is_legal_rights(candidate->role)) {
+            candidate->sensitivity = MetadataConceptSensitivity::LegalRights;
+        }
     }
 
     static MetadataConceptCandidate*
@@ -2509,7 +2612,15 @@ namespace {
         case MetadataQuerySemanticKind::Rights:
         case MetadataQuerySemanticKind::License:
         case MetadataQuerySemanticKind::Credit:
-        case MetadataQuerySemanticKind::Source: break;
+        case MetadataQuerySemanticKind::Source:
+        case MetadataQuerySemanticKind::Contact:
+        case MetadataQuerySemanticKind::Event:
+        case MetadataQuerySemanticKind::Person:
+        case MetadataQuerySemanticKind::Organization:
+        case MetadataQuerySemanticKind::Product:
+        case MetadataQuerySemanticKind::Artwork:
+        case MetadataQuerySemanticKind::RightsExpression:
+        case MetadataQuerySemanticKind::Release: break;
         }
         return MetadataConceptRole::Primary;
     }
@@ -2644,7 +2755,15 @@ namespace {
         case MetadataQuerySemanticKind::Rights:
         case MetadataQuerySemanticKind::License:
         case MetadataQuerySemanticKind::Credit:
-        case MetadataQuerySemanticKind::Source: break;
+        case MetadataQuerySemanticKind::Source:
+        case MetadataQuerySemanticKind::Contact:
+        case MetadataQuerySemanticKind::Event:
+        case MetadataQuerySemanticKind::Person:
+        case MetadataQuerySemanticKind::Organization:
+        case MetadataQuerySemanticKind::Product:
+        case MetadataQuerySemanticKind::Artwork:
+        case MetadataQuerySemanticKind::RightsExpression:
+        case MetadataQuerySemanticKind::Release: break;
         }
         return MetadataConceptRole::Primary;
     }
@@ -2753,7 +2872,15 @@ namespace {
         case MetadataQuerySemanticKind::Rights:
         case MetadataQuerySemanticKind::License:
         case MetadataQuerySemanticKind::Credit:
-        case MetadataQuerySemanticKind::Source: break;
+        case MetadataQuerySemanticKind::Source:
+        case MetadataQuerySemanticKind::Contact:
+        case MetadataQuerySemanticKind::Event:
+        case MetadataQuerySemanticKind::Person:
+        case MetadataQuerySemanticKind::Organization:
+        case MetadataQuerySemanticKind::Product:
+        case MetadataQuerySemanticKind::Artwork:
+        case MetadataQuerySemanticKind::RightsExpression:
+        case MetadataQuerySemanticKind::Release: break;
         }
         return MetadataConceptRole::Primary;
     }
@@ -3028,7 +3155,15 @@ namespace {
         case MetadataQuerySemanticKind::Rights:
         case MetadataQuerySemanticKind::License:
         case MetadataQuerySemanticKind::Credit:
-        case MetadataQuerySemanticKind::Source: break;
+        case MetadataQuerySemanticKind::Source:
+        case MetadataQuerySemanticKind::Contact:
+        case MetadataQuerySemanticKind::Event:
+        case MetadataQuerySemanticKind::Person:
+        case MetadataQuerySemanticKind::Organization:
+        case MetadataQuerySemanticKind::Product:
+        case MetadataQuerySemanticKind::Artwork:
+        case MetadataQuerySemanticKind::RightsExpression:
+        case MetadataQuerySemanticKind::Release: break;
         }
         return MetadataConceptRole::Primary;
     }
@@ -3636,7 +3771,59 @@ namespace {
                || role == MetadataConceptRole::RightsHolderName
                || role == MetadataConceptRole::RightsHolderIdentifier
                || role == MetadataConceptRole::LicensorName
-               || role == MetadataConceptRole::LicensorIdentifier;
+               || role == MetadataConceptRole::LicensorIdentifier
+               || role == MetadataConceptRole::Name
+               || role == MetadataConceptRole::Identifier
+               || role == MetadataConceptRole::Address
+               || role == MetadataConceptRole::Email
+               || role == MetadataConceptRole::Telephone
+               || role == MetadataConceptRole::Url
+               || role == MetadataConceptRole::Characteristic
+               || role == MetadataConceptRole::Gtin
+               || role == MetadataConceptRole::InventoryNumber
+               || role == MetadataConceptRole::StylePeriod
+               || role == MetadataConceptRole::CreatorIdentifier
+               || role == MetadataConceptRole::RightsExpression
+               || role == MetadataConceptRole::MediaConstraint
+               || role == MetadataConceptRole::RegionConstraint
+               || role == MetadataConceptRole::ProductOrServiceConstraint
+               || role == MetadataConceptRole::ImageFileConstraint
+               || role == MetadataConceptRole::ImageAlterationConstraint
+               || role == MetadataConceptRole::OtherLicenseRequirement
+               || role == MetadataConceptRole::OtherCondition
+               || role == MetadataConceptRole::LicenseeTransactionIdentifier
+               || role == MetadataConceptRole::LicensorTransactionIdentifier
+               || role == MetadataConceptRole::LicenseeProjectReference
+               || role == MetadataConceptRole::ReleaseIdentifier;
+    }
+
+    static bool descriptive_role_is_localized(MetadataConceptRole role) noexcept
+    {
+        switch (role) {
+        case MetadataConceptRole::Title:
+        case MetadataConceptRole::Headline:
+        case MetadataConceptRole::Description:
+        case MetadataConceptRole::CopyrightNotice:
+        case MetadataConceptRole::RightsUsageTerms:
+        case MetadataConceptRole::LocationName:
+        case MetadataConceptRole::Sublocation:
+        case MetadataConceptRole::City:
+        case MetadataConceptRole::ProvinceState:
+        case MetadataConceptRole::CountryName:
+        case MetadataConceptRole::CountryCode:
+        case MetadataConceptRole::WorldRegion:
+        case MetadataConceptRole::Name:
+        case MetadataConceptRole::ContentDescription:
+        case MetadataConceptRole::ContributionDescription:
+        case MetadataConceptRole::PhysicalDescription:
+        case MetadataConceptRole::MediaConstraint:
+        case MetadataConceptRole::RegionConstraint:
+        case MetadataConceptRole::ProductOrServiceConstraint:
+        case MetadataConceptRole::OtherLicenseRequirement:
+        case MetadataConceptRole::OtherCondition: return true;
+        default: break;
+        }
+        return false;
     }
 
     static bool descriptive_role_is_location(MetadataConceptRole role) noexcept
@@ -3655,9 +3842,39 @@ namespace {
         return false;
     }
 
-    static MetadataQuerySemanticKind
-    descriptive_semantic_for_role(MetadataConceptRole role) noexcept
+    static MetadataQuerySemanticKind descriptive_semantic_for_role(
+        MetadataConceptRole role,
+        MetadataConceptRecordKind record_kind) noexcept
     {
+        if (role == MetadataConceptRole::CreditLine
+            || role == MetadataConceptRole::CreditLineRequired) {
+            return MetadataQuerySemanticKind::Credit;
+        }
+        switch (record_kind) {
+        case MetadataConceptRecordKind::CreatorContact:
+            return MetadataQuerySemanticKind::Contact;
+        case MetadataConceptRecordKind::Event:
+            return MetadataQuerySemanticKind::Event;
+        case MetadataConceptRecordKind::Person:
+            return MetadataQuerySemanticKind::Person;
+        case MetadataConceptRecordKind::Organization:
+            return MetadataQuerySemanticKind::Organization;
+        case MetadataConceptRecordKind::Product:
+            return MetadataQuerySemanticKind::Product;
+        case MetadataConceptRecordKind::ArtworkOrObject:
+            return MetadataQuerySemanticKind::Artwork;
+        case MetadataConceptRecordKind::RightsExpression:
+            return MetadataQuerySemanticKind::RightsExpression;
+        case MetadataConceptRecordKind::RightsHolder:
+            return MetadataQuerySemanticKind::Rights;
+        case MetadataConceptRecordKind::Licensor:
+        case MetadataConceptRecordKind::Licensee:
+        case MetadataConceptRecordKind::License:
+            return MetadataQuerySemanticKind::License;
+        case MetadataConceptRecordKind::Release:
+            return MetadataQuerySemanticKind::Release;
+        case MetadataConceptRecordKind::None: break;
+        }
         switch (role) {
         case MetadataConceptRole::Title:
         case MetadataConceptRole::Headline:
@@ -3724,12 +3941,10 @@ namespace {
     descriptive_xmp_record_scope(std::string_view path,
                                  std::string_view root_name) noexcept
     {
-        const size_t separator = path.find('/');
-        if (separator == std::string_view::npos) {
-            return {};
-        }
+        const size_t separator      = path.find('/');
         const std::string_view root = xmp_scope_leaf(
-            path.substr(0U, separator));
+            separator == std::string_view::npos ? path
+                                                : path.substr(0U, separator));
         if (ascii_equal_ci(root, root_name)) {
             return root;
         }
@@ -3744,6 +3959,27 @@ namespace {
             }
         }
         return root;
+    }
+
+    static bool descriptive_xmp_normalized_record_scope(
+        std::string_view path, std::string_view root_name,
+        std::string_view normalized_name, std::string* out)
+    {
+        if (out) {
+            out->clear();
+        }
+        const std::string_view scope = descriptive_xmp_record_scope(path,
+                                                                    root_name);
+        if (scope.empty()) {
+            return false;
+        }
+        if (out) {
+            out->assign(normalized_name);
+            if (scope.size() > root_name.size()) {
+                out->append(scope.substr(root_name.size()));
+            }
+        }
+        return true;
     }
 
     static MetadataConceptRole
@@ -3781,18 +4017,19 @@ namespace {
 
     static void append_descriptive_text_candidate(
         const MetaStore& store, EntryId id, MetadataConceptRole role,
-        uint8_t priority, std::string_view location_scope,
-        std::string_view record_scope, std::string_view xmp_path,
-        MetadataConceptResolution* out)
+        MetadataConceptRecordKind record_kind, uint8_t priority,
+        std::string_view location_scope, std::string_view record_scope,
+        std::string_view xmp_path, MetadataConceptResolution* out)
     {
         std::string text;
         if (!value_to_text(store.arena(), store.entry(id).value, &text)) {
             return;
         }
-        MetadataConceptCandidate candidate
-            = make_entry_candidate(store, id, MetadataConceptKind::Descriptive,
-                                   role, descriptive_semantic_for_role(role),
-                                   MetadataQueryValueShape::Text, priority);
+        MetadataConceptCandidate candidate = make_entry_candidate(
+            store, id, MetadataConceptKind::Descriptive, role,
+            descriptive_semantic_for_role(role, record_kind),
+            MetadataQueryValueShape::Text, priority);
+        candidate.record_kind = record_kind;
         candidate.text.assign(text);
         normalize_text_key(text, &candidate.value_key);
         if (candidate.value_key.empty()) {
@@ -3804,7 +4041,7 @@ namespace {
         if (!record_scope.empty()) {
             candidate.record_scope.assign(record_scope);
         }
-        if (!descriptive_role_is_collection(role)) {
+        if (descriptive_role_is_localized(role)) {
             assign_candidate_language(xmp_path, &candidate);
         }
         append_candidate(out, candidate);
@@ -3856,8 +4093,9 @@ namespace {
             break;
         default: return;
         }
-        append_descriptive_text_candidate(store, id, role, priority, {}, {}, {},
-                                          out);
+        append_descriptive_text_candidate(store, id, role,
+                                          MetadataConceptRecordKind::None,
+                                          priority, {}, {}, {}, out);
     }
 
     static void
@@ -3901,8 +4139,309 @@ namespace {
         const std::string_view scope = descriptive_role_is_location(role)
                                            ? std::string_view("LocationCreated")
                                            : std::string_view {};
-        append_descriptive_text_candidate(store, id, role, 86U, scope, {}, {},
-                                          out);
+        append_descriptive_text_candidate(store, id, role,
+                                          MetadataConceptRecordKind::None, 86U,
+                                          scope, {}, {}, out);
+    }
+
+    static bool map_iptc_core_structured_descriptive(
+        std::string_view path, std::string_view leaf, MetadataConceptRole* role,
+        MetadataConceptRecordKind* record_kind, std::string* record_scope)
+    {
+        if (!descriptive_xmp_normalized_record_scope(path, "CreatorContactInfo",
+                                                     "CreatorContact",
+                                                     record_scope)) {
+            return false;
+        }
+        *record_kind = MetadataConceptRecordKind::CreatorContact;
+        if (ascii_equal_ci(leaf, "CiAdrCity")) {
+            *role = MetadataConceptRole::City;
+        } else if (ascii_equal_ci(leaf, "CiAdrCtry")) {
+            *role = MetadataConceptRole::CountryName;
+        } else if (ascii_equal_ci(leaf, "CiAdrExtadr")) {
+            *role = MetadataConceptRole::Address;
+        } else if (ascii_equal_ci(leaf, "CiAdrPcode")) {
+            *role = MetadataConceptRole::PostalCode;
+        } else if (ascii_equal_ci(leaf, "CiAdrRegion")
+                   || ascii_equal_ci(leaf, "ProvinceName")) {
+            *role = MetadataConceptRole::ProvinceState;
+        } else if (ascii_equal_ci(leaf, "ProvinceCode")) {
+            *role = MetadataConceptRole::Identifier;
+        } else if (ascii_equal_ci(leaf, "CiEmailWork")) {
+            *role = MetadataConceptRole::Email;
+        } else if (ascii_equal_ci(leaf, "CiTelWork")) {
+            *role = MetadataConceptRole::Telephone;
+        } else if (ascii_equal_ci(leaf, "CiUrlWork")) {
+            *role = MetadataConceptRole::Url;
+        }
+        return *role != MetadataConceptRole::Primary;
+    }
+
+    static bool map_artwork_descriptive(std::string_view leaf,
+                                        MetadataConceptRole* role)
+    {
+        if (ascii_equal_ci(leaf, "AOCopyrightNotice")) {
+            *role = MetadataConceptRole::CopyrightNotice;
+        } else if (ascii_equal_ci(leaf, "AOCreator")) {
+            *role = MetadataConceptRole::Creator;
+        } else if (ascii_equal_ci(leaf, "AOCreatorId")) {
+            *role = MetadataConceptRole::CreatorIdentifier;
+        } else if (ascii_equal_ci(leaf, "AODateCreated")
+                   || ascii_equal_ci(leaf, "AOCircaDateCreated")) {
+            *role = MetadataConceptRole::DateCreated;
+        } else if (ascii_equal_ci(leaf, "AOSource")) {
+            *role = MetadataConceptRole::Source;
+        } else if (ascii_equal_ci(leaf, "AOSourceInvNo")) {
+            *role = MetadataConceptRole::InventoryNumber;
+        } else if (ascii_equal_ci(leaf, "AOTitle")) {
+            *role = MetadataConceptRole::Title;
+        } else if (ascii_equal_ci(leaf, "AOCurrentCopyrightOwnerName")) {
+            *role = MetadataConceptRole::RightsHolderName;
+        } else if (ascii_equal_ci(leaf, "AOCurrentCopyrightOwnerId")) {
+            *role = MetadataConceptRole::RightsHolderIdentifier;
+        } else if (ascii_equal_ci(leaf, "AOCurrentLicensorName")) {
+            *role = MetadataConceptRole::LicensorName;
+        } else if (ascii_equal_ci(leaf, "AOCurrentLicensorId")) {
+            *role = MetadataConceptRole::LicensorIdentifier;
+        } else if (ascii_equal_ci(leaf, "AOStylePeriod")) {
+            *role = MetadataConceptRole::StylePeriod;
+        } else if (ascii_equal_ci(leaf, "AOSourceInvURL")) {
+            *role = MetadataConceptRole::Url;
+        } else if (ascii_equal_ci(leaf, "AOContentDescription")) {
+            *role = MetadataConceptRole::ContentDescription;
+        } else if (ascii_equal_ci(leaf, "AOContributionDescription")) {
+            *role = MetadataConceptRole::ContributionDescription;
+        } else if (ascii_equal_ci(leaf, "AOPhysicalDescription")) {
+            *role = MetadataConceptRole::PhysicalDescription;
+        }
+        return *role != MetadataConceptRole::Primary;
+    }
+
+    static bool map_iptc_ext_structured_descriptive(
+        std::string_view path, std::string_view leaf, MetadataConceptRole* role,
+        MetadataConceptRecordKind* record_kind, std::string* record_scope)
+    {
+        if (descriptive_xmp_normalized_record_scope(path, "ArtworkOrObject",
+                                                    "ArtworkOrObject",
+                                                    record_scope)) {
+            *record_kind = MetadataConceptRecordKind::ArtworkOrObject;
+            return map_artwork_descriptive(leaf, role);
+        }
+        if (descriptive_xmp_normalized_record_scope(path,
+                                                    "PersonInImageWDetails",
+                                                    "Person", record_scope)) {
+            *record_kind = MetadataConceptRecordKind::Person;
+            if (ascii_equal_ci(leaf, "PersonName")) {
+                *role = MetadataConceptRole::Name;
+            } else if (ascii_equal_ci(leaf, "PersonId")) {
+                *role = MetadataConceptRole::Identifier;
+            } else if (ascii_equal_ci(leaf, "PersonDescription")) {
+                *role = MetadataConceptRole::Description;
+            } else if (ascii_equal_ci(leaf, "PersonCharacteristic")
+                       || ascii_equal_ci(leaf, "CvId")
+                       || ascii_equal_ci(leaf, "CvTermId")
+                       || ascii_equal_ci(leaf, "CvTermName")
+                       || ascii_equal_ci(leaf, "CvTermRefinedAbout")) {
+                *role = MetadataConceptRole::Characteristic;
+            }
+            return *role != MetadataConceptRole::Primary;
+        }
+        if (descriptive_xmp_normalized_record_scope(path, "ProductInImage",
+                                                    "Product", record_scope)) {
+            *record_kind = MetadataConceptRecordKind::Product;
+            if (ascii_equal_ci(leaf, "ProductName")) {
+                *role = MetadataConceptRole::Name;
+            } else if (ascii_equal_ci(leaf, "ProductId")) {
+                *role = MetadataConceptRole::Identifier;
+            } else if (ascii_equal_ci(leaf, "ProductGTIN")) {
+                *role = MetadataConceptRole::Gtin;
+            } else if (ascii_equal_ci(leaf, "ProductDescription")) {
+                *role = MetadataConceptRole::Description;
+            }
+            return *role != MetadataConceptRole::Primary;
+        }
+        if (descriptive_xmp_normalized_record_scope(path, "EmbdEncRightsExpr",
+                                                    "EmbeddedRightsExpression",
+                                                    record_scope)
+            || descriptive_xmp_normalized_record_scope(path,
+                                                       "LinkedEncRightsExpr",
+                                                       "LinkedRightsExpression",
+                                                       record_scope)) {
+            *record_kind = MetadataConceptRecordKind::RightsExpression;
+            if (ascii_equal_ci(leaf, "EncRightsExpr")
+                || ascii_equal_ci(leaf, "LinkedRightsExpr")) {
+                *role = MetadataConceptRole::RightsExpression;
+            } else if (ascii_equal_ci(leaf, "RightsExprEncType")) {
+                *role = MetadataConceptRole::RightsExpressionEncoding;
+            } else if (ascii_equal_ci(leaf, "RightsExprLangId")) {
+                *role = MetadataConceptRole::RightsExpressionLanguage;
+            }
+            return *role != MetadataConceptRole::Primary;
+        }
+        if (descriptive_xmp_normalized_record_scope(path, "PersonInImage",
+                                                    "Person", record_scope)) {
+            *record_kind = MetadataConceptRecordKind::Person;
+            *role        = MetadataConceptRole::Name;
+            return true;
+        }
+        if (descriptive_xmp_normalized_record_scope(path, "ModelAge", "Person",
+                                                    record_scope)) {
+            *record_kind = MetadataConceptRecordKind::Person;
+            *role        = MetadataConceptRole::Age;
+            return true;
+        }
+        if (descriptive_xmp_normalized_record_scope(path,
+                                                    "OrganisationInImageName",
+                                                    "Organization",
+                                                    record_scope)) {
+            *record_kind = MetadataConceptRecordKind::Organization;
+            *role        = MetadataConceptRole::Name;
+            return true;
+        }
+        if (descriptive_xmp_normalized_record_scope(path,
+                                                    "OrganisationInImageCode",
+                                                    "Organization",
+                                                    record_scope)) {
+            *record_kind = MetadataConceptRecordKind::Organization;
+            *role        = MetadataConceptRole::Identifier;
+            return true;
+        }
+        if (ascii_equal_ci(leaf, "Event")) {
+            *record_kind = MetadataConceptRecordKind::Event;
+            *role        = MetadataConceptRole::Name;
+            record_scope->assign("Event");
+            return true;
+        }
+        if (descriptive_xmp_normalized_record_scope(path, "EventId", "Event",
+                                                    record_scope)) {
+            *record_kind = MetadataConceptRecordKind::Event;
+            *role        = MetadataConceptRole::Identifier;
+            record_scope->assign("Event");
+            return true;
+        }
+        return false;
+    }
+
+    static bool map_plus_record_descriptive(
+        std::string_view path, std::string_view leaf, MetadataConceptRole* role,
+        MetadataConceptRecordKind* record_kind, std::string* record_scope)
+    {
+        if (descriptive_xmp_normalized_record_scope(path, "CopyrightOwner",
+                                                    "CopyrightOwner",
+                                                    record_scope)) {
+            *record_kind = MetadataConceptRecordKind::RightsHolder;
+            if (ascii_equal_ci(leaf, "CopyrightOwnerName")) {
+                *role = MetadataConceptRole::RightsHolderName;
+            } else if (ascii_equal_ci(leaf, "CopyrightOwnerID")) {
+                *role = MetadataConceptRole::RightsHolderIdentifier;
+            }
+            return *role != MetadataConceptRole::Primary;
+        }
+        if (descriptive_xmp_normalized_record_scope(path, "Licensor",
+                                                    "Licensor", record_scope)) {
+            *record_kind = MetadataConceptRecordKind::Licensor;
+            if (ascii_equal_ci(leaf, "LicensorName")) {
+                *role = MetadataConceptRole::LicensorName;
+            } else if (ascii_equal_ci(leaf, "LicensorID")) {
+                *role = MetadataConceptRole::LicensorIdentifier;
+            } else if (ascii_equal_ci(leaf, "LicensorStreetAddress")
+                       || ascii_equal_ci(leaf, "LicensorExtendedAddress")) {
+                *role = MetadataConceptRole::Address;
+            } else if (ascii_equal_ci(leaf, "LicensorCity")) {
+                *role = MetadataConceptRole::City;
+            } else if (ascii_equal_ci(leaf, "LicensorRegion")) {
+                *role = MetadataConceptRole::ProvinceState;
+            } else if (ascii_equal_ci(leaf, "LicensorPostalCode")) {
+                *role = MetadataConceptRole::PostalCode;
+            } else if (ascii_equal_ci(leaf, "LicensorCountry")) {
+                *role = MetadataConceptRole::CountryName;
+            } else if (ascii_equal_ci(leaf, "LicensorTelephone1")
+                       || ascii_equal_ci(leaf, "LicensorTelephone2")) {
+                *role = MetadataConceptRole::Telephone;
+            } else if (ascii_equal_ci(leaf, "LicensorTelephoneType1")
+                       || ascii_equal_ci(leaf, "LicensorTelephoneType2")) {
+                *role = MetadataConceptRole::Characteristic;
+            } else if (ascii_equal_ci(leaf, "LicensorEmail")) {
+                *role = MetadataConceptRole::Email;
+            } else if (ascii_equal_ci(leaf, "LicensorURL")) {
+                *role = MetadataConceptRole::Url;
+            }
+            return *role != MetadataConceptRole::Primary;
+        }
+        if (descriptive_xmp_normalized_record_scope(path, "Licensee",
+                                                    "Licensee", record_scope)) {
+            *record_kind = MetadataConceptRecordKind::Licensee;
+            if (ascii_equal_ci(leaf, "LicenseeName")) {
+                *role = MetadataConceptRole::Name;
+            } else if (ascii_equal_ci(leaf, "LicenseeID")) {
+                *role = MetadataConceptRole::Identifier;
+            } else if (ascii_equal_ci(leaf, "LicenseeURL")) {
+                *role = MetadataConceptRole::Url;
+            }
+            return *role != MetadataConceptRole::Primary;
+        }
+        return false;
+    }
+
+    static bool map_plus_license_descriptive(
+        std::string_view leaf, MetadataConceptRole* role,
+        MetadataConceptRecordKind* record_kind, std::string* record_scope)
+    {
+        *record_kind = MetadataConceptRecordKind::License;
+        if (ascii_equal_ci(leaf, "CopyrightStatus")) {
+            *record_kind = MetadataConceptRecordKind::RightsHolder;
+            *role        = MetadataConceptRole::CopyrightStatus;
+        } else if (ascii_equal_ci(leaf, "LicenseID")) {
+            *role = MetadataConceptRole::LicenseIdentifier;
+        } else if (ascii_equal_ci(leaf, "LicenseStartDate")) {
+            *role = MetadataConceptRole::LicenseStartDate;
+        } else if (ascii_equal_ci(leaf, "LicenseEndDate")) {
+            *role = MetadataConceptRole::LicenseEndDate;
+        } else if (ascii_equal_ci(leaf, "MediaConstraints")) {
+            *role = MetadataConceptRole::MediaConstraint;
+        } else if (ascii_equal_ci(leaf, "RegionConstraints")) {
+            *role = MetadataConceptRole::RegionConstraint;
+        } else if (ascii_equal_ci(leaf, "ProductOrServiceConstraints")) {
+            *role = MetadataConceptRole::ProductOrServiceConstraint;
+        } else if (ascii_equal_ci(leaf, "ImageFileConstraints")) {
+            *role = MetadataConceptRole::ImageFileConstraint;
+        } else if (ascii_equal_ci(leaf, "ImageAlterationConstraints")) {
+            *role = MetadataConceptRole::ImageAlterationConstraint;
+        } else if (ascii_equal_ci(leaf, "OtherLicenseRequirements")) {
+            *role = MetadataConceptRole::OtherLicenseRequirement;
+        } else if (ascii_equal_ci(leaf, "OtherConditions")
+                   || ascii_equal_ci(leaf, "OtherConstraints")) {
+            *role = MetadataConceptRole::OtherCondition;
+        } else if (ascii_equal_ci(leaf, "TermsAndConditionsText")) {
+            *role = MetadataConceptRole::RightsUsageTerms;
+        } else if (ascii_equal_ci(leaf, "TermsAndConditionsURL")) {
+            *role = MetadataConceptRole::LicenseTermsUrl;
+        } else if (ascii_equal_ci(leaf, "LicensorTransactionID")) {
+            *role = MetadataConceptRole::LicensorTransactionIdentifier;
+        } else if (ascii_equal_ci(leaf, "LicenseeTransactionID")) {
+            *role = MetadataConceptRole::LicenseeTransactionIdentifier;
+        } else if (ascii_equal_ci(leaf, "LicenseeProjectReference")) {
+            *role = MetadataConceptRole::LicenseeProjectReference;
+        } else if (ascii_equal_ci(leaf, "LicenseTransactionDate")) {
+            *role = MetadataConceptRole::LicenseTransactionDate;
+        } else if (ascii_equal_ci(leaf, "CreditLineRequired")) {
+            *role = MetadataConceptRole::CreditLineRequired;
+        } else if (ascii_equal_ci(leaf, "ModelReleaseStatus")
+                   || ascii_equal_ci(leaf, "PropertyReleaseStatus")) {
+            *record_kind = MetadataConceptRecordKind::Release;
+            *role        = MetadataConceptRole::ReleaseStatus;
+            record_scope->assign(ascii_equal_ci(leaf, "ModelReleaseStatus")
+                                     ? "ModelRelease"
+                                     : "PropertyRelease");
+        } else if (ascii_equal_ci(leaf, "ModelReleaseID")
+                   || ascii_equal_ci(leaf, "PropertyReleaseID")) {
+            *record_kind = MetadataConceptRecordKind::Release;
+            *role        = MetadataConceptRole::ReleaseIdentifier;
+            record_scope->assign(ascii_equal_ci(leaf, "ModelReleaseID")
+                                     ? "ModelRelease"
+                                     : "PropertyRelease");
+        }
+        return *role != MetadataConceptRole::Primary;
     }
 
     static void append_xmp_descriptive_candidate(const MetaStore& store,
@@ -3912,8 +4451,9 @@ namespace {
         const std::string_view path
             = arena_string(store.arena(),
                            entry.key.data.xmp_property.property_path);
-        const std::string_view leaf = xmp_property_leaf(path);
-        MetadataConceptRole role    = MetadataConceptRole::Primary;
+        const std::string_view leaf           = xmp_property_leaf(path);
+        MetadataConceptRole role              = MetadataConceptRole::Primary;
+        MetadataConceptRecordKind record_kind = MetadataConceptRecordKind::None;
         std::string location_scope;
         std::string record_scope;
         uint8_t priority = 0U;
@@ -3946,7 +4486,11 @@ namespace {
             }
             priority = 92U;
         } else if (xmp_schema_matches(store, entry, kIptcCoreXmpSchema)) {
-            if (!descriptive_xmp_location_scope(path, &location_scope)) {
+            if (map_iptc_core_structured_descriptive(path, leaf, &role,
+                                                     &record_kind,
+                                                     &record_scope)) {
+                priority = 100U;
+            } else if (!descriptive_xmp_location_scope(path, &location_scope)) {
                 if (ascii_equal_ci(leaf, "Location")
                     || ascii_equal_ci(leaf, "CountryCode")) {
                     location_scope.assign("LocationCreated");
@@ -3954,13 +4498,18 @@ namespace {
                     return;
                 }
             }
-            role     = descriptive_location_role_for_leaf(leaf);
-            priority = 96U;
+            if (role == MetadataConceptRole::Primary) {
+                role = descriptive_location_role_for_leaf(leaf);
+            }
+            if (priority == 0U) {
+                priority = 96U;
+            }
         } else if (xmp_schema_matches(store, entry, kIptcExtXmpSchema)) {
             if (!descriptive_xmp_location_scope(path, &location_scope)) {
                 if (ascii_equal_ci(leaf, "DigitalSourceType")) {
                     role = MetadataConceptRole::DigitalSourceType;
-                } else {
+                } else if (!map_iptc_ext_structured_descriptive(
+                               path, leaf, &role, &record_kind, &record_scope)) {
                     return;
                 }
             } else {
@@ -3973,7 +4522,11 @@ namespace {
             } else if (ascii_equal_ci(leaf, "Marked")) {
                 role = MetadataConceptRole::RightsMarked;
             } else if (ascii_equal_ci(leaf, "Owner")) {
-                role = MetadataConceptRole::RightsHolderName;
+                role        = MetadataConceptRole::RightsHolderName;
+                record_kind = MetadataConceptRecordKind::RightsHolder;
+                descriptive_xmp_normalized_record_scope(path, "Owner",
+                                                        "RightsHolder",
+                                                        &record_scope);
             } else if (ascii_equal_ci(leaf, "UsageTerms")) {
                 role = MetadataConceptRole::RightsUsageTerms;
             } else if (ascii_equal_ci(leaf, "WebStatement")) {
@@ -3981,32 +4534,11 @@ namespace {
             }
             priority = 100U;
         } else if (xmp_schema_matches(store, entry, kPlusXmpSchema)) {
-            if (ascii_equal_ci(leaf, "CopyrightStatus")) {
-                role = MetadataConceptRole::CopyrightStatus;
-            } else if (ascii_equal_ci(leaf, "CopyrightOwnerName")) {
-                role = MetadataConceptRole::RightsHolderName;
-                record_scope.assign(
-                    descriptive_xmp_record_scope(path, "CopyrightOwner"));
-            } else if (ascii_equal_ci(leaf, "CopyrightOwnerID")) {
-                role = MetadataConceptRole::RightsHolderIdentifier;
-                record_scope.assign(
-                    descriptive_xmp_record_scope(path, "CopyrightOwner"));
-            } else if (ascii_equal_ci(leaf, "LicenseID")) {
-                role = MetadataConceptRole::LicenseIdentifier;
-            } else if (ascii_equal_ci(leaf, "TermsAndConditionsText")) {
-                role = MetadataConceptRole::RightsUsageTerms;
-            } else if (ascii_equal_ci(leaf, "TermsAndConditionsURL")) {
-                role = MetadataConceptRole::LicenseTermsUrl;
-            } else if (ascii_equal_ci(leaf, "LicensorName")) {
-                role = MetadataConceptRole::LicensorName;
-                record_scope.assign(
-                    descriptive_xmp_record_scope(path, "Licensor"));
-            } else if (ascii_equal_ci(leaf, "LicensorID")) {
-                role = MetadataConceptRole::LicensorIdentifier;
-                record_scope.assign(
-                    descriptive_xmp_record_scope(path, "Licensor"));
-            } else if (ascii_equal_ci(leaf, "CreditLineRequired")) {
-                role = MetadataConceptRole::CreditLineRequired;
+            if (!map_plus_record_descriptive(path, leaf, &role, &record_kind,
+                                             &record_scope)
+                && !map_plus_license_descriptive(leaf, &role, &record_kind,
+                                                 &record_scope)) {
+                return;
             }
             priority = 100U;
         } else {
@@ -4015,9 +4547,9 @@ namespace {
         if (role == MetadataConceptRole::Primary) {
             return;
         }
-        append_descriptive_text_candidate(store, id, role, priority,
-                                          location_scope, record_scope, path,
-                                          out);
+        append_descriptive_text_candidate(store, id, role, record_kind,
+                                          priority, location_scope,
+                                          record_scope, path, out);
     }
 
     static void append_descriptive_candidates(const MetaStore& store,
@@ -4229,28 +4761,20 @@ namespace {
         case MetadataConceptRole::CreditLineRequired:
         case MetadataConceptRole::Source:
         case MetadataConceptRole::DigitalSourceType: break;
+        default: break;
         }
         return false;
     }
 
     static bool role_uses_language_scope(MetadataConceptRole role) noexcept
     {
-        switch (role) {
-        case MetadataConceptRole::Title:
-        case MetadataConceptRole::Headline:
-        case MetadataConceptRole::Description:
-        case MetadataConceptRole::CopyrightNotice:
-        case MetadataConceptRole::RightsUsageTerms:
-        case MetadataConceptRole::LocationName:
-        case MetadataConceptRole::Sublocation:
-        case MetadataConceptRole::City:
-        case MetadataConceptRole::ProvinceState:
-        case MetadataConceptRole::CountryName:
-        case MetadataConceptRole::CountryCode:
-        case MetadataConceptRole::WorldRegion: return true;
-        default: break;
-        }
-        return false;
+        return descriptive_role_is_localized(role);
+    }
+
+    static bool role_uses_record_scope(MetadataConceptRole role) noexcept
+    {
+        return static_cast<uint8_t>(role)
+               >= static_cast<uint8_t>(MetadataConceptRole::Title);
     }
 
     static bool
@@ -4258,6 +4782,11 @@ namespace {
                                 const MetadataConceptCandidate& a,
                                 const MetadataConceptCandidate& b) noexcept
     {
+        if (role_uses_record_scope(role)
+            && (a.record_kind != b.record_kind
+                || a.record_scope != b.record_scope)) {
+            return false;
+        }
         if (role_uses_location_scope(role)
             && a.location_scope != b.location_scope) {
             return false;
@@ -4473,6 +5002,7 @@ namespace {
         case MetadataConceptRole::CreditLineRequired:
         case MetadataConceptRole::Source:
         case MetadataConceptRole::DigitalSourceType: break;
+        default: break;
         }
         return 0.0;
     }
@@ -4533,7 +5063,8 @@ namespace {
         if (descriptive_role_is_collection(role)) {
             return;
         }
-        if (role_uses_location_scope(role) || role_uses_language_scope(role)) {
+        if (role_uses_location_scope(role) || role_uses_language_scope(role)
+            || role_uses_record_scope(role)) {
             for (size_t i = 0U; i < resolution->candidates.size(); ++i) {
                 MetadataConceptCandidate& a = resolution->candidates[i];
                 if (a.role != role) {
@@ -4624,7 +5155,8 @@ namespace {
             }
             return;
         }
-        if (role_uses_location_scope(role) || role_uses_language_scope(role)) {
+        if (role_uses_location_scope(role) || role_uses_language_scope(role)
+            || role_uses_record_scope(role)) {
             for (size_t i = 0U; i < resolution->candidates.size(); ++i) {
                 MetadataConceptCandidate& candidate = resolution->candidates[i];
                 if (candidate.role != role) {
@@ -4690,6 +5222,7 @@ namespace {
             candidate.preferred                 = false;
             candidate.conflict                  = false;
             assign_transfer_hint(&candidate);
+            assign_sensitivity(&candidate);
             assign_raw_applicability(&candidate, raw_descriptor);
             if (candidate.source_entries.empty()) {
                 add_unique_entry(&resolution->source_entries,
@@ -4754,6 +5287,40 @@ namespace {
             MetadataConceptRole::CreditLineRequired,
             MetadataConceptRole::Source,
             MetadataConceptRole::DigitalSourceType,
+            MetadataConceptRole::Name,
+            MetadataConceptRole::Identifier,
+            MetadataConceptRole::Address,
+            MetadataConceptRole::PostalCode,
+            MetadataConceptRole::Email,
+            MetadataConceptRole::Telephone,
+            MetadataConceptRole::Url,
+            MetadataConceptRole::Characteristic,
+            MetadataConceptRole::Gtin,
+            MetadataConceptRole::InventoryNumber,
+            MetadataConceptRole::StylePeriod,
+            MetadataConceptRole::CreatorIdentifier,
+            MetadataConceptRole::Age,
+            MetadataConceptRole::ContentDescription,
+            MetadataConceptRole::ContributionDescription,
+            MetadataConceptRole::PhysicalDescription,
+            MetadataConceptRole::RightsExpression,
+            MetadataConceptRole::RightsExpressionEncoding,
+            MetadataConceptRole::RightsExpressionLanguage,
+            MetadataConceptRole::LicenseStartDate,
+            MetadataConceptRole::LicenseEndDate,
+            MetadataConceptRole::MediaConstraint,
+            MetadataConceptRole::RegionConstraint,
+            MetadataConceptRole::ProductOrServiceConstraint,
+            MetadataConceptRole::ImageFileConstraint,
+            MetadataConceptRole::ImageAlterationConstraint,
+            MetadataConceptRole::OtherLicenseRequirement,
+            MetadataConceptRole::OtherCondition,
+            MetadataConceptRole::LicenseeTransactionIdentifier,
+            MetadataConceptRole::LicensorTransactionIdentifier,
+            MetadataConceptRole::LicenseeProjectReference,
+            MetadataConceptRole::LicenseTransactionDate,
+            MetadataConceptRole::ReleaseStatus,
+            MetadataConceptRole::ReleaseIdentifier,
             MetadataConceptRole::Timestamp,
             MetadataConceptRole::Crop,
             MetadataConceptRole::ActiveArea,
@@ -5070,6 +5637,7 @@ metadata_raw_applicability_for_descriptor(
     case MetadataConceptRole::CreditLineRequired:
     case MetadataConceptRole::Source:
     case MetadataConceptRole::DigitalSourceType: break;
+    default: break;
     }
     return MetadataRawApplicabilityState::Unknown;
 }
@@ -5211,8 +5779,89 @@ metadata_concept_role_name(MetadataConceptRole role) noexcept
     case MetadataConceptRole::CreditLineRequired: return "credit_line_required";
     case MetadataConceptRole::Source: return "source";
     case MetadataConceptRole::DigitalSourceType: return "digital_source_type";
+    case MetadataConceptRole::Name: return "name";
+    case MetadataConceptRole::Identifier: return "identifier";
+    case MetadataConceptRole::Address: return "address";
+    case MetadataConceptRole::PostalCode: return "postal_code";
+    case MetadataConceptRole::Email: return "email";
+    case MetadataConceptRole::Telephone: return "telephone";
+    case MetadataConceptRole::Url: return "url";
+    case MetadataConceptRole::Characteristic: return "characteristic";
+    case MetadataConceptRole::Gtin: return "gtin";
+    case MetadataConceptRole::InventoryNumber: return "inventory_number";
+    case MetadataConceptRole::StylePeriod: return "style_period";
+    case MetadataConceptRole::CreatorIdentifier: return "creator_identifier";
+    case MetadataConceptRole::Age: return "age";
+    case MetadataConceptRole::ContentDescription: return "content_description";
+    case MetadataConceptRole::ContributionDescription:
+        return "contribution_description";
+    case MetadataConceptRole::PhysicalDescription:
+        return "physical_description";
+    case MetadataConceptRole::RightsExpression: return "rights_expression";
+    case MetadataConceptRole::RightsExpressionEncoding:
+        return "rights_expression_encoding";
+    case MetadataConceptRole::RightsExpressionLanguage:
+        return "rights_expression_language";
+    case MetadataConceptRole::LicenseStartDate: return "license_start_date";
+    case MetadataConceptRole::LicenseEndDate: return "license_end_date";
+    case MetadataConceptRole::MediaConstraint: return "media_constraint";
+    case MetadataConceptRole::RegionConstraint: return "region_constraint";
+    case MetadataConceptRole::ProductOrServiceConstraint:
+        return "product_or_service_constraint";
+    case MetadataConceptRole::ImageFileConstraint:
+        return "image_file_constraint";
+    case MetadataConceptRole::ImageAlterationConstraint:
+        return "image_alteration_constraint";
+    case MetadataConceptRole::OtherLicenseRequirement:
+        return "other_license_requirement";
+    case MetadataConceptRole::OtherCondition: return "other_condition";
+    case MetadataConceptRole::LicenseeTransactionIdentifier:
+        return "licensee_transaction_identifier";
+    case MetadataConceptRole::LicensorTransactionIdentifier:
+        return "licensor_transaction_identifier";
+    case MetadataConceptRole::LicenseeProjectReference:
+        return "licensee_project_reference";
+    case MetadataConceptRole::LicenseTransactionDate:
+        return "license_transaction_date";
+    case MetadataConceptRole::ReleaseStatus: return "release_status";
+    case MetadataConceptRole::ReleaseIdentifier: return "release_identifier";
     }
     return "unknown";
+}
+
+const char*
+metadata_concept_record_kind_name(MetadataConceptRecordKind kind) noexcept
+{
+    switch (kind) {
+    case MetadataConceptRecordKind::None: return "none";
+    case MetadataConceptRecordKind::CreatorContact: return "creator_contact";
+    case MetadataConceptRecordKind::Event: return "event";
+    case MetadataConceptRecordKind::Person: return "person";
+    case MetadataConceptRecordKind::Organization: return "organization";
+    case MetadataConceptRecordKind::Product: return "product";
+    case MetadataConceptRecordKind::ArtworkOrObject: return "artwork_or_object";
+    case MetadataConceptRecordKind::RightsExpression:
+        return "rights_expression";
+    case MetadataConceptRecordKind::RightsHolder: return "rights_holder";
+    case MetadataConceptRecordKind::Licensor: return "licensor";
+    case MetadataConceptRecordKind::Licensee: return "licensee";
+    case MetadataConceptRecordKind::License: return "license";
+    case MetadataConceptRecordKind::Release: return "release";
+    }
+    return "none";
+}
+
+const char*
+metadata_concept_sensitivity_name(MetadataConceptSensitivity sensitivity) noexcept
+{
+    switch (sensitivity) {
+    case MetadataConceptSensitivity::None: return "none";
+    case MetadataConceptSensitivity::PersonalContact: return "personal_contact";
+    case MetadataConceptSensitivity::PersonIdentity: return "person_identity";
+    case MetadataConceptSensitivity::Location: return "location";
+    case MetadataConceptSensitivity::LegalRights: return "legal_rights";
+    }
+    return "none";
 }
 
 const char*

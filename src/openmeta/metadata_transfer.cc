@@ -13449,9 +13449,11 @@ namespace {
                             TransferSafetyMode safety)
     {
         TransferConceptDiagnostic out;
-        out.kind   = candidate.kind;
-        out.role   = candidate.role;
-        out.hint   = candidate.transfer_hint;
+        out.kind        = candidate.kind;
+        out.role        = candidate.role;
+        out.record_kind = candidate.record_kind;
+        out.sensitivity = candidate.sensitivity;
+        out.hint        = candidate.transfer_hint;
         out.action = concept_diagnostic_action_for_candidate(candidate, safety);
         out.reason = concept_diagnostic_reason_from_hint(
             candidate.transfer_hint);

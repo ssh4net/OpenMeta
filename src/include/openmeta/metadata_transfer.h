@@ -452,8 +452,12 @@ enum class TransferConceptDiagnosticSeverity : uint8_t {
 };
 
 struct TransferConceptDiagnostic final {
-    MetadataConceptKind kind         = MetadataConceptKind::Orientation;
-    MetadataConceptRole role         = MetadataConceptRole::Primary;
+    MetadataConceptKind kind = MetadataConceptKind::Orientation;
+    MetadataConceptRole role = MetadataConceptRole::Primary;
+    /// Structured-record type copied from the concept candidate.
+    MetadataConceptRecordKind record_kind = MetadataConceptRecordKind::None;
+    /// Host policy signal; independent from `hint` and `action`.
+    MetadataConceptSensitivity sensitivity = MetadataConceptSensitivity::None;
     MetadataConceptTransferHint hint = MetadataConceptTransferHint::Unknown;
     TransferConceptDiagnosticAction action
         = TransferConceptDiagnosticAction::Drop;

@@ -6,7 +6,7 @@ meaningful interpretation. Interpretation means that decoded entries have
 stable names, typed values, semantic groups, query shapes, and transfer-safety
 classification that host applications can use directly.
 
-Current overall status: **medium-high, about 97%** for the public target
+Current overall status: **high, about 98-99%** for the public target
 scope.
 This is intentionally lower than decode coverage. Decode parity only proves
 that metadata carriers and entries are visible; interpretation also requires
@@ -91,13 +91,13 @@ Coverage matrix
        rights/license, credit/source, and IPTC date/time promoted into
        cross-family created-date candidates are
        queryable with source-entry provenance. The ``Descriptive`` concept
-       reconciles these standard scalar and collection fields plus common
-       created/shown location fields with language, structured-location, and
-       PLUS owner/licensor record scopes.
-     - Medium-high, about 89-93%.
-     - Creator contact, event/person/product, encoded rights expressions,
-       broader PLUS license constraints, and broader MWG-style duplicated-field
-       reconciliation remain bounded.
+       also interprets structured creator contacts, events, people,
+       organizations, products, artwork/objects, encoded rights expressions,
+       PLUS license constraints/transactions, and model/property releases with
+       record kind, record scope, language, and independent sensitivity.
+     - High, about 94-97%.
+     - Broader MWG-style duplicated-field reconciliation and long-tail
+       extension fields remain bounded.
    * - Orientation
      - EXIF/TIFF orientation query, LibRaw flip mapping, and generic
        orientation helpers for index, rotation degrees, mirrored state,
@@ -334,18 +334,17 @@ Coverage matrix
        date candidates, same-scope EXIF/XMP GPS timestamp assembly, distinct
        camera/destination/shown/created coordinate roles, scope-aware
        structured-location conflict handling, language-aware descriptive
-       scalar conflicts, additive creator/keyword/location-identifier/
-       rights-holder/licensor collections, structured owner/licensor record
-       scopes, GPS altitude-reference state and display token, canonical
+       scalar conflicts, structured descriptive record kinds/scopes,
+       independent sensitivity, GPS altitude-reference state and display
+       token, canonical
        geometry
        origin/size/rect/margins, normalized exposure values, shape-checked
        grouped value vectors, transfer hints, RAW applicability states,
        rendered/compatible safety booleans, and tolerance-aware
        GPS/exposure/color/geometry conflicts.
-     - Medium-high, about 92-95%.
-     - Creator-contact/event/person/product concept roles, encoded rights
-       expressions and broader PLUS constraints, more long-tail per-model
-       concept aliases, and richer localized policy wording.
+     - High, about 96-98%.
+     - More long-tail per-model concept aliases, broader duplicated-field
+       reconciliation, and richer localized policy wording.
    * - Transfer-safety classification
      - Compatible-file versus rendered-image safety policies classify
        source-specific image geometry, color/profile, RAW curves/linearity
@@ -390,9 +389,8 @@ Next interpretation priorities
    independently authored conformance files as they become available.
 2. Broaden transfer diagnostic policy coverage now that stable message tokens
    and localizable argument tokens are available for GUI workflows.
-3. Extend bounded descriptive reconciliation to creator contact, event, person,
-   and product fields, then cover encoded rights expressions and broader PLUS
-   constraints without merging distinct schemas or collection roles.
+3. Audit the remaining duplicated descriptive fields across standard schemas
+   and add precedence only where equivalent meaning is unambiguous.
 4. Expand the remaining unambiguous MakerNote long tail: encrypted/custom
    settings, per-model firmware formulas outside currently supported
    formatter contexts, remaining live-vendor scalar/string-coded fields, and
