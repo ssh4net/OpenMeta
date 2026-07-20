@@ -389,6 +389,133 @@ TEST(MetadataQuery, ClassifiesStructuredEditorialAndLegalEntries)
     EXPECT_EQ(release_match->semantic, MetadataQuerySemanticKind::Release);
 }
 
+TEST(MetadataQuery, ClassifiesEditorialTaxonomyIdentityAndPlusTail)
+{
+    MetaStore store;
+    const std::string_view photoshop = "http://ns.adobe.com/photoshop/1.0/";
+    const std::string_view core = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
+    const std::string_view plus = "http://ns.useplus.org/ldf/xmp/1.0/";
+    const EntryId urgency       = add_iptc_text(&store, 2U, 10U, "5");
+    const EntryId instructions = add_xmp_text(&store, photoshop, "Instructions",
+                                              "Do not crop");
+    const EntryId creator_title  = add_iptc_text(&store, 2U, 85U,
+                                                 "Staff Photographer");
+    const EntryId transmission   = add_iptc_text(&store, 2U, 103U, "job-042");
+    const EntryId caption_writer = add_iptc_text(&store, 2U, 122U,
+                                                 "Editor Example");
+    const EntryId accessibility
+        = add_xmp_text(&store, core,
+                       "AltTextAccessibility[@xml:lang=x-default]",
+                       "Person crossing a street");
+    const EntryId taxonomy = add_xmp_text(&store, core, "Scene[1]", "010100");
+    const EntryId document = add_xmp_text(&store,
+                                          "http://ns.adobe.com/xap/1.0/mm/",
+                                          "DocumentID", "xmp.did:document");
+    const EntryId resource = add_xmp_text(&store,
+                                          "http://ns.adobe.com/xap/1.0/",
+                                          "Identifier[1]", "asset-001");
+    const EntryId end_user = add_xmp_text(&store, plus,
+                                          "EndUser[1]/EndUserName",
+                                          "Example Publisher");
+    const EntryId image_creator
+        = add_xmp_text(&store, plus, "ImageCreator[1]/ImageCreatorName",
+                       "Alex Example");
+    const EntryId supplier  = add_xmp_text(&store, plus, "ImageSupplierName",
+                                           "Example Agency");
+    const EntryId delivered = add_xmp_text(&store, plus, "FileNameAsDelivered",
+                                           "asset.tif");
+    const EntryId policy  = add_xmp_text(&store, plus, "DataMining", "DMI-PRO");
+    const EntryId release = add_xmp_text(&store, plus,
+                                         "MinorModelAgeDisclosure", "AG-A18");
+    const EntryId registration
+        = add_xmp_text(&store, plus, "CopyrightRegistrationNumber", "REG-001");
+    const EntryId publication
+        = add_xmp_text(&store, plus, "FirstPublicationDate", "2026-07-01");
+    store.finalize();
+
+    const MetadataQueryResult result        = query_descriptive_metadata(store);
+    const MetadataQueryMatch* urgency_match = find_match_for_entry(result,
+                                                                   urgency);
+    const MetadataQueryMatch* instructions_match
+        = find_match_for_entry(result, instructions);
+    const MetadataQueryMatch* creator_title_match
+        = find_match_for_entry(result, creator_title);
+    const MetadataQueryMatch* transmission_match
+        = find_match_for_entry(result, transmission);
+    const MetadataQueryMatch* caption_writer_match
+        = find_match_for_entry(result, caption_writer);
+    const MetadataQueryMatch* accessibility_match
+        = find_match_for_entry(result, accessibility);
+    const MetadataQueryMatch* taxonomy_match = find_match_for_entry(result,
+                                                                    taxonomy);
+    const MetadataQueryMatch* document_match = find_match_for_entry(result,
+                                                                    document);
+    const MetadataQueryMatch* resource_match = find_match_for_entry(result,
+                                                                    resource);
+    const MetadataQueryMatch* end_user_match = find_match_for_entry(result,
+                                                                    end_user);
+    const MetadataQueryMatch* image_creator_match
+        = find_match_for_entry(result, image_creator);
+    const MetadataQueryMatch* supplier_match  = find_match_for_entry(result,
+                                                                     supplier);
+    const MetadataQueryMatch* delivered_match = find_match_for_entry(result,
+                                                                     delivered);
+    const MetadataQueryMatch* policy_match    = find_match_for_entry(result,
+                                                                     policy);
+    const MetadataQueryMatch* release_match   = find_match_for_entry(result,
+                                                                     release);
+    const MetadataQueryMatch* registration_match
+        = find_match_for_entry(result, registration);
+    const MetadataQueryMatch* publication_match
+        = find_match_for_entry(result, publication);
+    ASSERT_NE(urgency_match, nullptr);
+    ASSERT_NE(instructions_match, nullptr);
+    ASSERT_NE(creator_title_match, nullptr);
+    ASSERT_NE(transmission_match, nullptr);
+    ASSERT_NE(caption_writer_match, nullptr);
+    ASSERT_NE(accessibility_match, nullptr);
+    ASSERT_NE(taxonomy_match, nullptr);
+    ASSERT_NE(document_match, nullptr);
+    ASSERT_NE(resource_match, nullptr);
+    ASSERT_NE(end_user_match, nullptr);
+    ASSERT_NE(image_creator_match, nullptr);
+    ASSERT_NE(supplier_match, nullptr);
+    ASSERT_NE(delivered_match, nullptr);
+    ASSERT_NE(policy_match, nullptr);
+    ASSERT_NE(release_match, nullptr);
+    ASSERT_NE(registration_match, nullptr);
+    ASSERT_NE(publication_match, nullptr);
+    EXPECT_EQ(urgency_match->semantic, MetadataQuerySemanticKind::Editorial);
+    EXPECT_EQ(instructions_match->semantic,
+              MetadataQuerySemanticKind::Editorial);
+    EXPECT_EQ(creator_title_match->semantic,
+              MetadataQuerySemanticKind::Creator);
+    EXPECT_EQ(transmission_match->semantic,
+              MetadataQuerySemanticKind::Editorial);
+    EXPECT_EQ(caption_writer_match->semantic,
+              MetadataQuerySemanticKind::Creator);
+    EXPECT_EQ(accessibility_match->semantic,
+              MetadataQuerySemanticKind::Accessibility);
+    EXPECT_EQ(taxonomy_match->semantic, MetadataQuerySemanticKind::Taxonomy);
+    EXPECT_EQ(document_match->semantic,
+              MetadataQuerySemanticKind::DocumentIdentity);
+    EXPECT_EQ(resource_match->semantic,
+              MetadataQuerySemanticKind::DocumentIdentity);
+    EXPECT_EQ(end_user_match->semantic, MetadataQuerySemanticKind::License);
+    EXPECT_EQ(image_creator_match->semantic,
+              MetadataQuerySemanticKind::Creator);
+    EXPECT_EQ(supplier_match->semantic, MetadataQuerySemanticKind::Source);
+    EXPECT_EQ(delivered_match->semantic,
+              MetadataQuerySemanticKind::DocumentIdentity);
+    EXPECT_EQ(policy_match->semantic, MetadataQuerySemanticKind::License);
+    EXPECT_EQ(release_match->semantic, MetadataQuerySemanticKind::Release);
+    EXPECT_EQ(registration_match->semantic, MetadataQuerySemanticKind::Rights);
+    EXPECT_EQ(publication_match->semantic, MetadataQuerySemanticKind::Rights);
+    EXPECT_STREQ(metadata_query_semantic_kind_name(
+                     MetadataQuerySemanticKind::DocumentIdentity),
+                 "document_identity");
+}
+
 TEST(MetadataQuery, ClassifiesRightsLicenseCreditAndSourceEntries)
 {
     MetaStore store;

@@ -6259,7 +6259,11 @@ NB_MODULE(_openmeta, m)
         .value("Product", MetadataQuerySemanticKind::Product)
         .value("Artwork", MetadataQuerySemanticKind::Artwork)
         .value("RightsExpression", MetadataQuerySemanticKind::RightsExpression)
-        .value("Release", MetadataQuerySemanticKind::Release);
+        .value("Release", MetadataQuerySemanticKind::Release)
+        .value("Editorial", MetadataQuerySemanticKind::Editorial)
+        .value("Accessibility", MetadataQuerySemanticKind::Accessibility)
+        .value("Taxonomy", MetadataQuerySemanticKind::Taxonomy)
+        .value("DocumentIdentity", MetadataQuerySemanticKind::DocumentIdentity);
 
     nb::enum_<MetadataQueryValueShape>(m, "MetadataQueryValueShape")
         .value("Unknown", MetadataQueryValueShape::Unknown)
@@ -6469,7 +6473,55 @@ NB_MODULE(_openmeta, m)
         .value("LicenseTransactionDate",
                MetadataConceptRole::LicenseTransactionDate)
         .value("ReleaseStatus", MetadataConceptRole::ReleaseStatus)
-        .value("ReleaseIdentifier", MetadataConceptRole::ReleaseIdentifier);
+        .value("ReleaseIdentifier", MetadataConceptRole::ReleaseIdentifier)
+        .value("Urgency", MetadataConceptRole::Urgency)
+        .value("Category", MetadataConceptRole::Category)
+        .value("SupplementalCategory",
+               MetadataConceptRole::SupplementalCategory)
+        .value("Instructions", MetadataConceptRole::Instructions)
+        .value("CreatorTitle", MetadataConceptRole::CreatorTitle)
+        .value("TransmissionReference",
+               MetadataConceptRole::TransmissionReference)
+        .value("CaptionWriter", MetadataConceptRole::CaptionWriter)
+        .value("AccessibilityAltText",
+               MetadataConceptRole::AccessibilityAltText)
+        .value("AccessibilityExtendedDescription",
+               MetadataConceptRole::AccessibilityExtendedDescription)
+        .value("IntellectualGenre", MetadataConceptRole::IntellectualGenre)
+        .value("SceneCode", MetadataConceptRole::SceneCode)
+        .value("SubjectCode", MetadataConceptRole::SubjectCode)
+        .value("ResourceIdentifier", MetadataConceptRole::ResourceIdentifier)
+        .value("DerivedFromIdentifier",
+               MetadataConceptRole::DerivedFromIdentifier)
+        .value("DocumentIdentifier", MetadataConceptRole::DocumentIdentifier)
+        .value("InstanceIdentifier", MetadataConceptRole::InstanceIdentifier)
+        .value("OriginalDocumentIdentifier",
+               MetadataConceptRole::OriginalDocumentIdentifier)
+        .value("RenditionClass", MetadataConceptRole::RenditionClass)
+        .value("ImageIdentifier", MetadataConceptRole::ImageIdentifier)
+        .value("Notes", MetadataConceptRole::Notes)
+        .value("MediaSummaryCode", MetadataConceptRole::MediaSummaryCode)
+        .value("ImageDuplicationConstraint",
+               MetadataConceptRole::ImageDuplicationConstraint)
+        .value("MinorModelAgeDisclosure",
+               MetadataConceptRole::MinorModelAgeDisclosure)
+        .value("AdultContentWarning", MetadataConceptRole::AdultContentWarning)
+        .value("DeliveredImageType", MetadataConceptRole::DeliveredImageType)
+        .value("DeliveredFileName", MetadataConceptRole::DeliveredFileName)
+        .value("DeliveredFileFormat", MetadataConceptRole::DeliveredFileFormat)
+        .value("DeliveredFileSize", MetadataConceptRole::DeliveredFileSize)
+        .value("CopyrightRegistrationNumber",
+               MetadataConceptRole::CopyrightRegistrationNumber)
+        .value("FirstPublicationDate",
+               MetadataConceptRole::FirstPublicationDate)
+        .value("OtherImageInformation",
+               MetadataConceptRole::OtherImageInformation)
+        .value("Reuse", MetadataConceptRole::Reuse)
+        .value("DataMining", MetadataConceptRole::DataMining)
+        .value("OtherLicenseDocument",
+               MetadataConceptRole::OtherLicenseDocument)
+        .value("OtherLicenseInformation",
+               MetadataConceptRole::OtherLicenseInformation);
 
     nb::enum_<MetadataConceptRecordKind>(m, "MetadataConceptRecordKind")
         .value("None_", MetadataConceptRecordKind::None)
@@ -6484,7 +6536,11 @@ NB_MODULE(_openmeta, m)
         .value("Licensor", MetadataConceptRecordKind::Licensor)
         .value("Licensee", MetadataConceptRecordKind::Licensee)
         .value("License", MetadataConceptRecordKind::License)
-        .value("Release", MetadataConceptRecordKind::Release);
+        .value("Release", MetadataConceptRecordKind::Release)
+        .value("EndUser", MetadataConceptRecordKind::EndUser)
+        .value("ImageCreator", MetadataConceptRecordKind::ImageCreator)
+        .value("ImageSupplier", MetadataConceptRecordKind::ImageSupplier)
+        .value("ImageAsset", MetadataConceptRecordKind::ImageAsset);
 
     nb::enum_<MetadataConceptSensitivity>(m, "MetadataConceptSensitivity")
         .value("None_", MetadataConceptSensitivity::None)

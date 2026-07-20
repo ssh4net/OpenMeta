@@ -42,11 +42,18 @@ different status.
 Structured descriptive candidates now expose experimental `record_kind`,
 `record_scope`, and `sensitivity` fields. Record kinds cover creator contacts,
 events, people, organizations, products, artwork/objects, rights expressions,
-rights holders, licensors, licensees, licenses, and releases. Sensitivity is a
+rights holders, licensors, licensees, licenses, releases, end users, image
+creators, image suppliers, and image assets. Sensitivity is a
 policy signal independent of technical transfer safety; the same fields are
 mirrored in transfer diagnostics and thin Python dictionaries. Hosts must not
 interpret `safe` as approval to publish personal-contact, person-identity,
 location, or legal-rights metadata.
+
+Exact descriptive query semantics also cover legacy editorial workflow pairs,
+IPTC Core accessibility and taxonomy fields, resource/document identity, and
+remaining bounded PLUS party, delivered-asset, and license-policy fields.
+Equivalent scalar pairs participate in preference/conflict handling; taxonomy,
+resource-identifier, and license-document collections remain additive.
 
 The bounded BMFF tiled-image field contract covers `tilC` version 0 tile
 dimensions, up to eight extra dimensions, `dref`/`deti` mapping, internal

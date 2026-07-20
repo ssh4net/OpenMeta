@@ -85,9 +85,11 @@ Descriptive concepts reconcile standard EXIF, IPTC IIM, Dublin Core,
 XMP Rights, Photoshop, IPTC Core/Extension, and PLUS title/headline,
 description, creator, keyword/subject, location, copyright, rights/license,
 credit, source, creator-contact, event, person, organization, product,
-artwork/object, encoded-rights-expression, license-constraint, and release
-fields. Scalar conflicts are isolated by normalized language and structured
-location scope; additive collections retain distinct values. Structured
+artwork/object, encoded-rights-expression, license-constraint, release,
+legacy editorial, accessibility, taxonomy, resource/document identity,
+end-user, image-creator, image-supplier, and delivered-image fields. Scalar
+conflicts are isolated by normalized language and structured location scope;
+additive collections retain distinct values. Structured
 members carry both a `record_kind` and `record_scope`, such as `person` plus
 `Person[1]`, so hosts can keep associated names, identifiers, descriptions,
 contacts, constraints, and release records together.

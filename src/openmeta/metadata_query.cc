@@ -57,6 +57,10 @@ namespace {
         = "http://purl.org/dc/elements/1.1/";
     static constexpr std::string_view kPhotoshopXmpSchema
         = "http://ns.adobe.com/photoshop/1.0/";
+    static constexpr std::string_view kXmpBasicSchema
+        = "http://ns.adobe.com/xap/1.0/";
+    static constexpr std::string_view kXmpMmSchema
+        = "http://ns.adobe.com/xap/1.0/mm/";
     static constexpr std::string_view kIptcCoreXmpSchema
         = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
     static constexpr std::string_view kIptcExtXmpSchema
@@ -1242,13 +1246,20 @@ namespace {
         }
         switch (dataset) {
         case 5U: return "ObjectName";
+        case 10U: return "Urgency";
+        case 15U: return "Category";
+        case 20U: return "SupplementalCategory";
         case 25U: return "Keywords";
+        case 40U: return "Instructions";
         case 80U: return "By-line";
+        case 85U: return "By-lineTitle";
+        case 103U: return "TransmissionReference";
         case 105U: return "Headline";
         case 110U: return "Credit";
         case 115U: return "Source";
         case 116U: return "CopyrightNotice";
         case 120U: return "Caption-Abstract";
+        case 122U: return "CaptionWriter";
         default: break;
         }
         return "";
@@ -1266,6 +1277,9 @@ namespace {
         case 25U:
             return static_cast<uint32_t>(MetadataQueryMatchTerm::Keywords);
         case 80U: return static_cast<uint32_t>(MetadataQueryMatchTerm::Creator);
+        case 85U:
+        case 122U:
+            return static_cast<uint32_t>(MetadataQueryMatchTerm::Creator);
         case 120U:
             return static_cast<uint32_t>(MetadataQueryMatchTerm::Description);
         default: break;
@@ -1351,6 +1365,11 @@ namespace {
             && equals_ascii_case_insensitive(leaf, "rights")) {
             return MetadataQuerySemanticKind::Rights;
         }
+        if (ns == kDcXmpSchema
+            && (equals_ascii_case_insensitive(leaf, "identifier")
+                || equals_ascii_case_insensitive(leaf, "source"))) {
+            return MetadataQuerySemanticKind::DocumentIdentity;
+        }
         if (ns == kPhotoshopXmpSchema) {
             if (equals_ascii_case_insensitive(leaf, "Credit")) {
                 return MetadataQuerySemanticKind::Credit;
@@ -1358,10 +1377,52 @@ namespace {
             if (equals_ascii_case_insensitive(leaf, "Source")) {
                 return MetadataQuerySemanticKind::Source;
             }
+            if (equals_ascii_case_insensitive(leaf, "AuthorsPosition")
+                || equals_ascii_case_insensitive(leaf, "CaptionWriter")) {
+                return MetadataQuerySemanticKind::Creator;
+            }
+            if (equals_ascii_case_insensitive(leaf, "Urgency")
+                || equals_ascii_case_insensitive(leaf, "Category")
+                || equals_ascii_case_insensitive(leaf, "SupplementalCategories")
+                || equals_ascii_case_insensitive(leaf, "Instructions")
+                || equals_ascii_case_insensitive(leaf,
+                                                 "TransmissionReference")) {
+                return MetadataQuerySemanticKind::Editorial;
+            }
         }
-        if (ns == kIptcCoreXmpSchema
-            && xmp_path_has_root(path, "CreatorContactInfo")) {
-            return MetadataQuerySemanticKind::Contact;
+        if (ns == kXmpBasicSchema
+            && equals_ascii_case_insensitive(leaf, "Identifier")) {
+            return MetadataQuerySemanticKind::DocumentIdentity;
+        }
+        if (ns == kXmpMmSchema
+            && (equals_ascii_case_insensitive(leaf, "DocumentID")
+                || equals_ascii_case_insensitive(leaf, "InstanceID")
+                || equals_ascii_case_insensitive(leaf, "OriginalDocumentID")
+                || equals_ascii_case_insensitive(leaf, "RenditionClass"))) {
+            return MetadataQuerySemanticKind::DocumentIdentity;
+        }
+        if (ns == kIptcCoreXmpSchema) {
+            if (xmp_path_has_root(path, "CreatorContactInfo")
+                || equals_ascii_case_insensitive(leaf, "CiAdrCity")
+                || equals_ascii_case_insensitive(leaf, "CiAdrCtry")
+                || equals_ascii_case_insensitive(leaf, "CiAdrExtadr")
+                || equals_ascii_case_insensitive(leaf, "CiAdrPcode")
+                || equals_ascii_case_insensitive(leaf, "CiAdrRegion")
+                || equals_ascii_case_insensitive(leaf, "CiEmailWork")
+                || equals_ascii_case_insensitive(leaf, "CiTelWork")
+                || equals_ascii_case_insensitive(leaf, "CiUrlWork")) {
+                return MetadataQuerySemanticKind::Contact;
+            }
+            if (equals_ascii_case_insensitive(leaf, "AltTextAccessibility")
+                || equals_ascii_case_insensitive(leaf,
+                                                 "ExtDescrAccessibility")) {
+                return MetadataQuerySemanticKind::Accessibility;
+            }
+            if (equals_ascii_case_insensitive(leaf, "IntellectualGenre")
+                || equals_ascii_case_insensitive(leaf, "Scene")
+                || equals_ascii_case_insensitive(leaf, "SubjectCode")) {
+                return MetadataQuerySemanticKind::Taxonomy;
+            }
         }
         if (ns == kIptcExtXmpSchema
             && equals_ascii_case_insensitive(leaf, "DigitalSourceType")) {
@@ -1408,14 +1469,35 @@ namespace {
                 return MetadataQuerySemanticKind::Rights;
             }
             if (xmp_path_has_root(path, "Licensor")
-                || xmp_path_has_root(path, "Licensee")) {
+                || xmp_path_has_root(path, "Licensee")
+                || xmp_path_has_root(path, "EndUser")) {
                 return MetadataQuerySemanticKind::License;
+            }
+            if (xmp_path_has_root(path, "ImageCreator")) {
+                return MetadataQuerySemanticKind::Creator;
+            }
+            if (equals_ascii_case_insensitive(leaf, "ImageSupplierName")
+                || equals_ascii_case_insensitive(leaf, "ImageSupplierID")
+                || equals_ascii_case_insensitive(leaf, "ImageSupplierImageID")) {
+                return MetadataQuerySemanticKind::Source;
             }
             if (equals_ascii_case_insensitive(leaf, "ModelReleaseStatus")
                 || equals_ascii_case_insensitive(leaf, "ModelReleaseID")
                 || equals_ascii_case_insensitive(leaf, "PropertyReleaseStatus")
                 || equals_ascii_case_insensitive(leaf, "PropertyReleaseID")) {
                 return MetadataQuerySemanticKind::Release;
+            }
+            if (equals_ascii_case_insensitive(leaf, "MinorModelAgeDisclosure")) {
+                return MetadataQuerySemanticKind::Release;
+            }
+            if (equals_ascii_case_insensitive(leaf, "ImageType")
+                || equals_ascii_case_insensitive(leaf, "FileNameAsDelivered")
+                || equals_ascii_case_insensitive(leaf,
+                                                 "ImageFileFormatAsDelivered")
+                || equals_ascii_case_insensitive(leaf,
+                                                 "ImageFileSizeAsDelivered")
+                || equals_ascii_case_insensitive(leaf, "OtherImageInfo")) {
+                return MetadataQuerySemanticKind::DocumentIdentity;
             }
             if (equals_ascii_case_insensitive(leaf, "LicenseID")
                 || equals_ascii_case_insensitive(leaf, "LicenseStartDate")
@@ -1428,6 +1510,8 @@ namespace {
                 || equals_ascii_case_insensitive(leaf,
                                                  "ImageAlterationConstraints")
                 || equals_ascii_case_insensitive(leaf,
+                                                 "ImageDuplicationConstraints")
+                || equals_ascii_case_insensitive(leaf,
                                                  "OtherLicenseRequirements")
                 || equals_ascii_case_insensitive(leaf, "OtherConditions")
                 || equals_ascii_case_insensitive(leaf, "OtherConstraints")
@@ -1439,7 +1523,16 @@ namespace {
                 || equals_ascii_case_insensitive(leaf, "TermsAndConditionsText")
                 || equals_ascii_case_insensitive(leaf, "TermsAndConditionsURL")
                 || equals_ascii_case_insensitive(leaf, "LicensorName")
-                || equals_ascii_case_insensitive(leaf, "LicensorID")) {
+                || equals_ascii_case_insensitive(leaf, "LicensorID")
+                || equals_ascii_case_insensitive(leaf, "MediaSummaryCode")
+                || equals_ascii_case_insensitive(leaf, "AdultContentWarning")
+                || equals_ascii_case_insensitive(leaf, "Reuse")
+                || equals_ascii_case_insensitive(leaf, "DataMining")
+                || equals_ascii_case_insensitive(leaf, "OtherLicenseDocuments")
+                || equals_ascii_case_insensitive(leaf, "OtherLicenseInfo")
+                || equals_ascii_case_insensitive(leaf, "LicensorImageID")
+                || equals_ascii_case_insensitive(leaf, "LicenseeImageID")
+                || equals_ascii_case_insensitive(leaf, "LicenseeImageNotes")) {
                 return MetadataQuerySemanticKind::License;
             }
             if (equals_ascii_case_insensitive(leaf, "CreditLineRequired")) {
@@ -1447,7 +1540,10 @@ namespace {
             }
             if (equals_ascii_case_insensitive(leaf, "CopyrightStatus")
                 || equals_ascii_case_insensitive(leaf, "CopyrightOwnerName")
-                || equals_ascii_case_insensitive(leaf, "CopyrightOwnerID")) {
+                || equals_ascii_case_insensitive(leaf, "CopyrightOwnerID")
+                || equals_ascii_case_insensitive(leaf,
+                                                 "CopyrightRegistrationNumber")
+                || equals_ascii_case_insensitive(leaf, "FirstPublicationDate")) {
                 return MetadataQuerySemanticKind::Rights;
             }
         }
@@ -1461,6 +1557,13 @@ namespace {
             return MetadataQuerySemanticKind::Unknown;
         }
         switch (dataset) {
+        case 10U:
+        case 15U:
+        case 20U:
+        case 40U:
+        case 103U: return MetadataQuerySemanticKind::Editorial;
+        case 85U:
+        case 122U: return MetadataQuerySemanticKind::Creator;
         case 110U: return MetadataQuerySemanticKind::Credit;
         case 115U: return MetadataQuerySemanticKind::Source;
         case 116U: return MetadataQuerySemanticKind::Rights;
@@ -4035,6 +4138,11 @@ metadata_query_semantic_kind_name(MetadataQuerySemanticKind kind) noexcept
     case MetadataQuerySemanticKind::RightsExpression:
         return "rights_expression";
     case MetadataQuerySemanticKind::Release: return "release";
+    case MetadataQuerySemanticKind::Editorial: return "editorial";
+    case MetadataQuerySemanticKind::Accessibility: return "accessibility";
+    case MetadataQuerySemanticKind::Taxonomy: return "taxonomy";
+    case MetadataQuerySemanticKind::DocumentIdentity:
+        return "document_identity";
     }
     return "unknown";
 }

@@ -24,77 +24,88 @@
 namespace openmeta {
 namespace {
 
-    static constexpr uint16_t kExifOrientationTag             = 0x0112U;
-    static constexpr uint16_t kExifDateTimeTag                = 0x0132U;
-    static constexpr uint16_t kExifExposureTimeTag            = 0x829AU;
-    static constexpr uint16_t kExifFNumberTag                 = 0x829DU;
-    static constexpr uint16_t kExifCopyrightTag               = 0x8298U;
-    static constexpr uint16_t kExifExposureProgramTag         = 0x8822U;
-    static constexpr uint16_t kExifPhotographicSensitivityTag = 0x8827U;
-    static constexpr uint16_t kExifDateTimeOriginalTag        = 0x9003U;
-    static constexpr uint16_t kExifDateTimeDigitizedTag       = 0x9004U;
-    static constexpr uint16_t kExifOffsetTimeTag              = 0x9010U;
-    static constexpr uint16_t kExifOffsetTimeOriginalTag      = 0x9011U;
-    static constexpr uint16_t kExifOffsetTimeDigitizedTag     = 0x9012U;
-    static constexpr uint16_t kExifShutterSpeedValueTag       = 0x9201U;
-    static constexpr uint16_t kExifApertureValueTag           = 0x9202U;
-    static constexpr uint16_t kExifExposureBiasValueTag       = 0x9204U;
-    static constexpr uint16_t kExifMaxApertureValueTag        = 0x9205U;
-    static constexpr uint16_t kExifExposureIndexTag           = 0x9215U;
-    static constexpr uint16_t kExifSubSecTimeTag              = 0x9290U;
-    static constexpr uint16_t kExifSubSecTimeOriginalTag      = 0x9291U;
-    static constexpr uint16_t kExifSubSecTimeDigitizedTag     = 0x9292U;
-    static constexpr uint16_t kExifColorSpaceTag              = 0xA001U;
-    static constexpr uint16_t kExifGainControlTag             = 0xA407U;
-    static constexpr uint16_t kExifDocumentNameTag            = 0x010DU;
-    static constexpr uint16_t kExifImageDescriptionTag        = 0x010EU;
-    static constexpr uint16_t kExifArtistTag                  = 0x013BU;
-    static constexpr uint16_t kExifXpTitleTag                 = 0x9C9BU;
-    static constexpr uint16_t kExifXpCommentTag               = 0x9C9CU;
-    static constexpr uint16_t kExifXpAuthorTag                = 0x9C9DU;
-    static constexpr uint16_t kExifXpKeywordsTag              = 0x9C9EU;
-    static constexpr uint16_t kDngBaselineExposureTag         = 0xC62AU;
-    static constexpr uint16_t kDngBaselineExposureOffsetTag   = 0xC7A5U;
-    static constexpr uint16_t kDngRawToPreviewGainTag         = 0xC7A8U;
-    static constexpr uint16_t kDngProfileGainTableMapTag      = 0xCD2DU;
-    static constexpr uint16_t kDngProfileGainTableMap2Tag     = 0xCD40U;
-    static constexpr uint16_t kGpsLatitudeRefTag              = 0x0001U;
-    static constexpr uint16_t kGpsLatitudeTag                 = 0x0002U;
-    static constexpr uint16_t kGpsLongitudeRefTag             = 0x0003U;
-    static constexpr uint16_t kGpsLongitudeTag                = 0x0004U;
-    static constexpr uint16_t kGpsAltitudeRefTag              = 0x0005U;
-    static constexpr uint16_t kGpsAltitudeTag                 = 0x0006U;
-    static constexpr uint16_t kGpsTimeStampTag                = 0x0007U;
-    static constexpr uint16_t kGpsDestLatitudeRefTag          = 0x0013U;
-    static constexpr uint16_t kGpsDestLatitudeTag             = 0x0014U;
-    static constexpr uint16_t kGpsDestLongitudeRefTag         = 0x0015U;
-    static constexpr uint16_t kGpsDestLongitudeTag            = 0x0016U;
-    static constexpr uint16_t kGpsDateStampTag                = 0x001DU;
-    static constexpr uint16_t kIptcDateCreatedDataset         = 55U;
-    static constexpr uint16_t kIptcTimeCreatedDataset         = 60U;
-    static constexpr uint16_t kIptcDigitalCreationDateDataset = 62U;
-    static constexpr uint16_t kIptcDigitalCreationTimeDataset = 63U;
-    static constexpr uint16_t kIptcObjectNameDataset          = 5U;
-    static constexpr uint16_t kIptcKeywordsDataset            = 25U;
-    static constexpr uint16_t kIptcBylineDataset              = 80U;
-    static constexpr uint16_t kIptcCityDataset                = 90U;
-    static constexpr uint16_t kIptcSublocationDataset         = 92U;
-    static constexpr uint16_t kIptcProvinceStateDataset       = 95U;
-    static constexpr uint16_t kIptcCountryCodeDataset         = 100U;
-    static constexpr uint16_t kIptcCountryNameDataset         = 101U;
-    static constexpr uint16_t kIptcHeadlineDataset            = 105U;
-    static constexpr uint16_t kIptcCreditDataset              = 110U;
-    static constexpr uint16_t kIptcSourceDataset              = 115U;
-    static constexpr uint16_t kIptcCopyrightNoticeDataset     = 116U;
-    static constexpr uint16_t kIptcCaptionDataset             = 120U;
-    static constexpr uint32_t kIccHeaderRgbColorSpaceOffset   = 16U;
-    static constexpr size_t kMaxDateTimeSubsecondDigits       = 9U;
+    static constexpr uint16_t kExifOrientationTag               = 0x0112U;
+    static constexpr uint16_t kExifDateTimeTag                  = 0x0132U;
+    static constexpr uint16_t kExifExposureTimeTag              = 0x829AU;
+    static constexpr uint16_t kExifFNumberTag                   = 0x829DU;
+    static constexpr uint16_t kExifCopyrightTag                 = 0x8298U;
+    static constexpr uint16_t kExifExposureProgramTag           = 0x8822U;
+    static constexpr uint16_t kExifPhotographicSensitivityTag   = 0x8827U;
+    static constexpr uint16_t kExifDateTimeOriginalTag          = 0x9003U;
+    static constexpr uint16_t kExifDateTimeDigitizedTag         = 0x9004U;
+    static constexpr uint16_t kExifOffsetTimeTag                = 0x9010U;
+    static constexpr uint16_t kExifOffsetTimeOriginalTag        = 0x9011U;
+    static constexpr uint16_t kExifOffsetTimeDigitizedTag       = 0x9012U;
+    static constexpr uint16_t kExifShutterSpeedValueTag         = 0x9201U;
+    static constexpr uint16_t kExifApertureValueTag             = 0x9202U;
+    static constexpr uint16_t kExifExposureBiasValueTag         = 0x9204U;
+    static constexpr uint16_t kExifMaxApertureValueTag          = 0x9205U;
+    static constexpr uint16_t kExifExposureIndexTag             = 0x9215U;
+    static constexpr uint16_t kExifSubSecTimeTag                = 0x9290U;
+    static constexpr uint16_t kExifSubSecTimeOriginalTag        = 0x9291U;
+    static constexpr uint16_t kExifSubSecTimeDigitizedTag       = 0x9292U;
+    static constexpr uint16_t kExifColorSpaceTag                = 0xA001U;
+    static constexpr uint16_t kExifGainControlTag               = 0xA407U;
+    static constexpr uint16_t kExifDocumentNameTag              = 0x010DU;
+    static constexpr uint16_t kExifImageDescriptionTag          = 0x010EU;
+    static constexpr uint16_t kExifArtistTag                    = 0x013BU;
+    static constexpr uint16_t kExifXpTitleTag                   = 0x9C9BU;
+    static constexpr uint16_t kExifXpCommentTag                 = 0x9C9CU;
+    static constexpr uint16_t kExifXpAuthorTag                  = 0x9C9DU;
+    static constexpr uint16_t kExifXpKeywordsTag                = 0x9C9EU;
+    static constexpr uint16_t kDngBaselineExposureTag           = 0xC62AU;
+    static constexpr uint16_t kDngBaselineExposureOffsetTag     = 0xC7A5U;
+    static constexpr uint16_t kDngRawToPreviewGainTag           = 0xC7A8U;
+    static constexpr uint16_t kDngProfileGainTableMapTag        = 0xCD2DU;
+    static constexpr uint16_t kDngProfileGainTableMap2Tag       = 0xCD40U;
+    static constexpr uint16_t kGpsLatitudeRefTag                = 0x0001U;
+    static constexpr uint16_t kGpsLatitudeTag                   = 0x0002U;
+    static constexpr uint16_t kGpsLongitudeRefTag               = 0x0003U;
+    static constexpr uint16_t kGpsLongitudeTag                  = 0x0004U;
+    static constexpr uint16_t kGpsAltitudeRefTag                = 0x0005U;
+    static constexpr uint16_t kGpsAltitudeTag                   = 0x0006U;
+    static constexpr uint16_t kGpsTimeStampTag                  = 0x0007U;
+    static constexpr uint16_t kGpsDestLatitudeRefTag            = 0x0013U;
+    static constexpr uint16_t kGpsDestLatitudeTag               = 0x0014U;
+    static constexpr uint16_t kGpsDestLongitudeRefTag           = 0x0015U;
+    static constexpr uint16_t kGpsDestLongitudeTag              = 0x0016U;
+    static constexpr uint16_t kGpsDateStampTag                  = 0x001DU;
+    static constexpr uint16_t kIptcDateCreatedDataset           = 55U;
+    static constexpr uint16_t kIptcTimeCreatedDataset           = 60U;
+    static constexpr uint16_t kIptcDigitalCreationDateDataset   = 62U;
+    static constexpr uint16_t kIptcDigitalCreationTimeDataset   = 63U;
+    static constexpr uint16_t kIptcObjectNameDataset            = 5U;
+    static constexpr uint16_t kIptcUrgencyDataset               = 10U;
+    static constexpr uint16_t kIptcCategoryDataset              = 15U;
+    static constexpr uint16_t kIptcSupplementalCategoryDataset  = 20U;
+    static constexpr uint16_t kIptcKeywordsDataset              = 25U;
+    static constexpr uint16_t kIptcInstructionsDataset          = 40U;
+    static constexpr uint16_t kIptcBylineDataset                = 80U;
+    static constexpr uint16_t kIptcBylineTitleDataset           = 85U;
+    static constexpr uint16_t kIptcCityDataset                  = 90U;
+    static constexpr uint16_t kIptcSublocationDataset           = 92U;
+    static constexpr uint16_t kIptcProvinceStateDataset         = 95U;
+    static constexpr uint16_t kIptcCountryCodeDataset           = 100U;
+    static constexpr uint16_t kIptcCountryNameDataset           = 101U;
+    static constexpr uint16_t kIptcTransmissionReferenceDataset = 103U;
+    static constexpr uint16_t kIptcHeadlineDataset              = 105U;
+    static constexpr uint16_t kIptcCreditDataset                = 110U;
+    static constexpr uint16_t kIptcSourceDataset                = 115U;
+    static constexpr uint16_t kIptcCopyrightNoticeDataset       = 116U;
+    static constexpr uint16_t kIptcCaptionDataset               = 120U;
+    static constexpr uint16_t kIptcCaptionWriterDataset         = 122U;
+    static constexpr uint32_t kIccHeaderRgbColorSpaceOffset     = 16U;
+    static constexpr size_t kMaxDateTimeSubsecondDigits         = 9U;
     static constexpr std::string_view kExifXmpSchema
         = "http://ns.adobe.com/exif/1.0/";
     static constexpr std::string_view kDcXmpSchema
         = "http://purl.org/dc/elements/1.1/";
     static constexpr std::string_view kPhotoshopXmpSchema
         = "http://ns.adobe.com/photoshop/1.0/";
+    static constexpr std::string_view kXmpBasicSchema
+        = "http://ns.adobe.com/xap/1.0/";
+    static constexpr std::string_view kXmpMmSchema
+        = "http://ns.adobe.com/xap/1.0/mm/";
     static constexpr std::string_view kIptcCoreXmpSchema
         = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
     static constexpr std::string_view kIptcExtXmpSchema
@@ -1447,7 +1458,16 @@ namespace {
         case MetadataConceptRole::LicenseeProjectReference:
         case MetadataConceptRole::LicenseTransactionDate:
         case MetadataConceptRole::ReleaseStatus:
-        case MetadataConceptRole::ReleaseIdentifier: return true;
+        case MetadataConceptRole::ReleaseIdentifier:
+        case MetadataConceptRole::MediaSummaryCode:
+        case MetadataConceptRole::ImageDuplicationConstraint:
+        case MetadataConceptRole::MinorModelAgeDisclosure:
+        case MetadataConceptRole::AdultContentWarning:
+        case MetadataConceptRole::CopyrightRegistrationNumber:
+        case MetadataConceptRole::Reuse:
+        case MetadataConceptRole::DataMining:
+        case MetadataConceptRole::OtherLicenseDocument:
+        case MetadataConceptRole::OtherLicenseInformation: return true;
         default: break;
         }
         return false;
@@ -1480,8 +1500,11 @@ namespace {
             return;
         }
         if (candidate->record_kind == MetadataConceptRecordKind::Person
+            || candidate->record_kind == MetadataConceptRecordKind::ImageCreator
             || candidate->role == MetadataConceptRole::Creator
             || candidate->role == MetadataConceptRole::CreatorIdentifier
+            || candidate->role == MetadataConceptRole::CreatorTitle
+            || candidate->role == MetadataConceptRole::CaptionWriter
             || candidate->role == MetadataConceptRole::Age) {
             candidate->sensitivity = MetadataConceptSensitivity::PersonIdentity;
             return;
@@ -1498,6 +1521,7 @@ namespace {
             || candidate->record_kind == MetadataConceptRecordKind::Licensee
             || candidate->record_kind == MetadataConceptRecordKind::License
             || candidate->record_kind == MetadataConceptRecordKind::Release
+            || candidate->record_kind == MetadataConceptRecordKind::EndUser
             || role_is_legal_rights(candidate->role)) {
             candidate->sensitivity = MetadataConceptSensitivity::LegalRights;
         }
@@ -2620,7 +2644,11 @@ namespace {
         case MetadataQuerySemanticKind::Product:
         case MetadataQuerySemanticKind::Artwork:
         case MetadataQuerySemanticKind::RightsExpression:
-        case MetadataQuerySemanticKind::Release: break;
+        case MetadataQuerySemanticKind::Release:
+        case MetadataQuerySemanticKind::Editorial:
+        case MetadataQuerySemanticKind::Accessibility:
+        case MetadataQuerySemanticKind::Taxonomy:
+        case MetadataQuerySemanticKind::DocumentIdentity: break;
         }
         return MetadataConceptRole::Primary;
     }
@@ -2763,7 +2791,11 @@ namespace {
         case MetadataQuerySemanticKind::Product:
         case MetadataQuerySemanticKind::Artwork:
         case MetadataQuerySemanticKind::RightsExpression:
-        case MetadataQuerySemanticKind::Release: break;
+        case MetadataQuerySemanticKind::Release:
+        case MetadataQuerySemanticKind::Editorial:
+        case MetadataQuerySemanticKind::Accessibility:
+        case MetadataQuerySemanticKind::Taxonomy:
+        case MetadataQuerySemanticKind::DocumentIdentity: break;
         }
         return MetadataConceptRole::Primary;
     }
@@ -2880,7 +2912,11 @@ namespace {
         case MetadataQuerySemanticKind::Product:
         case MetadataQuerySemanticKind::Artwork:
         case MetadataQuerySemanticKind::RightsExpression:
-        case MetadataQuerySemanticKind::Release: break;
+        case MetadataQuerySemanticKind::Release:
+        case MetadataQuerySemanticKind::Editorial:
+        case MetadataQuerySemanticKind::Accessibility:
+        case MetadataQuerySemanticKind::Taxonomy:
+        case MetadataQuerySemanticKind::DocumentIdentity: break;
         }
         return MetadataConceptRole::Primary;
     }
@@ -3163,7 +3199,11 @@ namespace {
         case MetadataQuerySemanticKind::Product:
         case MetadataQuerySemanticKind::Artwork:
         case MetadataQuerySemanticKind::RightsExpression:
-        case MetadataQuerySemanticKind::Release: break;
+        case MetadataQuerySemanticKind::Release:
+        case MetadataQuerySemanticKind::Editorial:
+        case MetadataQuerySemanticKind::Accessibility:
+        case MetadataQuerySemanticKind::Taxonomy:
+        case MetadataQuerySemanticKind::DocumentIdentity: break;
         }
         return MetadataConceptRole::Primary;
     }
@@ -3794,7 +3834,15 @@ namespace {
                || role == MetadataConceptRole::LicenseeTransactionIdentifier
                || role == MetadataConceptRole::LicensorTransactionIdentifier
                || role == MetadataConceptRole::LicenseeProjectReference
-               || role == MetadataConceptRole::ReleaseIdentifier;
+               || role == MetadataConceptRole::ReleaseIdentifier
+               || role == MetadataConceptRole::SupplementalCategory
+               || role == MetadataConceptRole::SceneCode
+               || role == MetadataConceptRole::SubjectCode
+               || role == MetadataConceptRole::ResourceIdentifier
+               || role == MetadataConceptRole::ImageIdentifier
+               || role == MetadataConceptRole::OtherLicenseDocument
+               || role == MetadataConceptRole::CreatorTitle
+               || role == MetadataConceptRole::CaptionWriter;
     }
 
     static bool descriptive_role_is_localized(MetadataConceptRole role) noexcept
@@ -3820,7 +3868,12 @@ namespace {
         case MetadataConceptRole::RegionConstraint:
         case MetadataConceptRole::ProductOrServiceConstraint:
         case MetadataConceptRole::OtherLicenseRequirement:
-        case MetadataConceptRole::OtherCondition: return true;
+        case MetadataConceptRole::OtherCondition:
+        case MetadataConceptRole::AccessibilityAltText:
+        case MetadataConceptRole::AccessibilityExtendedDescription:
+        case MetadataConceptRole::Notes:
+        case MetadataConceptRole::OtherImageInformation:
+        case MetadataConceptRole::OtherLicenseInformation: return true;
         default: break;
         }
         return false;
@@ -3873,6 +3926,14 @@ namespace {
             return MetadataQuerySemanticKind::License;
         case MetadataConceptRecordKind::Release:
             return MetadataQuerySemanticKind::Release;
+        case MetadataConceptRecordKind::EndUser:
+            return MetadataQuerySemanticKind::License;
+        case MetadataConceptRecordKind::ImageCreator:
+            return MetadataQuerySemanticKind::Creator;
+        case MetadataConceptRecordKind::ImageSupplier:
+            return MetadataQuerySemanticKind::Source;
+        case MetadataConceptRecordKind::ImageAsset:
+            return MetadataQuerySemanticKind::DocumentIdentity;
         case MetadataConceptRecordKind::None: break;
         }
         switch (role) {
@@ -3882,6 +3943,8 @@ namespace {
         case MetadataConceptRole::Description:
             return MetadataQuerySemanticKind::Description;
         case MetadataConceptRole::Creator:
+        case MetadataConceptRole::CreatorTitle:
+        case MetadataConceptRole::CaptionWriter:
             return MetadataQuerySemanticKind::Creator;
         case MetadataConceptRole::Keywords:
             return MetadataQuerySemanticKind::Keywords;
@@ -3905,6 +3968,26 @@ namespace {
         case MetadataConceptRole::Source:
         case MetadataConceptRole::DigitalSourceType:
             return MetadataQuerySemanticKind::Source;
+        case MetadataConceptRole::Urgency:
+        case MetadataConceptRole::Category:
+        case MetadataConceptRole::SupplementalCategory:
+        case MetadataConceptRole::Instructions:
+        case MetadataConceptRole::TransmissionReference:
+            return MetadataQuerySemanticKind::Editorial;
+        case MetadataConceptRole::AccessibilityAltText:
+        case MetadataConceptRole::AccessibilityExtendedDescription:
+            return MetadataQuerySemanticKind::Accessibility;
+        case MetadataConceptRole::IntellectualGenre:
+        case MetadataConceptRole::SceneCode:
+        case MetadataConceptRole::SubjectCode:
+            return MetadataQuerySemanticKind::Taxonomy;
+        case MetadataConceptRole::ResourceIdentifier:
+        case MetadataConceptRole::DerivedFromIdentifier:
+        case MetadataConceptRole::DocumentIdentifier:
+        case MetadataConceptRole::InstanceIdentifier:
+        case MetadataConceptRole::OriginalDocumentIdentifier:
+        case MetadataConceptRole::RenditionClass:
+            return MetadataQuerySemanticKind::DocumentIdentity;
         default: break;
         }
         return MetadataQuerySemanticKind::Unknown;
@@ -4110,8 +4193,19 @@ namespace {
         const uint16_t dataset   = entry.key.data.iptc_dataset.dataset;
         switch (dataset) {
         case kIptcObjectNameDataset: role = MetadataConceptRole::Title; break;
+        case kIptcUrgencyDataset: role = MetadataConceptRole::Urgency; break;
+        case kIptcCategoryDataset: role = MetadataConceptRole::Category; break;
+        case kIptcSupplementalCategoryDataset:
+            role = MetadataConceptRole::SupplementalCategory;
+            break;
         case kIptcKeywordsDataset: role = MetadataConceptRole::Keywords; break;
+        case kIptcInstructionsDataset:
+            role = MetadataConceptRole::Instructions;
+            break;
         case kIptcBylineDataset: role = MetadataConceptRole::Creator; break;
+        case kIptcBylineTitleDataset:
+            role = MetadataConceptRole::CreatorTitle;
+            break;
         case kIptcHeadlineDataset: role = MetadataConceptRole::Headline; break;
         case kIptcCreditDataset: role = MetadataConceptRole::CreditLine; break;
         case kIptcSourceDataset: role = MetadataConceptRole::Source; break;
@@ -4134,6 +4228,12 @@ namespace {
         case kIptcCountryNameDataset:
             role = MetadataConceptRole::CountryName;
             break;
+        case kIptcTransmissionReferenceDataset:
+            role = MetadataConceptRole::TransmissionReference;
+            break;
+        case kIptcCaptionWriterDataset:
+            role = MetadataConceptRole::CaptionWriter;
+            break;
         default: return;
         }
         const std::string_view scope = descriptive_role_is_location(role)
@@ -4144,16 +4244,9 @@ namespace {
                                           scope, {}, {}, out);
     }
 
-    static bool map_iptc_core_structured_descriptive(
-        std::string_view path, std::string_view leaf, MetadataConceptRole* role,
-        MetadataConceptRecordKind* record_kind, std::string* record_scope)
+    static bool map_creator_contact_descriptive(std::string_view leaf,
+                                                MetadataConceptRole* role)
     {
-        if (!descriptive_xmp_normalized_record_scope(path, "CreatorContactInfo",
-                                                     "CreatorContact",
-                                                     record_scope)) {
-            return false;
-        }
-        *record_kind = MetadataConceptRecordKind::CreatorContact;
         if (ascii_equal_ci(leaf, "CiAdrCity")) {
             *role = MetadataConceptRole::City;
         } else if (ascii_equal_ci(leaf, "CiAdrCtry")) {
@@ -4173,6 +4266,43 @@ namespace {
             *role = MetadataConceptRole::Telephone;
         } else if (ascii_equal_ci(leaf, "CiUrlWork")) {
             *role = MetadataConceptRole::Url;
+        }
+        return *role != MetadataConceptRole::Primary;
+    }
+
+    static bool map_iptc_core_structured_descriptive(
+        std::string_view path, std::string_view leaf, MetadataConceptRole* role,
+        MetadataConceptRecordKind* record_kind, std::string* record_scope)
+    {
+        if (!descriptive_xmp_normalized_record_scope(path, "CreatorContactInfo",
+                                                     "CreatorContact",
+                                                     record_scope)) {
+            return false;
+        }
+        *record_kind = MetadataConceptRecordKind::CreatorContact;
+        return map_creator_contact_descriptive(leaf, role);
+    }
+
+    static bool map_iptc_core_flat_descriptive(
+        std::string_view leaf, MetadataConceptRole* role,
+        MetadataConceptRecordKind* record_kind, std::string* record_scope)
+    {
+        if (ascii_starts_with_ci(leaf, "Ci")
+            && map_creator_contact_descriptive(leaf, role)) {
+            *record_kind = MetadataConceptRecordKind::CreatorContact;
+            record_scope->assign("CreatorContact");
+            return true;
+        }
+        if (ascii_equal_ci(leaf, "AltTextAccessibility")) {
+            *role = MetadataConceptRole::AccessibilityAltText;
+        } else if (ascii_equal_ci(leaf, "ExtDescrAccessibility")) {
+            *role = MetadataConceptRole::AccessibilityExtendedDescription;
+        } else if (ascii_equal_ci(leaf, "IntellectualGenre")) {
+            *role = MetadataConceptRole::IntellectualGenre;
+        } else if (ascii_equal_ci(leaf, "Scene")) {
+            *role = MetadataConceptRole::SceneCode;
+        } else if (ascii_equal_ci(leaf, "SubjectCode")) {
+            *role = MetadataConceptRole::SubjectCode;
         }
         return *role != MetadataConceptRole::Primary;
     }
@@ -4334,6 +4464,8 @@ namespace {
                 *role = MetadataConceptRole::RightsHolderName;
             } else if (ascii_equal_ci(leaf, "CopyrightOwnerID")) {
                 *role = MetadataConceptRole::RightsHolderIdentifier;
+            } else if (ascii_equal_ci(leaf, "CopyrightOwnerImageID")) {
+                *role = MetadataConceptRole::ImageIdentifier;
             }
             return *role != MetadataConceptRole::Primary;
         }
@@ -4365,6 +4497,10 @@ namespace {
                 *role = MetadataConceptRole::Email;
             } else if (ascii_equal_ci(leaf, "LicensorURL")) {
                 *role = MetadataConceptRole::Url;
+            } else if (ascii_equal_ci(leaf, "LicensorNotes")) {
+                *role = MetadataConceptRole::Notes;
+            } else if (ascii_equal_ci(leaf, "LicensorImageID")) {
+                *role = MetadataConceptRole::ImageIdentifier;
             }
             return *role != MetadataConceptRole::Primary;
         }
@@ -4380,6 +4516,29 @@ namespace {
             }
             return *role != MetadataConceptRole::Primary;
         }
+        if (descriptive_xmp_normalized_record_scope(path, "EndUser", "EndUser",
+                                                    record_scope)) {
+            *record_kind = MetadataConceptRecordKind::EndUser;
+            if (ascii_equal_ci(leaf, "EndUserName")) {
+                *role = MetadataConceptRole::Name;
+            } else if (ascii_equal_ci(leaf, "EndUserID")) {
+                *role = MetadataConceptRole::Identifier;
+            }
+            return *role != MetadataConceptRole::Primary;
+        }
+        if (descriptive_xmp_normalized_record_scope(path, "ImageCreator",
+                                                    "ImageCreator",
+                                                    record_scope)) {
+            *record_kind = MetadataConceptRecordKind::ImageCreator;
+            if (ascii_equal_ci(leaf, "ImageCreatorName")) {
+                *role = MetadataConceptRole::Name;
+            } else if (ascii_equal_ci(leaf, "ImageCreatorID")) {
+                *role = MetadataConceptRole::Identifier;
+            } else if (ascii_equal_ci(leaf, "ImageCreatorImageID")) {
+                *role = MetadataConceptRole::ImageIdentifier;
+            }
+            return *role != MetadataConceptRole::Primary;
+        }
         return false;
     }
 
@@ -4391,8 +4550,19 @@ namespace {
         if (ascii_equal_ci(leaf, "CopyrightStatus")) {
             *record_kind = MetadataConceptRecordKind::RightsHolder;
             *role        = MetadataConceptRole::CopyrightStatus;
+            record_scope->assign("Copyright");
+        } else if (ascii_equal_ci(leaf, "CopyrightRegistrationNumber")) {
+            *record_kind = MetadataConceptRecordKind::RightsHolder;
+            *role        = MetadataConceptRole::CopyrightRegistrationNumber;
+            record_scope->assign("Copyright");
+        } else if (ascii_equal_ci(leaf, "FirstPublicationDate")) {
+            *record_kind = MetadataConceptRecordKind::RightsHolder;
+            *role        = MetadataConceptRole::FirstPublicationDate;
+            record_scope->assign("Copyright");
         } else if (ascii_equal_ci(leaf, "LicenseID")) {
             *role = MetadataConceptRole::LicenseIdentifier;
+        } else if (ascii_equal_ci(leaf, "MediaSummaryCode")) {
+            *role = MetadataConceptRole::MediaSummaryCode;
         } else if (ascii_equal_ci(leaf, "LicenseStartDate")) {
             *role = MetadataConceptRole::LicenseStartDate;
         } else if (ascii_equal_ci(leaf, "LicenseEndDate")) {
@@ -4407,6 +4577,8 @@ namespace {
             *role = MetadataConceptRole::ImageFileConstraint;
         } else if (ascii_equal_ci(leaf, "ImageAlterationConstraints")) {
             *role = MetadataConceptRole::ImageAlterationConstraint;
+        } else if (ascii_equal_ci(leaf, "ImageDuplicationConstraints")) {
+            *role = MetadataConceptRole::ImageDuplicationConstraint;
         } else if (ascii_equal_ci(leaf, "OtherLicenseRequirements")) {
             *role = MetadataConceptRole::OtherLicenseRequirement;
         } else if (ascii_equal_ci(leaf, "OtherConditions")
@@ -4426,6 +4598,60 @@ namespace {
             *role = MetadataConceptRole::LicenseTransactionDate;
         } else if (ascii_equal_ci(leaf, "CreditLineRequired")) {
             *role = MetadataConceptRole::CreditLineRequired;
+        } else if (ascii_equal_ci(leaf, "AdultContentWarning")) {
+            *role = MetadataConceptRole::AdultContentWarning;
+        } else if (ascii_equal_ci(leaf, "Reuse")) {
+            *role = MetadataConceptRole::Reuse;
+        } else if (ascii_equal_ci(leaf, "DataMining")) {
+            *role = MetadataConceptRole::DataMining;
+        } else if (ascii_equal_ci(leaf, "OtherLicenseDocuments")) {
+            *role = MetadataConceptRole::OtherLicenseDocument;
+        } else if (ascii_equal_ci(leaf, "OtherLicenseInfo")) {
+            *role = MetadataConceptRole::OtherLicenseInformation;
+        } else if (ascii_equal_ci(leaf, "LicensorImageID")) {
+            *record_kind = MetadataConceptRecordKind::Licensor;
+            *role        = MetadataConceptRole::ImageIdentifier;
+            record_scope->assign("Licensor");
+        } else if (ascii_equal_ci(leaf, "LicenseeImageID")) {
+            *record_kind = MetadataConceptRecordKind::Licensee;
+            *role        = MetadataConceptRole::ImageIdentifier;
+            record_scope->assign("Licensee");
+        } else if (ascii_equal_ci(leaf, "LicenseeImageNotes")) {
+            *record_kind = MetadataConceptRecordKind::Licensee;
+            *role        = MetadataConceptRole::Notes;
+            record_scope->assign("Licensee");
+        } else if (ascii_equal_ci(leaf, "ImageSupplierName")) {
+            *record_kind = MetadataConceptRecordKind::ImageSupplier;
+            *role        = MetadataConceptRole::Name;
+            record_scope->assign("ImageSupplier");
+        } else if (ascii_equal_ci(leaf, "ImageSupplierID")) {
+            *record_kind = MetadataConceptRecordKind::ImageSupplier;
+            *role        = MetadataConceptRole::Identifier;
+            record_scope->assign("ImageSupplier");
+        } else if (ascii_equal_ci(leaf, "ImageSupplierImageID")) {
+            *record_kind = MetadataConceptRecordKind::ImageSupplier;
+            *role        = MetadataConceptRole::ImageIdentifier;
+            record_scope->assign("ImageSupplier");
+        } else if (ascii_equal_ci(leaf, "ImageType")) {
+            *record_kind = MetadataConceptRecordKind::ImageAsset;
+            *role        = MetadataConceptRole::DeliveredImageType;
+            record_scope->assign("ImageAsset");
+        } else if (ascii_equal_ci(leaf, "FileNameAsDelivered")) {
+            *record_kind = MetadataConceptRecordKind::ImageAsset;
+            *role        = MetadataConceptRole::DeliveredFileName;
+            record_scope->assign("ImageAsset");
+        } else if (ascii_equal_ci(leaf, "ImageFileFormatAsDelivered")) {
+            *record_kind = MetadataConceptRecordKind::ImageAsset;
+            *role        = MetadataConceptRole::DeliveredFileFormat;
+            record_scope->assign("ImageAsset");
+        } else if (ascii_equal_ci(leaf, "ImageFileSizeAsDelivered")) {
+            *record_kind = MetadataConceptRecordKind::ImageAsset;
+            *role        = MetadataConceptRole::DeliveredFileSize;
+            record_scope->assign("ImageAsset");
+        } else if (ascii_equal_ci(leaf, "OtherImageInfo")) {
+            *record_kind = MetadataConceptRecordKind::ImageAsset;
+            *role        = MetadataConceptRole::OtherImageInformation;
+            record_scope->assign("ImageAsset");
         } else if (ascii_equal_ci(leaf, "ModelReleaseStatus")
                    || ascii_equal_ci(leaf, "PropertyReleaseStatus")) {
             *record_kind = MetadataConceptRecordKind::Release;
@@ -4440,6 +4666,10 @@ namespace {
             record_scope->assign(ascii_equal_ci(leaf, "ModelReleaseID")
                                      ? "ModelRelease"
                                      : "PropertyRelease");
+        } else if (ascii_equal_ci(leaf, "MinorModelAgeDisclosure")) {
+            *record_kind = MetadataConceptRecordKind::Release;
+            *role        = MetadataConceptRole::MinorModelAgeDisclosure;
+            record_scope->assign("ModelRelease");
         }
         return *role != MetadataConceptRole::Primary;
     }
@@ -4469,6 +4699,14 @@ namespace {
                 role = MetadataConceptRole::Keywords;
             } else if (ascii_equal_ci(leaf, "rights")) {
                 role = MetadataConceptRole::CopyrightNotice;
+            } else if (ascii_equal_ci(leaf, "identifier")) {
+                role         = MetadataConceptRole::ResourceIdentifier;
+                record_kind  = MetadataConceptRecordKind::ImageAsset;
+                record_scope = "ImageAsset";
+            } else if (ascii_equal_ci(leaf, "source")) {
+                role         = MetadataConceptRole::DerivedFromIdentifier;
+                record_kind  = MetadataConceptRecordKind::ImageAsset;
+                record_scope = "ImageAsset";
             }
             priority = 100U;
         } else if (xmp_schema_matches(store, entry, kPhotoshopXmpSchema)) {
@@ -4478,6 +4716,20 @@ namespace {
                 role = MetadataConceptRole::CreditLine;
             } else if (ascii_equal_ci(leaf, "Source")) {
                 role = MetadataConceptRole::Source;
+            } else if (ascii_equal_ci(leaf, "Urgency")) {
+                role = MetadataConceptRole::Urgency;
+            } else if (ascii_equal_ci(leaf, "Category")) {
+                role = MetadataConceptRole::Category;
+            } else if (ascii_equal_ci(leaf, "SupplementalCategories")) {
+                role = MetadataConceptRole::SupplementalCategory;
+            } else if (ascii_equal_ci(leaf, "Instructions")) {
+                role = MetadataConceptRole::Instructions;
+            } else if (ascii_equal_ci(leaf, "AuthorsPosition")) {
+                role = MetadataConceptRole::CreatorTitle;
+            } else if (ascii_equal_ci(leaf, "TransmissionReference")) {
+                role = MetadataConceptRole::TransmissionReference;
+            } else if (ascii_equal_ci(leaf, "CaptionWriter")) {
+                role = MetadataConceptRole::CaptionWriter;
             } else {
                 role = descriptive_location_role_for_leaf(leaf);
                 if (descriptive_role_is_location(role)) {
@@ -4485,10 +4737,35 @@ namespace {
                 }
             }
             priority = 92U;
+        } else if (xmp_schema_matches(store, entry, kXmpBasicSchema)) {
+            if (ascii_equal_ci(leaf, "Identifier")) {
+                role         = MetadataConceptRole::ResourceIdentifier;
+                record_kind  = MetadataConceptRecordKind::ImageAsset;
+                record_scope = "ImageAsset";
+            }
+            priority = 100U;
+        } else if (xmp_schema_matches(store, entry, kXmpMmSchema)) {
+            if (ascii_equal_ci(leaf, "DocumentID")) {
+                role = MetadataConceptRole::DocumentIdentifier;
+            } else if (ascii_equal_ci(leaf, "InstanceID")) {
+                role = MetadataConceptRole::InstanceIdentifier;
+            } else if (ascii_equal_ci(leaf, "OriginalDocumentID")) {
+                role = MetadataConceptRole::OriginalDocumentIdentifier;
+            } else if (ascii_equal_ci(leaf, "RenditionClass")) {
+                role = MetadataConceptRole::RenditionClass;
+            }
+            if (role != MetadataConceptRole::Primary) {
+                record_kind  = MetadataConceptRecordKind::ImageAsset;
+                record_scope = "ImageAsset";
+            }
+            priority = 100U;
         } else if (xmp_schema_matches(store, entry, kIptcCoreXmpSchema)) {
             if (map_iptc_core_structured_descriptive(path, leaf, &role,
                                                      &record_kind,
                                                      &record_scope)) {
+                priority = 100U;
+            } else if (map_iptc_core_flat_descriptive(leaf, &role, &record_kind,
+                                                      &record_scope)) {
                 priority = 100U;
             } else if (!descriptive_xmp_location_scope(path, &location_scope)) {
                 if (ascii_equal_ci(leaf, "Location")
@@ -5321,6 +5598,41 @@ namespace {
             MetadataConceptRole::LicenseTransactionDate,
             MetadataConceptRole::ReleaseStatus,
             MetadataConceptRole::ReleaseIdentifier,
+            MetadataConceptRole::Urgency,
+            MetadataConceptRole::Category,
+            MetadataConceptRole::SupplementalCategory,
+            MetadataConceptRole::Instructions,
+            MetadataConceptRole::CreatorTitle,
+            MetadataConceptRole::TransmissionReference,
+            MetadataConceptRole::CaptionWriter,
+            MetadataConceptRole::AccessibilityAltText,
+            MetadataConceptRole::AccessibilityExtendedDescription,
+            MetadataConceptRole::IntellectualGenre,
+            MetadataConceptRole::SceneCode,
+            MetadataConceptRole::SubjectCode,
+            MetadataConceptRole::ResourceIdentifier,
+            MetadataConceptRole::DerivedFromIdentifier,
+            MetadataConceptRole::DocumentIdentifier,
+            MetadataConceptRole::InstanceIdentifier,
+            MetadataConceptRole::OriginalDocumentIdentifier,
+            MetadataConceptRole::RenditionClass,
+            MetadataConceptRole::ImageIdentifier,
+            MetadataConceptRole::Notes,
+            MetadataConceptRole::MediaSummaryCode,
+            MetadataConceptRole::ImageDuplicationConstraint,
+            MetadataConceptRole::MinorModelAgeDisclosure,
+            MetadataConceptRole::AdultContentWarning,
+            MetadataConceptRole::DeliveredImageType,
+            MetadataConceptRole::DeliveredFileName,
+            MetadataConceptRole::DeliveredFileFormat,
+            MetadataConceptRole::DeliveredFileSize,
+            MetadataConceptRole::CopyrightRegistrationNumber,
+            MetadataConceptRole::FirstPublicationDate,
+            MetadataConceptRole::OtherImageInformation,
+            MetadataConceptRole::Reuse,
+            MetadataConceptRole::DataMining,
+            MetadataConceptRole::OtherLicenseDocument,
+            MetadataConceptRole::OtherLicenseInformation,
             MetadataConceptRole::Timestamp,
             MetadataConceptRole::Crop,
             MetadataConceptRole::ActiveArea,
@@ -5825,6 +6137,56 @@ metadata_concept_role_name(MetadataConceptRole role) noexcept
         return "license_transaction_date";
     case MetadataConceptRole::ReleaseStatus: return "release_status";
     case MetadataConceptRole::ReleaseIdentifier: return "release_identifier";
+    case MetadataConceptRole::Urgency: return "urgency";
+    case MetadataConceptRole::Category: return "category";
+    case MetadataConceptRole::SupplementalCategory:
+        return "supplemental_category";
+    case MetadataConceptRole::Instructions: return "instructions";
+    case MetadataConceptRole::CreatorTitle: return "creator_title";
+    case MetadataConceptRole::TransmissionReference:
+        return "transmission_reference";
+    case MetadataConceptRole::CaptionWriter: return "caption_writer";
+    case MetadataConceptRole::AccessibilityAltText:
+        return "accessibility_alt_text";
+    case MetadataConceptRole::AccessibilityExtendedDescription:
+        return "accessibility_extended_description";
+    case MetadataConceptRole::IntellectualGenre: return "intellectual_genre";
+    case MetadataConceptRole::SceneCode: return "scene_code";
+    case MetadataConceptRole::SubjectCode: return "subject_code";
+    case MetadataConceptRole::ResourceIdentifier: return "resource_identifier";
+    case MetadataConceptRole::DerivedFromIdentifier:
+        return "derived_from_identifier";
+    case MetadataConceptRole::DocumentIdentifier: return "document_identifier";
+    case MetadataConceptRole::InstanceIdentifier: return "instance_identifier";
+    case MetadataConceptRole::OriginalDocumentIdentifier:
+        return "original_document_identifier";
+    case MetadataConceptRole::RenditionClass: return "rendition_class";
+    case MetadataConceptRole::ImageIdentifier: return "image_identifier";
+    case MetadataConceptRole::Notes: return "notes";
+    case MetadataConceptRole::MediaSummaryCode: return "media_summary_code";
+    case MetadataConceptRole::ImageDuplicationConstraint:
+        return "image_duplication_constraint";
+    case MetadataConceptRole::MinorModelAgeDisclosure:
+        return "minor_model_age_disclosure";
+    case MetadataConceptRole::AdultContentWarning:
+        return "adult_content_warning";
+    case MetadataConceptRole::DeliveredImageType: return "delivered_image_type";
+    case MetadataConceptRole::DeliveredFileName: return "delivered_file_name";
+    case MetadataConceptRole::DeliveredFileFormat:
+        return "delivered_file_format";
+    case MetadataConceptRole::DeliveredFileSize: return "delivered_file_size";
+    case MetadataConceptRole::CopyrightRegistrationNumber:
+        return "copyright_registration_number";
+    case MetadataConceptRole::FirstPublicationDate:
+        return "first_publication_date";
+    case MetadataConceptRole::OtherImageInformation:
+        return "other_image_information";
+    case MetadataConceptRole::Reuse: return "reuse";
+    case MetadataConceptRole::DataMining: return "data_mining";
+    case MetadataConceptRole::OtherLicenseDocument:
+        return "other_license_document";
+    case MetadataConceptRole::OtherLicenseInformation:
+        return "other_license_information";
     }
     return "unknown";
 }
@@ -5847,6 +6209,10 @@ metadata_concept_record_kind_name(MetadataConceptRecordKind kind) noexcept
     case MetadataConceptRecordKind::Licensee: return "licensee";
     case MetadataConceptRecordKind::License: return "license";
     case MetadataConceptRecordKind::Release: return "release";
+    case MetadataConceptRecordKind::EndUser: return "end_user";
+    case MetadataConceptRecordKind::ImageCreator: return "image_creator";
+    case MetadataConceptRecordKind::ImageSupplier: return "image_supplier";
+    case MetadataConceptRecordKind::ImageAsset: return "image_asset";
     }
     return "none";
 }

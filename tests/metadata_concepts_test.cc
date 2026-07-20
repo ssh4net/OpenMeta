@@ -1853,6 +1853,277 @@ namespace {
                   MetadataConceptSensitivity::PersonalContact);
     }
 
+    TEST(MetadataConcepts, ReconcilesLegacyEditorialIptcAndPhotoshopPairs)
+    {
+        MetaStore store;
+        const std::string_view photoshop = "http://ns.adobe.com/photoshop/1.0/";
+        (void)add_iptc_text(&store, 2U, 10U, "5");
+        (void)add_iptc_text(&store, 2U, 15U, "NWS");
+        (void)add_iptc_text(&store, 2U, 20U, "SCI");
+        (void)add_iptc_text(&store, 2U, 40U, "Do not crop");
+        (void)add_iptc_text(&store, 2U, 85U, "Staff Photographer");
+        (void)add_iptc_text(&store, 2U, 103U, "job-042");
+        (void)add_iptc_text(&store, 2U, 122U, "Editor Example");
+        (void)add_xmp_text(&store, photoshop, "Urgency", "5");
+        (void)add_xmp_text(&store, photoshop, "Category", "NWS");
+        (void)add_xmp_text(&store, photoshop, "SupplementalCategories[1]",
+                           "SCI");
+        (void)add_xmp_text(&store, photoshop, "Instructions", "Do not crop");
+        (void)add_xmp_text(&store, photoshop, "AuthorsPosition",
+                           "Staff Photographer");
+        (void)add_xmp_text(&store, photoshop, "TransmissionReference",
+                           "job-042");
+        (void)add_xmp_text(&store, photoshop, "CaptionWriter",
+                           "Editor Example");
+        store.finalize();
+
+        const MetadataConceptResolution descriptive
+            = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+
+        EXPECT_TRUE(descriptive.found);
+        EXPECT_FALSE(descriptive.conflict);
+        const MetadataConceptCandidate* iptc_instructions
+            = find_role_family(descriptive, MetadataConceptRole::Instructions,
+                               MetadataConceptSourceFamily::Iptc);
+        const MetadataConceptCandidate* xmp_instructions
+            = find_role_family(descriptive, MetadataConceptRole::Instructions,
+                               MetadataConceptSourceFamily::Xmp);
+        const MetadataConceptCandidate* xmp_category
+            = find_role_family(descriptive, MetadataConceptRole::Category,
+                               MetadataConceptSourceFamily::Xmp);
+        const MetadataConceptCandidate* xmp_supplemental
+            = find_role_family(descriptive,
+                               MetadataConceptRole::SupplementalCategory,
+                               MetadataConceptSourceFamily::Xmp);
+        const MetadataConceptCandidate* creator_title
+            = find_role_family(descriptive, MetadataConceptRole::CreatorTitle,
+                               MetadataConceptSourceFamily::Xmp);
+        const MetadataConceptCandidate* transmission
+            = find_role_family(descriptive,
+                               MetadataConceptRole::TransmissionReference,
+                               MetadataConceptSourceFamily::Xmp);
+        const MetadataConceptCandidate* caption_writer
+            = find_role_family(descriptive, MetadataConceptRole::CaptionWriter,
+                               MetadataConceptSourceFamily::Xmp);
+        ASSERT_NE(iptc_instructions, nullptr);
+        ASSERT_NE(xmp_instructions, nullptr);
+        ASSERT_NE(xmp_category, nullptr);
+        ASSERT_NE(xmp_supplemental, nullptr);
+        ASSERT_NE(creator_title, nullptr);
+        ASSERT_NE(transmission, nullptr);
+        ASSERT_NE(caption_writer, nullptr);
+        EXPECT_FALSE(iptc_instructions->preferred);
+        EXPECT_TRUE(xmp_instructions->preferred);
+        EXPECT_EQ(xmp_instructions->semantic,
+                  MetadataQuerySemanticKind::Editorial);
+        EXPECT_TRUE(xmp_category->preferred);
+        EXPECT_TRUE(xmp_supplemental->preferred);
+        EXPECT_EQ(creator_title->semantic, MetadataQuerySemanticKind::Creator);
+        EXPECT_EQ(creator_title->sensitivity,
+                  MetadataConceptSensitivity::PersonIdentity);
+        EXPECT_EQ(transmission->semantic, MetadataQuerySemanticKind::Editorial);
+        EXPECT_EQ(caption_writer->sensitivity,
+                  MetadataConceptSensitivity::PersonIdentity);
+        EXPECT_STREQ(metadata_concept_role_name(caption_writer->role),
+                     "caption_writer");
+    }
+
+    TEST(MetadataConcepts, FlagsLegacyEditorialConflictsByExactRole)
+    {
+        MetaStore store;
+        const std::string_view photoshop = "http://ns.adobe.com/photoshop/1.0/";
+        (void)add_iptc_text(&store, 2U, 40U, "Do not crop");
+        (void)add_xmp_text(&store, photoshop, "Instructions", "Crop allowed");
+        (void)add_iptc_text(&store, 2U, 103U, "job-001");
+        (void)add_xmp_text(&store, photoshop, "TransmissionReference",
+                           "job-002");
+        (void)add_iptc_text(&store, 2U, 20U, "SCI");
+        (void)add_xmp_text(&store, photoshop, "SupplementalCategories[1]",
+                           "ART");
+        store.finalize();
+
+        const MetadataConceptResolution descriptive
+            = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+        const MetadataConceptCandidate* instructions
+            = find_role_family(descriptive, MetadataConceptRole::Instructions,
+                               MetadataConceptSourceFamily::Xmp);
+        const MetadataConceptCandidate* transmission
+            = find_role_family(descriptive,
+                               MetadataConceptRole::TransmissionReference,
+                               MetadataConceptSourceFamily::Xmp);
+        const MetadataConceptCandidate* supplemental
+            = find_role_family(descriptive,
+                               MetadataConceptRole::SupplementalCategory,
+                               MetadataConceptSourceFamily::Xmp);
+
+        EXPECT_TRUE(descriptive.conflict);
+        ASSERT_NE(instructions, nullptr);
+        ASSERT_NE(transmission, nullptr);
+        ASSERT_NE(supplemental, nullptr);
+        EXPECT_TRUE(instructions->conflict);
+        EXPECT_TRUE(transmission->conflict);
+        EXPECT_FALSE(supplemental->conflict);
+    }
+
+    TEST(MetadataConcepts, InterpretsAccessibilityTaxonomyAndDocumentIdentity)
+    {
+        MetaStore store;
+        const std::string_view core
+            = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
+        const std::string_view dc  = "http://purl.org/dc/elements/1.1/";
+        const std::string_view xmp = "http://ns.adobe.com/xap/1.0/";
+        const std::string_view mm  = "http://ns.adobe.com/xap/1.0/mm/";
+        (void)add_xmp_text(&store, core,
+                           "AltTextAccessibility[@xml:lang=x-default]",
+                           "Person crossing a street");
+        (void)add_xmp_text(&store, core,
+                           "ExtDescrAccessibility[@xml:lang=en-US]",
+                           "A detailed description of the crossing");
+        (void)add_xmp_text(&store, core, "IntellectualGenre", "news");
+        (void)add_xmp_text(&store, core, "Scene[1]", "010100");
+        (void)add_xmp_text(&store, core, "SubjectCode[1]", "15000000");
+        (void)add_xmp_text(&store, core, "CiEmailWork", "editor@example.test");
+        (void)add_xmp_text(&store, dc, "identifier", "asset-001");
+        (void)add_xmp_text(&store, dc, "source", "source-work-001");
+        (void)add_xmp_text(&store, xmp, "Identifier[1]", "asset-001");
+        (void)add_xmp_text(&store, mm, "DocumentID", "xmp.did:document");
+        (void)add_xmp_text(&store, mm, "InstanceID", "xmp.iid:instance");
+        (void)add_xmp_text(&store, mm, "OriginalDocumentID",
+                           "xmp.did:original");
+        (void)add_xmp_text(&store, mm, "RenditionClass", "proof:pdf");
+        store.finalize();
+
+        const MetadataConceptResolution descriptive
+            = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+        const MetadataConceptCandidate* alt
+            = find_role(descriptive, MetadataConceptRole::AccessibilityAltText);
+        const MetadataConceptCandidate* extended
+            = find_role(descriptive,
+                        MetadataConceptRole::AccessibilityExtendedDescription);
+        const MetadataConceptCandidate* scene
+            = find_role(descriptive, MetadataConceptRole::SceneCode);
+        const MetadataConceptCandidate* subject
+            = find_role(descriptive, MetadataConceptRole::SubjectCode);
+        const MetadataConceptCandidate* contact = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::CreatorContact,
+            MetadataConceptRole::Email, "CreatorContact");
+        const MetadataConceptCandidate* document = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageAsset,
+            MetadataConceptRole::DocumentIdentifier, "ImageAsset");
+        const MetadataConceptCandidate* instance = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageAsset,
+            MetadataConceptRole::InstanceIdentifier, "ImageAsset");
+        const MetadataConceptCandidate* derived = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageAsset,
+            MetadataConceptRole::DerivedFromIdentifier, "ImageAsset");
+        ASSERT_NE(alt, nullptr);
+        ASSERT_NE(extended, nullptr);
+        ASSERT_NE(scene, nullptr);
+        ASSERT_NE(subject, nullptr);
+        ASSERT_NE(contact, nullptr);
+        ASSERT_NE(document, nullptr);
+        ASSERT_NE(instance, nullptr);
+        ASSERT_NE(derived, nullptr);
+        EXPECT_EQ(alt->semantic, MetadataQuerySemanticKind::Accessibility);
+        EXPECT_EQ(alt->language, "x-default");
+        EXPECT_EQ(extended->language, "en-us");
+        EXPECT_EQ(scene->semantic, MetadataQuerySemanticKind::Taxonomy);
+        EXPECT_EQ(subject->semantic, MetadataQuerySemanticKind::Taxonomy);
+        EXPECT_EQ(contact->sensitivity,
+                  MetadataConceptSensitivity::PersonalContact);
+        EXPECT_EQ(document->semantic,
+                  MetadataQuerySemanticKind::DocumentIdentity);
+        EXPECT_EQ(instance->semantic,
+                  MetadataQuerySemanticKind::DocumentIdentity);
+        EXPECT_EQ(derived->text, "source-work-001");
+    }
+
+    TEST(MetadataConcepts, InterpretsRemainingPlusPartiesAssetsAndPolicy)
+    {
+        MetaStore store;
+        const std::string_view plus = "http://ns.useplus.org/ldf/xmp/1.0/";
+        (void)add_xmp_text(&store, plus, "EndUser[1]/EndUserName",
+                           "Example Publisher");
+        (void)add_xmp_text(&store, plus, "EndUser[1]/EndUserID", "EU-001");
+        (void)add_xmp_text(&store, plus, "ImageCreator[1]/ImageCreatorName",
+                           "Alex Example");
+        (void)add_xmp_text(&store, plus, "ImageCreator[1]/ImageCreatorID",
+                           "IC-001");
+        (void)add_xmp_text(&store, plus, "ImageCreator[1]/ImageCreatorImageID",
+                           "IMG-IC-1");
+        (void)add_xmp_text(&store, plus, "ImageSupplierName", "Example Agency");
+        (void)add_xmp_text(&store, plus, "ImageSupplierID", "IS-001");
+        (void)add_xmp_text(&store, plus, "ImageSupplierImageID", "IMG-IS-1");
+        (void)add_xmp_text(&store, plus, "MediaSummaryCode", "PLUS-MSC");
+        (void)add_xmp_text(&store, plus, "ImageDuplicationConstraints",
+                           "DUP-NO");
+        (void)add_xmp_text(&store, plus, "MinorModelAgeDisclosure", "AG-A18");
+        (void)add_xmp_text(&store, plus, "AdultContentWarning", "CW-AWR");
+        (void)add_xmp_text(&store, plus, "ImageType", "TY-PHO");
+        (void)add_xmp_text(&store, plus, "FileNameAsDelivered", "asset.tif");
+        (void)add_xmp_text(&store, plus, "ImageFileFormatAsDelivered",
+                           "FF-TIF");
+        (void)add_xmp_text(&store, plus, "ImageFileSizeAsDelivered", "SZ-HI");
+        (void)add_xmp_text(&store, plus, "CopyrightRegistrationNumber",
+                           "REG-001");
+        (void)add_xmp_text(&store, plus, "FirstPublicationDate", "2026-07-01");
+        (void)add_xmp_text(&store, plus, "Reuse", "RE-NAP");
+        (void)add_xmp_text(&store, plus, "DataMining", "DMI-PRO");
+        (void)add_xmp_text(&store, plus, "OtherLicenseDocuments[1]",
+                           "contract-001");
+        (void)add_xmp_text(&store, plus,
+                           "OtherLicenseInfo[@xml:lang=x-default]",
+                           "Archive the signed contract");
+        store.finalize();
+
+        const MetadataConceptResolution descriptive
+            = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+        const MetadataConceptCandidate* end_user
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::EndUser,
+                                     MetadataConceptRole::Name, "EndUser[1]");
+        const MetadataConceptCandidate* creator = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageCreator,
+            MetadataConceptRole::Name, "ImageCreator[1]");
+        const MetadataConceptCandidate* supplier = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageSupplier,
+            MetadataConceptRole::Name, "ImageSupplier");
+        const MetadataConceptCandidate* delivered_name = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageAsset,
+            MetadataConceptRole::DeliveredFileName, "ImageAsset");
+        const MetadataConceptCandidate* duplication
+            = find_role(descriptive,
+                        MetadataConceptRole::ImageDuplicationConstraint);
+        const MetadataConceptCandidate* minor_age = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::Release,
+            MetadataConceptRole::MinorModelAgeDisclosure, "ModelRelease");
+        const MetadataConceptCandidate* license_info
+            = find_role(descriptive,
+                        MetadataConceptRole::OtherLicenseInformation);
+        ASSERT_NE(end_user, nullptr);
+        ASSERT_NE(creator, nullptr);
+        ASSERT_NE(supplier, nullptr);
+        ASSERT_NE(delivered_name, nullptr);
+        ASSERT_NE(duplication, nullptr);
+        ASSERT_NE(minor_age, nullptr);
+        ASSERT_NE(license_info, nullptr);
+        EXPECT_EQ(end_user->semantic, MetadataQuerySemanticKind::License);
+        EXPECT_EQ(end_user->sensitivity,
+                  MetadataConceptSensitivity::LegalRights);
+        EXPECT_EQ(creator->semantic, MetadataQuerySemanticKind::Creator);
+        EXPECT_EQ(creator->sensitivity,
+                  MetadataConceptSensitivity::PersonIdentity);
+        EXPECT_EQ(supplier->semantic, MetadataQuerySemanticKind::Source);
+        EXPECT_EQ(delivered_name->semantic,
+                  MetadataQuerySemanticKind::DocumentIdentity);
+        EXPECT_EQ(duplication->sensitivity,
+                  MetadataConceptSensitivity::LegalRights);
+        EXPECT_EQ(minor_age->semantic, MetadataQuerySemanticKind::Release);
+        EXPECT_EQ(license_info->language, "x-default");
+        EXPECT_STREQ(metadata_concept_record_kind_name(supplier->record_kind),
+                     "image_supplier");
+    }
+
     TEST(MetadataConcepts, UsesToleranceForGpsCoordinateConflicts)
     {
         {

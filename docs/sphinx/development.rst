@@ -62,8 +62,11 @@ model should stay compact:
        ``SubSecTime*`` date composition with normalized-instant conflict
        checks, separate camera/destination/shown/created GPS roles with
        scope-aware structured-location conflicts,
-       language-aware descriptive roles, structured creator-contact/event/
-       person/organization/product/artwork/rights/license/release records,
+       language-aware descriptive roles, legacy editorial duplicate
+       reconciliation, accessibility/taxonomy/document-identity semantics,
+       structured creator-contact/event/person/organization/product/artwork/
+       rights/license/release/end-user/image-creator/image-supplier/image-asset
+       records,
        and independent privacy/policy sensitivity,
        computational, thermal, stitch/panorama capture state, and
        vendor-private fields.
@@ -76,11 +79,12 @@ model should stay compact:
        flags for crop/border/active-area, exposure/gain,
        color/WB/profile/source-color-transform, orientation, date/time, GPS,
        descriptive fields including contact/event/person/organization/product/
-       artwork/rights/license/release semantics,
+       artwork/rights/license/release, editorial, accessibility, taxonomy,
+       and document-identity semantics,
        lens-correction, computational/thermal/stitch, and RAW/source-processing
        fields plus BMFF derived-image construction and tiled-image configuration
        evidence across standard and vendor metadata.
-     - High, about 96-98%.
+     - High, about 97-99%.
    * - Creation
      - Build fresh metadata entries from host-provided values.
      - Medium, about 55-65%.
@@ -182,7 +186,8 @@ compare keys, parsed date/time fields, date/time precision, timezone kind, GPS
 altitude-reference state, distinct destination/shown/created coordinate roles,
 structured-location scope, normalized descriptive language, additive
 collection preference, structured record kinds and scopes for editorial,
-rights, license, and release records, independent policy sensitivity,
+rights, license, release, end-user, image-creator, image-supplier, and
+image-asset records, independent policy sensitivity,
 canonical geometry origin/size/rect/margins,
 normalized exposure values, full normalized value vectors for grouped
 matrix/vector/table records, transfer hints, compatible and rendered safety

@@ -1,5 +1,33 @@
 # OpenMeta Changes
 
+## 0.4.80 - 2026-07-17
+
+Changes compared with `0.4.79`.
+
+### Added
+
+- Added normalized descriptive roles for urgency, category, supplemental
+  category, instructions, creator title, transmission reference, and caption
+  writer across their equivalent IPTC-IIM and Photoshop XMP fields.
+- Added exact accessibility, controlled-taxonomy, and document-identity query
+  semantics for IPTC Core accessibility text, genre/scene/subject codes,
+  Dublin Core identifiers, XMP resource identifiers, and XMP Media Management
+  document, instance, original-document, and rendition identifiers.
+- Added structured PLUS interpretation for end users, image creators, image
+  suppliers, delivered-image identity, residual license policy, image IDs,
+  copyright registration/publication fields, and model-age disclosure.
+
+### Changed
+
+- Equivalent legacy editorial values now use cross-family preference and
+  conflict handling, while supplemental categories, scene codes, subject
+  codes, resource identifiers, and license-document references remain
+  additive collections.
+- Deprecated flat IPTC Core creator-contact properties now resolve into the
+  same scoped contact record as the structured form.
+- C++ and thin Python enums expose the same new roles, record kinds, and
+  `editorial`, `accessibility`, `taxonomy`, and `document_identity` semantics.
+
 ## 0.4.79 - 2026-07-17
 
 Changes compared with `0.4.78`.

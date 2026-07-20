@@ -91,13 +91,17 @@ Coverage matrix
        rights/license, credit/source, and IPTC date/time promoted into
        cross-family created-date candidates are
        queryable with source-entry provenance. The ``Descriptive`` concept
-       also interprets structured creator contacts, events, people,
-       organizations, products, artwork/objects, encoded rights expressions,
-       PLUS license constraints/transactions, and model/property releases with
-       record kind, record scope, language, and independent sensitivity.
-     - High, about 94-97%.
-     - Broader MWG-style duplicated-field reconciliation and long-tail
-       extension fields remain bounded.
+       also reconciles legacy IPTC/Photoshop urgency, category,
+       supplemental-category, instructions, creator-title,
+       transmission-reference, and caption-writer pairs; interprets IPTC Core
+       accessibility/taxonomy fields and XMP document identity; and groups
+       structured creator contacts, events, people, organizations, products,
+       artwork/objects, encoded rights expressions, PLUS parties/assets/
+       license policy, and model/property releases with record kind, record
+       scope, language, and independent sensitivity.
+     - High, about 96-98%.
+     - Non-equivalent legacy workflow fields and nested IPTC Extension/XMP
+       Media Management structures remain bounded.
    * - Orientation
      - EXIF/TIFF orientation query, LibRaw flip mapping, and generic
        orientation helpers for index, rotation degrees, mirrored state,
@@ -307,7 +311,8 @@ Coverage matrix
        patterns, border margins, exposure/gain roles, selected
        vendor/MakerNote exposure-name aliases, per-family grouped vendor
        records, descriptive EXIF/IPTC/XMP concepts including exact
-       rights/license/credit/source semantics, explicit color-profile
+       rights/license/credit/source/editorial/accessibility/taxonomy/
+       document-identity semantics, explicit color-profile
        records for EXIF/ICC/XMP/PNG profile carriers, explicit
        source-color-transform records for camera RAW profiles, looks, tone
        curves, Canon ColorData tables, and vendor source color tables,
@@ -342,9 +347,9 @@ Coverage matrix
        grouped value vectors, transfer hints, RAW applicability states,
        rendered/compatible safety booleans, and tolerance-aware
        GPS/exposure/color/geometry conflicts.
-     - High, about 96-98%.
-     - More long-tail per-model concept aliases, broader duplicated-field
-       reconciliation, and richer localized policy wording.
+     - High, about 97-99%.
+     - More long-tail per-model concept aliases, nested descriptive
+       structures, and richer localized policy wording.
    * - Transfer-safety classification
      - Compatible-file versus rendered-image safety policies classify
        source-specific image geometry, color/profile, RAW curves/linearity
@@ -389,8 +394,9 @@ Next interpretation priorities
    independently authored conformance files as they become available.
 2. Broaden transfer diagnostic policy coverage now that stable message tokens
    and localizable argument tokens are available for GUI workflows.
-3. Audit the remaining duplicated descriptive fields across standard schemas
-   and add precedence only where equivalent meaning is unambiguous.
+3. Interpret remaining non-equivalent legacy workflow fields and bounded
+   nested IPTC Extension/XMP Media Management structures without merging
+   fields that merely have similar names.
 4. Expand the remaining unambiguous MakerNote long tail: encrypted/custom
    settings, per-model firmware formulas outside currently supported
    formatter contexts, remaining live-vendor scalar/string-coded fields, and

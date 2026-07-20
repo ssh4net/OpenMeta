@@ -72,6 +72,10 @@ enum class MetadataQuerySemanticKind : uint8_t {
     Artwork,
     RightsExpression,
     Release,
+    Editorial,
+    Accessibility,
+    Taxonomy,
+    DocumentIdentity,
 };
 
 enum class MetadataQueryValueShape : uint8_t {
