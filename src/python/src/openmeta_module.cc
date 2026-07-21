@@ -6263,7 +6263,11 @@ NB_MODULE(_openmeta, m)
         .value("Editorial", MetadataQuerySemanticKind::Editorial)
         .value("Accessibility", MetadataQuerySemanticKind::Accessibility)
         .value("Taxonomy", MetadataQuerySemanticKind::Taxonomy)
-        .value("DocumentIdentity", MetadataQuerySemanticKind::DocumentIdentity);
+        .value("DocumentIdentity", MetadataQuerySemanticKind::DocumentIdentity)
+        .value("Registry", MetadataQuerySemanticKind::Registry)
+        .value("ImageRegion", MetadataQuerySemanticKind::ImageRegion)
+        .value("DocumentLineage", MetadataQuerySemanticKind::DocumentLineage)
+        .value("DocumentHistory", MetadataQuerySemanticKind::DocumentHistory);
 
     nb::enum_<MetadataQueryValueShape>(m, "MetadataQueryValueShape")
         .value("Unknown", MetadataQueryValueShape::Unknown)
@@ -6521,7 +6525,52 @@ NB_MODULE(_openmeta, m)
         .value("OtherLicenseDocument",
                MetadataConceptRole::OtherLicenseDocument)
         .value("OtherLicenseInformation",
-               MetadataConceptRole::OtherLicenseInformation);
+               MetadataConceptRole::OtherLicenseInformation)
+        .value("VocabularyIdentifier",
+               MetadataConceptRole::VocabularyIdentifier)
+        .value("TermIdentifier", MetadataConceptRole::TermIdentifier)
+        .value("TermName", MetadataConceptRole::TermName)
+        .value("RefinedAbout", MetadataConceptRole::RefinedAbout)
+        .value("RegistryItemIdentifier",
+               MetadataConceptRole::RegistryItemIdentifier)
+        .value("RegistryOrganizationIdentifier",
+               MetadataConceptRole::RegistryOrganizationIdentifier)
+        .value("RegistryEntryRole", MetadataConceptRole::RegistryEntryRole)
+        .value("RegionIdentifier", MetadataConceptRole::RegionIdentifier)
+        .value("RegionName", MetadataConceptRole::RegionName)
+        .value("RegionContentTypeIdentifier",
+               MetadataConceptRole::RegionContentTypeIdentifier)
+        .value("RegionContentTypeName",
+               MetadataConceptRole::RegionContentTypeName)
+        .value("RegionRoleIdentifier",
+               MetadataConceptRole::RegionRoleIdentifier)
+        .value("RegionRoleName", MetadataConceptRole::RegionRoleName)
+        .value("VersionIdentifier", MetadataConceptRole::VersionIdentifier)
+        .value("RenditionParameters", MetadataConceptRole::RenditionParameters)
+        .value("FilePath", MetadataConceptRole::FilePath)
+        .value("FromPart", MetadataConceptRole::FromPart)
+        .value("ToPart", MetadataConceptRole::ToPart)
+        .value("Manager", MetadataConceptRole::Manager)
+        .value("ManagerVariant", MetadataConceptRole::ManagerVariant)
+        .value("ManageTo", MetadataConceptRole::ManageTo)
+        .value("ManageUi", MetadataConceptRole::ManageUi)
+        .value("AlternatePath", MetadataConceptRole::AlternatePath)
+        .value("LastModifiedDate", MetadataConceptRole::LastModifiedDate)
+        .value("MaskMarkers", MetadataConceptRole::MaskMarkers)
+        .value("PartMapping", MetadataConceptRole::PartMapping)
+        .value("LastUrl", MetadataConceptRole::LastUrl)
+        .value("LinkForm", MetadataConceptRole::LinkForm)
+        .value("LinkCategory", MetadataConceptRole::LinkCategory)
+        .value("PlacedXResolution", MetadataConceptRole::PlacedXResolution)
+        .value("PlacedYResolution", MetadataConceptRole::PlacedYResolution)
+        .value("PlacedResolutionUnit",
+               MetadataConceptRole::PlacedResolutionUnit)
+        .value("EventAction", MetadataConceptRole::EventAction)
+        .value("EventParameters", MetadataConceptRole::EventParameters)
+        .value("SoftwareAgent", MetadataConceptRole::SoftwareAgent)
+        .value("EventWhen", MetadataConceptRole::EventWhen)
+        .value("ChangedParts", MetadataConceptRole::ChangedParts)
+        .value("Format", MetadataConceptRole::Format);
 
     nb::enum_<MetadataConceptRecordKind>(m, "MetadataConceptRecordKind")
         .value("None_", MetadataConceptRecordKind::None)
@@ -6540,7 +6589,15 @@ NB_MODULE(_openmeta, m)
         .value("EndUser", MetadataConceptRecordKind::EndUser)
         .value("ImageCreator", MetadataConceptRecordKind::ImageCreator)
         .value("ImageSupplier", MetadataConceptRecordKind::ImageSupplier)
-        .value("ImageAsset", MetadataConceptRecordKind::ImageAsset);
+        .value("ImageAsset", MetadataConceptRecordKind::ImageAsset)
+        .value("ControlledVocabularyTerm",
+               MetadataConceptRecordKind::ControlledVocabularyTerm)
+        .value("RegistryEntry", MetadataConceptRecordKind::RegistryEntry)
+        .value("ImageRegion", MetadataConceptRecordKind::ImageRegion)
+        .value("ResourceReference",
+               MetadataConceptRecordKind::ResourceReference)
+        .value("ResourceEvent", MetadataConceptRecordKind::ResourceEvent)
+        .value("PantryItem", MetadataConceptRecordKind::PantryItem);
 
     nb::enum_<MetadataConceptSensitivity>(m, "MetadataConceptSensitivity")
         .value("None_", MetadataConceptSensitivity::None)

@@ -1394,12 +1394,32 @@ namespace {
             && equals_ascii_case_insensitive(leaf, "Identifier")) {
             return MetadataQuerySemanticKind::DocumentIdentity;
         }
-        if (ns == kXmpMmSchema
-            && (equals_ascii_case_insensitive(leaf, "DocumentID")
+        if (ns == kXmpMmSchema) {
+            if (xmp_path_has_root(path, "History")
+                || (xmp_path_has_root(path, "Versions")
+                    && contains_ascii_case_insensitive(path, "event"))) {
+                return MetadataQuerySemanticKind::DocumentHistory;
+            }
+            if (xmp_path_has_root(path, "DerivedFrom")
+                || xmp_path_has_root(path, "ManagedFrom")
+                || xmp_path_has_root(path, "RenditionOf")
+                || xmp_path_has_root(path, "Ingredients")
+                || xmp_path_has_root(path, "Manifest")
+                || xmp_path_has_root(path, "Pantry")) {
+                return MetadataQuerySemanticKind::DocumentLineage;
+            }
+            if (equals_ascii_case_insensitive(leaf, "DocumentID")
                 || equals_ascii_case_insensitive(leaf, "InstanceID")
                 || equals_ascii_case_insensitive(leaf, "OriginalDocumentID")
-                || equals_ascii_case_insensitive(leaf, "RenditionClass"))) {
-            return MetadataQuerySemanticKind::DocumentIdentity;
+                || equals_ascii_case_insensitive(leaf, "RenditionClass")
+                || equals_ascii_case_insensitive(leaf, "RenditionParams")
+                || equals_ascii_case_insensitive(leaf, "VersionID")
+                || equals_ascii_case_insensitive(leaf, "Manager")
+                || equals_ascii_case_insensitive(leaf, "ManagerVariant")
+                || equals_ascii_case_insensitive(leaf, "ManageTo")
+                || equals_ascii_case_insensitive(leaf, "ManageUI")) {
+                return MetadataQuerySemanticKind::DocumentIdentity;
+            }
         }
         if (ns == kIptcCoreXmpSchema) {
             if (xmp_path_has_root(path, "CreatorContactInfo")
@@ -1429,6 +1449,19 @@ namespace {
             return MetadataQuerySemanticKind::Source;
         }
         if (ns == kIptcExtXmpSchema) {
+            if (xmp_path_has_root(path, "AboutCvTerm")
+                || xmp_path_has_root(path, "CVterm")
+                || xmp_path_has_root(path, "Genre")) {
+                return MetadataQuerySemanticKind::Taxonomy;
+            }
+            if (xmp_path_has_root(path, "RegistryId")
+                || equals_ascii_case_insensitive(leaf, "RegItemId")
+                || equals_ascii_case_insensitive(leaf, "RegOrgId")) {
+                return MetadataQuerySemanticKind::Registry;
+            }
+            if (xmp_path_has_root(path, "ImageRegion")) {
+                return MetadataQuerySemanticKind::ImageRegion;
+            }
             if (xmp_path_has_root(path, "ArtworkOrObject")) {
                 return MetadataQuerySemanticKind::Artwork;
             }
@@ -4143,6 +4176,10 @@ metadata_query_semantic_kind_name(MetadataQuerySemanticKind kind) noexcept
     case MetadataQuerySemanticKind::Taxonomy: return "taxonomy";
     case MetadataQuerySemanticKind::DocumentIdentity:
         return "document_identity";
+    case MetadataQuerySemanticKind::Registry: return "registry";
+    case MetadataQuerySemanticKind::ImageRegion: return "image_region";
+    case MetadataQuerySemanticKind::DocumentLineage: return "document_lineage";
+    case MetadataQuerySemanticKind::DocumentHistory: return "document_history";
     }
     return "unknown";
 }

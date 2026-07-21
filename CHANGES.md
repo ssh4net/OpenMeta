@@ -1,5 +1,30 @@
 # OpenMeta Changes
 
+## 0.4.81 - 2026-07-20
+
+Changes compared with `0.4.80`.
+
+### Added
+
+- Added scoped IPTC Extension records for controlled-vocabulary terms,
+  registry entries, and image-region names, identifiers, content types, and
+  roles.
+- Added structured XMP Media Management interpretation for resource
+  references, ingredients, history and version events, manifest references,
+  and bounded pantry identity/format fields.
+- Added exact `registry`, `image_region`, `document_lineage`, and
+  `document_history` query semantics with matching append-only C++ and thin
+  Python enums.
+
+### Changed
+
+- Document, registry, resource-reference, event-history, and pantry identity
+  records are now source-bound for rendered transfer instead of being treated
+  as generally safe descriptive metadata.
+- Image-region records now require target image specifications. Boundary
+  coordinates and arbitrary pantry payloads remain lossless raw metadata until
+  their context can be normalized without guessing.
+
 ## 0.4.80 - 2026-07-17
 
 Changes compared with `0.4.79`.

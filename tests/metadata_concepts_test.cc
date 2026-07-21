@@ -3245,5 +3245,169 @@ namespace {
         EXPECT_TRUE(graph_in_all->found);
     }
 
+    TEST(MetadataConcepts, InterpretsIptcVocabularyRegistryAndRegionRecords)
+    {
+        MetaStore store;
+        const std::string_view ext
+            = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/";
+        (void)add_xmp_text(&store, ext, "AboutCvTerm[1]/CvId",
+                           "https://example.test/vocabulary");
+        (void)add_xmp_text(&store, ext, "AboutCvTerm[1]/CvTermId",
+                           "https://example.test/vocabulary/culture");
+        (void)add_xmp_text(&store, ext,
+                           "AboutCvTerm[1]/CvTermName[@xml:lang=en-US]",
+                           "Culture");
+        (void)add_xmp_text(&store, ext, "RegistryId[1]/RegItemId", "asset-001");
+        (void)add_xmp_text(&store, ext, "RegistryId[1]/RegOrgId",
+                           "registry.example");
+        (void)add_xmp_text(&store, ext, "RegistryId[2]/RegItemId", "asset-002");
+        (void)add_xmp_text(&store, ext,
+                           "ImageRegion[1]/Name[@xml:lang=x-default]",
+                           "Main subject");
+        (void)add_xmp_text(&store, ext, "ImageRegion[1]/rId", "region-1");
+        (void)add_xmp_text(&store, ext,
+                           "ImageRegion[1]/rCtype[1]/xmp:Identifier[1]",
+                           "face");
+        (void)add_xmp_text(&store, ext,
+                           "ImageRegion[1]/rRole[1]/Name[@xml:lang=x-default]",
+                           "subject");
+        store.finalize();
+
+        const MetadataConceptResolution descriptive
+            = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+        const MetadataConceptCandidate* term_name = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ControlledVocabularyTerm,
+            MetadataConceptRole::TermName, "AboutCvTerm[1]");
+        const MetadataConceptCandidate* registry_one = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::RegistryEntry,
+            MetadataConceptRole::RegistryItemIdentifier, "RegistryEntry[1]");
+        const MetadataConceptCandidate* registry_two = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::RegistryEntry,
+            MetadataConceptRole::RegistryItemIdentifier, "RegistryEntry[2]");
+        const MetadataConceptCandidate* region_name = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageRegion,
+            MetadataConceptRole::RegionName, "ImageRegion[1]");
+        const MetadataConceptCandidate* content_type = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageRegion,
+            MetadataConceptRole::RegionContentTypeIdentifier,
+            "ImageRegion[1]/ContentType[1]");
+        const MetadataConceptCandidate* region_role = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageRegion,
+            MetadataConceptRole::RegionRoleName, "ImageRegion[1]/Role[1]");
+
+        EXPECT_TRUE(descriptive.found);
+        EXPECT_FALSE(descriptive.conflict);
+        ASSERT_NE(term_name, nullptr);
+        ASSERT_NE(registry_one, nullptr);
+        ASSERT_NE(registry_two, nullptr);
+        ASSERT_NE(region_name, nullptr);
+        ASSERT_NE(content_type, nullptr);
+        ASSERT_NE(region_role, nullptr);
+        EXPECT_EQ(term_name->semantic, MetadataQuerySemanticKind::Taxonomy);
+        EXPECT_EQ(term_name->language, "en-us");
+        EXPECT_EQ(registry_one->semantic, MetadataQuerySemanticKind::Registry);
+        EXPECT_EQ(registry_one->transfer_hint,
+                  MetadataConceptTransferHint::SourceBound);
+        EXPECT_EQ(region_name->semantic,
+                  MetadataQuerySemanticKind::ImageRegion);
+        EXPECT_EQ(region_name->transfer_hint,
+                  MetadataConceptTransferHint::RequiresTargetImageSpec);
+        EXPECT_TRUE(region_name->requires_target_image_spec);
+        EXPECT_EQ(content_type->text, "face");
+        EXPECT_EQ(region_role->language, "x-default");
+        EXPECT_STREQ(metadata_concept_record_kind_name(
+                         MetadataConceptRecordKind::ControlledVocabularyTerm),
+                     "controlled_vocabulary_term");
+    }
+
+    TEST(MetadataConcepts, InterpretsXmpMmLineageHistoryAndPantryRecords)
+    {
+        MetaStore store;
+        const std::string_view mm = "http://ns.adobe.com/xap/1.0/mm/";
+        (void)add_xmp_text(&store, mm, "DerivedFrom/stRef:documentID",
+                           "xmp.did:base");
+        (void)add_xmp_text(&store, mm, "DerivedFrom/stRef:filePath",
+                           "/assets/base.psd");
+        (void)add_xmp_text(&store, mm, "Ingredients[1]/stRef:documentID",
+                           "xmp.did:ingredient-1");
+        (void)add_xmp_text(&store, mm, "Ingredients[2]/stRef:documentID",
+                           "xmp.did:ingredient-2");
+        (void)add_xmp_text(&store, mm, "History[1]/stEvt:action", "saved");
+        (void)add_xmp_text(&store, mm, "History[1]/stEvt:softwareAgent",
+                           "OpenMeta");
+        (void)add_xmp_text(&store, mm, "History[2]/stEvt:action", "exported");
+        (void)add_xmp_text(&store, mm,
+                           "Manifest[1]/stMfs:reference/stRef:filePath",
+                           "/assets/linked.tif");
+        (void)add_xmp_text(&store, mm,
+                           "Versions[1]/stVer:event/stEvt:parameters",
+                           "quality=final");
+        (void)add_xmp_text(&store, mm, "Pantry[1]/InstanceID",
+                           "xmp.iid:pantry-1");
+        (void)add_xmp_text(&store, mm, "Pantry[1]/dc:format", "image/tiff");
+        store.finalize();
+
+        const MetadataConceptResolution descriptive
+            = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+        const MetadataConceptCandidate* derived = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ResourceReference,
+            MetadataConceptRole::DocumentIdentifier, "DerivedFrom");
+        const MetadataConceptCandidate* ingredient_one = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ResourceReference,
+            MetadataConceptRole::DocumentIdentifier, "Ingredient[1]");
+        const MetadataConceptCandidate* ingredient_two = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ResourceReference,
+            MetadataConceptRole::DocumentIdentifier, "Ingredient[2]");
+        const MetadataConceptCandidate* event = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ResourceEvent,
+            MetadataConceptRole::EventAction, "HistoryEvent[1]");
+        const MetadataConceptCandidate* agent = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ResourceEvent,
+            MetadataConceptRole::SoftwareAgent, "HistoryEvent[1]");
+        const MetadataConceptCandidate* pantry = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::PantryItem,
+            MetadataConceptRole::InstanceIdentifier, "PantryItem[1]");
+        const MetadataConceptCandidate* format = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::PantryItem,
+            MetadataConceptRole::Format, "PantryItem[1]");
+        const MetadataConceptCandidate* manifest = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ResourceReference,
+            MetadataConceptRole::FilePath, "Manifest[1]/Reference");
+        const MetadataConceptCandidate* version_event = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ResourceEvent,
+            MetadataConceptRole::EventParameters, "Version[1]/Event");
+
+        EXPECT_TRUE(descriptive.found);
+        EXPECT_FALSE(descriptive.conflict);
+        ASSERT_NE(derived, nullptr);
+        ASSERT_NE(ingredient_one, nullptr);
+        ASSERT_NE(ingredient_two, nullptr);
+        ASSERT_NE(event, nullptr);
+        ASSERT_NE(agent, nullptr);
+        ASSERT_NE(pantry, nullptr);
+        ASSERT_NE(format, nullptr);
+        ASSERT_NE(manifest, nullptr);
+        ASSERT_NE(version_event, nullptr);
+        EXPECT_EQ(derived->semantic,
+                  MetadataQuerySemanticKind::DocumentLineage);
+        EXPECT_EQ(derived->transfer_hint,
+                  MetadataConceptTransferHint::SourceBound);
+        EXPECT_TRUE(derived->source_bound);
+        EXPECT_EQ(ingredient_one->text, "xmp.did:ingredient-1");
+        EXPECT_EQ(ingredient_two->text, "xmp.did:ingredient-2");
+        EXPECT_EQ(event->semantic, MetadataQuerySemanticKind::DocumentHistory);
+        EXPECT_EQ(event->transfer_hint,
+                  MetadataConceptTransferHint::SourceBound);
+        EXPECT_EQ(agent->text, "OpenMeta");
+        EXPECT_EQ(pantry->semantic, MetadataQuerySemanticKind::DocumentLineage);
+        EXPECT_EQ(format->text, "image/tiff");
+        EXPECT_EQ(manifest->text, "/assets/linked.tif");
+        EXPECT_EQ(version_event->semantic,
+                  MetadataQuerySemanticKind::DocumentHistory);
+        EXPECT_STREQ(metadata_concept_role_name(
+                         MetadataConceptRole::SoftwareAgent),
+                     "software_agent");
+    }
+
 }  // namespace
 }  // namespace openmeta

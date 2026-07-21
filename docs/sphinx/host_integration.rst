@@ -94,7 +94,9 @@ description, creator, keyword/subject, location, copyright, rights/license,
 credit, source, creator-contact, event, person, organization, product,
 artwork/object, encoded-rights-expression, license-constraint, release,
 legacy editorial, accessibility, taxonomy, resource/document identity,
-end-user, image-creator, image-supplier, and delivered-image fields. Scalar
+controlled-vocabulary terms, registry entries, image-region entities,
+document lineage/history, end-user, image-creator, image-supplier, and
+delivered-image fields. Scalar
 conflicts are isolated by normalized language and structured location scope;
 additive collections retain distinct values. Structured
 members carry both a ``record_kind`` and ``record_scope``, such as ``person``
@@ -102,7 +104,10 @@ plus ``Person[1]``, so hosts can keep associated values together. Treat this as
 an inspection and policy input
 rather than an automatic
 metadata rewrite decision; source-bound color, lens, and RAW-processing values
-still need rendered-transfer safety filtering. Each candidate also carries a
+still need rendered-transfer safety filtering. Document identity, registry,
+XMP Media Management lineage/history, and pantry identity are source-bound;
+image-region records require target image specifications because their meaning
+is tied to the source image. Each candidate also carries a
 transfer hint: ``safe``, ``source_bound``, ``rendered_unsafe``, or
 ``requires_target_image_spec``, plus ``compatible_file_safe`` and
 ``rendered_image_safe`` booleans for host UI and preflight policy. For transfer

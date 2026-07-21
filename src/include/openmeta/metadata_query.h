@@ -76,6 +76,10 @@ enum class MetadataQuerySemanticKind : uint8_t {
     Accessibility,
     Taxonomy,
     DocumentIdentity,
+    Registry,
+    ImageRegion,
+    DocumentLineage,
+    DocumentHistory,
 };
 
 enum class MetadataQueryValueShape : uint8_t {

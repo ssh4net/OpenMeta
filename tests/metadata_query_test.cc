@@ -2066,4 +2066,56 @@ TEST(MetadataQuery, GroupsDngRawStorageTable)
                  "cfa_layout");
 }
 
+TEST(MetadataQuery, ClassifiesNestedTaxonomyRegistryRegionAndLineage)
+{
+    MetaStore store;
+    const std::string_view ext = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/";
+    const std::string_view mm  = "http://ns.adobe.com/xap/1.0/mm/";
+    const EntryId taxonomy
+        = add_xmp_text(&store, ext,
+                       "AboutCvTerm[1]/CvTermName[@xml:lang=x-default]",
+                       "Culture");
+    const EntryId registry
+        = add_xmp_text(&store, ext, "RegistryId[1]/RegItemId", "asset-001");
+    const EntryId region
+        = add_xmp_text(&store, ext, "ImageRegion[1]/rRole[1]/Name", "subject");
+    const EntryId lineage = add_xmp_text(&store, mm,
+                                         "Ingredients[1]/stRef:documentID",
+                                         "xmp.did:ingredient");
+    const EntryId history = add_xmp_text(&store, mm, "History[1]/stEvt:action",
+                                         "saved");
+    store.finalize();
+
+    const MetadataQueryResult result = query_descriptive_metadata(store);
+    const MetadataQueryMatch* taxonomy_match = find_match_for_entry(result,
+                                                                    taxonomy);
+    const MetadataQueryMatch* registry_match = find_match_for_entry(result,
+                                                                    registry);
+    const MetadataQueryMatch* region_match   = find_match_for_entry(result,
+                                                                    region);
+    const MetadataQueryMatch* lineage_match  = find_match_for_entry(result,
+                                                                    lineage);
+    const MetadataQueryMatch* history_match  = find_match_for_entry(result,
+                                                                    history);
+
+    ASSERT_NE(taxonomy_match, nullptr);
+    ASSERT_NE(registry_match, nullptr);
+    ASSERT_NE(region_match, nullptr);
+    ASSERT_NE(lineage_match, nullptr);
+    ASSERT_NE(history_match, nullptr);
+    EXPECT_EQ(taxonomy_match->semantic, MetadataQuerySemanticKind::Taxonomy);
+    EXPECT_EQ(registry_match->semantic, MetadataQuerySemanticKind::Registry);
+    EXPECT_EQ(region_match->semantic, MetadataQuerySemanticKind::ImageRegion);
+    EXPECT_EQ(lineage_match->semantic,
+              MetadataQuerySemanticKind::DocumentLineage);
+    EXPECT_EQ(history_match->semantic,
+              MetadataQuerySemanticKind::DocumentHistory);
+    EXPECT_STREQ(metadata_query_semantic_kind_name(
+                     MetadataQuerySemanticKind::DocumentLineage),
+                 "document_lineage");
+    EXPECT_STREQ(metadata_query_semantic_kind_name(
+                     MetadataQuerySemanticKind::DocumentHistory),
+                 "document_history");
+}
+
 }  // namespace openmeta

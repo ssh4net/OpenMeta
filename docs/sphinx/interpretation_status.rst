@@ -94,14 +94,18 @@ Coverage matrix
        also reconciles legacy IPTC/Photoshop urgency, category,
        supplemental-category, instructions, creator-title,
        transmission-reference, and caption-writer pairs; interprets IPTC Core
-       accessibility/taxonomy fields and XMP document identity; and groups
-       structured creator contacts, events, people, organizations, products,
+       accessibility/taxonomy fields, IPTC Extension controlled-vocabulary,
+       registry, and image-region entity records, XMP document identity, and
+       XMP Media Management resource-reference, ingredient, history,
+       manifest-reference, and bounded pantry records; and groups structured
+       creator contacts, events, people, organizations, products,
        artwork/objects, encoded rights expressions, PLUS parties/assets/
        license policy, and model/property releases with record kind, record
-       scope, language, and independent sensitivity.
-     - High, about 96-98%.
-     - Non-equivalent legacy workflow fields and nested IPTC Extension/XMP
-       Media Management structures remain bounded.
+       scope, language, transfer hint, and independent sensitivity.
+     - High, about 98-99%.
+     - Non-equivalent legacy workflow fields, image-region boundary
+       normalization, arbitrary pantry payloads, and remaining
+       version/manifest wrapper fields remain bounded.
    * - Orientation
      - EXIF/TIFF orientation query, LibRaw flip mapping, and generic
        orientation helpers for index, rotation degrees, mirrored state,
@@ -311,8 +315,9 @@ Coverage matrix
        patterns, border margins, exposure/gain roles, selected
        vendor/MakerNote exposure-name aliases, per-family grouped vendor
        records, descriptive EXIF/IPTC/XMP concepts including exact
-       rights/license/credit/source/editorial/accessibility/taxonomy/
-       document-identity semantics, explicit color-profile
+       rights/license/credit/source/editorial/accessibility/taxonomy/registry/
+       image-region/document-identity/document-lineage/document-history
+       semantics, explicit color-profile
        records for EXIF/ICC/XMP/PNG profile carriers, explicit
        source-color-transform records for camera RAW profiles, looks, tone
        curves, Canon ColorData tables, and vendor source color tables,
@@ -347,7 +352,7 @@ Coverage matrix
        grouped value vectors, transfer hints, RAW applicability states,
        rendered/compatible safety booleans, and tolerance-aware
        GPS/exposure/color/geometry conflicts.
-     - High, about 97-99%.
+     - High, about 98-99%.
      - More long-tail per-model concept aliases, nested descriptive
        structures, and richer localized policy wording.
    * - Transfer-safety classification
@@ -394,9 +399,9 @@ Next interpretation priorities
    independently authored conformance files as they become available.
 2. Broaden transfer diagnostic policy coverage now that stable message tokens
    and localizable argument tokens are available for GUI workflows.
-3. Interpret remaining non-equivalent legacy workflow fields and bounded
-   nested IPTC Extension/XMP Media Management structures without merging
-   fields that merely have similar names.
+3. Interpret remaining non-equivalent legacy workflow fields, image-region
+   boundary geometry, and bounded XMP Media Management version/manifest
+   wrapper fields without guessing at arbitrary pantry payloads.
 4. Expand the remaining unambiguous MakerNote long tail: encrypted/custom
    settings, per-model firmware formulas outside currently supported
    formatter contexts, remaining live-vendor scalar/string-coded fields, and
