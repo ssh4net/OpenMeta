@@ -1396,8 +1396,7 @@ namespace {
         }
         if (ns == kXmpMmSchema) {
             if (xmp_path_has_root(path, "History")
-                || (xmp_path_has_root(path, "Versions")
-                    && contains_ascii_case_insensitive(path, "event"))) {
+                || xmp_path_has_root(path, "Versions")) {
                 return MetadataQuerySemanticKind::DocumentHistory;
             }
             if (xmp_path_has_root(path, "DerivedFrom")

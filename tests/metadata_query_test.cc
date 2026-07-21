@@ -2084,6 +2084,9 @@ TEST(MetadataQuery, ClassifiesNestedTaxonomyRegistryRegionAndLineage)
                                          "xmp.did:ingredient");
     const EntryId history = add_xmp_text(&store, mm, "History[1]/stEvt:action",
                                          "saved");
+    const EntryId version = add_xmp_text(&store, mm,
+                                         "Versions[1]/stVer:comments",
+                                         "Approved master");
     store.finalize();
 
     const MetadataQueryResult result = query_descriptive_metadata(store);
@@ -2097,18 +2100,23 @@ TEST(MetadataQuery, ClassifiesNestedTaxonomyRegistryRegionAndLineage)
                                                                     lineage);
     const MetadataQueryMatch* history_match  = find_match_for_entry(result,
                                                                     history);
+    const MetadataQueryMatch* version_match  = find_match_for_entry(result,
+                                                                    version);
 
     ASSERT_NE(taxonomy_match, nullptr);
     ASSERT_NE(registry_match, nullptr);
     ASSERT_NE(region_match, nullptr);
     ASSERT_NE(lineage_match, nullptr);
     ASSERT_NE(history_match, nullptr);
+    ASSERT_NE(version_match, nullptr);
     EXPECT_EQ(taxonomy_match->semantic, MetadataQuerySemanticKind::Taxonomy);
     EXPECT_EQ(registry_match->semantic, MetadataQuerySemanticKind::Registry);
     EXPECT_EQ(region_match->semantic, MetadataQuerySemanticKind::ImageRegion);
     EXPECT_EQ(lineage_match->semantic,
               MetadataQuerySemanticKind::DocumentLineage);
     EXPECT_EQ(history_match->semantic,
+              MetadataQuerySemanticKind::DocumentHistory);
+    EXPECT_EQ(version_match->semantic,
               MetadataQuerySemanticKind::DocumentHistory);
     EXPECT_STREQ(metadata_query_semantic_kind_name(
                      MetadataQuerySemanticKind::DocumentLineage),

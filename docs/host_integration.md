@@ -95,12 +95,22 @@ additive collections retain distinct values. Structured
 members carry both a `record_kind` and `record_scope`, such as `person` plus
 `Person[1]`, so hosts can keep associated names, identifiers, descriptions,
 contacts, constraints, and release records together.
+IPTC image boundaries use the `image_region_boundary` record kind. A complete
+boundary adds a `region_boundary` candidate with explicit
+`image_region_shape` and `image_region_coordinate_unit` fields. Rectangle
+values use `rect` as x, y, width, height; circles use a three-value x, y,
+radius vector; polygons use a flattened x, y `vector_set` plus scoped `vec2`
+vertex candidates. OpenMeta does not synthesize geometry when the shape, unit,
+or required coordinates are incomplete, but valid individual numeric fields
+remain queryable. Pixel and relative coordinates are not interchangeable:
+hosts must use source and target image specifications to transform or validate
+them before transfer.
 Treat this as an inspection and policy input rather than an automatic metadata
 rewrite decision; source-bound color, lens, and RAW-processing values still need
 rendered-transfer safety filtering. Document identity, registry, XMP Media
-Management lineage/history, and pantry identity are source-bound; image-region
-records require target image specifications because their meaning is tied to
-the source image. Each candidate also carries a transfer
+Management manifest/version/lineage/history records, and pantry identity are
+source-bound; image-region records require target image specifications because
+their meaning is tied to the source image. Each candidate also carries a transfer
 hint: `safe`, `source_bound`, `rendered_unsafe`, or
 `requires_target_image_spec`, plus `compatible_file_safe` and
 `rendered_image_safe` booleans for host UI and preflight policy. For transfer

@@ -2,6 +2,8 @@
 
 #include "openmeta/xmp_decode.h"
 
+#include "openmeta/metadata_concepts.h"
+
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -244,8 +246,9 @@ TEST(XmpDecodeTest, SkipsEmptyRdfAbout)
           "</rdf:RDF>"
           "</x:xmpmeta>";
 
-    const std::span<const std::byte> bytes(
-        reinterpret_cast<const std::byte*>(xmp.data()), xmp.size());
+    const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(
+                                               xmp.data()),
+                                           xmp.size());
 
     MetaStore store;
     const XmpDecodeResult r = decode_xmp_packet(bytes, store);
@@ -935,6 +938,60 @@ TEST(XmpDecodeTest, DecodesXmpMmVersionsStructuredChildren)
     expect_text("Versions[1]/stVer:event/stEvt:action", "saved");
     expect_text("Versions[1]/stVer:event/stEvt:changed", "/metadata");
     expect_text("Versions[1]/stVer:event/stEvt:when", "2026-04-16T10:15:00Z");
+}
+
+TEST(XmpDecodeTest, ResolvesIptcImageRegionBoundaryGeometry)
+{
+    const std::string xmp
+        = "<x:xmpmeta xmlns:x='adobe:ns:meta/'>"
+          "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>"
+          "<rdf:Description "
+          "xmlns:Iptc4xmpExt='http://iptc.org/std/Iptc4xmpExt/2008-02-29/'>"
+          "<Iptc4xmpExt:ImageRegion><rdf:Bag>"
+          "<rdf:li rdf:parseType='Resource'>"
+          "<Iptc4xmpExt:RegionBoundary rdf:parseType='Resource'>"
+          "<Iptc4xmpExt:rbShape>rectangle</Iptc4xmpExt:rbShape>"
+          "<Iptc4xmpExt:rbUnit>pixel</Iptc4xmpExt:rbUnit>"
+          "<Iptc4xmpExt:rbX>10</Iptc4xmpExt:rbX>"
+          "<Iptc4xmpExt:rbY>20</Iptc4xmpExt:rbY>"
+          "<Iptc4xmpExt:rbW>300</Iptc4xmpExt:rbW>"
+          "<Iptc4xmpExt:rbH>200</Iptc4xmpExt:rbH>"
+          "</Iptc4xmpExt:RegionBoundary>"
+          "</rdf:li></rdf:Bag></Iptc4xmpExt:ImageRegion>"
+          "</rdf:Description></rdf:RDF></x:xmpmeta>";
+    const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(
+                                               xmp.data()),
+                                           xmp.size());
+
+    MetaStore store;
+    const XmpDecodeResult decoded = decode_xmp_packet(bytes, store);
+    ASSERT_EQ(decoded.status, XmpDecodeStatus::Ok);
+    store.finalize();
+
+    const MetadataConceptResolution descriptive
+        = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+    const MetadataConceptCandidate* boundary = nullptr;
+    for (size_t i = 0U; i < descriptive.candidates.size(); ++i) {
+        const MetadataConceptCandidate& candidate = descriptive.candidates[i];
+        if (candidate.record_kind
+                == MetadataConceptRecordKind::ImageRegionBoundary
+            && candidate.role == MetadataConceptRole::RegionBoundary) {
+            boundary = &candidate;
+            break;
+        }
+    }
+
+    ASSERT_NE(boundary, nullptr);
+    EXPECT_EQ(boundary->record_scope, "ImageRegion[1]/Boundary");
+    EXPECT_EQ(boundary->image_region_shape,
+              MetadataImageRegionShape::Rectangle);
+    EXPECT_EQ(boundary->image_region_coordinate_unit,
+              MetadataImageRegionCoordinateUnit::Pixel);
+    ASSERT_TRUE(boundary->has_rect);
+    EXPECT_DOUBLE_EQ(boundary->rect[0], 10.0);
+    EXPECT_DOUBLE_EQ(boundary->rect[1], 20.0);
+    EXPECT_DOUBLE_EQ(boundary->rect[2], 300.0);
+    EXPECT_DOUBLE_EQ(boundary->rect[3], 200.0);
 }
 
 TEST(XmpDecodeTest, DecodesAltTextEntriesWithXmlLangPaths)

@@ -229,6 +229,19 @@ enum class MetadataConceptRole : uint8_t {
     EventWhen,
     ChangedParts,
     Format,
+    RegionBoundary,
+    RegionBoundaryShape,
+    RegionBoundaryUnit,
+    RegionBoundaryX,
+    RegionBoundaryY,
+    RegionBoundaryWidth,
+    RegionBoundaryHeight,
+    RegionBoundaryRadius,
+    RegionBoundaryVertexX,
+    RegionBoundaryVertexY,
+    RegionBoundaryVertex,
+    VersionComments,
+    VersionModifier,
 };
 
 enum class MetadataConceptRecordKind : uint8_t {
@@ -255,6 +268,22 @@ enum class MetadataConceptRecordKind : uint8_t {
     ResourceReference,
     ResourceEvent,
     PantryItem,
+    ImageRegionBoundary,
+    ManifestItem,
+    Version,
+};
+
+enum class MetadataImageRegionShape : uint8_t {
+    Unknown,
+    Rectangle,
+    Circle,
+    Polygon,
+};
+
+enum class MetadataImageRegionCoordinateUnit : uint8_t {
+    Unknown,
+    Pixel,
+    Relative,
 };
 
 /// Policy sensitivity is independent from technical transfer safety.
@@ -329,6 +358,12 @@ struct MetadataConceptCandidate final {
     MetadataQueryValueShape shape      = MetadataQueryValueShape::Unknown;
     /// Normalized structured-record type; `None` for unstructured values.
     MetadataConceptRecordKind record_kind = MetadataConceptRecordKind::None;
+    /// Source-declared shape for synthesized image-region geometry.
+    MetadataImageRegionShape image_region_shape
+        = MetadataImageRegionShape::Unknown;
+    /// Coordinate space for synthesized image-region geometry.
+    MetadataImageRegionCoordinateUnit image_region_coordinate_unit
+        = MetadataImageRegionCoordinateUnit::Unknown;
     /// Host policy signal; independent from technical transfer safety.
     MetadataConceptSensitivity sensitivity = MetadataConceptSensitivity::None;
     EntryId entry_id                       = kInvalidEntryId;
@@ -446,6 +481,13 @@ metadata_concept_role_name(MetadataConceptRole role) noexcept;
 
 const char*
 metadata_concept_record_kind_name(MetadataConceptRecordKind kind) noexcept;
+
+const char*
+metadata_image_region_shape_name(MetadataImageRegionShape shape) noexcept;
+
+const char*
+metadata_image_region_coordinate_unit_name(
+    MetadataImageRegionCoordinateUnit unit) noexcept;
 
 const char*
 metadata_concept_sensitivity_name(

@@ -1192,6 +1192,14 @@ namespace {
         out["record_kind"]      = candidate.record_kind;
         out["record_kind_name"] = nb::str(
             metadata_concept_record_kind_name(candidate.record_kind));
+        out["image_region_shape"]      = candidate.image_region_shape;
+        out["image_region_shape_name"] = nb::str(
+            metadata_image_region_shape_name(candidate.image_region_shape));
+        out["image_region_coordinate_unit"]
+            = candidate.image_region_coordinate_unit;
+        out["image_region_coordinate_unit_name"] = nb::str(
+            metadata_image_region_coordinate_unit_name(
+                candidate.image_region_coordinate_unit));
         out["sensitivity"]      = candidate.sensitivity;
         out["sensitivity_name"] = nb::str(
             metadata_concept_sensitivity_name(candidate.sensitivity));
@@ -6570,7 +6578,25 @@ NB_MODULE(_openmeta, m)
         .value("SoftwareAgent", MetadataConceptRole::SoftwareAgent)
         .value("EventWhen", MetadataConceptRole::EventWhen)
         .value("ChangedParts", MetadataConceptRole::ChangedParts)
-        .value("Format", MetadataConceptRole::Format);
+        .value("Format", MetadataConceptRole::Format)
+        .value("RegionBoundary", MetadataConceptRole::RegionBoundary)
+        .value("RegionBoundaryShape", MetadataConceptRole::RegionBoundaryShape)
+        .value("RegionBoundaryUnit", MetadataConceptRole::RegionBoundaryUnit)
+        .value("RegionBoundaryX", MetadataConceptRole::RegionBoundaryX)
+        .value("RegionBoundaryY", MetadataConceptRole::RegionBoundaryY)
+        .value("RegionBoundaryWidth", MetadataConceptRole::RegionBoundaryWidth)
+        .value("RegionBoundaryHeight",
+               MetadataConceptRole::RegionBoundaryHeight)
+        .value("RegionBoundaryRadius",
+               MetadataConceptRole::RegionBoundaryRadius)
+        .value("RegionBoundaryVertexX",
+               MetadataConceptRole::RegionBoundaryVertexX)
+        .value("RegionBoundaryVertexY",
+               MetadataConceptRole::RegionBoundaryVertexY)
+        .value("RegionBoundaryVertex",
+               MetadataConceptRole::RegionBoundaryVertex)
+        .value("VersionComments", MetadataConceptRole::VersionComments)
+        .value("VersionModifier", MetadataConceptRole::VersionModifier);
 
     nb::enum_<MetadataConceptRecordKind>(m, "MetadataConceptRecordKind")
         .value("None_", MetadataConceptRecordKind::None)
@@ -6597,7 +6623,23 @@ NB_MODULE(_openmeta, m)
         .value("ResourceReference",
                MetadataConceptRecordKind::ResourceReference)
         .value("ResourceEvent", MetadataConceptRecordKind::ResourceEvent)
-        .value("PantryItem", MetadataConceptRecordKind::PantryItem);
+        .value("PantryItem", MetadataConceptRecordKind::PantryItem)
+        .value("ImageRegionBoundary",
+               MetadataConceptRecordKind::ImageRegionBoundary)
+        .value("ManifestItem", MetadataConceptRecordKind::ManifestItem)
+        .value("Version", MetadataConceptRecordKind::Version);
+
+    nb::enum_<MetadataImageRegionShape>(m, "MetadataImageRegionShape")
+        .value("Unknown", MetadataImageRegionShape::Unknown)
+        .value("Rectangle", MetadataImageRegionShape::Rectangle)
+        .value("Circle", MetadataImageRegionShape::Circle)
+        .value("Polygon", MetadataImageRegionShape::Polygon);
+
+    nb::enum_<MetadataImageRegionCoordinateUnit>(
+        m, "MetadataImageRegionCoordinateUnit")
+        .value("Unknown", MetadataImageRegionCoordinateUnit::Unknown)
+        .value("Pixel", MetadataImageRegionCoordinateUnit::Pixel)
+        .value("Relative", MetadataImageRegionCoordinateUnit::Relative);
 
     nb::enum_<MetadataConceptSensitivity>(m, "MetadataConceptSensitivity")
         .value("None_", MetadataConceptSensitivity::None)

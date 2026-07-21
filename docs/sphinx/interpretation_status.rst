@@ -95,17 +95,18 @@ Coverage matrix
        supplemental-category, instructions, creator-title,
        transmission-reference, and caption-writer pairs; interprets IPTC Core
        accessibility/taxonomy fields, IPTC Extension controlled-vocabulary,
-       registry, and image-region entity records, XMP document identity, and
-       XMP Media Management resource-reference, ingredient, history,
-       manifest-reference, and bounded pantry records; and groups structured
+       registry, image-region entity records, and rectangle/circle/polygon
+       boundary geometry with explicit pixel/relative units, XMP document
+       identity, and XMP Media Management resource-reference, ingredient,
+       history, manifest-item/reference, version/event, and bounded pantry
+       records; and groups structured
        creator contacts, events, people, organizations, products,
        artwork/objects, encoded rights expressions, PLUS parties/assets/
        license policy, and model/property releases with record kind, record
        scope, language, transfer hint, and independent sensitivity.
      - High, about 98-99%.
-     - Non-equivalent legacy workflow fields, image-region boundary
-       normalization, arbitrary pantry payloads, and remaining
-       version/manifest wrapper fields remain bounded.
+     - Non-equivalent legacy workflow fields and deliberately unmodeled
+       arbitrary pantry payloads remain bounded.
    * - Orientation
      - EXIF/TIFF orientation query, LibRaw flip mapping, and generic
        orientation helpers for index, rotation degrees, mirrored state,
@@ -399,9 +400,8 @@ Next interpretation priorities
    independently authored conformance files as they become available.
 2. Broaden transfer diagnostic policy coverage now that stable message tokens
    and localizable argument tokens are available for GUI workflows.
-3. Interpret remaining non-equivalent legacy workflow fields, image-region
-   boundary geometry, and bounded XMP Media Management version/manifest
-   wrapper fields without guessing at arbitrary pantry payloads.
+3. Interpret remaining non-equivalent legacy workflow fields and add pantry
+   payload semantics only where a validated, bounded schema exists.
 4. Expand the remaining unambiguous MakerNote long tail: encrypted/custom
    settings, per-model firmware formulas outside currently supported
    formatter contexts, remaining live-vendor scalar/string-coded fields, and

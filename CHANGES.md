@@ -1,5 +1,27 @@
 # OpenMeta Changes
 
+## 0.4.82 - 2026-07-21
+
+Changes compared with `0.4.81`.
+
+### Added
+
+- Added scoped IPTC Extension image-region boundary interpretation for
+  rectangle, circle, and polygon shapes with explicit pixel or relative
+  coordinate units, numeric field candidates, normalized rectangle/circle
+  values, polygon vertex records, and complete source-entry provenance.
+- Added XMP Media Management manifest-item and version records for manifest
+  link/resolution fields and version comments, modifier, modification date,
+  and identifier wrappers.
+- Added append-only C++ and thin Python enums for image-region shapes,
+  coordinate units, boundary roles, and manifest/version record kinds.
+
+### Changed
+
+- XMP Media Management version wrapper fields now query as document history;
+  image-region boundaries require a target image specification, while
+  manifest/version records remain source-bound for rendered-image transfer.
+
 ## 0.4.81 - 2026-07-20
 
 Changes compared with `0.4.80`.

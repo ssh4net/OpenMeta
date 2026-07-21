@@ -3320,6 +3320,140 @@ namespace {
                      "controlled_vocabulary_term");
     }
 
+    TEST(MetadataConcepts, NormalizesScopedIptcImageRegionBoundaries)
+    {
+        MetaStore store;
+        const std::string_view ext
+            = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/";
+        (void)add_xmp_text(&store, ext, "ImageRegion[1]/RegionBoundary/rbShape",
+                           "rectangle");
+        (void)add_xmp_text(&store, ext, "ImageRegion[1]/RegionBoundary/rbUnit",
+                           "pixel");
+        (void)add_xmp_text(&store, ext, "ImageRegion[1]/RegionBoundary/rbX",
+                           "120");
+        (void)add_xmp_text(&store, ext, "ImageRegion[1]/RegionBoundary/rbY",
+                           "45");
+        (void)add_xmp_text(&store, ext, "ImageRegion[1]/RegionBoundary/rbW",
+                           "640");
+        (void)add_xmp_text(&store, ext, "ImageRegion[1]/RegionBoundary/rbH",
+                           "480");
+        (void)add_xmp_text(&store, ext, "ImageRegion[2]/RegionBoundary/rbShape",
+                           "circle");
+        (void)add_xmp_text(&store, ext, "ImageRegion[2]/RegionBoundary/rbUnit",
+                           "relative");
+        (void)add_xmp_text(&store, ext, "ImageRegion[2]/RegionBoundary/rbX",
+                           "0.5");
+        (void)add_xmp_text(&store, ext, "ImageRegion[2]/RegionBoundary/rbY",
+                           "0.25");
+        (void)add_xmp_text(&store, ext, "ImageRegion[2]/RegionBoundary/rbRx",
+                           "0.1");
+        (void)add_xmp_text(&store, ext, "ImageRegion[3]/RegionBoundary/rbShape",
+                           "polygon");
+        (void)add_xmp_text(&store, ext, "ImageRegion[3]/RegionBoundary/rbUnit",
+                           "relative");
+        (void)add_xmp_text(&store, ext,
+                           "ImageRegion[3]/RegionBoundary/rbVertices[1]/rbX",
+                           "0.1");
+        (void)add_xmp_text(&store, ext,
+                           "ImageRegion[3]/RegionBoundary/rbVertices[1]/rbY",
+                           "0.2");
+        (void)add_xmp_text(&store, ext,
+                           "ImageRegion[3]/RegionBoundary/rbVertices[2]/rbX",
+                           "0.8");
+        (void)add_xmp_text(&store, ext,
+                           "ImageRegion[3]/RegionBoundary/rbVertices[2]/rbY",
+                           "0.2");
+        (void)add_xmp_text(&store, ext,
+                           "ImageRegion[3]/RegionBoundary/rbVertices[3]/rbX",
+                           "0.5");
+        (void)add_xmp_text(&store, ext,
+                           "ImageRegion[3]/RegionBoundary/rbVertices[3]/rbY",
+                           "0.9");
+        (void)add_xmp_text(&store, ext, "ImageRegion[4]/RegionBoundary/rbShape",
+                           "rectangle");
+        (void)add_xmp_text(&store, ext, "ImageRegion[4]/RegionBoundary/rbUnit",
+                           "pixel");
+        (void)add_xmp_text(&store, ext, "ImageRegion[4]/RegionBoundary/rbX",
+                           "8");
+        store.finalize();
+
+        const MetadataConceptResolution descriptive
+            = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+        const MetadataConceptCandidate* rectangle = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageRegionBoundary,
+            MetadataConceptRole::RegionBoundary, "ImageRegion[1]/Boundary");
+        const MetadataConceptCandidate* circle = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageRegionBoundary,
+            MetadataConceptRole::RegionBoundary, "ImageRegion[2]/Boundary");
+        const MetadataConceptCandidate* polygon = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageRegionBoundary,
+            MetadataConceptRole::RegionBoundary, "ImageRegion[3]/Boundary");
+        const MetadataConceptCandidate* first_vertex = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageRegionBoundary,
+            MetadataConceptRole::RegionBoundaryVertex,
+            "ImageRegion[3]/Boundary/Vertex[1]");
+        const MetadataConceptCandidate* incomplete = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageRegionBoundary,
+            MetadataConceptRole::RegionBoundary, "ImageRegion[4]/Boundary");
+        const MetadataConceptCandidate* incomplete_x = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ImageRegionBoundary,
+            MetadataConceptRole::RegionBoundaryX, "ImageRegion[4]/Boundary");
+
+        EXPECT_TRUE(descriptive.found);
+        EXPECT_FALSE(descriptive.conflict);
+        ASSERT_NE(rectangle, nullptr);
+        ASSERT_NE(circle, nullptr);
+        ASSERT_NE(polygon, nullptr);
+        ASSERT_NE(first_vertex, nullptr);
+        EXPECT_EQ(incomplete, nullptr);
+        ASSERT_NE(incomplete_x, nullptr);
+        EXPECT_EQ(incomplete_x->shape, MetadataQueryValueShape::Scalar);
+        EXPECT_TRUE(incomplete_x->has_numeric);
+        EXPECT_DOUBLE_EQ(incomplete_x->numeric[0], 8.0);
+
+        EXPECT_EQ(rectangle->shape, MetadataQueryValueShape::Rect);
+        EXPECT_EQ(rectangle->image_region_shape,
+                  MetadataImageRegionShape::Rectangle);
+        EXPECT_EQ(rectangle->image_region_coordinate_unit,
+                  MetadataImageRegionCoordinateUnit::Pixel);
+        EXPECT_TRUE(rectangle->has_rect);
+        EXPECT_DOUBLE_EQ(rectangle->rect[0], 120.0);
+        EXPECT_DOUBLE_EQ(rectangle->rect[1], 45.0);
+        EXPECT_DOUBLE_EQ(rectangle->rect[2], 640.0);
+        EXPECT_DOUBLE_EQ(rectangle->rect[3], 480.0);
+        EXPECT_EQ(rectangle->transfer_hint,
+                  MetadataConceptTransferHint::RequiresTargetImageSpec);
+
+        EXPECT_EQ(circle->shape, MetadataQueryValueShape::Vec3);
+        EXPECT_EQ(circle->image_region_shape, MetadataImageRegionShape::Circle);
+        EXPECT_EQ(circle->image_region_coordinate_unit,
+                  MetadataImageRegionCoordinateUnit::Relative);
+        ASSERT_TRUE(circle->has_values);
+        ASSERT_EQ(circle->values.size(), 3U);
+        EXPECT_DOUBLE_EQ(circle->values[2], 0.1);
+
+        EXPECT_EQ(polygon->shape, MetadataQueryValueShape::VectorSet);
+        EXPECT_EQ(polygon->image_region_shape,
+                  MetadataImageRegionShape::Polygon);
+        ASSERT_TRUE(polygon->has_values);
+        ASSERT_EQ(polygon->values.size(), 6U);
+        EXPECT_DOUBLE_EQ(polygon->values[0], 0.1);
+        EXPECT_DOUBLE_EQ(polygon->values[5], 0.9);
+        EXPECT_EQ(first_vertex->shape, MetadataQueryValueShape::Vec2);
+        ASSERT_TRUE(first_vertex->has_values);
+        EXPECT_DOUBLE_EQ(first_vertex->values[0], 0.1);
+        EXPECT_DOUBLE_EQ(first_vertex->values[1], 0.2);
+        EXPECT_STREQ(metadata_image_region_shape_name(
+                         MetadataImageRegionShape::Rectangle),
+                     "rectangle");
+        EXPECT_STREQ(metadata_image_region_coordinate_unit_name(
+                         MetadataImageRegionCoordinateUnit::Relative),
+                     "relative");
+        EXPECT_STREQ(metadata_concept_record_kind_name(
+                         MetadataConceptRecordKind::ImageRegionBoundary),
+                     "image_region_boundary");
+    }
+
     TEST(MetadataConcepts, InterpretsXmpMmLineageHistoryAndPantryRecords)
     {
         MetaStore store;
@@ -3339,9 +3473,19 @@ namespace {
         (void)add_xmp_text(&store, mm,
                            "Manifest[1]/stMfs:reference/stRef:filePath",
                            "/assets/linked.tif");
+        (void)add_xmp_text(&store, mm, "Manifest[1]/stMfs:linkForm",
+                           "ReferenceStream");
+        (void)add_xmp_text(&store, mm, "Manifest[1]/stMfs:placedXResolution",
+                           "300");
         (void)add_xmp_text(&store, mm,
                            "Versions[1]/stVer:event/stEvt:parameters",
                            "quality=final");
+        (void)add_xmp_text(&store, mm, "Versions[1]/stVer:comments",
+                           "Approved master");
+        (void)add_xmp_text(&store, mm, "Versions[1]/stVer:modifier", "Editor");
+        (void)add_xmp_text(&store, mm, "Versions[1]/stVer:modifyDate",
+                           "2026-07-21T10:30:00Z");
+        (void)add_xmp_text(&store, mm, "Versions[1]/stVer:version", "7");
         (void)add_xmp_text(&store, mm, "Pantry[1]/InstanceID",
                            "xmp.iid:pantry-1");
         (void)add_xmp_text(&store, mm, "Pantry[1]/dc:format", "image/tiff");
@@ -3376,6 +3520,32 @@ namespace {
         const MetadataConceptCandidate* version_event = find_record_role_scope(
             descriptive, MetadataConceptRecordKind::ResourceEvent,
             MetadataConceptRole::EventParameters, "Version[1]/Event");
+        const MetadataConceptCandidate* manifest_link = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ManifestItem,
+            MetadataConceptRole::LinkForm, "Manifest[1]");
+        const MetadataConceptCandidate* manifest_resolution
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::ManifestItem,
+                                     MetadataConceptRole::PlacedXResolution,
+                                     "Manifest[1]");
+        const MetadataConceptCandidate* version_comments
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::Version,
+                                     MetadataConceptRole::VersionComments,
+                                     "Version[1]");
+        const MetadataConceptCandidate* version_modifier
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::Version,
+                                     MetadataConceptRole::VersionModifier,
+                                     "Version[1]");
+        const MetadataConceptCandidate* version_date = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::Version,
+            MetadataConceptRole::LastModifiedDate, "Version[1]");
+        const MetadataConceptCandidate* version_identifier
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::Version,
+                                     MetadataConceptRole::VersionIdentifier,
+                                     "Version[1]");
 
         EXPECT_TRUE(descriptive.found);
         EXPECT_FALSE(descriptive.conflict);
@@ -3388,6 +3558,12 @@ namespace {
         ASSERT_NE(format, nullptr);
         ASSERT_NE(manifest, nullptr);
         ASSERT_NE(version_event, nullptr);
+        ASSERT_NE(manifest_link, nullptr);
+        ASSERT_NE(manifest_resolution, nullptr);
+        ASSERT_NE(version_comments, nullptr);
+        ASSERT_NE(version_modifier, nullptr);
+        ASSERT_NE(version_date, nullptr);
+        ASSERT_NE(version_identifier, nullptr);
         EXPECT_EQ(derived->semantic,
                   MetadataQuerySemanticKind::DocumentLineage);
         EXPECT_EQ(derived->transfer_hint,
@@ -3404,6 +3580,17 @@ namespace {
         EXPECT_EQ(manifest->text, "/assets/linked.tif");
         EXPECT_EQ(version_event->semantic,
                   MetadataQuerySemanticKind::DocumentHistory);
+        EXPECT_EQ(manifest_link->semantic,
+                  MetadataQuerySemanticKind::DocumentLineage);
+        EXPECT_EQ(manifest_link->transfer_hint,
+                  MetadataConceptTransferHint::SourceBound);
+        EXPECT_EQ(manifest_resolution->text, "300");
+        EXPECT_EQ(version_comments->semantic,
+                  MetadataQuerySemanticKind::DocumentHistory);
+        EXPECT_EQ(version_comments->text, "Approved master");
+        EXPECT_EQ(version_modifier->text, "Editor");
+        EXPECT_EQ(version_date->text, "2026-07-21T10:30:00Z");
+        EXPECT_EQ(version_identifier->text, "7");
         EXPECT_STREQ(metadata_concept_role_name(
                          MetadataConceptRole::SoftwareAgent),
                      "software_agent");

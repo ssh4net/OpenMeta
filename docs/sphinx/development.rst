@@ -67,8 +67,9 @@ model should stay compact:
        document-identity/lineage/history semantics,
        structured creator-contact/event/person/organization/product/artwork/
        rights/license/release/end-user/image-creator/image-supplier/image-asset/
-       controlled-vocabulary/registry/image-region/resource-reference/
-       resource-event/pantry records,
+       controlled-vocabulary/registry/image-region/image-region-boundary/
+       resource-reference/resource-event/manifest-item/version/pantry records,
+       explicit image-region shape and coordinate-unit contracts,
        and independent privacy/policy sensitivity,
        computational, thermal, stitch/panorama capture state, and
        vendor-private fields.

@@ -1215,6 +1215,7 @@ namespace {
         case MetadataConceptKind::Descriptive:
             switch (candidate->record_kind) {
             case MetadataConceptRecordKind::ImageRegion:
+            case MetadataConceptRecordKind::ImageRegionBoundary:
                 set_transfer_hint(
                     candidate,
                     MetadataConceptTransferHint::RequiresTargetImageSpec, true,
@@ -1225,6 +1226,8 @@ namespace {
             case MetadataConceptRecordKind::ResourceReference:
             case MetadataConceptRecordKind::ResourceEvent:
             case MetadataConceptRecordKind::PantryItem:
+            case MetadataConceptRecordKind::ManifestItem:
+            case MetadataConceptRecordKind::Version:
                 set_transfer_hint(candidate,
                                   MetadataConceptTransferHint::SourceBound,
                                   true, false);
@@ -1605,6 +1608,13 @@ namespace {
         }
         if (dst->shape == MetadataQueryValueShape::Unknown) {
             dst->shape = src.shape;
+        }
+        if (dst->image_region_shape == MetadataImageRegionShape::Unknown) {
+            dst->image_region_shape = src.image_region_shape;
+        }
+        if (dst->image_region_coordinate_unit
+            == MetadataImageRegionCoordinateUnit::Unknown) {
+            dst->image_region_coordinate_unit = src.image_region_coordinate_unit;
         }
         for (size_t i = 0U; i < src.source_entries.size(); ++i) {
             add_unique_entry(&dst->source_entries, src.source_entries[i]);
@@ -4007,11 +4017,14 @@ namespace {
         case MetadataConceptRecordKind::RegistryEntry:
             return MetadataQuerySemanticKind::Registry;
         case MetadataConceptRecordKind::ImageRegion:
+        case MetadataConceptRecordKind::ImageRegionBoundary:
             return MetadataQuerySemanticKind::ImageRegion;
         case MetadataConceptRecordKind::ResourceReference:
         case MetadataConceptRecordKind::PantryItem:
+        case MetadataConceptRecordKind::ManifestItem:
             return MetadataQuerySemanticKind::DocumentLineage;
         case MetadataConceptRecordKind::ResourceEvent:
+        case MetadataConceptRecordKind::Version:
             return MetadataQuerySemanticKind::DocumentHistory;
         case MetadataConceptRecordKind::None: break;
         }
@@ -4206,6 +4219,82 @@ namespace {
         if (descriptive_role_is_localized(role)) {
             assign_candidate_language(xmp_path, &candidate);
         }
+        append_candidate(out, candidate);
+    }
+
+    static bool
+    image_region_boundary_numeric_role(MetadataConceptRole role) noexcept
+    {
+        switch (role) {
+        case MetadataConceptRole::RegionBoundaryX:
+        case MetadataConceptRole::RegionBoundaryY:
+        case MetadataConceptRole::RegionBoundaryWidth:
+        case MetadataConceptRole::RegionBoundaryHeight:
+        case MetadataConceptRole::RegionBoundaryRadius:
+        case MetadataConceptRole::RegionBoundaryVertexX:
+        case MetadataConceptRole::RegionBoundaryVertexY: return true;
+        default: return false;
+        }
+    }
+
+    static bool image_region_boundary_numeric_value(const MetaStore& store,
+                                                    const MetaValue& value,
+                                                    double* out)
+    {
+        if (!out) {
+            return false;
+        }
+        if (value_to_numeric_array(store.arena(), value, out, 1U) == 1U) {
+            return std::isfinite(*out);
+        }
+        std::string text;
+        if (!value_to_text(store.arena(), value, &text) || text.empty()) {
+            return false;
+        }
+        const char* begin   = text.c_str();
+        char* end           = nullptr;
+        const double parsed = std::strtod(begin, &end);
+        if (end == begin || !std::isfinite(parsed)) {
+            return false;
+        }
+        while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+            ++end;
+        }
+        if (*end != '\0') {
+            return false;
+        }
+        *out = parsed;
+        return true;
+    }
+
+    static void append_image_region_boundary_field_candidate(
+        const MetaStore& store, EntryId id, MetadataConceptRole role,
+        std::string_view record_scope, std::string_view xmp_path,
+        MetadataConceptResolution* out)
+    {
+        if (!image_region_boundary_numeric_role(role)) {
+            append_descriptive_text_candidate(
+                store, id, role, MetadataConceptRecordKind::ImageRegionBoundary,
+                100U, {}, record_scope, xmp_path, out);
+            return;
+        }
+        double value = 0.0;
+        if (!image_region_boundary_numeric_value(store, store.entry(id).value,
+                                                 &value)) {
+            return;
+        }
+        MetadataConceptCandidate candidate
+            = make_entry_candidate(store, id, MetadataConceptKind::Descriptive,
+                                   role, MetadataQuerySemanticKind::ImageRegion,
+                                   MetadataQueryValueShape::Scalar, 100U);
+        candidate.record_kind  = MetadataConceptRecordKind::ImageRegionBoundary;
+        candidate.record_scope = record_scope;
+        candidate.has_numeric  = true;
+        candidate.numeric_count = 1U;
+        candidate.numeric[0]    = value;
+        candidate.value_key     = numeric_key(value);
+        (void)value_to_text(store.arena(), store.entry(id).value,
+                            &candidate.text);
         append_candidate(out, candidate);
     }
 
@@ -4520,6 +4609,34 @@ namespace {
                                                      record_scope)) {
             return false;
         }
+        if (ascii_contains_ci(path, "RegionBoundary")) {
+            record_scope->append("/Boundary");
+            *record_kind = MetadataConceptRecordKind::ImageRegionBoundary;
+            if (ascii_contains_ci(path, "rbVertices")) {
+                append_nested_record_scope(path, "rbVertices", "Vertex",
+                                           record_scope);
+                if (ascii_equal_ci(leaf, "rbX")) {
+                    *role = MetadataConceptRole::RegionBoundaryVertexX;
+                } else if (ascii_equal_ci(leaf, "rbY")) {
+                    *role = MetadataConceptRole::RegionBoundaryVertexY;
+                }
+            } else if (ascii_equal_ci(leaf, "rbShape")) {
+                *role = MetadataConceptRole::RegionBoundaryShape;
+            } else if (ascii_equal_ci(leaf, "rbUnit")) {
+                *role = MetadataConceptRole::RegionBoundaryUnit;
+            } else if (ascii_equal_ci(leaf, "rbX")) {
+                *role = MetadataConceptRole::RegionBoundaryX;
+            } else if (ascii_equal_ci(leaf, "rbY")) {
+                *role = MetadataConceptRole::RegionBoundaryY;
+            } else if (ascii_equal_ci(leaf, "rbW")) {
+                *role = MetadataConceptRole::RegionBoundaryWidth;
+            } else if (ascii_equal_ci(leaf, "rbH")) {
+                *role = MetadataConceptRole::RegionBoundaryHeight;
+            } else if (ascii_equal_ci(leaf, "rbRx")) {
+                *role = MetadataConceptRole::RegionBoundaryRadius;
+            }
+            return *role != MetadataConceptRole::Primary;
+        }
         *record_kind = MetadataConceptRecordKind::ImageRegion;
         if (ascii_contains_ci(path, "rCtype")) {
             append_nested_record_scope(path, "rCtype", "ContentType",
@@ -4749,11 +4866,23 @@ namespace {
             return map_xmp_mm_resource_reference_role(leaf, role);
         }
         if (descriptive_xmp_normalized_record_scope(path, "Manifest",
-                                                    "Manifest", record_scope)
-            && ascii_contains_ci(path, "reference/")) {
-            record_scope->append("/Reference");
-            *record_kind = MetadataConceptRecordKind::ResourceReference;
-            return map_xmp_mm_resource_reference_role(leaf, role);
+                                                    "Manifest", record_scope)) {
+            if (ascii_contains_ci(path, "reference/")) {
+                record_scope->append("/Reference");
+                *record_kind = MetadataConceptRecordKind::ResourceReference;
+                return map_xmp_mm_resource_reference_role(leaf, role);
+            }
+            *record_kind = MetadataConceptRecordKind::ManifestItem;
+            if (ascii_equal_ci(leaf, "linkForm")) {
+                *role = MetadataConceptRole::LinkForm;
+            } else if (ascii_equal_ci(leaf, "placedXResolution")) {
+                *role = MetadataConceptRole::PlacedXResolution;
+            } else if (ascii_equal_ci(leaf, "placedYResolution")) {
+                *role = MetadataConceptRole::PlacedYResolution;
+            } else if (ascii_equal_ci(leaf, "placedResolutionUnit")) {
+                *role = MetadataConceptRole::PlacedResolutionUnit;
+            }
+            return *role != MetadataConceptRole::Primary;
         }
         if (descriptive_xmp_normalized_record_scope(path, "History",
                                                     "HistoryEvent",
@@ -4762,11 +4891,23 @@ namespace {
             return map_xmp_mm_resource_event_role(leaf, role);
         }
         if (descriptive_xmp_normalized_record_scope(path, "Versions", "Version",
-                                                    record_scope)
-            && ascii_contains_ci(path, "event/")) {
-            record_scope->append("/Event");
-            *record_kind = MetadataConceptRecordKind::ResourceEvent;
-            return map_xmp_mm_resource_event_role(leaf, role);
+                                                    record_scope)) {
+            if (ascii_contains_ci(path, "event/")) {
+                record_scope->append("/Event");
+                *record_kind = MetadataConceptRecordKind::ResourceEvent;
+                return map_xmp_mm_resource_event_role(leaf, role);
+            }
+            *record_kind = MetadataConceptRecordKind::Version;
+            if (ascii_equal_ci(leaf, "comments")) {
+                *role = MetadataConceptRole::VersionComments;
+            } else if (ascii_equal_ci(leaf, "modifier")) {
+                *role = MetadataConceptRole::VersionModifier;
+            } else if (ascii_equal_ci(leaf, "modifyDate")) {
+                *role = MetadataConceptRole::LastModifiedDate;
+            } else if (ascii_equal_ci(leaf, "version")) {
+                *role = MetadataConceptRole::VersionIdentifier;
+            }
+            return *role != MetadataConceptRole::Primary;
         }
         if (descriptive_xmp_normalized_record_scope(path, "Pantry",
                                                     "PantryItem",
@@ -5152,9 +5293,325 @@ namespace {
         if (role == MetadataConceptRole::Primary) {
             return;
         }
+        if (record_kind == MetadataConceptRecordKind::ImageRegionBoundary) {
+            append_image_region_boundary_field_candidate(store, id, role,
+                                                         record_scope, path,
+                                                         out);
+            return;
+        }
         append_descriptive_text_candidate(store, id, role, record_kind,
                                           priority, location_scope,
                                           record_scope, path, out);
+    }
+
+    struct ImageRegionBoundaryVertex final {
+        std::string scope;
+        EntryId x_entry = kInvalidEntryId;
+        EntryId y_entry = kInvalidEntryId;
+        double x        = 0.0;
+        double y        = 0.0;
+    };
+
+    static const MetadataConceptCandidate* find_scoped_boundary_candidate(
+        const MetadataConceptResolution& resolution, size_t candidate_count,
+        MetadataConceptRole role, std::string_view record_scope) noexcept
+    {
+        const size_t count = std::min(candidate_count,
+                                      resolution.candidates.size());
+        for (size_t i = 0U; i < count; ++i) {
+            const MetadataConceptCandidate& candidate = resolution.candidates[i];
+            if (candidate.record_kind
+                    == MetadataConceptRecordKind::ImageRegionBoundary
+                && candidate.role == role
+                && candidate.record_scope == record_scope) {
+                return &candidate;
+            }
+        }
+        return nullptr;
+    }
+
+    static MetadataImageRegionShape image_region_shape_from_candidate(
+        const MetadataConceptCandidate* candidate) noexcept
+    {
+        if (!candidate) {
+            return MetadataImageRegionShape::Unknown;
+        }
+        if (candidate->value_key == "rectangle") {
+            return MetadataImageRegionShape::Rectangle;
+        }
+        if (candidate->value_key == "circle") {
+            return MetadataImageRegionShape::Circle;
+        }
+        if (candidate->value_key == "polygon") {
+            return MetadataImageRegionShape::Polygon;
+        }
+        return MetadataImageRegionShape::Unknown;
+    }
+
+    static MetadataImageRegionCoordinateUnit image_region_unit_from_candidate(
+        const MetadataConceptCandidate* candidate) noexcept
+    {
+        if (!candidate) {
+            return MetadataImageRegionCoordinateUnit::Unknown;
+        }
+        if (candidate->value_key == "pixel") {
+            return MetadataImageRegionCoordinateUnit::Pixel;
+        }
+        if (candidate->value_key == "relative") {
+            return MetadataImageRegionCoordinateUnit::Relative;
+        }
+        return MetadataImageRegionCoordinateUnit::Unknown;
+    }
+
+    static void add_candidate_sources(MetadataConceptCandidate* destination,
+                                      const MetadataConceptCandidate* source)
+    {
+        if (!destination || !source) {
+            return;
+        }
+        for (size_t i = 0U; i < source->source_entries.size(); ++i) {
+            add_unique_entry(&destination->source_entries,
+                             source->source_entries[i]);
+        }
+    }
+
+    static bool scope_starts_with(std::string_view scope,
+                                  std::string_view prefix) noexcept
+    {
+        return scope.size() >= prefix.size()
+               && scope.substr(0U, prefix.size()) == prefix;
+    }
+
+    static void
+    collect_boundary_vertices(const MetadataConceptResolution& resolution,
+                              size_t candidate_count,
+                              std::string_view boundary_scope,
+                              std::vector<ImageRegionBoundaryVertex>* vertices)
+    {
+        if (!vertices) {
+            return;
+        }
+        vertices->clear();
+        std::string vertex_prefix(boundary_scope);
+        vertex_prefix.append("/Vertex[");
+        const size_t count = std::min(candidate_count,
+                                      resolution.candidates.size());
+        for (size_t i = 0U; i < count; ++i) {
+            const MetadataConceptCandidate& x = resolution.candidates[i];
+            if (x.role != MetadataConceptRole::RegionBoundaryVertexX
+                || !x.has_numeric || x.numeric_count != 1U
+                || !scope_starts_with(x.record_scope, vertex_prefix)) {
+                continue;
+            }
+            const MetadataConceptCandidate* y = find_scoped_boundary_candidate(
+                resolution, candidate_count,
+                MetadataConceptRole::RegionBoundaryVertexY, x.record_scope);
+            if (!y || !y->has_numeric || y->numeric_count != 1U) {
+                continue;
+            }
+            ImageRegionBoundaryVertex vertex;
+            vertex.scope   = x.record_scope;
+            vertex.x_entry = x.entry_id;
+            vertex.y_entry = y->entry_id;
+            vertex.x       = x.numeric[0];
+            vertex.y       = y->numeric[0];
+            vertices->push_back(vertex);
+        }
+    }
+
+    static std::string
+    image_region_geometry_value_key(const MetadataConceptCandidate& candidate)
+    {
+        std::string out(candidate.text);
+        out.push_back(':');
+        if (candidate.has_rect) {
+            out.append(geometry_key(candidate));
+        } else if (candidate.has_values) {
+            out.append(values_key(candidate.values));
+        }
+        return out;
+    }
+
+    static void append_image_region_boundary_geometry(
+        const MetaStore& store, std::string_view boundary_scope,
+        size_t candidate_count, MetadataConceptResolution* out)
+    {
+        if (!out) {
+            return;
+        }
+        const MetadataConceptCandidate* shape_candidate
+            = find_scoped_boundary_candidate(
+                *out, candidate_count, MetadataConceptRole::RegionBoundaryShape,
+                boundary_scope);
+        const MetadataConceptCandidate* unit_candidate
+            = find_scoped_boundary_candidate(
+                *out, candidate_count, MetadataConceptRole::RegionBoundaryUnit,
+                boundary_scope);
+        const MetadataImageRegionShape region_shape
+            = image_region_shape_from_candidate(shape_candidate);
+        const MetadataImageRegionCoordinateUnit coordinate_unit
+            = image_region_unit_from_candidate(unit_candidate);
+        if (region_shape == MetadataImageRegionShape::Unknown
+            || coordinate_unit == MetadataImageRegionCoordinateUnit::Unknown) {
+            return;
+        }
+        const MetadataConceptCandidate shape_source = *shape_candidate;
+        const MetadataConceptCandidate unit_source  = *unit_candidate;
+
+        MetadataConceptCandidate geometry
+            = make_entry_candidate(store, shape_source.entry_id,
+                                   MetadataConceptKind::Descriptive,
+                                   MetadataConceptRole::RegionBoundary,
+                                   MetadataQuerySemanticKind::ImageRegion,
+                                   MetadataQueryValueShape::Unknown, 100U);
+        geometry.record_kind  = MetadataConceptRecordKind::ImageRegionBoundary;
+        geometry.record_scope = boundary_scope;
+        geometry.image_region_shape           = region_shape;
+        geometry.image_region_coordinate_unit = coordinate_unit;
+        geometry.text = metadata_image_region_shape_name(region_shape);
+        geometry.text.push_back(':');
+        geometry.text.append(
+            metadata_image_region_coordinate_unit_name(coordinate_unit));
+        add_candidate_sources(&geometry, &unit_source);
+
+        if (region_shape == MetadataImageRegionShape::Rectangle) {
+            const MetadataConceptCandidate* x = find_scoped_boundary_candidate(
+                *out, candidate_count, MetadataConceptRole::RegionBoundaryX,
+                boundary_scope);
+            const MetadataConceptCandidate* y = find_scoped_boundary_candidate(
+                *out, candidate_count, MetadataConceptRole::RegionBoundaryY,
+                boundary_scope);
+            const MetadataConceptCandidate* width
+                = find_scoped_boundary_candidate(
+                    *out, candidate_count,
+                    MetadataConceptRole::RegionBoundaryWidth, boundary_scope);
+            const MetadataConceptCandidate* height
+                = find_scoped_boundary_candidate(
+                    *out, candidate_count,
+                    MetadataConceptRole::RegionBoundaryHeight, boundary_scope);
+            if (!x || !y || !width || !height || !x->has_numeric
+                || !y->has_numeric || !width->has_numeric
+                || !height->has_numeric || width->numeric[0] < 0.0
+                || height->numeric[0] < 0.0) {
+                return;
+            }
+            const double values[] = { x->numeric[0], y->numeric[0],
+                                      width->numeric[0], height->numeric[0] };
+            geometry.shape        = MetadataQueryValueShape::Rect;
+            geometry.has_origin   = true;
+            geometry.origin[0]    = values[0];
+            geometry.origin[1]    = values[1];
+            geometry.has_size     = true;
+            geometry.size[0]      = values[2];
+            geometry.size[1]      = values[3];
+            geometry.has_rect     = true;
+            for (uint8_t i = 0U; i < 4U; ++i) {
+                geometry.rect[i] = values[i];
+            }
+            fill_values_candidate(&geometry,
+                                  std::vector<double>(values, values + 4U));
+            add_candidate_sources(&geometry, x);
+            add_candidate_sources(&geometry, y);
+            add_candidate_sources(&geometry, width);
+            add_candidate_sources(&geometry, height);
+        } else if (region_shape == MetadataImageRegionShape::Circle) {
+            const MetadataConceptCandidate* x = find_scoped_boundary_candidate(
+                *out, candidate_count, MetadataConceptRole::RegionBoundaryX,
+                boundary_scope);
+            const MetadataConceptCandidate* y = find_scoped_boundary_candidate(
+                *out, candidate_count, MetadataConceptRole::RegionBoundaryY,
+                boundary_scope);
+            const MetadataConceptCandidate* radius
+                = find_scoped_boundary_candidate(
+                    *out, candidate_count,
+                    MetadataConceptRole::RegionBoundaryRadius, boundary_scope);
+            if (!x || !y || !radius || !x->has_numeric || !y->has_numeric
+                || !radius->has_numeric || radius->numeric[0] < 0.0) {
+                return;
+            }
+            const double values[] = { x->numeric[0], y->numeric[0],
+                                      radius->numeric[0] };
+            geometry.shape        = MetadataQueryValueShape::Vec3;
+            geometry.has_origin   = true;
+            geometry.origin[0]    = values[0];
+            geometry.origin[1]    = values[1];
+            fill_values_candidate(&geometry,
+                                  std::vector<double>(values, values + 3U));
+            add_candidate_sources(&geometry, x);
+            add_candidate_sources(&geometry, y);
+            add_candidate_sources(&geometry, radius);
+        } else {
+            std::vector<ImageRegionBoundaryVertex> vertices;
+            collect_boundary_vertices(*out, candidate_count, boundary_scope,
+                                      &vertices);
+            if (vertices.size() < 3U) {
+                return;
+            }
+            std::vector<double> values;
+            values.reserve(vertices.size() * 2U);
+            for (size_t i = 0U; i < vertices.size(); ++i) {
+                values.push_back(vertices[i].x);
+                values.push_back(vertices[i].y);
+                MetadataConceptCandidate vertex = make_entry_candidate(
+                    store, vertices[i].x_entry,
+                    MetadataConceptKind::Descriptive,
+                    MetadataConceptRole::RegionBoundaryVertex,
+                    MetadataQuerySemanticKind::ImageRegion,
+                    MetadataQueryValueShape::Vec2, 100U);
+                vertex.record_kind
+                    = MetadataConceptRecordKind::ImageRegionBoundary;
+                vertex.record_scope                 = vertices[i].scope;
+                vertex.image_region_shape           = region_shape;
+                vertex.image_region_coordinate_unit = coordinate_unit;
+                const double point[] = { vertices[i].x, vertices[i].y };
+                fill_values_candidate(&vertex,
+                                      std::vector<double>(point, point + 2U));
+                add_candidate_sources(&vertex, &shape_source);
+                add_candidate_sources(&vertex, &unit_source);
+                add_unique_entry(&vertex.source_entries, vertices[i].y_entry);
+                vertex.value_key = values_key(vertex.values);
+                append_candidate(out, vertex);
+                add_unique_entry(&geometry.source_entries, vertices[i].x_entry);
+                add_unique_entry(&geometry.source_entries, vertices[i].y_entry);
+            }
+            geometry.shape = MetadataQueryValueShape::VectorSet;
+            fill_values_candidate(&geometry, values);
+        }
+        geometry.value_key = image_region_geometry_value_key(geometry);
+        append_candidate(out, geometry);
+    }
+
+    static void
+    append_image_region_boundary_geometries(const MetaStore& store,
+                                            MetadataConceptResolution* out)
+    {
+        if (!out) {
+            return;
+        }
+        const size_t candidate_count = out->candidates.size();
+        std::vector<std::string> boundary_scopes;
+        for (size_t i = 0U; i < candidate_count; ++i) {
+            const MetadataConceptCandidate& candidate = out->candidates[i];
+            if (candidate.role != MetadataConceptRole::RegionBoundaryShape
+                || candidate.record_kind
+                       != MetadataConceptRecordKind::ImageRegionBoundary) {
+                continue;
+            }
+            bool duplicate = false;
+            for (size_t j = 0U; j < boundary_scopes.size(); ++j) {
+                if (boundary_scopes[j] == candidate.record_scope) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) {
+                boundary_scopes.push_back(candidate.record_scope);
+            }
+        }
+        for (size_t i = 0U; i < boundary_scopes.size(); ++i) {
+            append_image_region_boundary_geometry(store, boundary_scopes[i],
+                                                  candidate_count, out);
+        }
     }
 
     static void append_descriptive_candidates(const MetaStore& store,
@@ -5179,6 +5636,7 @@ namespace {
             default: break;
             }
         }
+        append_image_region_boundary_geometries(store, out);
     }
 
     static void append_container_graph_candidates(const MetaStore& store,
@@ -5999,6 +6457,19 @@ namespace {
             MetadataConceptRole::EventWhen,
             MetadataConceptRole::ChangedParts,
             MetadataConceptRole::Format,
+            MetadataConceptRole::RegionBoundary,
+            MetadataConceptRole::RegionBoundaryShape,
+            MetadataConceptRole::RegionBoundaryUnit,
+            MetadataConceptRole::RegionBoundaryX,
+            MetadataConceptRole::RegionBoundaryY,
+            MetadataConceptRole::RegionBoundaryWidth,
+            MetadataConceptRole::RegionBoundaryHeight,
+            MetadataConceptRole::RegionBoundaryRadius,
+            MetadataConceptRole::RegionBoundaryVertexX,
+            MetadataConceptRole::RegionBoundaryVertexY,
+            MetadataConceptRole::RegionBoundaryVertex,
+            MetadataConceptRole::VersionComments,
+            MetadataConceptRole::VersionModifier,
             MetadataConceptRole::Timestamp,
             MetadataConceptRole::Crop,
             MetadataConceptRole::ActiveArea,
@@ -6599,6 +7070,26 @@ metadata_concept_role_name(MetadataConceptRole role) noexcept
     case MetadataConceptRole::EventWhen: return "event_when";
     case MetadataConceptRole::ChangedParts: return "changed_parts";
     case MetadataConceptRole::Format: return "format";
+    case MetadataConceptRole::RegionBoundary: return "region_boundary";
+    case MetadataConceptRole::RegionBoundaryShape:
+        return "region_boundary_shape";
+    case MetadataConceptRole::RegionBoundaryUnit: return "region_boundary_unit";
+    case MetadataConceptRole::RegionBoundaryX: return "region_boundary_x";
+    case MetadataConceptRole::RegionBoundaryY: return "region_boundary_y";
+    case MetadataConceptRole::RegionBoundaryWidth:
+        return "region_boundary_width";
+    case MetadataConceptRole::RegionBoundaryHeight:
+        return "region_boundary_height";
+    case MetadataConceptRole::RegionBoundaryRadius:
+        return "region_boundary_radius";
+    case MetadataConceptRole::RegionBoundaryVertexX:
+        return "region_boundary_vertex_x";
+    case MetadataConceptRole::RegionBoundaryVertexY:
+        return "region_boundary_vertex_y";
+    case MetadataConceptRole::RegionBoundaryVertex:
+        return "region_boundary_vertex";
+    case MetadataConceptRole::VersionComments: return "version_comments";
+    case MetadataConceptRole::VersionModifier: return "version_modifier";
     }
     return "unknown";
 }
@@ -6633,8 +7124,36 @@ metadata_concept_record_kind_name(MetadataConceptRecordKind kind) noexcept
         return "resource_reference";
     case MetadataConceptRecordKind::ResourceEvent: return "resource_event";
     case MetadataConceptRecordKind::PantryItem: return "pantry_item";
+    case MetadataConceptRecordKind::ImageRegionBoundary:
+        return "image_region_boundary";
+    case MetadataConceptRecordKind::ManifestItem: return "manifest_item";
+    case MetadataConceptRecordKind::Version: return "version";
     }
     return "none";
+}
+
+const char*
+metadata_image_region_shape_name(MetadataImageRegionShape shape) noexcept
+{
+    switch (shape) {
+    case MetadataImageRegionShape::Unknown: return "unknown";
+    case MetadataImageRegionShape::Rectangle: return "rectangle";
+    case MetadataImageRegionShape::Circle: return "circle";
+    case MetadataImageRegionShape::Polygon: return "polygon";
+    }
+    return "unknown";
+}
+
+const char*
+metadata_image_region_coordinate_unit_name(
+    MetadataImageRegionCoordinateUnit unit) noexcept
+{
+    switch (unit) {
+    case MetadataImageRegionCoordinateUnit::Unknown: return "unknown";
+    case MetadataImageRegionCoordinateUnit::Pixel: return "pixel";
+    case MetadataImageRegionCoordinateUnit::Relative: return "relative";
+    }
+    return "unknown";
 }
 
 const char*
