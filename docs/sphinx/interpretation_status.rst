@@ -91,10 +91,13 @@ Coverage matrix
        rights/license, credit/source, and IPTC date/time promoted into
        cross-family created-date candidates are
        queryable with source-entry provenance. The ``Descriptive`` concept
-       also reconciles legacy IPTC/Photoshop urgency, category,
-       supplemental-category, instructions, creator-title,
-       transmission-reference, and caption-writer pairs; interprets IPTC Core
-       accessibility/taxonomy fields, IPTC Extension controlled-vocabulary,
+       also reconciles equivalent legacy IPTC/Photoshop fields; preserves
+       non-equivalent object-type, object-attribute, and subject references;
+       scopes editorial status/update/action/cycle/language/fixture fields,
+       content locations, prior-envelope references, originating software,
+       and editorial contacts; and normalizes editorial release/expiration
+       date-time pairs. It also interprets IPTC Core accessibility/taxonomy
+       fields, IPTC Extension controlled-vocabulary,
        registry, image-region entity records, and rectangle/circle/polygon
        boundary geometry with explicit pixel/relative units, XMP document
        identity, and XMP Media Management resource-reference, ingredient,
@@ -105,8 +108,8 @@ Coverage matrix
        license policy, and model/property releases with record kind, record
        scope, language, transfer hint, and independent sensitivity.
      - High, about 98-99%.
-     - Non-equivalent legacy workflow fields and deliberately unmodeled
-       arbitrary pantry payloads remain bounded.
+     - Legacy IPTC technical image/audio/preview descriptors and deliberately
+       unmodeled arbitrary pantry payloads remain bounded.
    * - Orientation
      - EXIF/TIFF orientation query, LibRaw flip mapping, and generic
        orientation helpers for index, rotation degrees, mirrored state,
@@ -400,8 +403,8 @@ Next interpretation priorities
    independently authored conformance files as they become available.
 2. Broaden transfer diagnostic policy coverage now that stable message tokens
    and localizable argument tokens are available for GUI workflows.
-3. Interpret remaining non-equivalent legacy workflow fields and add pantry
-   payload semantics only where a validated, bounded schema exists.
+3. Interpret legacy IPTC technical image/audio/preview descriptors and add
+   pantry payload semantics only where a validated, bounded schema exists.
 4. Expand the remaining unambiguous MakerNote long tail: encrypted/custom
    settings, per-model firmware formulas outside currently supported
    formatter contexts, remaining live-vendor scalar/string-coded fields, and

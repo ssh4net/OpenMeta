@@ -516,6 +516,42 @@ TEST(MetadataQuery, ClassifiesEditorialTaxonomyIdentityAndPlusTail)
                  "document_identity");
 }
 
+TEST(MetadataQuery, ClassifiesLegacyIptcWorkflowTail)
+{
+    MetaStore store;
+    const EntryId object_type = add_iptc_text(&store, 2U, 3U, "01:news");
+    const EntryId edit_status = add_iptc_text(&store, 2U, 7U, "edited");
+    const EntryId prior_service = add_iptc_text(&store, 2U, 45U, "NEWS");
+    const EntryId program = add_iptc_text(&store, 2U, 65U, "PhotoDesk");
+    const EntryId contact
+        = add_iptc_text(&store, 2U, 118U, "desk@example.test");
+    store.finalize();
+
+    const MetadataQueryResult result = query_descriptive_metadata(store);
+    const MetadataQueryMatch* object_type_match
+        = find_match_for_entry(result, object_type);
+    const MetadataQueryMatch* edit_status_match
+        = find_match_for_entry(result, edit_status);
+    const MetadataQueryMatch* prior_service_match
+        = find_match_for_entry(result, prior_service);
+    const MetadataQueryMatch* program_match = find_match_for_entry(result,
+                                                                   program);
+    const MetadataQueryMatch* contact_match = find_match_for_entry(result,
+                                                                   contact);
+
+    ASSERT_NE(object_type_match, nullptr);
+    ASSERT_NE(edit_status_match, nullptr);
+    ASSERT_NE(prior_service_match, nullptr);
+    ASSERT_NE(program_match, nullptr);
+    ASSERT_NE(contact_match, nullptr);
+    EXPECT_EQ(object_type_match->semantic, MetadataQuerySemanticKind::Taxonomy);
+    EXPECT_EQ(edit_status_match->semantic, MetadataQuerySemanticKind::Editorial);
+    EXPECT_EQ(prior_service_match->semantic,
+              MetadataQuerySemanticKind::DocumentLineage);
+    EXPECT_EQ(program_match->semantic, MetadataQuerySemanticKind::Source);
+    EXPECT_EQ(contact_match->semantic, MetadataQuerySemanticKind::Contact);
+}
+
 TEST(MetadataQuery, ClassifiesRightsLicenseCreditAndSourceEntries)
 {
     MetaStore store;

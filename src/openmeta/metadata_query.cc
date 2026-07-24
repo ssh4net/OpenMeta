@@ -1589,13 +1589,32 @@ namespace {
             return MetadataQuerySemanticKind::Unknown;
         }
         switch (dataset) {
+        case 3U:
+        case 4U:
+        case 12U: return MetadataQuerySemanticKind::Taxonomy;
+        case 7U:
+        case 8U:
         case 10U:
         case 15U:
         case 20U:
+        case 22U:
+        case 30U:
+        case 35U:
+        case 37U:
+        case 38U:
         case 40U:
+        case 42U:
+        case 75U:
+        case 135U:
         case 103U: return MetadataQuerySemanticKind::Editorial;
+        case 45U:
+        case 47U:
+        case 50U: return MetadataQuerySemanticKind::DocumentLineage;
+        case 65U:
+        case 70U: return MetadataQuerySemanticKind::Source;
         case 85U:
         case 122U: return MetadataQuerySemanticKind::Creator;
+        case 118U: return MetadataQuerySemanticKind::Contact;
         case 110U: return MetadataQuerySemanticKind::Credit;
         case 115U: return MetadataQuerySemanticKind::Source;
         case 116U: return MetadataQuerySemanticKind::Rights;

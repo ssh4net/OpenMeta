@@ -424,20 +424,26 @@ Structured descriptive record kinds cover creator contacts, events, people,
 organizations, products, artwork/objects, rights expressions, rights holders,
 licensors, licensees, licenses, releases, end users, image creators, image
 suppliers, image assets, controlled-vocabulary terms, registry entries, image
-regions, resource references, resource events, and pantry items. Sensitivity
+regions, resource references, resource events, manifest items, versions,
+editorial workflows, source software, editorial contacts, and pantry items.
+Sensitivity
 is mirrored in transfer diagnostics and thin Python dictionaries. Hosts must
 not interpret a ``safe`` transfer
 hint as approval to publish personal-contact,
 person-identity, location, or legal-rights metadata.
 
 Exact descriptive query semantics also cover legacy editorial workflow pairs,
-IPTC Core accessibility and taxonomy fields, IPTC Extension registry and
+non-equivalent IPTC taxonomy and workflow fields, scoped prior-envelope
+references and originating software, IPTC Core accessibility and taxonomy
+fields, IPTC Extension registry and
 image-region entities, resource/document identity and lineage/history, and
 remaining bounded PLUS party, delivered-asset, and license-policy fields.
 Equivalent scalar pairs participate in preference/conflict handling; taxonomy,
 resource-identifier, and license-document collections remain additive.
-Document identity/lineage/history and registry records are source-bound for
-rendered transfer; image-region records require target image specifications.
+Document identity/lineage/history, registry, prior-envelope-reference, and
+source-software records are source-bound for rendered transfer; image-region
+records require target image specifications. Editorial contacts carry
+personal-contact sensitivity independently of their technical transfer hint.
 
 The bounded BMFF tiled-image field contract covers ``tilC`` version 0 tile
 dimensions, up to eight extra dimensions, ``dref``/``deti`` mapping, internal

@@ -242,6 +242,21 @@ enum class MetadataConceptRole : uint8_t {
     RegionBoundaryVertex,
     VersionComments,
     VersionModifier,
+    ObjectTypeReference,
+    ObjectAttributeReference,
+    EditStatus,
+    EditorialUpdate,
+    SubjectReference,
+    FixtureIdentifier,
+    EditorialReleaseDate,
+    EditorialExpirationDate,
+    ActionAdvised,
+    ReferenceService,
+    ReferenceDate,
+    ReferenceNumber,
+    ObjectCycle,
+    LanguageIdentifier,
+    Contact,
 };
 
 enum class MetadataConceptRecordKind : uint8_t {
@@ -271,6 +286,9 @@ enum class MetadataConceptRecordKind : uint8_t {
     ImageRegionBoundary,
     ManifestItem,
     Version,
+    EditorialWorkflow,
+    SourceSoftware,
+    EditorialContact,
 };
 
 enum class MetadataImageRegionShape : uint8_t {

@@ -6596,7 +6596,27 @@ NB_MODULE(_openmeta, m)
         .value("RegionBoundaryVertex",
                MetadataConceptRole::RegionBoundaryVertex)
         .value("VersionComments", MetadataConceptRole::VersionComments)
-        .value("VersionModifier", MetadataConceptRole::VersionModifier);
+        .value("VersionModifier", MetadataConceptRole::VersionModifier)
+        .value("ObjectTypeReference",
+               MetadataConceptRole::ObjectTypeReference)
+        .value("ObjectAttributeReference",
+               MetadataConceptRole::ObjectAttributeReference)
+        .value("EditStatus", MetadataConceptRole::EditStatus)
+        .value("EditorialUpdate", MetadataConceptRole::EditorialUpdate)
+        .value("SubjectReference", MetadataConceptRole::SubjectReference)
+        .value("FixtureIdentifier", MetadataConceptRole::FixtureIdentifier)
+        .value("EditorialReleaseDate",
+               MetadataConceptRole::EditorialReleaseDate)
+        .value("EditorialExpirationDate",
+               MetadataConceptRole::EditorialExpirationDate)
+        .value("ActionAdvised", MetadataConceptRole::ActionAdvised)
+        .value("ReferenceService", MetadataConceptRole::ReferenceService)
+        .value("ReferenceDate", MetadataConceptRole::ReferenceDate)
+        .value("ReferenceNumber", MetadataConceptRole::ReferenceNumber)
+        .value("ObjectCycle", MetadataConceptRole::ObjectCycle)
+        .value("LanguageIdentifier",
+               MetadataConceptRole::LanguageIdentifier)
+        .value("Contact", MetadataConceptRole::Contact);
 
     nb::enum_<MetadataConceptRecordKind>(m, "MetadataConceptRecordKind")
         .value("None_", MetadataConceptRecordKind::None)
@@ -6627,7 +6647,12 @@ NB_MODULE(_openmeta, m)
         .value("ImageRegionBoundary",
                MetadataConceptRecordKind::ImageRegionBoundary)
         .value("ManifestItem", MetadataConceptRecordKind::ManifestItem)
-        .value("Version", MetadataConceptRecordKind::Version);
+        .value("Version", MetadataConceptRecordKind::Version)
+        .value("EditorialWorkflow",
+               MetadataConceptRecordKind::EditorialWorkflow)
+        .value("SourceSoftware", MetadataConceptRecordKind::SourceSoftware)
+        .value("EditorialContact",
+               MetadataConceptRecordKind::EditorialContact);
 
     nb::enum_<MetadataImageRegionShape>(m, "MetadataImageRegionShape")
         .value("Unknown", MetadataImageRegionShape::Unknown)

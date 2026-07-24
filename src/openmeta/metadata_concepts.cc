@@ -74,12 +74,31 @@ namespace {
     static constexpr uint16_t kIptcTimeCreatedDataset           = 60U;
     static constexpr uint16_t kIptcDigitalCreationDateDataset   = 62U;
     static constexpr uint16_t kIptcDigitalCreationTimeDataset   = 63U;
+    static constexpr uint16_t kIptcObjectTypeReferenceDataset   = 3U;
+    static constexpr uint16_t kIptcObjectAttributeReferenceDataset = 4U;
     static constexpr uint16_t kIptcObjectNameDataset            = 5U;
+    static constexpr uint16_t kIptcEditStatusDataset            = 7U;
+    static constexpr uint16_t kIptcEditorialUpdateDataset       = 8U;
     static constexpr uint16_t kIptcUrgencyDataset               = 10U;
+    static constexpr uint16_t kIptcSubjectReferenceDataset      = 12U;
     static constexpr uint16_t kIptcCategoryDataset              = 15U;
     static constexpr uint16_t kIptcSupplementalCategoryDataset  = 20U;
+    static constexpr uint16_t kIptcFixtureIdentifierDataset     = 22U;
     static constexpr uint16_t kIptcKeywordsDataset              = 25U;
+    static constexpr uint16_t kIptcContentLocationCodeDataset   = 26U;
+    static constexpr uint16_t kIptcContentLocationNameDataset   = 27U;
+    static constexpr uint16_t kIptcReleaseDateDataset           = 30U;
+    static constexpr uint16_t kIptcReleaseTimeDataset           = 35U;
+    static constexpr uint16_t kIptcExpirationDateDataset        = 37U;
+    static constexpr uint16_t kIptcExpirationTimeDataset        = 38U;
     static constexpr uint16_t kIptcInstructionsDataset          = 40U;
+    static constexpr uint16_t kIptcActionAdvisedDataset         = 42U;
+    static constexpr uint16_t kIptcReferenceServiceDataset      = 45U;
+    static constexpr uint16_t kIptcReferenceDateDataset         = 47U;
+    static constexpr uint16_t kIptcReferenceNumberDataset       = 50U;
+    static constexpr uint16_t kIptcOriginatingProgramDataset    = 65U;
+    static constexpr uint16_t kIptcProgramVersionDataset        = 70U;
+    static constexpr uint16_t kIptcObjectCycleDataset           = 75U;
     static constexpr uint16_t kIptcBylineDataset                = 80U;
     static constexpr uint16_t kIptcBylineTitleDataset           = 85U;
     static constexpr uint16_t kIptcCityDataset                  = 90U;
@@ -92,8 +111,10 @@ namespace {
     static constexpr uint16_t kIptcCreditDataset                = 110U;
     static constexpr uint16_t kIptcSourceDataset                = 115U;
     static constexpr uint16_t kIptcCopyrightNoticeDataset       = 116U;
+    static constexpr uint16_t kIptcContactDataset               = 118U;
     static constexpr uint16_t kIptcCaptionDataset               = 120U;
     static constexpr uint16_t kIptcCaptionWriterDataset         = 122U;
+    static constexpr uint16_t kIptcLanguageIdentifierDataset    = 135U;
     static constexpr uint32_t kIccHeaderRgbColorSpaceOffset     = 16U;
     static constexpr size_t kMaxDateTimeSubsecondDigits         = 9U;
     static constexpr std::string_view kExifXmpSchema
@@ -1228,6 +1249,7 @@ namespace {
             case MetadataConceptRecordKind::PantryItem:
             case MetadataConceptRecordKind::ManifestItem:
             case MetadataConceptRecordKind::Version:
+            case MetadataConceptRecordKind::SourceSoftware:
                 set_transfer_hint(candidate,
                                   MetadataConceptTransferHint::SourceBound,
                                   true, false);
@@ -1541,6 +1563,8 @@ namespace {
         }
         candidate->sensitivity = MetadataConceptSensitivity::None;
         if (candidate->record_kind == MetadataConceptRecordKind::CreatorContact
+            || candidate->record_kind
+                   == MetadataConceptRecordKind::EditorialContact
             || ((candidate->record_kind == MetadataConceptRecordKind::Licensor
                  || candidate->record_kind
                         == MetadataConceptRecordKind::Licensee)
@@ -3916,7 +3940,9 @@ namespace {
                || role == MetadataConceptRole::CreatorTitle
                || role == MetadataConceptRole::CaptionWriter
                || role == MetadataConceptRole::AlternatePath
-               || role == MetadataConceptRole::ChangedParts;
+               || role == MetadataConceptRole::ChangedParts
+               || role == MetadataConceptRole::ObjectAttributeReference
+               || role == MetadataConceptRole::SubjectReference;
     }
 
     static bool descriptive_role_is_localized(MetadataConceptRole role) noexcept
@@ -4026,6 +4052,12 @@ namespace {
         case MetadataConceptRecordKind::ResourceEvent:
         case MetadataConceptRecordKind::Version:
             return MetadataQuerySemanticKind::DocumentHistory;
+        case MetadataConceptRecordKind::EditorialWorkflow:
+            return MetadataQuerySemanticKind::Editorial;
+        case MetadataConceptRecordKind::SourceSoftware:
+            return MetadataQuerySemanticKind::Source;
+        case MetadataConceptRecordKind::EditorialContact:
+            return MetadataQuerySemanticKind::Contact;
         case MetadataConceptRecordKind::None: break;
         }
         switch (role) {
@@ -4065,6 +4097,14 @@ namespace {
         case MetadataConceptRole::SupplementalCategory:
         case MetadataConceptRole::Instructions:
         case MetadataConceptRole::TransmissionReference:
+        case MetadataConceptRole::EditStatus:
+        case MetadataConceptRole::EditorialUpdate:
+        case MetadataConceptRole::FixtureIdentifier:
+        case MetadataConceptRole::EditorialReleaseDate:
+        case MetadataConceptRole::EditorialExpirationDate:
+        case MetadataConceptRole::ActionAdvised:
+        case MetadataConceptRole::ObjectCycle:
+        case MetadataConceptRole::LanguageIdentifier:
             return MetadataQuerySemanticKind::Editorial;
         case MetadataConceptRole::AccessibilityAltText:
         case MetadataConceptRole::AccessibilityExtendedDescription:
@@ -4072,6 +4112,9 @@ namespace {
         case MetadataConceptRole::IntellectualGenre:
         case MetadataConceptRole::SceneCode:
         case MetadataConceptRole::SubjectCode:
+        case MetadataConceptRole::ObjectTypeReference:
+        case MetadataConceptRole::ObjectAttributeReference:
+        case MetadataConceptRole::SubjectReference:
             return MetadataQuerySemanticKind::Taxonomy;
         case MetadataConceptRole::ResourceIdentifier:
         case MetadataConceptRole::DerivedFromIdentifier:
@@ -4349,6 +4392,113 @@ namespace {
                                           priority, {}, {}, {}, out);
     }
 
+    static size_t iptc_dataset_occurrence_index(const MetaStore& store,
+                                                EntryId id) noexcept
+    {
+        const Entry& target = store.entry(id);
+        size_t occurrence   = 0U;
+        for (EntryId other_id = 0U; other_id < id; ++other_id) {
+            const Entry& other = store.entry(other_id);
+            if (any(other.flags, EntryFlags::Deleted)
+                || other.key.kind != MetaKeyKind::IptcDataset
+                || other.key.data.iptc_dataset.record
+                       != target.key.data.iptc_dataset.record
+                || other.key.data.iptc_dataset.dataset
+                       != target.key.data.iptc_dataset.dataset) {
+                continue;
+            }
+            ++occurrence;
+        }
+        return occurrence;
+    }
+
+    static void indexed_iptc_scope(const MetaStore& store, EntryId id,
+                                   std::string_view root, std::string* out)
+    {
+        if (!out) {
+            return;
+        }
+        char suffix[32] {};
+        const size_t occurrence = iptc_dataset_occurrence_index(store, id) + 1U;
+        const int length = std::snprintf(suffix, sizeof(suffix), "[%zu]",
+                                         occurrence);
+        out->assign(root);
+        if (length > 0 && static_cast<size_t>(length) < sizeof(suffix)) {
+            out->append(suffix, static_cast<size_t>(length));
+        }
+    }
+
+    static void append_iptc_descriptive_date_candidate(
+        const MetaStore& store, EntryId id, MetadataConceptRole role,
+        MetadataConceptRecordKind record_kind, std::string_view record_scope,
+        uint8_t priority, MetadataConceptResolution* out)
+    {
+        std::string text;
+        if (!value_to_text(store.arena(), store.entry(id).value, &text)) {
+            return;
+        }
+        MetadataConceptCandidate candidate = make_entry_candidate(
+            store, id, MetadataConceptKind::Descriptive, role,
+            descriptive_semantic_for_role(role, record_kind),
+            MetadataQueryValueShape::Text, priority);
+        candidate.record_kind = record_kind;
+        candidate.record_scope.assign(record_scope);
+        candidate.text.assign(text);
+        if (!fill_datetime_from_text(text, &candidate)) {
+            normalize_text_key(text, &candidate.value_key);
+        }
+        if (!candidate.value_key.empty()) {
+            append_candidate(out, candidate);
+        }
+    }
+
+    static void append_iptc_editorial_schedule_candidate(
+        const MetaStore& store, uint16_t date_dataset, uint16_t time_dataset,
+        MetadataConceptRole role, MetadataConceptResolution* out)
+    {
+        EntryId date_id = kInvalidEntryId;
+        EntryId time_id = kInvalidEntryId;
+        std::string date_text;
+        std::string time_text;
+        if (!find_iptc_text_entry(store, 2U, date_dataset, &date_id,
+                                  &date_text)) {
+            return;
+        }
+
+        MetadataConceptCandidate candidate = make_entry_candidate(
+            store, date_id, MetadataConceptKind::Descriptive, role,
+            MetadataQuerySemanticKind::Editorial,
+            MetadataQueryValueShape::Text, 86U);
+        candidate.record_kind  = MetadataConceptRecordKind::EditorialWorkflow;
+        candidate.record_scope = "EditorialWorkflow";
+        candidate.text         = date_text;
+        if (!fill_datetime_from_text(date_text, &candidate)) {
+            normalize_text_key(date_text, &candidate.value_key);
+            if (!candidate.value_key.empty()) {
+                append_candidate(out, candidate);
+            }
+            return;
+        }
+
+        if (find_iptc_text_entry(store, 2U, time_dataset, &time_id, &time_text)) {
+            const Entry& time_entry = store.entry(time_id);
+            uint8_t hour            = 0U;
+            uint8_t minute          = 0U;
+            uint8_t second          = 0U;
+            bool has_offset         = false;
+            int16_t offset          = 0;
+            if (fill_time_from_value(store.arena(), time_entry.value, &hour,
+                                     &minute, &second, &has_offset, &offset)) {
+                candidate.text.push_back(' ');
+                candidate.text.append(time_text);
+                (void)attach_time_to_candidate(&candidate, hour, minute, second,
+                                               has_offset, offset);
+                add_unique_entry(&candidate.source_entries, time_id);
+            }
+        }
+        append_candidate(out, candidate);
+    }
+
     static void
     append_iptc_descriptive_candidate(const MetaStore& store, EntryId id,
                                       const Entry& entry,
@@ -4357,18 +4507,97 @@ namespace {
         if (entry.key.data.iptc_dataset.record != 2U) {
             return;
         }
-        MetadataConceptRole role = MetadataConceptRole::Primary;
-        const uint16_t dataset   = entry.key.data.iptc_dataset.dataset;
+        MetadataConceptRole role              = MetadataConceptRole::Primary;
+        MetadataConceptRecordKind record_kind = MetadataConceptRecordKind::None;
+        std::string location_scope;
+        std::string record_scope;
+        const uint16_t dataset = entry.key.data.iptc_dataset.dataset;
         switch (dataset) {
+        case kIptcObjectTypeReferenceDataset:
+            role = MetadataConceptRole::ObjectTypeReference;
+            break;
+        case kIptcObjectAttributeReferenceDataset:
+            role = MetadataConceptRole::ObjectAttributeReference;
+            break;
         case kIptcObjectNameDataset: role = MetadataConceptRole::Title; break;
+        case kIptcEditStatusDataset:
+            role         = MetadataConceptRole::EditStatus;
+            record_kind  = MetadataConceptRecordKind::EditorialWorkflow;
+            record_scope = "EditorialWorkflow";
+            break;
+        case kIptcEditorialUpdateDataset:
+            role         = MetadataConceptRole::EditorialUpdate;
+            record_kind  = MetadataConceptRecordKind::EditorialWorkflow;
+            record_scope = "EditorialWorkflow";
+            break;
         case kIptcUrgencyDataset: role = MetadataConceptRole::Urgency; break;
+        case kIptcSubjectReferenceDataset:
+            role = MetadataConceptRole::SubjectReference;
+            break;
         case kIptcCategoryDataset: role = MetadataConceptRole::Category; break;
         case kIptcSupplementalCategoryDataset:
             role = MetadataConceptRole::SupplementalCategory;
             break;
+        case kIptcFixtureIdentifierDataset:
+            role         = MetadataConceptRole::FixtureIdentifier;
+            record_kind  = MetadataConceptRecordKind::EditorialWorkflow;
+            record_scope = "EditorialWorkflow";
+            break;
         case kIptcKeywordsDataset: role = MetadataConceptRole::Keywords; break;
+        case kIptcContentLocationCodeDataset:
+            role = MetadataConceptRole::CountryCode;
+            indexed_iptc_scope(store, id, "LocationShown", &location_scope);
+            break;
+        case kIptcContentLocationNameDataset:
+            role = MetadataConceptRole::LocationName;
+            indexed_iptc_scope(store, id, "LocationShown", &location_scope);
+            break;
+        case kIptcReleaseDateDataset:
+        case kIptcReleaseTimeDataset:
+        case kIptcExpirationDateDataset:
+        case kIptcExpirationTimeDataset: return;
         case kIptcInstructionsDataset:
             role = MetadataConceptRole::Instructions;
+            break;
+        case kIptcActionAdvisedDataset:
+            role         = MetadataConceptRole::ActionAdvised;
+            record_kind  = MetadataConceptRecordKind::EditorialWorkflow;
+            record_scope = "EditorialWorkflow";
+            break;
+        case kIptcReferenceServiceDataset:
+            role        = MetadataConceptRole::ReferenceService;
+            record_kind = MetadataConceptRecordKind::ResourceReference;
+            indexed_iptc_scope(store, id, "PriorEnvelopeReference",
+                               &record_scope);
+            break;
+        case kIptcReferenceDateDataset:
+            record_kind = MetadataConceptRecordKind::ResourceReference;
+            indexed_iptc_scope(store, id, "PriorEnvelopeReference",
+                               &record_scope);
+            append_iptc_descriptive_date_candidate(
+                store, id, MetadataConceptRole::ReferenceDate, record_kind,
+                record_scope, 86U, out);
+            return;
+        case kIptcReferenceNumberDataset:
+            role        = MetadataConceptRole::ReferenceNumber;
+            record_kind = MetadataConceptRecordKind::ResourceReference;
+            indexed_iptc_scope(store, id, "PriorEnvelopeReference",
+                               &record_scope);
+            break;
+        case kIptcOriginatingProgramDataset:
+            role         = MetadataConceptRole::SoftwareAgent;
+            record_kind  = MetadataConceptRecordKind::SourceSoftware;
+            record_scope = "SourceSoftware";
+            break;
+        case kIptcProgramVersionDataset:
+            role         = MetadataConceptRole::VersionIdentifier;
+            record_kind  = MetadataConceptRecordKind::SourceSoftware;
+            record_scope = "SourceSoftware";
+            break;
+        case kIptcObjectCycleDataset:
+            role         = MetadataConceptRole::ObjectCycle;
+            record_kind  = MetadataConceptRecordKind::EditorialWorkflow;
+            record_scope = "EditorialWorkflow";
             break;
         case kIptcBylineDataset: role = MetadataConceptRole::Creator; break;
         case kIptcBylineTitleDataset:
@@ -4379,6 +4608,11 @@ namespace {
         case kIptcSourceDataset: role = MetadataConceptRole::Source; break;
         case kIptcCopyrightNoticeDataset:
             role = MetadataConceptRole::CopyrightNotice;
+            break;
+        case kIptcContactDataset:
+            role        = MetadataConceptRole::Contact;
+            record_kind = MetadataConceptRecordKind::EditorialContact;
+            indexed_iptc_scope(store, id, "EditorialContact", &record_scope);
             break;
         case kIptcCaptionDataset:
             role = MetadataConceptRole::Description;
@@ -4402,14 +4636,19 @@ namespace {
         case kIptcCaptionWriterDataset:
             role = MetadataConceptRole::CaptionWriter;
             break;
+        case kIptcLanguageIdentifierDataset:
+            role         = MetadataConceptRole::LanguageIdentifier;
+            record_kind  = MetadataConceptRecordKind::EditorialWorkflow;
+            record_scope = "EditorialWorkflow";
+            break;
         default: return;
         }
-        const std::string_view scope = descriptive_role_is_location(role)
-                                           ? std::string_view("LocationCreated")
-                                           : std::string_view {};
+        if (location_scope.empty() && descriptive_role_is_location(role)) {
+            location_scope = "LocationCreated";
+        }
         append_descriptive_text_candidate(store, id, role,
-                                          MetadataConceptRecordKind::None, 86U,
-                                          scope, {}, {}, out);
+                                          record_kind, 86U, location_scope,
+                                          record_scope, {}, out);
     }
 
     static bool map_creator_contact_descriptive(std::string_view leaf,
@@ -5636,6 +5875,12 @@ namespace {
             default: break;
             }
         }
+        append_iptc_editorial_schedule_candidate(
+            store, kIptcReleaseDateDataset, kIptcReleaseTimeDataset,
+            MetadataConceptRole::EditorialReleaseDate, out);
+        append_iptc_editorial_schedule_candidate(
+            store, kIptcExpirationDateDataset, kIptcExpirationTimeDataset,
+            MetadataConceptRole::EditorialExpirationDate, out);
         append_image_region_boundary_geometries(store, out);
     }
 
@@ -6470,6 +6715,21 @@ namespace {
             MetadataConceptRole::RegionBoundaryVertex,
             MetadataConceptRole::VersionComments,
             MetadataConceptRole::VersionModifier,
+            MetadataConceptRole::ObjectTypeReference,
+            MetadataConceptRole::ObjectAttributeReference,
+            MetadataConceptRole::EditStatus,
+            MetadataConceptRole::EditorialUpdate,
+            MetadataConceptRole::SubjectReference,
+            MetadataConceptRole::FixtureIdentifier,
+            MetadataConceptRole::EditorialReleaseDate,
+            MetadataConceptRole::EditorialExpirationDate,
+            MetadataConceptRole::ActionAdvised,
+            MetadataConceptRole::ReferenceService,
+            MetadataConceptRole::ReferenceDate,
+            MetadataConceptRole::ReferenceNumber,
+            MetadataConceptRole::ObjectCycle,
+            MetadataConceptRole::LanguageIdentifier,
+            MetadataConceptRole::Contact,
             MetadataConceptRole::Timestamp,
             MetadataConceptRole::Crop,
             MetadataConceptRole::ActiveArea,
@@ -7090,6 +7350,27 @@ metadata_concept_role_name(MetadataConceptRole role) noexcept
         return "region_boundary_vertex";
     case MetadataConceptRole::VersionComments: return "version_comments";
     case MetadataConceptRole::VersionModifier: return "version_modifier";
+    case MetadataConceptRole::ObjectTypeReference:
+        return "object_type_reference";
+    case MetadataConceptRole::ObjectAttributeReference:
+        return "object_attribute_reference";
+    case MetadataConceptRole::EditStatus: return "edit_status";
+    case MetadataConceptRole::EditorialUpdate: return "editorial_update";
+    case MetadataConceptRole::SubjectReference: return "subject_reference";
+    case MetadataConceptRole::FixtureIdentifier:
+        return "fixture_identifier";
+    case MetadataConceptRole::EditorialReleaseDate:
+        return "editorial_release_date";
+    case MetadataConceptRole::EditorialExpirationDate:
+        return "editorial_expiration_date";
+    case MetadataConceptRole::ActionAdvised: return "action_advised";
+    case MetadataConceptRole::ReferenceService: return "reference_service";
+    case MetadataConceptRole::ReferenceDate: return "reference_date";
+    case MetadataConceptRole::ReferenceNumber: return "reference_number";
+    case MetadataConceptRole::ObjectCycle: return "object_cycle";
+    case MetadataConceptRole::LanguageIdentifier:
+        return "language_identifier";
+    case MetadataConceptRole::Contact: return "contact";
     }
     return "unknown";
 }
@@ -7128,6 +7409,11 @@ metadata_concept_record_kind_name(MetadataConceptRecordKind kind) noexcept
         return "image_region_boundary";
     case MetadataConceptRecordKind::ManifestItem: return "manifest_item";
     case MetadataConceptRecordKind::Version: return "version";
+    case MetadataConceptRecordKind::EditorialWorkflow:
+        return "editorial_workflow";
+    case MetadataConceptRecordKind::SourceSoftware: return "source_software";
+    case MetadataConceptRecordKind::EditorialContact:
+        return "editorial_contact";
     }
     return "none";
 }

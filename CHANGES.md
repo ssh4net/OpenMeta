@@ -1,5 +1,28 @@
 # OpenMeta Changes
 
+## 0.4.83 - 2026-07-24
+
+Changes compared with `0.4.82`.
+
+### Added
+
+- Added normalized IPTC-IIM roles for non-equivalent object-type,
+  object-attribute, subject, editorial-state, fixture, action, cycle, language,
+  reference, and contact fields without forcing lossy XMP aliases.
+- Added scoped content-location, prior-envelope-reference, originating-software,
+  editorial-workflow, and editorial-contact records.
+- Added typed editorial release and expiration date-time candidates with full
+  date/time source-entry provenance.
+- Added matching append-only C++ and thin Python roles and record kinds.
+
+### Changed
+
+- Prior-envelope references and originating-software records are source-bound
+  for rendered transfer, while editorial contacts carry independent
+  personal-contact sensitivity.
+- Descriptive queries now classify the legacy IPTC workflow tail as taxonomy,
+  editorial, document-lineage, source, or contact semantics.
+
 ## 0.4.82 - 2026-07-21
 
 Changes compared with `0.4.81`.

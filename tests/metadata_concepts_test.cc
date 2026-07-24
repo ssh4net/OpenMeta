@@ -1965,6 +1965,142 @@ namespace {
         EXPECT_FALSE(supplemental->conflict);
     }
 
+    TEST(MetadataConcepts, InterpretsLegacyIptcWorkflowAndReferenceRecords)
+    {
+        MetaStore store;
+        const EntryId release_date = add_iptc_text(&store, 2U, 30U, "20260724");
+        const EntryId release_time = add_iptc_text(&store, 2U, 35U,
+                                                   "101530+0900");
+        (void)add_iptc_text(&store, 2U, 3U, "01:news");
+        (void)add_iptc_text(&store, 2U, 4U, "001:current");
+        (void)add_iptc_text(&store, 2U, 4U, "002:analysis");
+        (void)add_iptc_text(&store, 2U, 7U, "edited");
+        (void)add_iptc_text(&store, 2U, 8U, "01");
+        (void)add_iptc_text(&store, 2U, 12U, "IPTC:15000000:news:politics");
+        (void)add_iptc_text(&store, 2U, 22U, "daily-briefing");
+        (void)add_iptc_text(&store, 2U, 26U, "JPN");
+        (void)add_iptc_text(&store, 2U, 27U, "Japan");
+        (void)add_iptc_text(&store, 2U, 37U, "20260725");
+        (void)add_iptc_text(&store, 2U, 38U, "235959+0900");
+        (void)add_iptc_text(&store, 2U, 42U, "02");
+        (void)add_iptc_text(&store, 2U, 45U, "NEWS");
+        (void)add_iptc_text(&store, 2U, 47U, "20260720");
+        (void)add_iptc_text(&store, 2U, 50U, "00001234");
+        (void)add_iptc_text(&store, 2U, 45U, "SPORT");
+        (void)add_iptc_text(&store, 2U, 47U, "20260721");
+        (void)add_iptc_text(&store, 2U, 50U, "00005678");
+        (void)add_iptc_text(&store, 2U, 65U, "PhotoDesk");
+        (void)add_iptc_text(&store, 2U, 70U, "4.2");
+        (void)add_iptc_text(&store, 2U, 75U, "p");
+        (void)add_iptc_text(&store, 2U, 118U, "desk@example.test");
+        (void)add_iptc_text(&store, 2U, 135U, "en");
+        store.finalize();
+
+        const MetadataConceptResolution descriptive
+            = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+        const MetadataConceptCandidate* release = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::EditorialWorkflow,
+            MetadataConceptRole::EditorialReleaseDate, "EditorialWorkflow");
+        const MetadataConceptCandidate* expiration = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::EditorialWorkflow,
+            MetadataConceptRole::EditorialExpirationDate, "EditorialWorkflow");
+        const MetadataConceptCandidate* first_reference = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ResourceReference,
+            MetadataConceptRole::ReferenceService, "PriorEnvelopeReference[1]");
+        const MetadataConceptCandidate* second_reference
+            = find_record_role_scope(
+                descriptive, MetadataConceptRecordKind::ResourceReference,
+                MetadataConceptRole::ReferenceNumber,
+                "PriorEnvelopeReference[2]");
+        const MetadataConceptCandidate* reference_date = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ResourceReference,
+            MetadataConceptRole::ReferenceDate, "PriorEnvelopeReference[1]");
+        const MetadataConceptCandidate* source_software
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::SourceSoftware,
+                                     MetadataConceptRole::SoftwareAgent,
+                                     "SourceSoftware");
+        const MetadataConceptCandidate* source_version = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::SourceSoftware,
+            MetadataConceptRole::VersionIdentifier, "SourceSoftware");
+        const MetadataConceptCandidate* contact = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::EditorialContact,
+            MetadataConceptRole::Contact, "EditorialContact[1]");
+        const MetadataConceptCandidate* location_code
+            = find_role_scope(descriptive, MetadataConceptRole::CountryCode,
+                              "LocationShown[1]");
+        const MetadataConceptCandidate* location_name
+            = find_role_scope(descriptive, MetadataConceptRole::LocationName,
+                              "LocationShown[1]");
+
+        EXPECT_TRUE(descriptive.found);
+        EXPECT_FALSE(descriptive.conflict);
+        EXPECT_NE(find_role(descriptive,
+                            MetadataConceptRole::ObjectTypeReference),
+                  nullptr);
+        EXPECT_NE(find_role(descriptive,
+                            MetadataConceptRole::ObjectAttributeReference),
+                  nullptr);
+        EXPECT_NE(find_role(descriptive, MetadataConceptRole::SubjectReference),
+                  nullptr);
+        EXPECT_NE(find_role(descriptive, MetadataConceptRole::EditStatus),
+                  nullptr);
+        EXPECT_NE(find_role(descriptive, MetadataConceptRole::EditorialUpdate),
+                  nullptr);
+        EXPECT_NE(find_role(descriptive, MetadataConceptRole::FixtureIdentifier),
+                  nullptr);
+        EXPECT_NE(find_role(descriptive, MetadataConceptRole::ActionAdvised),
+                  nullptr);
+        EXPECT_NE(find_role(descriptive, MetadataConceptRole::ObjectCycle),
+                  nullptr);
+        EXPECT_NE(find_role(descriptive,
+                            MetadataConceptRole::LanguageIdentifier),
+                  nullptr);
+        ASSERT_NE(release, nullptr);
+        ASSERT_NE(expiration, nullptr);
+        ASSERT_NE(first_reference, nullptr);
+        ASSERT_NE(second_reference, nullptr);
+        ASSERT_NE(reference_date, nullptr);
+        ASSERT_NE(source_software, nullptr);
+        ASSERT_NE(source_version, nullptr);
+        ASSERT_NE(contact, nullptr);
+        ASSERT_NE(location_code, nullptr);
+        ASSERT_NE(location_name, nullptr);
+
+        EXPECT_TRUE(release->has_date_time);
+        EXPECT_TRUE(release->date_time_has_time);
+        EXPECT_EQ(release->date_time_year, 2026);
+        EXPECT_EQ(release->date_time_month, 7U);
+        EXPECT_EQ(release->date_time_day, 24U);
+        EXPECT_EQ(release->date_time_hour, 10U);
+        EXPECT_EQ(release->date_time_utc_offset_min, 540);
+        EXPECT_TRUE(contains_entry(release->source_entries, release_date));
+        EXPECT_TRUE(contains_entry(release->source_entries, release_time));
+        EXPECT_FALSE(release->source_bound);
+        EXPECT_TRUE(release->rendered_image_safe);
+        EXPECT_TRUE(expiration->has_date_time);
+        EXPECT_EQ(reference_date->date_time_precision,
+                  MetadataConceptDateTimePrecision::Date);
+        EXPECT_EQ(first_reference->semantic,
+                  MetadataQuerySemanticKind::DocumentLineage);
+        EXPECT_TRUE(first_reference->source_bound);
+        EXPECT_EQ(source_software->semantic, MetadataQuerySemanticKind::Source);
+        EXPECT_TRUE(source_software->source_bound);
+        EXPECT_TRUE(source_version->source_bound);
+        EXPECT_EQ(contact->semantic, MetadataQuerySemanticKind::Contact);
+        EXPECT_EQ(contact->sensitivity,
+                  MetadataConceptSensitivity::PersonalContact);
+        EXPECT_TRUE(contact->rendered_image_safe);
+        EXPECT_EQ(location_code->sensitivity,
+                  MetadataConceptSensitivity::Location);
+        EXPECT_STREQ(metadata_concept_role_name(
+                         MetadataConceptRole::EditorialReleaseDate),
+                     "editorial_release_date");
+        EXPECT_STREQ(metadata_concept_record_kind_name(
+                         MetadataConceptRecordKind::SourceSoftware),
+                     "source_software");
+    }
+
     TEST(MetadataConcepts, InterpretsAccessibilityTaxonomyAndDocumentIdentity)
     {
         MetaStore store;

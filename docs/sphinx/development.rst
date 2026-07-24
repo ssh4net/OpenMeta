@@ -192,7 +192,11 @@ structured-location scope, normalized descriptive language, additive
 collection preference, structured record kinds and scopes for editorial,
 rights, license, release, end-user, image-creator, image-supplier, and
 image-asset, controlled-vocabulary, registry, image-region,
-resource-reference, resource-event, and pantry records, independent policy
+resource-reference, resource-event, manifest-item, version,
+editorial-workflow, source-software, editorial-contact, and pantry records,
+including non-equivalent IPTC taxonomy/workflow fields, content-location and
+prior-envelope scopes, and editorial release/expiration date-time pairs,
+independent policy
 sensitivity,
 canonical geometry origin/size/rect/margins,
 normalized exposure values, full normalized value vectors for grouped
