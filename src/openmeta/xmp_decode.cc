@@ -641,8 +641,11 @@ namespace {
             if (is_root) {
                 ctx->root_schema_ns.assign(parts.uri.data(), parts.uri.size());
             } else if (parts.uri != ctx->root_schema_ns) {
-                const std::string_view nested_prefix
+                std::string_view nested_prefix
                     = portable_nested_prefix_for_xmp_ns(parts.uri);
+                if (nested_prefix.empty() && !parts.uri.empty()) {
+                    nested_prefix = "ns";
+                }
                 if (!nested_prefix.empty()) {
                     qualified_seg.reserve(nested_prefix.size() + 1U
                                           + parts.local.size());

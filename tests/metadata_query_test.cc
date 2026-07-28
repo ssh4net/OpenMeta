@@ -2123,6 +2123,18 @@ TEST(MetadataQuery, ClassifiesNestedTaxonomyRegistryRegionAndLineage)
     const EntryId version = add_xmp_text(&store, mm,
                                          "Versions[1]/stVer:comments",
                                          "Approved master");
+    const EntryId pantry_lineage
+        = add_xmp_text(&store, mm, "Pantry[1]/DerivedFrom/stRef:documentID",
+                       "xmp.did:pantry-source");
+    const EntryId pantry_history
+        = add_xmp_text(&store, mm, "Pantry[1]/History[1]/stEvt:action",
+                       "copied");
+    const EntryId pantry_version
+        = add_xmp_text(&store, mm, "Pantry[1]/Versions[1]/stVer:comments",
+                       "Embedded component");
+    const EntryId vendor_history
+        = add_xmp_text(&store, mm, "Pantry[2]/ns:History[1]/ns:action",
+                       "vendor-action");
     store.finalize();
 
     const MetadataQueryResult result = query_descriptive_metadata(store);
@@ -2138,6 +2150,14 @@ TEST(MetadataQuery, ClassifiesNestedTaxonomyRegistryRegionAndLineage)
                                                                     history);
     const MetadataQueryMatch* version_match  = find_match_for_entry(result,
                                                                     version);
+    const MetadataQueryMatch* pantry_lineage_match
+        = find_match_for_entry(result, pantry_lineage);
+    const MetadataQueryMatch* pantry_history_match
+        = find_match_for_entry(result, pantry_history);
+    const MetadataQueryMatch* pantry_version_match
+        = find_match_for_entry(result, pantry_version);
+    const MetadataQueryMatch* vendor_history_match
+        = find_match_for_entry(result, vendor_history);
 
     ASSERT_NE(taxonomy_match, nullptr);
     ASSERT_NE(registry_match, nullptr);
@@ -2145,6 +2165,10 @@ TEST(MetadataQuery, ClassifiesNestedTaxonomyRegistryRegionAndLineage)
     ASSERT_NE(lineage_match, nullptr);
     ASSERT_NE(history_match, nullptr);
     ASSERT_NE(version_match, nullptr);
+    ASSERT_NE(pantry_lineage_match, nullptr);
+    ASSERT_NE(pantry_history_match, nullptr);
+    ASSERT_NE(pantry_version_match, nullptr);
+    ASSERT_NE(vendor_history_match, nullptr);
     EXPECT_EQ(taxonomy_match->semantic, MetadataQuerySemanticKind::Taxonomy);
     EXPECT_EQ(registry_match->semantic, MetadataQuerySemanticKind::Registry);
     EXPECT_EQ(region_match->semantic, MetadataQuerySemanticKind::ImageRegion);
@@ -2154,6 +2178,14 @@ TEST(MetadataQuery, ClassifiesNestedTaxonomyRegistryRegionAndLineage)
               MetadataQuerySemanticKind::DocumentHistory);
     EXPECT_EQ(version_match->semantic,
               MetadataQuerySemanticKind::DocumentHistory);
+    EXPECT_EQ(pantry_lineage_match->semantic,
+              MetadataQuerySemanticKind::DocumentLineage);
+    EXPECT_EQ(pantry_history_match->semantic,
+              MetadataQuerySemanticKind::DocumentHistory);
+    EXPECT_EQ(pantry_version_match->semantic,
+              MetadataQuerySemanticKind::DocumentHistory);
+    EXPECT_EQ(vendor_history_match->semantic,
+              MetadataQuerySemanticKind::DocumentLineage);
     EXPECT_STREQ(metadata_query_semantic_kind_name(
                      MetadataQuerySemanticKind::DocumentLineage),
                  "document_lineage");

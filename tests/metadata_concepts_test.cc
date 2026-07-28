@@ -3785,6 +3785,28 @@ namespace {
         (void)add_xmp_text(&store, mm, "Pantry[1]/InstanceID",
                            "xmp.iid:pantry-1");
         (void)add_xmp_text(&store, mm, "Pantry[1]/dc:format", "image/tiff");
+        (void)add_xmp_text(&store, mm, "Pantry[1]/DerivedFrom/stRef:documentID",
+                           "xmp.did:pantry-source");
+        (void)add_xmp_text(&store, mm,
+                           "Pantry[1]/Ingredients[1]/stRef:filePath",
+                           "/assets/pantry-layer.tif");
+        (void)add_xmp_text(
+            &store, mm, "Pantry[1]/Manifest[1]/stMfs:reference/stRef:manageUI",
+            "https://example.invalid/pantry");
+        (void)add_xmp_text(&store, mm, "Pantry[1]/History[1]/stEvt:action",
+                           "copied");
+        (void)add_xmp_text(
+            &store, mm, "Pantry[1]/Versions[1]/stVer:event/stEvt:softwareAgent",
+            "Pantry Writer");
+        (void)add_xmp_text(&store, mm, "Pantry[1]/Versions[1]/stVer:comments",
+                           "Embedded component");
+        (void)add_xmp_text(&store, mm, "Pantry[2]/ns:format",
+                           "application/x-vendor");
+        (void)add_xmp_text(&store, mm, "Pantry[2]/ns:payload/InstanceID",
+                           "vendor-instance");
+        (void)add_xmp_text(&store, mm,
+                           "Pantry[2]/ns:DerivedFrom/ns:documentID",
+                           "vendor-document");
         store.finalize();
 
         const MetadataConceptResolution descriptive
@@ -3810,6 +3832,42 @@ namespace {
         const MetadataConceptCandidate* format = find_record_role_scope(
             descriptive, MetadataConceptRecordKind::PantryItem,
             MetadataConceptRole::Format, "PantryItem[1]");
+        const MetadataConceptCandidate* pantry_derived = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ResourceReference,
+            MetadataConceptRole::DocumentIdentifier,
+            "PantryItem[1]/DerivedFrom");
+        const MetadataConceptCandidate* pantry_ingredient
+            = find_record_role_scope(
+                descriptive, MetadataConceptRecordKind::ResourceReference,
+                MetadataConceptRole::FilePath, "PantryItem[1]/Ingredient[1]");
+        const MetadataConceptCandidate* pantry_manifest = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ResourceReference,
+            MetadataConceptRole::ManageUi,
+            "PantryItem[1]/Manifest[1]/Reference");
+        const MetadataConceptCandidate* pantry_history = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::ResourceEvent,
+            MetadataConceptRole::EventAction, "PantryItem[1]/HistoryEvent[1]");
+        const MetadataConceptCandidate* pantry_version_event
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::ResourceEvent,
+                                     MetadataConceptRole::SoftwareAgent,
+                                     "PantryItem[1]/Version[1]/Event");
+        const MetadataConceptCandidate* pantry_version = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::Version,
+            MetadataConceptRole::VersionComments, "PantryItem[1]/Version[1]");
+        const MetadataConceptCandidate* vendor_format = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::PantryItem,
+            MetadataConceptRole::Format, "PantryItem[2]");
+        const MetadataConceptCandidate* vendor_instance
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::PantryItem,
+                                     MetadataConceptRole::InstanceIdentifier,
+                                     "PantryItem[2]");
+        const MetadataConceptCandidate* vendor_reference
+            = find_record_role_scope(
+                descriptive, MetadataConceptRecordKind::ResourceReference,
+                MetadataConceptRole::DocumentIdentifier,
+                "PantryItem[2]/DerivedFrom");
         const MetadataConceptCandidate* manifest = find_record_role_scope(
             descriptive, MetadataConceptRecordKind::ResourceReference,
             MetadataConceptRole::FilePath, "Manifest[1]/Reference");
@@ -3852,6 +3910,15 @@ namespace {
         ASSERT_NE(agent, nullptr);
         ASSERT_NE(pantry, nullptr);
         ASSERT_NE(format, nullptr);
+        ASSERT_NE(pantry_derived, nullptr);
+        ASSERT_NE(pantry_ingredient, nullptr);
+        ASSERT_NE(pantry_manifest, nullptr);
+        ASSERT_NE(pantry_history, nullptr);
+        ASSERT_NE(pantry_version_event, nullptr);
+        ASSERT_NE(pantry_version, nullptr);
+        EXPECT_EQ(vendor_format, nullptr);
+        EXPECT_EQ(vendor_instance, nullptr);
+        EXPECT_EQ(vendor_reference, nullptr);
         ASSERT_NE(manifest, nullptr);
         ASSERT_NE(version_event, nullptr);
         ASSERT_NE(manifest_link, nullptr);
@@ -3873,6 +3940,17 @@ namespace {
         EXPECT_EQ(agent->text, "OpenMeta");
         EXPECT_EQ(pantry->semantic, MetadataQuerySemanticKind::DocumentLineage);
         EXPECT_EQ(format->text, "image/tiff");
+        EXPECT_EQ(pantry_derived->text, "xmp.did:pantry-source");
+        EXPECT_EQ(pantry_derived->transfer_hint,
+                  MetadataConceptTransferHint::SourceBound);
+        EXPECT_TRUE(pantry_derived->source_bound);
+        EXPECT_EQ(pantry_ingredient->text, "/assets/pantry-layer.tif");
+        EXPECT_EQ(pantry_manifest->text, "https://example.invalid/pantry");
+        EXPECT_EQ(pantry_history->semantic,
+                  MetadataQuerySemanticKind::DocumentHistory);
+        EXPECT_EQ(pantry_version_event->semantic,
+                  MetadataQuerySemanticKind::DocumentHistory);
+        EXPECT_EQ(pantry_version->text, "Embedded component");
         EXPECT_EQ(manifest->text, "/assets/linked.tif");
         EXPECT_EQ(version_event->semantic,
                   MetadataQuerySemanticKind::DocumentHistory);

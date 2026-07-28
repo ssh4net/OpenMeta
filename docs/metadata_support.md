@@ -70,7 +70,7 @@ Current tracked-gate status:
 | --- | --- | --- | --- | --- |
 | EXIF (`MetaKeyKind::ExifTag`) | Yes | Yes | Yes | Standard EXIF plus pointer IFDs, including current EXIF 3.1 learning/development/correction/noise tag names and bounded correction/noise value labels |
 | MakerNote | Partial / Yes | Partial / Yes | Lossless yes; portable limited | Broad vendor coverage; unknown tags may remain raw; selected version/firmware payloads, live-vendor scalar fields, Fujifilm flash white-balance and native RAF firmware names, selected Sony correction-offset routes, Reconyx scalar/string-coded fields, Microsoft stitch fields, Nintendo category fields, Sanyo public-context scalar fields, current Canon RF/Nikon Z lens labels, and an ambiguous Pentax Sigma/Samsung/Tokina lens-family label have bounded display helpers |
-| XMP (`MetaKeyKind::XmpProperty`) | Yes | Native schema/path | Yes | Requires Expat at build time |
+| XMP (`MetaKeyKind::XmpProperty`) | Yes | Native schema/path | Yes | Requires Expat at build time; known nested namespaces use portable prefixes and unknown nested namespaces use the collision-safe `ns:` marker |
 | ICC (`IccHeaderField`, `IccTag`) | Yes | Yes | Yes | Header fields plus tag table; raw tag payload preserved |
 | IPTC-IIM (`IptcDataset`) | Yes | Yes | Yes | Raw dataset bytes preserved |
 | Photoshop IRB (`PhotoshopIrb`) | Yes | Partial / Yes | Yes | Raw resources preserved, bounded interpreted subset, fixed-layout, Lightroom workflow, IPTC-NAA byte count, working-path and numbered clipping-path record summaries, descriptor-header, scalar/class/alias/reference, enum, and nested list/object summaries, embedded IPTC/XMP/ICC decode |

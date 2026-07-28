@@ -5530,7 +5530,115 @@ namespace {
         return *role != MetadataConceptRole::Primary;
     }
 
-    static bool map_xmp_mm_structured_descriptive(
+    static std::string_view xmp_path_component(std::string_view path,
+                                               size_t index) noexcept
+    {
+        size_t begin = 0U;
+        for (size_t current = 0U;; ++current) {
+            const size_t end = path.find('/', begin);
+            if (current == index) {
+                return path.substr(begin, end == std::string_view::npos
+                                              ? path.size() - begin
+                                              : end - begin);
+            }
+            if (end == std::string_view::npos) {
+                return {};
+            }
+            begin = end + 1U;
+        }
+    }
+
+    static size_t xmp_path_component_count(std::string_view path) noexcept
+    {
+        if (path.empty()) {
+            return 0U;
+        }
+        size_t count = 1U;
+        for (size_t i = 0U; i < path.size(); ++i) {
+            if (path[i] == '/') {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    static bool
+    xmp_component_namespace_matches(std::string_view component,
+                                    std::string_view expected_prefix) noexcept
+    {
+        size_t end = component.find('[');
+        if (end == std::string_view::npos) {
+            end = component.size();
+        }
+        const size_t separator = component.find(':');
+        if (separator == std::string_view::npos || separator >= end) {
+            return true;
+        }
+        return ascii_equal_ci(component.substr(0U, separator), expected_prefix);
+    }
+
+    static bool
+    xmp_mm_bounded_pantry_payload_path(std::string_view path) noexcept
+    {
+        const size_t count          = xmp_path_component_count(path);
+        const std::string_view root = xmp_path_component(path, 0U);
+        if (count < 2U || !xmp_component_namespace_matches(root, "xmpMM")) {
+            return false;
+        }
+
+        const std::string_view reference_roots[]
+            = { "DerivedFrom", "ManagedFrom", "RenditionOf", "Ingredients" };
+        for (size_t i = 0U; i < 4U; ++i) {
+            if (!descriptive_xmp_record_scope(path, reference_roots[i]).empty()) {
+                return count == 2U
+                       && xmp_component_namespace_matches(
+                           xmp_path_component(path, 1U), "stRef");
+            }
+        }
+        if (!descriptive_xmp_record_scope(path, "History").empty()) {
+            return count == 2U
+                   && xmp_component_namespace_matches(xmp_path_component(path,
+                                                                         1U),
+                                                      "stEvt");
+        }
+        if (!descriptive_xmp_record_scope(path, "Versions").empty()) {
+            if (count == 2U) {
+                return xmp_component_namespace_matches(xmp_path_component(path,
+                                                                          1U),
+                                                       "stVer");
+            }
+            return count == 3U
+                   && xmp_component_namespace_matches(xmp_path_component(path,
+                                                                         1U),
+                                                      "stVer")
+                   && ascii_equal_ci(xmp_property_leaf(
+                                         xmp_path_component(path, 1U)),
+                                     "event")
+                   && xmp_component_namespace_matches(xmp_path_component(path,
+                                                                         2U),
+                                                      "stEvt");
+        }
+        if (!descriptive_xmp_record_scope(path, "Manifest").empty()) {
+            if (count == 2U) {
+                return xmp_component_namespace_matches(xmp_path_component(path,
+                                                                          1U),
+                                                       "stMfs");
+            }
+            return count == 3U
+                   && xmp_component_namespace_matches(xmp_path_component(path,
+                                                                         1U),
+                                                      "stMfs")
+                   && ascii_equal_ci(xmp_property_leaf(
+                                         xmp_path_component(path, 1U)),
+                                     "reference")
+                   && xmp_component_namespace_matches(xmp_path_component(path,
+                                                                         2U),
+                                                      "stRef");
+        }
+        return false;
+    }
+
+    static bool map_xmp_mm_bounded_structured_descriptive(
         std::string_view path, std::string_view leaf, MetadataConceptRole* role,
         MetadataConceptRecordKind* record_kind, std::string* record_scope)
     {
@@ -5592,18 +5700,66 @@ namespace {
             }
             return *role != MetadataConceptRole::Primary;
         }
+        return false;
+    }
+
+    static bool map_xmp_mm_pantry_descriptive(
+        std::string_view path, std::string_view leaf, MetadataConceptRole* role,
+        MetadataConceptRecordKind* record_kind, std::string* record_scope)
+    {
+        std::string pantry_scope;
         if (descriptive_xmp_normalized_record_scope(path, "Pantry",
                                                     "PantryItem",
-                                                    record_scope)) {
+                                                    &pantry_scope)) {
+            const size_t separator = path.find('/');
+            if (separator == std::string_view::npos
+                || separator + 1U >= path.size()) {
+                return false;
+            }
+            const std::string_view payload_path = path.substr(separator + 1U);
+            if (payload_path.find('/') != std::string_view::npos) {
+                if (!xmp_mm_bounded_pantry_payload_path(payload_path)) {
+                    return false;
+                }
+                std::string payload_scope;
+                if (!map_xmp_mm_bounded_structured_descriptive(
+                        payload_path, leaf, role, record_kind, &payload_scope)) {
+                    return false;
+                }
+                if (record_scope) {
+                    record_scope->assign(pantry_scope);
+                    record_scope->push_back('/');
+                    record_scope->append(payload_scope);
+                }
+                return true;
+            }
             *record_kind = MetadataConceptRecordKind::PantryItem;
-            if (ascii_equal_ci(leaf, "InstanceID")) {
+            if (ascii_equal_ci(leaf, "InstanceID")
+                && xmp_component_namespace_matches(payload_path, "xmpMM")) {
                 *role = MetadataConceptRole::InstanceIdentifier;
-            } else if (ascii_equal_ci(leaf, "format")) {
+            } else if (ascii_equal_ci(leaf, "format")
+                       && xmp_component_namespace_matches(payload_path, "dc")) {
                 *role = MetadataConceptRole::Format;
+            }
+            if (*role != MetadataConceptRole::Primary && record_scope) {
+                record_scope->assign(pantry_scope);
             }
             return *role != MetadataConceptRole::Primary;
         }
         return false;
+    }
+
+    static bool map_xmp_mm_structured_descriptive(
+        std::string_view path, std::string_view leaf, MetadataConceptRole* role,
+        MetadataConceptRecordKind* record_kind, std::string* record_scope)
+    {
+        if (map_xmp_mm_bounded_structured_descriptive(path, leaf, role,
+                                                      record_kind,
+                                                      record_scope)) {
+            return true;
+        }
+        return map_xmp_mm_pantry_descriptive(path, leaf, role, record_kind,
+                                             record_scope);
     }
 
     static bool map_plus_record_descriptive(

@@ -1,5 +1,25 @@
 # OpenMeta Changes
 
+## 0.4.85 - 2026-07-28
+
+Changes compared with `0.4.84`.
+
+### Added
+
+- Added bounded interpretation for standard XMP Media Management
+  resource-reference, manifest-reference, history-event, and version structures
+  nested inside pantry items.
+- Added pantry-qualified record scopes and exact document-lineage or
+  document-history query semantics for those structures.
+
+### Changed
+
+- Unknown nested XMP namespaces now use a stable `ns:` path marker instead of
+  collapsing to an unqualified property name.
+- Pantry identity and format promotion now requires the defined XMP Media
+  Management or Dublin Core namespace form, while unknown and vendor-specific
+  pantry payloads remain raw metadata.
+
 ## 0.4.84 - 2026-07-24
 
 Changes compared with `0.4.83`.

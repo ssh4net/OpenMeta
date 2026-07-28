@@ -1335,6 +1335,38 @@ namespace {
         return equals_ascii_case_insensitive(root, expected);
     }
 
+    static bool
+    xmp_pantry_payload_has_xmp_mm_root(std::string_view path,
+                                       std::string_view expected) noexcept
+    {
+        if (!xmp_path_has_root(path, "Pantry")) {
+            return false;
+        }
+        const size_t separator = path.find('/');
+        if (separator == std::string_view::npos
+            || separator + 1U >= path.size()) {
+            return false;
+        }
+        const std::string_view payload = path.substr(separator + 1U);
+        const size_t payload_separator = payload.find('/');
+        std::string_view root  = payload_separator == std::string_view::npos
+                                     ? payload
+                                     : payload.substr(0U, payload_separator);
+        const size_t qualifier = root.find('[');
+        if (qualifier != std::string_view::npos) {
+            root = root.substr(0U, qualifier);
+        }
+        const size_t prefix = root.find(':');
+        if (prefix != std::string_view::npos) {
+            if (!equals_ascii_case_insensitive(root.substr(0U, prefix),
+                                               "xmpMM")) {
+                return false;
+            }
+            root.remove_prefix(prefix + 1U);
+        }
+        return equals_ascii_case_insensitive(root, expected);
+    }
+
     static uint32_t
     xmp_descriptive_terms(std::string_view path,
                           MatchProvenanceState* provenance) noexcept
@@ -1407,7 +1439,9 @@ namespace {
         }
         if (ns == kXmpMmSchema) {
             if (xmp_path_has_root(path, "History")
-                || xmp_path_has_root(path, "Versions")) {
+                || xmp_path_has_root(path, "Versions")
+                || xmp_pantry_payload_has_xmp_mm_root(path, "History")
+                || xmp_pantry_payload_has_xmp_mm_root(path, "Versions")) {
                 return MetadataQuerySemanticKind::DocumentHistory;
             }
             if (xmp_path_has_root(path, "DerivedFrom")

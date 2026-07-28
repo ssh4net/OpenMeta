@@ -346,11 +346,32 @@ TEST(XmpDecodeTest, DecodesXmpMmPantryStructuredChildren)
           "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>"
           "<rdf:Description "
           "xmlns:xmpMM='http://ns.adobe.com/xap/1.0/mm/' "
-          "xmlns:dc='http://purl.org/dc/elements/1.1/'>"
+          "xmlns:dc='http://purl.org/dc/elements/1.1/' "
+          "xmlns:stRef='http://ns.adobe.com/xap/1.0/sType/ResourceRef#' "
+          "xmlns:stEvt='http://ns.adobe.com/xap/1.0/sType/ResourceEvent#' "
+          "xmlns:stVer='http://ns.adobe.com/xap/1.0/sType/Version#' "
+          "xmlns:vendor='https://example.invalid/xmp/vendor/'>"
           "<xmpMM:Pantry><rdf:Bag>"
           "<rdf:li rdf:parseType='Resource'>"
           "<xmpMM:InstanceID>uuid:pantry-1</xmpMM:InstanceID>"
           "<dc:format>image/jpeg</dc:format>"
+          "<xmpMM:DerivedFrom rdf:parseType='Resource'>"
+          "<stRef:documentID>xmp.did:pantry-source</stRef:documentID>"
+          "</xmpMM:DerivedFrom>"
+          "<xmpMM:History><rdf:Seq>"
+          "<rdf:li rdf:parseType='Resource'>"
+          "<stEvt:action>copied</stEvt:action>"
+          "</rdf:li>"
+          "</rdf:Seq></xmpMM:History>"
+          "<xmpMM:Versions><rdf:Seq>"
+          "<rdf:li rdf:parseType='Resource'>"
+          "<stVer:comments>Embedded component</stVer:comments>"
+          "<stVer:event rdf:parseType='Resource'>"
+          "<stEvt:softwareAgent>Pantry Writer</stEvt:softwareAgent>"
+          "</stVer:event>"
+          "</rdf:li>"
+          "</rdf:Seq></xmpMM:Versions>"
+          "<vendor:Payload>opaque-vendor-data</vendor:Payload>"
           "</rdf:li>"
           "</rdf:Bag></xmpMM:Pantry>"
           "</rdf:Description>"
@@ -364,7 +385,7 @@ TEST(XmpDecodeTest, DecodesXmpMmPantryStructuredChildren)
     MetaStore store;
     const XmpDecodeResult r = decode_xmp_packet(bytes, store);
     EXPECT_EQ(r.status, XmpDecodeStatus::Ok);
-    EXPECT_EQ(r.entries_decoded, 2U);
+    EXPECT_EQ(r.entries_decoded, 7U);
 
     store.finalize();
 
@@ -387,6 +408,13 @@ TEST(XmpDecodeTest, DecodesXmpMmPantryStructuredChildren)
 
     expect_text("Pantry[1]/InstanceID", "uuid:pantry-1");
     expect_text("Pantry[1]/dc:format", "image/jpeg");
+    expect_text("Pantry[1]/DerivedFrom/stRef:documentID",
+                "xmp.did:pantry-source");
+    expect_text("Pantry[1]/History[1]/stEvt:action", "copied");
+    expect_text("Pantry[1]/Versions[1]/stVer:comments", "Embedded component");
+    expect_text("Pantry[1]/Versions[1]/stVer:event/stEvt:softwareAgent",
+                "Pantry Writer");
+    expect_text("Pantry[1]/ns:Payload", "opaque-vendor-data");
 }
 
 TEST(XmpDecodeTest, DecodesLegacyUnqualifiedXmpMmStructuredChildren)
