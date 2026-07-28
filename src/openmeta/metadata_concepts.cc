@@ -114,7 +114,19 @@ namespace {
     static constexpr uint16_t kIptcContactDataset               = 118U;
     static constexpr uint16_t kIptcCaptionDataset               = 120U;
     static constexpr uint16_t kIptcCaptionWriterDataset         = 122U;
+    static constexpr uint16_t kIptcRasterizedCaptionDataset     = 125U;
+    static constexpr uint16_t kIptcImageTypeDataset             = 130U;
+    static constexpr uint16_t kIptcImageOrientationDataset      = 131U;
     static constexpr uint16_t kIptcLanguageIdentifierDataset    = 135U;
+    static constexpr uint16_t kIptcAudioTypeDataset             = 150U;
+    static constexpr uint16_t kIptcAudioSamplingRateDataset     = 151U;
+    static constexpr uint16_t kIptcAudioSamplingResolutionDataset
+        = 152U;
+    static constexpr uint16_t kIptcAudioDurationDataset         = 153U;
+    static constexpr uint16_t kIptcAudioOutcueDataset           = 154U;
+    static constexpr uint16_t kIptcPreviewFormatDataset         = 200U;
+    static constexpr uint16_t kIptcPreviewVersionDataset        = 201U;
+    static constexpr uint16_t kIptcPreviewDataDataset           = 202U;
     static constexpr uint32_t kIccHeaderRgbColorSpaceOffset     = 16U;
     static constexpr size_t kMaxDateTimeSubsecondDigits         = 9U;
     static constexpr std::string_view kExifXmpSchema
@@ -641,6 +653,24 @@ namespace {
         return true;
     }
 
+    static bool byte_value_to_text(const ByteArena& arena,
+                                   const MetaValue& value, std::string* out)
+    {
+        if (!out || value.kind != MetaValueKind::Bytes) {
+            return false;
+        }
+        const std::span<const std::byte> bytes = arena.span(value.data.span);
+        out->assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        return true;
+    }
+
+    static bool iptc_value_to_text(const ByteArena& arena,
+                                   const MetaValue& value, std::string* out)
+    {
+        return value_to_text(arena, value, out)
+               || byte_value_to_text(arena, value, out);
+    }
+
     static void normalize_text_key(std::string_view text, std::string* out)
     {
         if (!out) {
@@ -981,7 +1011,7 @@ namespace {
         }
 
         std::string text;
-        if (!value_to_text(arena, value, &text)) {
+        if (!iptc_value_to_text(arena, value, &text)) {
             return false;
         }
         std::string digits;
@@ -1250,6 +1280,9 @@ namespace {
             case MetadataConceptRecordKind::ManifestItem:
             case MetadataConceptRecordKind::Version:
             case MetadataConceptRecordKind::SourceSoftware:
+            case MetadataConceptRecordKind::TechnicalImage:
+            case MetadataConceptRecordKind::AudioAsset:
+            case MetadataConceptRecordKind::PreviewAsset:
                 set_transfer_hint(candidate,
                                   MetadataConceptTransferHint::SourceBound,
                                   true, false);
@@ -2144,7 +2177,9 @@ namespace {
         }
 
         std::string text;
-        if (!value_to_text(store.arena(), entry.value, &text)) {
+        if (!value_to_text(store.arena(), entry.value, &text)
+            && (entry.key.kind != MetaKeyKind::IptcDataset
+                || !byte_value_to_text(store.arena(), entry.value, &text))) {
             return;
         }
         MetadataConceptCandidate candidate
@@ -2194,7 +2229,9 @@ namespace {
     {
         const Entry& entry = store.entry(id);
         std::string text;
-        if (!value_to_text(store.arena(), entry.value, &text)) {
+        if (!value_to_text(store.arena(), entry.value, &text)
+            && (entry.key.kind != MetaKeyKind::IptcDataset
+                || !byte_value_to_text(store.arena(), entry.value, &text))) {
             return;
         }
         MetadataConceptCandidate candidate
@@ -2395,7 +2432,7 @@ namespace {
                 || entry.key.data.iptc_dataset.dataset != dataset) {
                 continue;
             }
-            if (!value_to_text(store.arena(), entry.value, out)) {
+            if (!iptc_value_to_text(store.arena(), entry.value, out)) {
                 continue;
             }
             if (out_id) {
@@ -2732,7 +2769,10 @@ namespace {
         case MetadataQuerySemanticKind::Registry:
         case MetadataQuerySemanticKind::ImageRegion:
         case MetadataQuerySemanticKind::DocumentLineage:
-        case MetadataQuerySemanticKind::DocumentHistory: break;
+        case MetadataQuerySemanticKind::DocumentHistory:
+        case MetadataQuerySemanticKind::TechnicalImage:
+        case MetadataQuerySemanticKind::Audio:
+        case MetadataQuerySemanticKind::Preview: break;
         }
         return MetadataConceptRole::Primary;
     }
@@ -2883,7 +2923,10 @@ namespace {
         case MetadataQuerySemanticKind::Registry:
         case MetadataQuerySemanticKind::ImageRegion:
         case MetadataQuerySemanticKind::DocumentLineage:
-        case MetadataQuerySemanticKind::DocumentHistory: break;
+        case MetadataQuerySemanticKind::DocumentHistory:
+        case MetadataQuerySemanticKind::TechnicalImage:
+        case MetadataQuerySemanticKind::Audio:
+        case MetadataQuerySemanticKind::Preview: break;
         }
         return MetadataConceptRole::Primary;
     }
@@ -3008,7 +3051,10 @@ namespace {
         case MetadataQuerySemanticKind::Registry:
         case MetadataQuerySemanticKind::ImageRegion:
         case MetadataQuerySemanticKind::DocumentLineage:
-        case MetadataQuerySemanticKind::DocumentHistory: break;
+        case MetadataQuerySemanticKind::DocumentHistory:
+        case MetadataQuerySemanticKind::TechnicalImage:
+        case MetadataQuerySemanticKind::Audio:
+        case MetadataQuerySemanticKind::Preview: break;
         }
         return MetadataConceptRole::Primary;
     }
@@ -3299,7 +3345,10 @@ namespace {
         case MetadataQuerySemanticKind::Registry:
         case MetadataQuerySemanticKind::ImageRegion:
         case MetadataQuerySemanticKind::DocumentLineage:
-        case MetadataQuerySemanticKind::DocumentHistory: break;
+        case MetadataQuerySemanticKind::DocumentHistory:
+        case MetadataQuerySemanticKind::TechnicalImage:
+        case MetadataQuerySemanticKind::Audio:
+        case MetadataQuerySemanticKind::Preview: break;
         }
         return MetadataConceptRole::Primary;
     }
@@ -4058,6 +4107,12 @@ namespace {
             return MetadataQuerySemanticKind::Source;
         case MetadataConceptRecordKind::EditorialContact:
             return MetadataQuerySemanticKind::Contact;
+        case MetadataConceptRecordKind::TechnicalImage:
+            return MetadataQuerySemanticKind::TechnicalImage;
+        case MetadataConceptRecordKind::AudioAsset:
+            return MetadataQuerySemanticKind::Audio;
+        case MetadataConceptRecordKind::PreviewAsset:
+            return MetadataQuerySemanticKind::Preview;
         case MetadataConceptRecordKind::None: break;
         }
         switch (role) {
@@ -4240,7 +4295,10 @@ namespace {
         std::string_view xmp_path, MetadataConceptResolution* out)
     {
         std::string text;
-        if (!value_to_text(store.arena(), store.entry(id).value, &text)) {
+        const Entry& entry = store.entry(id);
+        if (!value_to_text(store.arena(), entry.value, &text)
+            && (entry.key.kind != MetaKeyKind::IptcDataset
+                || !byte_value_to_text(store.arena(), entry.value, &text))) {
             return;
         }
         MetadataConceptCandidate candidate = make_entry_candidate(
@@ -4420,12 +4478,395 @@ namespace {
         }
         char suffix[32] {};
         const size_t occurrence = iptc_dataset_occurrence_index(store, id) + 1U;
-        const int length = std::snprintf(suffix, sizeof(suffix), "[%zu]",
-                                         occurrence);
+        const int length        = std::snprintf(suffix, sizeof(suffix), "[%zu]",
+                                                occurrence);
         out->assign(root);
         if (length > 0 && static_cast<size_t>(length) < sizeof(suffix)) {
             out->append(suffix, static_cast<size_t>(length));
         }
+    }
+
+    static bool parse_iptc_unsigned(std::string_view text, size_t max_digits,
+                                    uint32_t* out) noexcept
+    {
+        if (!out) {
+            return false;
+        }
+        text = trim_ascii_field(text);
+        if (text.empty() || text.size() > max_digits) {
+            return false;
+        }
+        uint32_t value = 0U;
+        for (size_t i = 0U; i < text.size(); ++i) {
+            if (!ascii_is_digit(text[i])) {
+                return false;
+            }
+            const uint32_t digit = static_cast<uint32_t>(text[i] - '0');
+            if (value > (0xFFFFFFFFU - digit) / 10U) {
+                return false;
+            }
+            value = value * 10U + digit;
+        }
+        *out = value;
+        return true;
+    }
+
+    static bool iptc_u16_value(const MetaStore& store, const MetaValue& value,
+                               uint16_t* out)
+    {
+        if (!out) {
+            return false;
+        }
+        if (value.kind == MetaValueKind::Scalar) {
+            double numeric = 0.0;
+            if (!scalar_to_double(value, &numeric) || numeric < 0.0
+                || numeric > 65535.0 || std::floor(numeric) != numeric) {
+                return false;
+            }
+            *out = static_cast<uint16_t>(numeric);
+            return true;
+        }
+        if (value.kind == MetaValueKind::Bytes) {
+            const std::span<const std::byte> bytes = store.arena().span(
+                value.data.span);
+            if (bytes.size() != 2U) {
+                return false;
+            }
+            *out = static_cast<uint16_t>(
+                (static_cast<uint16_t>(std::to_integer<uint8_t>(bytes[0])) << 8U)
+                | static_cast<uint16_t>(std::to_integer<uint8_t>(bytes[1])));
+            return true;
+        }
+        std::string text;
+        uint32_t parsed = 0U;
+        if (!value_to_text(store.arena(), value, &text)
+            || !parse_iptc_unsigned(text, 5U, &parsed) || parsed > 65535U) {
+            return false;
+        }
+        *out = static_cast<uint16_t>(parsed);
+        return true;
+    }
+
+    static void binary_value_key(std::span<const std::byte> bytes,
+                                 std::string* out)
+    {
+        if (!out) {
+            return;
+        }
+        uint64_t hash = 1469598103934665603ULL;
+        for (size_t i = 0U; i < bytes.size(); ++i) {
+            hash ^= static_cast<uint64_t>(std::to_integer<uint8_t>(bytes[i]));
+            hash *= 1099511628211ULL;
+        }
+        char text[64] {};
+        const int length = std::snprintf(text, sizeof(text), "%zu:%016llx",
+                                         bytes.size(),
+                                         static_cast<unsigned long long>(hash));
+        out->clear();
+        if (length > 0 && static_cast<size_t>(length) < sizeof(text)) {
+            out->assign(text, static_cast<size_t>(length));
+        }
+    }
+
+    static std::string_view
+    iptc_image_layout_name(std::string_view code) noexcept
+    {
+        if (code == "P") {
+            return "portrait";
+        }
+        if (code == "L") {
+            return "landscape";
+        }
+        if (code == "S") {
+            return "square";
+        }
+        return code;
+    }
+
+    static std::string_view iptc_audio_type_name(std::string_view code) noexcept
+    {
+        if (code == "1A") {
+            return "mono actuality";
+        }
+        if (code == "2A") {
+            return "stereo actuality";
+        }
+        if (code == "1C") {
+            return "mono question and answer session";
+        }
+        if (code == "2C") {
+            return "stereo question and answer session";
+        }
+        if (code == "1M") {
+            return "mono music";
+        }
+        if (code == "2M") {
+            return "stereo music";
+        }
+        if (code == "1Q") {
+            return "mono response to a question";
+        }
+        if (code == "2Q") {
+            return "stereo response to a question";
+        }
+        if (code == "1R") {
+            return "mono raw sound";
+        }
+        if (code == "2R") {
+            return "stereo raw sound";
+        }
+        if (code == "1S") {
+            return "mono scener";
+        }
+        if (code == "2S") {
+            return "stereo scener";
+        }
+        if (code == "0T") {
+            return "text only";
+        }
+        if (code == "1V") {
+            return "mono voicer";
+        }
+        if (code == "2V") {
+            return "stereo voicer";
+        }
+        if (code == "1W") {
+            return "mono wrap";
+        }
+        if (code == "2W") {
+            return "stereo wrap";
+        }
+        return code;
+    }
+
+    static const char* iptc_preview_format_name(uint16_t code) noexcept
+    {
+        switch (code) {
+        case 0U: return "No ObjectData";
+        case 1U: return "IPTC-NAA Digital Newsphoto Parameter Record";
+        case 2U: return "IPTC7901 Recommended Message Format";
+        case 3U: return "Tagged Image File Format";
+        case 4U: return "Adobe Illustrator";
+        case 5U: return "AppleSingle";
+        case 6U: return "NAA 89-3";
+        case 7U: return "MacBinary II";
+        case 8U: return "IPTC UCOFF";
+        case 9U: return "UPI ANPA 1312";
+        case 10U: return "UPI Down-Load Message";
+        case 11U: return "JPEG File Interchange Format";
+        case 12U: return "Photo-CD Image-Pac";
+        case 13U: return "Windows Bitmap";
+        case 14U: return "WAV";
+        case 15U: return "AVI";
+        case 16U: return "DOS or Windows Executable";
+        case 17U: return "ZIP";
+        case 18U: return "AIFF";
+        case 19U: return "RIFF Wave";
+        case 20U: return "FreeHand";
+        case 21U: return "HTML";
+        case 22U: return "MPEG-2 Audio Layer II";
+        case 23U: return "MPEG-2 Audio Layer III";
+        case 24U: return "PDF";
+        case 25U: return "News Industry Text Format";
+        case 26U: return "TAR";
+        case 27U: return "TTNITF";
+        case 28U: return "RBNITF";
+        case 29U: return "CorelDRAW";
+        default: break;
+        }
+        return "";
+    }
+
+    static void append_iptc_record_text_candidate(
+        const MetaStore& store, EntryId id, MetadataConceptRole role,
+        MetadataConceptRecordKind record_kind, std::string_view record_scope,
+        std::string_view text, MetadataConceptResolution* out)
+    {
+        MetadataConceptCandidate candidate = make_entry_candidate(
+            store, id, MetadataConceptKind::Descriptive, role,
+            descriptive_semantic_for_role(role, record_kind),
+            MetadataQueryValueShape::Text, 88U);
+        candidate.record_kind  = record_kind;
+        candidate.record_scope = record_scope;
+        candidate.text         = text;
+        normalize_text_key(text, &candidate.value_key);
+        if (!candidate.value_key.empty()) {
+            append_candidate(out, candidate);
+        }
+    }
+
+    static void append_iptc_record_numeric_candidate(
+        const MetaStore& store, EntryId id, MetadataConceptRole role,
+        MetadataConceptRecordKind record_kind, std::string_view record_scope,
+        double value, std::string_view text, MetadataConceptResolution* out)
+    {
+        MetadataConceptCandidate candidate = make_entry_candidate(
+            store, id, MetadataConceptKind::Descriptive, role,
+            descriptive_semantic_for_role(role, record_kind),
+            MetadataQueryValueShape::Scalar, 88U);
+        candidate.record_kind   = record_kind;
+        candidate.record_scope  = record_scope;
+        candidate.has_numeric   = true;
+        candidate.numeric_count = 1U;
+        candidate.numeric[0]    = value;
+        candidate.text          = text;
+        candidate.value_key     = numeric_key(value);
+        append_candidate(out, candidate);
+    }
+
+    static void append_iptc_record_blob_candidate(
+        const MetaStore& store, EntryId id, MetadataConceptRole role,
+        std::string_view record_scope, MetadataConceptResolution* out)
+    {
+        const MetaValue& value = store.entry(id).value;
+        if (value.kind != MetaValueKind::Bytes) {
+            return;
+        }
+        const std::span<const std::byte> bytes = store.arena().span(
+            value.data.span);
+        MetadataConceptCandidate candidate
+            = make_entry_candidate(store, id, MetadataConceptKind::Descriptive,
+                                   role, MetadataQuerySemanticKind::Preview,
+                                   MetadataQueryValueShape::Blob, 88U);
+        candidate.record_kind   = MetadataConceptRecordKind::PreviewAsset;
+        candidate.record_scope  = record_scope;
+        candidate.has_numeric   = true;
+        candidate.numeric_count = 1U;
+        candidate.numeric[0]    = static_cast<double>(bytes.size());
+        binary_value_key(bytes, &candidate.value_key);
+        append_candidate(out, candidate);
+    }
+
+    static bool append_iptc_technical_candidate(const MetaStore& store,
+                                                EntryId id, const Entry& entry,
+                                                MetadataConceptResolution* out)
+    {
+        const uint16_t dataset = entry.key.data.iptc_dataset.dataset;
+        if (dataset == kIptcRasterizedCaptionDataset) {
+            append_iptc_record_blob_candidate(
+                store, id, MetadataConceptRole::RasterizedCaption,
+                "RasterizedCaption", out);
+            return true;
+        }
+        if (dataset == kIptcPreviewDataDataset) {
+            append_iptc_record_blob_candidate(store, id,
+                                              MetadataConceptRole::PreviewData,
+                                              "PreviewAsset", out);
+            return true;
+        }
+
+        if (dataset == kIptcPreviewFormatDataset
+            || dataset == kIptcPreviewVersionDataset) {
+            uint16_t numeric = 0U;
+            if (!iptc_u16_value(store, entry.value, &numeric)) {
+                return true;
+            }
+            const MetadataConceptRole role
+                = dataset == kIptcPreviewFormatDataset
+                      ? MetadataConceptRole::PreviewFormat
+                      : MetadataConceptRole::PreviewVersion;
+            const char* label = dataset == kIptcPreviewFormatDataset
+                                    ? iptc_preview_format_name(numeric)
+                                    : "";
+            append_iptc_record_numeric_candidate(
+                store, id, role, MetadataConceptRecordKind::PreviewAsset,
+                "PreviewAsset", static_cast<double>(numeric), label, out);
+            return true;
+        }
+
+        std::string storage;
+        if (!iptc_value_to_text(store.arena(), entry.value, &storage)) {
+            return dataset == kIptcImageTypeDataset
+                   || dataset == kIptcImageOrientationDataset
+                   || dataset == kIptcAudioTypeDataset
+                   || dataset == kIptcAudioSamplingRateDataset
+                   || dataset == kIptcAudioSamplingResolutionDataset
+                   || dataset == kIptcAudioDurationDataset
+                   || dataset == kIptcAudioOutcueDataset;
+        }
+        const std::string_view text = trim_ascii_field(storage);
+        if (dataset == kIptcImageTypeDataset) {
+            append_iptc_record_text_candidate(
+                store, id, MetadataConceptRole::ImageType,
+                MetadataConceptRecordKind::TechnicalImage, "TechnicalImage",
+                text, out);
+            if (text.size() == 2U && ascii_is_digit(text[0])) {
+                append_iptc_record_numeric_candidate(
+                    store, id, MetadataConceptRole::ImageComponentCount,
+                    MetadataConceptRecordKind::TechnicalImage, "TechnicalImage",
+                    static_cast<double>(text[0] - '0'), {}, out);
+                append_iptc_record_text_candidate(
+                    store, id, MetadataConceptRole::ImageColorComponentCode,
+                    MetadataConceptRecordKind::TechnicalImage, "TechnicalImage",
+                    text.substr(1U, 1U), out);
+            }
+            return true;
+        }
+        if (dataset == kIptcImageOrientationDataset) {
+            append_iptc_record_text_candidate(
+                store, id, MetadataConceptRole::ImageLayout,
+                MetadataConceptRecordKind::TechnicalImage, "TechnicalImage",
+                iptc_image_layout_name(text), out);
+            return true;
+        }
+        if (dataset == kIptcAudioTypeDataset) {
+            append_iptc_record_text_candidate(
+                store, id, MetadataConceptRole::AudioType,
+                MetadataConceptRecordKind::AudioAsset, "AudioAsset",
+                iptc_audio_type_name(text), out);
+            if (text.size() == 2U && text[0] >= '0' && text[0] <= '2') {
+                append_iptc_record_numeric_candidate(
+                    store, id, MetadataConceptRole::AudioChannelCount,
+                    MetadataConceptRecordKind::AudioAsset, "AudioAsset",
+                    static_cast<double>(text[0] - '0'), {}, out);
+                append_iptc_record_text_candidate(
+                    store, id, MetadataConceptRole::AudioContentCode,
+                    MetadataConceptRecordKind::AudioAsset, "AudioAsset",
+                    text.substr(1U, 1U), out);
+            }
+            return true;
+        }
+        if (dataset == kIptcAudioSamplingRateDataset
+            || dataset == kIptcAudioSamplingResolutionDataset) {
+            uint32_t numeric        = 0U;
+            const size_t max_digits = dataset == kIptcAudioSamplingRateDataset
+                                          ? 6U
+                                          : 2U;
+            if (parse_iptc_unsigned(text, max_digits, &numeric)) {
+                const MetadataConceptRole role
+                    = dataset == kIptcAudioSamplingRateDataset
+                          ? MetadataConceptRole::AudioSamplingRate
+                          : MetadataConceptRole::AudioSamplingResolution;
+                append_iptc_record_numeric_candidate(
+                    store, id, role, MetadataConceptRecordKind::AudioAsset,
+                    "AudioAsset", static_cast<double>(numeric), text, out);
+            }
+            return true;
+        }
+        if (dataset == kIptcAudioDurationDataset) {
+            uint32_t encoded = 0U;
+            if (text.size() == 6U && parse_iptc_unsigned(text, 6U, &encoded)) {
+                const uint32_t hours   = encoded / 10000U;
+                const uint32_t minutes = (encoded / 100U) % 100U;
+                const uint32_t seconds = encoded % 100U;
+                if (minutes < 60U && seconds < 60U) {
+                    const uint32_t duration = hours * 3600U + minutes * 60U
+                                              + seconds;
+                    append_iptc_record_numeric_candidate(
+                        store, id, MetadataConceptRole::AudioDuration,
+                        MetadataConceptRecordKind::AudioAsset, "AudioAsset",
+                        static_cast<double>(duration), text, out);
+                }
+            }
+            return true;
+        }
+        if (dataset == kIptcAudioOutcueDataset) {
+            append_iptc_record_text_candidate(
+                store, id, MetadataConceptRole::AudioOutcue,
+                MetadataConceptRecordKind::AudioAsset, "AudioAsset", text, out);
+            return true;
+        }
+        return false;
     }
 
     static void append_iptc_descriptive_date_candidate(
@@ -4434,7 +4875,7 @@ namespace {
         uint8_t priority, MetadataConceptResolution* out)
     {
         std::string text;
-        if (!value_to_text(store.arena(), store.entry(id).value, &text)) {
+        if (!iptc_value_to_text(store.arena(), store.entry(id).value, &text)) {
             return;
         }
         MetadataConceptCandidate candidate = make_entry_candidate(
@@ -4512,6 +4953,9 @@ namespace {
         std::string location_scope;
         std::string record_scope;
         const uint16_t dataset = entry.key.data.iptc_dataset.dataset;
+        if (append_iptc_technical_candidate(store, id, entry, out)) {
+            return;
+        }
         switch (dataset) {
         case kIptcObjectTypeReferenceDataset:
             role = MetadataConceptRole::ObjectTypeReference;
@@ -6730,6 +7174,21 @@ namespace {
             MetadataConceptRole::ObjectCycle,
             MetadataConceptRole::LanguageIdentifier,
             MetadataConceptRole::Contact,
+            MetadataConceptRole::RasterizedCaption,
+            MetadataConceptRole::ImageType,
+            MetadataConceptRole::ImageComponentCount,
+            MetadataConceptRole::ImageColorComponentCode,
+            MetadataConceptRole::ImageLayout,
+            MetadataConceptRole::AudioType,
+            MetadataConceptRole::AudioChannelCount,
+            MetadataConceptRole::AudioContentCode,
+            MetadataConceptRole::AudioSamplingRate,
+            MetadataConceptRole::AudioSamplingResolution,
+            MetadataConceptRole::AudioDuration,
+            MetadataConceptRole::AudioOutcue,
+            MetadataConceptRole::PreviewFormat,
+            MetadataConceptRole::PreviewVersion,
+            MetadataConceptRole::PreviewData,
             MetadataConceptRole::Timestamp,
             MetadataConceptRole::Crop,
             MetadataConceptRole::ActiveArea,
@@ -7371,6 +7830,24 @@ metadata_concept_role_name(MetadataConceptRole role) noexcept
     case MetadataConceptRole::LanguageIdentifier:
         return "language_identifier";
     case MetadataConceptRole::Contact: return "contact";
+    case MetadataConceptRole::RasterizedCaption: return "rasterized_caption";
+    case MetadataConceptRole::ImageType: return "image_type";
+    case MetadataConceptRole::ImageComponentCount:
+        return "image_component_count";
+    case MetadataConceptRole::ImageColorComponentCode:
+        return "image_color_component_code";
+    case MetadataConceptRole::ImageLayout: return "image_layout";
+    case MetadataConceptRole::AudioType: return "audio_type";
+    case MetadataConceptRole::AudioChannelCount: return "audio_channel_count";
+    case MetadataConceptRole::AudioContentCode: return "audio_content_code";
+    case MetadataConceptRole::AudioSamplingRate: return "audio_sampling_rate";
+    case MetadataConceptRole::AudioSamplingResolution:
+        return "audio_sampling_resolution";
+    case MetadataConceptRole::AudioDuration: return "audio_duration";
+    case MetadataConceptRole::AudioOutcue: return "audio_outcue";
+    case MetadataConceptRole::PreviewFormat: return "preview_format";
+    case MetadataConceptRole::PreviewVersion: return "preview_version";
+    case MetadataConceptRole::PreviewData: return "preview_data";
     }
     return "unknown";
 }
@@ -7414,6 +7891,9 @@ metadata_concept_record_kind_name(MetadataConceptRecordKind kind) noexcept
     case MetadataConceptRecordKind::SourceSoftware: return "source_software";
     case MetadataConceptRecordKind::EditorialContact:
         return "editorial_contact";
+    case MetadataConceptRecordKind::TechnicalImage: return "technical_image";
+    case MetadataConceptRecordKind::AudioAsset: return "audio_asset";
+    case MetadataConceptRecordKind::PreviewAsset: return "preview_asset";
     }
     return "none";
 }

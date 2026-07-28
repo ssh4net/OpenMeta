@@ -425,7 +425,11 @@ organizations, products, artwork/objects, rights expressions, rights holders,
 licensors, licensees, licenses, releases, end users, image creators, image
 suppliers, image assets, controlled-vocabulary terms, registry entries, image
 regions, resource references, resource events, manifest items, versions,
-editorial workflows, source software, editorial contacts, and pantry items.
+editorial workflows, source software, editorial contacts, technical-image,
+audio-asset, preview-asset, and pantry records. The IPTC technical records
+normalize image layout, component count, audio channel/rate/resolution/
+duration, preview format/version, and bounded binary payload identity without
+treating IPTC layout as EXIF rotation.
 Sensitivity
 is mirrored in transfer diagnostics and thin Python dictionaries. Hosts must
 not interpret a ``safe`` transfer
@@ -438,12 +442,15 @@ references and originating software, IPTC Core accessibility and taxonomy
 fields, IPTC Extension registry and
 image-region entities, resource/document identity and lineage/history, and
 remaining bounded PLUS party, delivered-asset, and license-policy fields.
+Legacy IPTC image, audio, and preview datasets use exact
+``technical_image``, ``audio``, and ``preview`` semantics.
 Equivalent scalar pairs participate in preference/conflict handling; taxonomy,
 resource-identifier, and license-document collections remain additive.
 Document identity/lineage/history, registry, prior-envelope-reference, and
 source-software records are source-bound for rendered transfer; image-region
 records require target image specifications. Editorial contacts carry
 personal-contact sensitivity independently of their technical transfer hint.
+Technical-image, audio-asset, and preview-asset records are source-bound.
 
 The bounded BMFF tiled-image field contract covers ``tilC`` version 0 tile
 dimensions, up to eight extra dimensions, ``dref``/``deti`` mapping, internal

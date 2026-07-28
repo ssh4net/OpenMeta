@@ -1,5 +1,29 @@
 # OpenMeta Changes
 
+## 0.4.84 - 2026-07-24
+
+Changes compared with `0.4.83`.
+
+### Added
+
+- Added source-bound legacy IPTC technical-image, audio-asset, and
+  preview-asset records with exact `technical_image`, `audio`, and `preview`
+  query semantics.
+- Added normalized image component/layout, audio
+  channel/content/rate/resolution/duration/outcue, preview format/version/data,
+  and rasterized-caption roles.
+- Added matching append-only C++ and thin Python enums.
+
+### Changed
+
+- IPTC concept resolution now consumes the raw byte representation produced by
+  the IPTC-IIM decoder for known textual and date/time datasets.
+- IPTC image layout remains distinct from EXIF rotation orientation, preview
+  format/version values use big-endian decoding, and binary preview identity
+  uses bounded size/hash keys without copying payloads into concept records.
+- Legacy IPTC technical records are source-bound and unsafe for automatic
+  rendered-image transfer.
+
 ## 0.4.83 - 2026-07-24
 
 Changes compared with `0.4.82`.

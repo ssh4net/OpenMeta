@@ -6275,7 +6275,10 @@ NB_MODULE(_openmeta, m)
         .value("Registry", MetadataQuerySemanticKind::Registry)
         .value("ImageRegion", MetadataQuerySemanticKind::ImageRegion)
         .value("DocumentLineage", MetadataQuerySemanticKind::DocumentLineage)
-        .value("DocumentHistory", MetadataQuerySemanticKind::DocumentHistory);
+        .value("DocumentHistory", MetadataQuerySemanticKind::DocumentHistory)
+        .value("TechnicalImage", MetadataQuerySemanticKind::TechnicalImage)
+        .value("Audio", MetadataQuerySemanticKind::Audio)
+        .value("Preview", MetadataQuerySemanticKind::Preview);
 
     nb::enum_<MetadataQueryValueShape>(m, "MetadataQueryValueShape")
         .value("Unknown", MetadataQueryValueShape::Unknown)
@@ -6616,7 +6619,24 @@ NB_MODULE(_openmeta, m)
         .value("ObjectCycle", MetadataConceptRole::ObjectCycle)
         .value("LanguageIdentifier",
                MetadataConceptRole::LanguageIdentifier)
-        .value("Contact", MetadataConceptRole::Contact);
+        .value("Contact", MetadataConceptRole::Contact)
+        .value("RasterizedCaption", MetadataConceptRole::RasterizedCaption)
+        .value("ImageType", MetadataConceptRole::ImageType)
+        .value("ImageComponentCount", MetadataConceptRole::ImageComponentCount)
+        .value("ImageColorComponentCode",
+               MetadataConceptRole::ImageColorComponentCode)
+        .value("ImageLayout", MetadataConceptRole::ImageLayout)
+        .value("AudioType", MetadataConceptRole::AudioType)
+        .value("AudioChannelCount", MetadataConceptRole::AudioChannelCount)
+        .value("AudioContentCode", MetadataConceptRole::AudioContentCode)
+        .value("AudioSamplingRate", MetadataConceptRole::AudioSamplingRate)
+        .value("AudioSamplingResolution",
+               MetadataConceptRole::AudioSamplingResolution)
+        .value("AudioDuration", MetadataConceptRole::AudioDuration)
+        .value("AudioOutcue", MetadataConceptRole::AudioOutcue)
+        .value("PreviewFormat", MetadataConceptRole::PreviewFormat)
+        .value("PreviewVersion", MetadataConceptRole::PreviewVersion)
+        .value("PreviewData", MetadataConceptRole::PreviewData);
 
     nb::enum_<MetadataConceptRecordKind>(m, "MetadataConceptRecordKind")
         .value("None_", MetadataConceptRecordKind::None)
@@ -6652,7 +6672,10 @@ NB_MODULE(_openmeta, m)
                MetadataConceptRecordKind::EditorialWorkflow)
         .value("SourceSoftware", MetadataConceptRecordKind::SourceSoftware)
         .value("EditorialContact",
-               MetadataConceptRecordKind::EditorialContact);
+               MetadataConceptRecordKind::EditorialContact)
+        .value("TechnicalImage", MetadataConceptRecordKind::TechnicalImage)
+        .value("AudioAsset", MetadataConceptRecordKind::AudioAsset)
+        .value("PreviewAsset", MetadataConceptRecordKind::PreviewAsset);
 
     nb::enum_<MetadataImageRegionShape>(m, "MetadataImageRegionShape")
         .value("Unknown", MetadataImageRegionShape::Unknown)

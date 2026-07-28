@@ -1260,6 +1260,17 @@ namespace {
         case 116U: return "CopyrightNotice";
         case 120U: return "Caption-Abstract";
         case 122U: return "CaptionWriter";
+        case 125U: return "RasterizedCaption";
+        case 130U: return "ImageType";
+        case 131U: return "ImageOrientation";
+        case 150U: return "AudioType";
+        case 151U: return "AudioSamplingRate";
+        case 152U: return "AudioSamplingResolution";
+        case 153U: return "AudioDuration";
+        case 154U: return "AudioOutcue";
+        case 200U: return "ObjectPreviewFileFormat";
+        case 201U: return "ObjectPreviewFileVersion";
+        case 202U: return "ObjectPreviewData";
         default: break;
         }
         return "";
@@ -1618,6 +1629,17 @@ namespace {
         case 110U: return MetadataQuerySemanticKind::Credit;
         case 115U: return MetadataQuerySemanticKind::Source;
         case 116U: return MetadataQuerySemanticKind::Rights;
+        case 130U:
+        case 131U: return MetadataQuerySemanticKind::TechnicalImage;
+        case 150U:
+        case 151U:
+        case 152U:
+        case 153U:
+        case 154U: return MetadataQuerySemanticKind::Audio;
+        case 125U:
+        case 200U:
+        case 201U:
+        case 202U: return MetadataQuerySemanticKind::Preview;
         default: break;
         }
         return MetadataQuerySemanticKind::Unknown;
@@ -4198,6 +4220,9 @@ metadata_query_semantic_kind_name(MetadataQuerySemanticKind kind) noexcept
     case MetadataQuerySemanticKind::ImageRegion: return "image_region";
     case MetadataQuerySemanticKind::DocumentLineage: return "document_lineage";
     case MetadataQuerySemanticKind::DocumentHistory: return "document_history";
+    case MetadataQuerySemanticKind::TechnicalImage: return "technical_image";
+    case MetadataQuerySemanticKind::Audio: return "audio";
+    case MetadataQuerySemanticKind::Preview: return "preview";
     }
     return "unknown";
 }

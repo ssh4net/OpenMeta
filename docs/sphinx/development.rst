@@ -63,17 +63,19 @@ model should stay compact:
        checks, separate camera/destination/shown/created GPS roles with
        scope-aware structured-location conflicts,
        language-aware descriptive roles, legacy editorial duplicate
-       reconciliation, accessibility/taxonomy/registry/image-region/
+       reconciliation, source-bound IPTC technical-image/audio/preview
+       records, accessibility/taxonomy/registry/image-region/
        document-identity/lineage/history semantics,
        structured creator-contact/event/person/organization/product/artwork/
        rights/license/release/end-user/image-creator/image-supplier/image-asset/
        controlled-vocabulary/registry/image-region/image-region-boundary/
-       resource-reference/resource-event/manifest-item/version/pantry records,
+       resource-reference/resource-event/manifest-item/version/
+       technical-image/audio-asset/preview-asset/pantry records,
        explicit image-region shape and coordinate-unit contracts,
        and independent privacy/policy sensitivity,
        computational, thermal, stitch/panorama capture state, and
        vendor-private fields.
-     - High, about 98-99%.
+     - High, about 99%.
    * - Query
      - Find entries by name, fuzzy term, or semantic group, then expose
        normalized query candidates, structured interpretation records, and
@@ -84,11 +86,11 @@ model should stay compact:
        descriptive fields including contact/event/person/organization/product/
        artwork/rights/license/release, editorial, accessibility, taxonomy,
        registry, image-region, document-identity, document-lineage, and
-       document-history semantics,
+       document-history, technical-image, audio, and preview semantics,
        lens-correction, computational/thermal/stitch, and RAW/source-processing
        fields plus BMFF derived-image construction and tiled-image configuration
        evidence across standard and vendor metadata.
-     - High, about 98-99%.
+     - High, about 99%.
    * - Creation
      - Build fresh metadata entries from host-provided values.
      - Medium, about 55-65%.
@@ -193,7 +195,8 @@ collection preference, structured record kinds and scopes for editorial,
 rights, license, release, end-user, image-creator, image-supplier, and
 image-asset, controlled-vocabulary, registry, image-region,
 resource-reference, resource-event, manifest-item, version,
-editorial-workflow, source-software, editorial-contact, and pantry records,
+editorial-workflow, source-software, editorial-contact, technical-image,
+audio-asset, preview-asset, and pantry records,
 including non-equivalent IPTC taxonomy/workflow fields, content-location and
 prior-envelope scopes, and editorial release/expiration date-time pairs,
 independent policy

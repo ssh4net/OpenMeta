@@ -80,6 +80,9 @@ enum class MetadataQuerySemanticKind : uint8_t {
     ImageRegion,
     DocumentLineage,
     DocumentHistory,
+    TechnicalImage,
+    Audio,
+    Preview,
 };
 
 enum class MetadataQueryValueShape : uint8_t {

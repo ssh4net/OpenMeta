@@ -96,7 +96,11 @@ Coverage matrix
        scopes editorial status/update/action/cycle/language/fixture fields,
        content locations, prior-envelope references, originating software,
        and editorial contacts; and normalizes editorial release/expiration
-       date-time pairs. It also interprets IPTC Core accessibility/taxonomy
+       date-time pairs. Legacy image type/layout, rasterized caption, audio
+       type/channel/content/rate/resolution/duration/outcue, and object-preview
+       format/version/data datasets are interpreted as source-bound technical
+       records; IPTC image layout is not conflated with EXIF rotation
+       orientation. It also interprets IPTC Core accessibility/taxonomy
        fields, IPTC Extension controlled-vocabulary,
        registry, image-region entity records, and rectangle/circle/polygon
        boundary geometry with explicit pixel/relative units, XMP document
@@ -107,9 +111,9 @@ Coverage matrix
        artwork/objects, encoded rights expressions, PLUS parties/assets/
        license policy, and model/property releases with record kind, record
        scope, language, transfer hint, and independent sensitivity.
-     - High, about 98-99%.
-     - Legacy IPTC technical image/audio/preview descriptors and deliberately
-       unmodeled arbitrary pantry payloads remain bounded.
+     - High, about 99%.
+     - Deliberately unmodeled arbitrary pantry payloads and undocumented
+       extension datasets remain bounded raw metadata.
    * - Orientation
      - EXIF/TIFF orientation query, LibRaw flip mapping, and generic
        orientation helpers for index, rotation degrees, mirrored state,
@@ -320,8 +324,8 @@ Coverage matrix
        vendor/MakerNote exposure-name aliases, per-family grouped vendor
        records, descriptive EXIF/IPTC/XMP concepts including exact
        rights/license/credit/source/editorial/accessibility/taxonomy/registry/
-       image-region/document-identity/document-lineage/document-history
-       semantics, explicit color-profile
+       image-region/document-identity/document-lineage/document-history/
+       technical-image/audio/preview semantics, explicit color-profile
        records for EXIF/ICC/XMP/PNG profile carriers, explicit
        source-color-transform records for camera RAW profiles, looks, tone
        curves, Canon ColorData tables, and vendor source color tables,
@@ -356,7 +360,7 @@ Coverage matrix
        grouped value vectors, transfer hints, RAW applicability states,
        rendered/compatible safety booleans, and tolerance-aware
        GPS/exposure/color/geometry conflicts.
-     - High, about 98-99%.
+     - High, about 99%.
      - More long-tail per-model concept aliases, nested descriptive
        structures, and richer localized policy wording.
    * - Transfer-safety classification
@@ -403,8 +407,8 @@ Next interpretation priorities
    independently authored conformance files as they become available.
 2. Broaden transfer diagnostic policy coverage now that stable message tokens
    and localizable argument tokens are available for GUI workflows.
-3. Interpret legacy IPTC technical image/audio/preview descriptors and add
-   pantry payload semantics only where a validated, bounded schema exists.
+3. Add pantry payload semantics only where a validated, bounded schema exists;
+   keep arbitrary payloads raw and source-bound.
 4. Expand the remaining unambiguous MakerNote long tail: encrypted/custom
    settings, per-model firmware formulas outside currently supported
    formatter contexts, remaining live-vendor scalar/string-coded fields, and

@@ -118,6 +118,25 @@ namespace {
         return id;
     }
 
+    static EntryId add_iptc_bytes(MetaStore* store, uint16_t record,
+                                  uint16_t dataset,
+                                  std::span<const std::byte> value)
+    {
+        Entry entry;
+        entry.key        = make_iptc_dataset_key(record, dataset);
+        entry.value      = make_bytes(store->arena(), value);
+        const EntryId id = store->add_entry(entry);
+        EXPECT_NE(id, kInvalidEntryId);
+        return id;
+    }
+
+    static EntryId add_iptc_wire_text(MetaStore* store, uint16_t record,
+                                      uint16_t dataset, std::string_view value)
+    {
+        const std::span<const char> chars(value.data(), value.size());
+        return add_iptc_bytes(store, record, dataset, std::as_bytes(chars));
+    }
+
     static EntryId add_bmff_text(MetaStore* store, std::string_view field,
                                  std::string_view value)
     {
@@ -2099,6 +2118,147 @@ namespace {
         EXPECT_STREQ(metadata_concept_record_kind_name(
                          MetadataConceptRecordKind::SourceSoftware),
                      "source_software");
+    }
+
+    TEST(MetadataConcepts, InterpretsWireEncodedIptcTechnicalRecords)
+    {
+        MetaStore store;
+        const std::array<std::byte, 4U> preview_data { std::byte { 0xFFU },
+                                                       std::byte { 0xD8U },
+                                                       std::byte { 0xFFU },
+                                                       std::byte { 0xD9U } };
+        const std::array<std::byte, 3U> rasterized_caption {
+            std::byte { 0x10U }, std::byte { 0x20U }, std::byte { 0x30U }
+        };
+        const std::array<std::byte, 2U> preview_format { std::byte { 0x00U },
+                                                         std::byte { 0x0BU } };
+        const std::array<std::byte, 2U> preview_version { std::byte { 0x00U },
+                                                          std::byte { 0x01U } };
+        (void)add_iptc_wire_text(&store, 2U, 5U, "Technical sample");
+        (void)add_iptc_wire_text(&store, 2U, 55U, "20260724");
+        (void)add_iptc_wire_text(&store, 2U, 60U, "101530+0900");
+        (void)add_iptc_bytes(&store, 2U, 125U, rasterized_caption);
+        (void)add_iptc_wire_text(&store, 2U, 130U, "3C");
+        (void)add_iptc_wire_text(&store, 2U, 131U, "L");
+        (void)add_iptc_wire_text(&store, 2U, 150U, "2M");
+        (void)add_iptc_wire_text(&store, 2U, 151U, "044100");
+        (void)add_iptc_wire_text(&store, 2U, 152U, "16");
+        (void)add_iptc_wire_text(&store, 2U, 153U, "013005");
+        (void)add_iptc_wire_text(&store, 2U, 154U, "end cue");
+        (void)add_iptc_bytes(&store, 2U, 200U, preview_format);
+        (void)add_iptc_bytes(&store, 2U, 201U, preview_version);
+        (void)add_iptc_bytes(&store, 2U, 202U, preview_data);
+        store.finalize();
+
+        const MetadataConceptResolution descriptive
+            = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+        const MetadataConceptResolution datetime
+            = resolve_metadata_concept(store, MetadataConceptKind::DateTime);
+        const MetadataConceptCandidate* image_type = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::TechnicalImage,
+            MetadataConceptRole::ImageType, "TechnicalImage");
+        const MetadataConceptCandidate* component_count
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::TechnicalImage,
+                                     MetadataConceptRole::ImageComponentCount,
+                                     "TechnicalImage");
+        const MetadataConceptCandidate* component_code = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::TechnicalImage,
+            MetadataConceptRole::ImageColorComponentCode, "TechnicalImage");
+        const MetadataConceptCandidate* image_layout = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::TechnicalImage,
+            MetadataConceptRole::ImageLayout, "TechnicalImage");
+        const MetadataConceptCandidate* audio_type = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::AudioAsset,
+            MetadataConceptRole::AudioType, "AudioAsset");
+        const MetadataConceptCandidate* audio_channels = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::AudioAsset,
+            MetadataConceptRole::AudioChannelCount, "AudioAsset");
+        const MetadataConceptCandidate* audio_rate = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::AudioAsset,
+            MetadataConceptRole::AudioSamplingRate, "AudioAsset");
+        const MetadataConceptCandidate* audio_resolution
+            = find_record_role_scope(
+                descriptive, MetadataConceptRecordKind::AudioAsset,
+                MetadataConceptRole::AudioSamplingResolution, "AudioAsset");
+        const MetadataConceptCandidate* audio_duration = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::AudioAsset,
+            MetadataConceptRole::AudioDuration, "AudioAsset");
+        const MetadataConceptCandidate* preview_format_candidate
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::PreviewAsset,
+                                     MetadataConceptRole::PreviewFormat,
+                                     "PreviewAsset");
+        const MetadataConceptCandidate* preview_version_candidate
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::PreviewAsset,
+                                     MetadataConceptRole::PreviewVersion,
+                                     "PreviewAsset");
+        const MetadataConceptCandidate* preview = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::PreviewAsset,
+            MetadataConceptRole::PreviewData, "PreviewAsset");
+        const MetadataConceptCandidate* rasterized = find_record_role_scope(
+            descriptive, MetadataConceptRecordKind::PreviewAsset,
+            MetadataConceptRole::RasterizedCaption, "RasterizedCaption");
+        const MetadataConceptCandidate* title
+            = find_role(descriptive, MetadataConceptRole::Title);
+        const MetadataConceptCandidate* created
+            = find_role(datetime, MetadataConceptRole::DateCreated);
+
+        ASSERT_NE(image_type, nullptr);
+        ASSERT_NE(component_count, nullptr);
+        ASSERT_NE(component_code, nullptr);
+        ASSERT_NE(image_layout, nullptr);
+        ASSERT_NE(audio_type, nullptr);
+        ASSERT_NE(audio_channels, nullptr);
+        ASSERT_NE(audio_rate, nullptr);
+        ASSERT_NE(audio_resolution, nullptr);
+        ASSERT_NE(audio_duration, nullptr);
+        ASSERT_NE(preview_format_candidate, nullptr);
+        ASSERT_NE(preview_version_candidate, nullptr);
+        ASSERT_NE(preview, nullptr);
+        ASSERT_NE(rasterized, nullptr);
+        ASSERT_NE(title, nullptr);
+        ASSERT_NE(created, nullptr);
+
+        EXPECT_EQ(image_type->text, "3C");
+        EXPECT_DOUBLE_EQ(component_count->numeric[0], 3.0);
+        EXPECT_EQ(component_code->text, "C");
+        EXPECT_EQ(image_layout->text, "landscape");
+        EXPECT_EQ(image_layout->semantic,
+                  MetadataQuerySemanticKind::TechnicalImage);
+        EXPECT_EQ(find_role(descriptive, MetadataConceptRole::Orientation),
+                  nullptr);
+        EXPECT_EQ(audio_type->text, "stereo music");
+        EXPECT_DOUBLE_EQ(audio_channels->numeric[0], 2.0);
+        EXPECT_DOUBLE_EQ(audio_rate->numeric[0], 44100.0);
+        EXPECT_DOUBLE_EQ(audio_resolution->numeric[0], 16.0);
+        EXPECT_DOUBLE_EQ(audio_duration->numeric[0], 5405.0);
+        EXPECT_EQ(audio_duration->text, "013005");
+        EXPECT_DOUBLE_EQ(preview_format_candidate->numeric[0], 11.0);
+        EXPECT_EQ(preview_format_candidate->text,
+                  "JPEG File Interchange Format");
+        EXPECT_DOUBLE_EQ(preview_version_candidate->numeric[0], 1.0);
+        EXPECT_EQ(preview->shape, MetadataQueryValueShape::Blob);
+        EXPECT_DOUBLE_EQ(preview->numeric[0], 4.0);
+        EXPECT_FALSE(preview->value_key.empty());
+        EXPECT_DOUBLE_EQ(rasterized->numeric[0], 3.0);
+        EXPECT_EQ(title->text, "Technical sample");
+        EXPECT_TRUE(created->has_date_time);
+        EXPECT_TRUE(created->date_time_has_time);
+        EXPECT_EQ(created->date_time_utc_offset_min, 540);
+        EXPECT_TRUE(image_layout->source_bound);
+        EXPECT_TRUE(audio_type->source_bound);
+        EXPECT_TRUE(preview->source_bound);
+        EXPECT_FALSE(image_layout->rendered_image_safe);
+        EXPECT_FALSE(audio_type->rendered_image_safe);
+        EXPECT_FALSE(preview->rendered_image_safe);
+        EXPECT_STREQ(metadata_concept_role_name(
+                         MetadataConceptRole::AudioSamplingResolution),
+                     "audio_sampling_resolution");
+        EXPECT_STREQ(metadata_concept_record_kind_name(
+                         MetadataConceptRecordKind::PreviewAsset),
+                     "preview_asset");
     }
 
     TEST(MetadataConcepts, InterpretsAccessibilityTaxonomyAndDocumentIdentity)

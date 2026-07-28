@@ -2162,4 +2162,41 @@ TEST(MetadataQuery, ClassifiesNestedTaxonomyRegistryRegionAndLineage)
                  "document_history");
 }
 
+TEST(MetadataQuery, ClassifiesLegacyIptcTechnicalSemantics)
+{
+    MetaStore store;
+    const EntryId image   = add_iptc_text(&store, 2U, 131U, "L");
+    const EntryId audio   = add_iptc_text(&store, 2U, 151U, "044100");
+    const EntryId preview = add_iptc_text(&store, 2U, 200U, "11");
+    store.finalize();
+
+    const MetadataQueryResult result      = query_descriptive_metadata(store);
+    const MetadataQueryMatch* image_match = find_match_for_entry(result, image);
+    const MetadataQueryMatch* audio_match = find_match_for_entry(result, audio);
+    const MetadataQueryMatch* preview_match = find_match_for_entry(result,
+                                                                   preview);
+
+    ASSERT_NE(image_match, nullptr);
+    ASSERT_NE(audio_match, nullptr);
+    ASSERT_NE(preview_match, nullptr);
+    EXPECT_TRUE(image_match->exact_match);
+    EXPECT_TRUE(audio_match->exact_match);
+    EXPECT_TRUE(preview_match->exact_match);
+    EXPECT_EQ(image_match->semantic, MetadataQuerySemanticKind::TechnicalImage);
+    EXPECT_EQ(audio_match->semantic, MetadataQuerySemanticKind::Audio);
+    EXPECT_EQ(preview_match->semantic, MetadataQuerySemanticKind::Preview);
+    EXPECT_EQ(image_match->name, "ImageOrientation");
+    EXPECT_EQ(audio_match->name, "AudioSamplingRate");
+    EXPECT_EQ(preview_match->name, "ObjectPreviewFileFormat");
+    EXPECT_STREQ(metadata_query_semantic_kind_name(
+                     MetadataQuerySemanticKind::TechnicalImage),
+                 "technical_image");
+    EXPECT_STREQ(metadata_query_semantic_kind_name(
+                     MetadataQuerySemanticKind::Audio),
+                 "audio");
+    EXPECT_STREQ(metadata_query_semantic_kind_name(
+                     MetadataQuerySemanticKind::Preview),
+                 "preview");
+}
+
 }  // namespace openmeta

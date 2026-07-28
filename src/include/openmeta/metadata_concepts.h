@@ -257,6 +257,21 @@ enum class MetadataConceptRole : uint8_t {
     ObjectCycle,
     LanguageIdentifier,
     Contact,
+    RasterizedCaption,
+    ImageType,
+    ImageComponentCount,
+    ImageColorComponentCode,
+    ImageLayout,
+    AudioType,
+    AudioChannelCount,
+    AudioContentCode,
+    AudioSamplingRate,
+    AudioSamplingResolution,
+    AudioDuration,
+    AudioOutcue,
+    PreviewFormat,
+    PreviewVersion,
+    PreviewData,
 };
 
 enum class MetadataConceptRecordKind : uint8_t {
@@ -289,6 +304,9 @@ enum class MetadataConceptRecordKind : uint8_t {
     EditorialWorkflow,
     SourceSoftware,
     EditorialContact,
+    TechnicalImage,
+    AudioAsset,
+    PreviewAsset,
 };
 
 enum class MetadataImageRegionShape : uint8_t {
