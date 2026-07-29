@@ -6392,6 +6392,16 @@ namespace {
         return false;
     }
 
+    static bool is_unmaterialized_ifd_pointer_tag(ExifIfdSlot slot,
+                                                  uint16_t tag) noexcept
+    {
+        if (slot != ExifIfdSlot::Ifd0) {
+            return false;
+        }
+        return tag == 0x0190U      // GlobalParametersIFD
+               || tag == 0xC6F5U;  // ExtraCameraProfiles
+    }
+
     static bool time_patch_field_for_exif_tag(ExifIfdSlot slot, uint16_t tag,
                                               TimePatchField* out) noexcept
     {
@@ -6741,6 +6751,11 @@ namespace {
             }
             if (!ifd_ref.is_page && !ifd_ref.is_subifd
                 && is_regenerated_pointer_tag(ifd_ref.slot, tag)) {
+                continue;
+            }
+            if (!ifd_ref.is_page && !ifd_ref.is_subifd
+                && is_unmaterialized_ifd_pointer_tag(ifd_ref.slot, tag)) {
+                note_exif_pack_skip(ifd_name, &out);
                 continue;
             }
             if (!ifd_ref.is_page && !ifd_ref.is_subifd && tag == 0x927CU

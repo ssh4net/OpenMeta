@@ -1,5 +1,18 @@
 # OpenMeta Changes
 
+## 0.4.88 - 2026-07-29
+
+Changes compared with `0.4.87`.
+
+### Changed
+
+- EXIF preparation now omits source `GlobalParametersIFD` and DNG
+  `ExtraCameraProfiles` offsets when their child directories cannot be
+  materialized, preventing stale source offsets from reaching destination
+  metadata.
+- TIFF/DNG rewrite preserves existing target-owned auxiliary IFD pointers and
+  payload bytes when the corresponding source pointers are omitted.
+
 ## 0.4.87 - 2026-07-28
 
 Changes compared with `0.4.86`.

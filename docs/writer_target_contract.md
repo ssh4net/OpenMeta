@@ -175,6 +175,14 @@ active image structure during metadata transfer. For replaced preview-page and
 offsets and preserves the corresponding target-local storage fields when a
 matching target child exists.
 
+Source IFD offsets are never copied as ordinary metadata values when OpenMeta
+does not also materialize their child directory. This currently applies to
+`GlobalParametersIFD` (`0x0190`) and DNG `ExtraCameraProfiles` (`0xC6F5`):
+prepare omits the source pointer and reports it as an unsupported EXIF entry.
+An existing target pointer and its target-owned child bytes remain unchanged
+during TIFF/DNG rewrite. Fresh output therefore contains neither a dangling
+source offset nor a partially reconstructed auxiliary directory.
+
 The same target-owned rule is applied before packaging EXIF/XMP metadata for
 JPEG, PNG, WebP, JP2, JXL, BMFF-family targets, and EXR string attributes.
 Source descriptive tags such as make/model/date/GPS/copyright continue to
