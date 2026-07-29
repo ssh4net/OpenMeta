@@ -1172,6 +1172,29 @@ TEST(MetadataQuery, MatchesXmpWhiteBalance)
     EXPECT_FALSE(candidate->has_values);
 }
 
+TEST(MetadataQuery, TreatsCameraRawSettingsAsSourceProcessing)
+{
+    MetaStore store;
+    const EntryId saturation
+        = add_xmp_text(&store, "http://ns.adobe.com/camera-raw-settings/1.0/",
+                       "Saturation", "+12");
+    const EntryId vendor_shadow
+        = add_xmp_text(&store, "urn:vendor:camera-raw-settings-shadow",
+                       "Saturation", "+20");
+    store.finalize();
+
+    const MetadataQueryResult result = query_raw_processing_metadata(store);
+    const MetadataQueryMatch* match  = find_match_for_entry(result, saturation);
+    ASSERT_NE(match, nullptr);
+    EXPECT_TRUE(match->exact_match);
+    EXPECT_EQ(match->semantic, MetadataQuerySemanticKind::SourceProcessing);
+    EXPECT_NE((match->matched_terms
+               & static_cast<uint32_t>(
+                   MetadataQueryMatchTerm::SourceProcessing)),
+              0U);
+    EXPECT_EQ(find_match_for_entry(result, vendor_shadow), nullptr);
+}
+
 TEST(MetadataQuery, MatchesDngColorMatrix)
 {
     MetaStore store;

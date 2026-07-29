@@ -38,6 +38,7 @@ set(_gtest_filter
   "PhotoshopIrbDecodeTest.*:"
   "PreviewExtract.*:"
   "PrintImDecode.*:"
+  "ReadLaneCoverage.*:"
   "ResourcePolicy.*:"
   "SimpleMetaRead.*:"
   "ValidateFile.*:"

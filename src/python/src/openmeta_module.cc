@@ -56,7 +56,13 @@ namespace {
 
     static nb::str sv_to_py(std::string_view s)
     {
-        return nb::str(s.data(), s.size());
+        PyObject* decoded
+            = PyUnicode_DecodeUTF8(s.data(), static_cast<Py_ssize_t>(s.size()),
+                                   "surrogateescape");
+        if (!decoded) {
+            throw nb::python_error();
+        }
+        return nb::steal<nb::str>(nb::handle(decoded));
     }
 
     static const char*
@@ -7202,6 +7208,8 @@ NB_MODULE(_openmeta, m)
     m.def("tiff_planar_configuration_name", &tiff_planar_configuration_name,
           "value"_a);
     m.def("tiff_resolution_unit_name", &tiff_resolution_unit_name, "value"_a);
+    m.def("tiff_ycbcr_positioning_name", &tiff_ycbcr_positioning_name,
+          "value"_a);
     m.def("exif_exposure_program_name", &exif_exposure_program_name, "value"_a);
     m.def("exif_exposure_mode_name", &exif_exposure_mode_name, "value"_a);
     m.def("exif_metering_mode_name", &exif_metering_mode_name, "value"_a);
@@ -7212,6 +7220,18 @@ NB_MODULE(_openmeta, m)
     m.def("exif_scene_capture_type_name", &exif_scene_capture_type_name,
           "value"_a);
     m.def("exif_gain_control_name", &exif_gain_control_name, "value"_a);
+    m.def("exif_sensitivity_type_name", &exif_sensitivity_type_name, "value"_a);
+    m.def("exif_focal_plane_resolution_unit_name",
+          &exif_focal_plane_resolution_unit_name, "value"_a);
+    m.def("exif_sensing_method_name", &exif_sensing_method_name, "value"_a);
+    m.def("exif_file_source_name", &exif_file_source_name, "value"_a);
+    m.def("exif_scene_type_name", &exif_scene_type_name, "value"_a);
+    m.def("exif_custom_rendered_name", &exif_custom_rendered_name, "value"_a);
+    m.def("exif_contrast_name", &exif_contrast_name, "value"_a);
+    m.def("exif_saturation_name", &exif_saturation_name, "value"_a);
+    m.def("exif_sharpness_name", &exif_sharpness_name, "value"_a);
+    m.def("exif_subject_distance_range_name", &exif_subject_distance_range_name,
+          "value"_a);
     m.def("dng_cfa_layout_name", &dng_cfa_layout_name, "value"_a);
     m.def("dng_calibration_illuminant_name", &dng_calibration_illuminant_name,
           "value"_a);

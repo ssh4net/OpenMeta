@@ -39636,6 +39636,93 @@ TEST(MetadataTransferApi, ExecutePreparedTransferExrEmitToWriterUnsupported)
     EXPECT_TRUE(writer.out.empty());
 }
 
+TEST(MetadataTransferApi, ExecutePreparedTransferBmffPayloadEmitToWriter)
+{
+    struct Case final {
+        openmeta::TransferTargetFormat target
+            = openmeta::TransferTargetFormat::Heif;
+    };
+    const std::array<Case, 3> cases = {
+        Case { openmeta::TransferTargetFormat::Heif },
+        Case { openmeta::TransferTargetFormat::Avif },
+        Case { openmeta::TransferTargetFormat::Cr3 },
+    };
+
+    for (const Case& one : cases) {
+        openmeta::PreparedTransferBundle bundle;
+        bundle.target_format = one.target;
+
+        openmeta::PreparedTransferBlock exif;
+        exif.route   = "bmff:item-exif";
+        exif.payload = { std::byte { 0x00 }, std::byte { 0x01 } };
+        bundle.blocks.push_back(exif);
+
+        openmeta::PreparedTransferBlock xmp;
+        xmp.route   = "bmff:item-xmp";
+        xmp.payload = { std::byte { '<' }, std::byte { 'x' }, std::byte { '/' },
+                        std::byte { '>' } };
+        bundle.blocks.push_back(xmp);
+
+        openmeta::PreparedTransferBlock icc;
+        icc.route   = "bmff:property-colr-icc";
+        icc.payload = { std::byte { 'p' }, std::byte { 'r' }, std::byte { 'o' },
+                        std::byte { 'f' }, std::byte { 0x10 } };
+        bundle.blocks.push_back(icc);
+
+        BufferByteWriter writer;
+        openmeta::ExecutePreparedTransferOptions options;
+        options.emit_repeat        = 2U;
+        options.emit_output_writer = &writer;
+
+        const openmeta::ExecutePreparedTransferResult result
+            = openmeta::execute_prepared_transfer(&bundle, {}, options);
+        EXPECT_EQ(result.compile.status, openmeta::TransferStatus::Ok);
+        EXPECT_EQ(result.emit.status, openmeta::TransferStatus::Ok);
+        EXPECT_EQ(result.emit_output_size, 22U);
+        ASSERT_EQ(writer.out.size(), 22U);
+        EXPECT_EQ(writer.out[0], std::byte { 0x00 });
+        EXPECT_EQ(writer.out[1], std::byte { 0x01 });
+        EXPECT_EQ(writer.out[2], std::byte { '<' });
+        EXPECT_EQ(writer.out[6], std::byte { 'p' });
+        EXPECT_EQ(writer.out[11], std::byte { 0x00 });
+
+        ASSERT_EQ(result.bmff_item_summary.size(), 2U);
+        EXPECT_EQ(result.bmff_item_summary[0].count, 2U);
+        EXPECT_EQ(result.bmff_item_summary[0].bytes, 4U);
+        EXPECT_EQ(result.bmff_item_summary[1].count, 2U);
+        EXPECT_EQ(result.bmff_item_summary[1].bytes, 8U);
+        ASSERT_EQ(result.bmff_property_summary.size(), 1U);
+        EXPECT_EQ(result.bmff_property_summary[0].count, 2U);
+        EXPECT_EQ(result.bmff_property_summary[0].bytes, 10U);
+    }
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffPayloadWriterPreflightsCapacity)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Avif;
+
+    openmeta::PreparedTransferBlock xmp;
+    xmp.route   = "bmff:item-xmp";
+    xmp.payload = { std::byte { '<' }, std::byte { 'x' }, std::byte { '/' },
+                    std::byte { '>' } };
+    bundle.blocks.push_back(xmp);
+
+    std::array<std::byte, 3> storage {};
+    openmeta::SpanTransferByteWriter writer(storage);
+    openmeta::ExecutePreparedTransferOptions options;
+    options.emit_output_writer = &writer;
+
+    const openmeta::ExecutePreparedTransferResult result
+        = openmeta::execute_prepared_transfer(&bundle, {}, options);
+    EXPECT_EQ(result.compile.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(result.emit.status, openmeta::TransferStatus::LimitExceeded);
+    EXPECT_EQ(result.emit.code, openmeta::EmitTransferCode::BackendWriteFailed);
+    EXPECT_EQ(result.emit_output_size, 0U);
+    EXPECT_EQ(writer.bytes_written(), 0U);
+}
+
 TEST(MetadataTransferApi, ExecutePreparedTransferJp2RoundTripsSimpleMetaRead)
 {
     openmeta::MetaStore source;

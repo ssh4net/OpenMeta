@@ -72,6 +72,18 @@ namespace {
         return id;
     }
 
+    static EntryId add_exif_bytes(MetaStore* store, std::string_view ifd,
+                                  uint16_t tag, std::string_view value)
+    {
+        Entry entry;
+        entry.key = make_exif_tag_key(store->arena(), ifd, tag);
+        const std::span<const char> chars(value.data(), value.size());
+        entry.value      = make_bytes(store->arena(), std::as_bytes(chars));
+        const EntryId id = store->add_entry(entry);
+        EXPECT_NE(id, kInvalidEntryId);
+        return id;
+    }
+
     static EntryId add_exif_urational_array(MetaStore* store,
                                             std::string_view ifd, uint16_t tag,
                                             std::span<const URational> values)
@@ -2649,6 +2661,97 @@ namespace {
                     1.0e-9);
     }
 
+    TEST(MetadataConcepts, ResolvesExifGpsTimeWithoutDate)
+    {
+        MetaStore store;
+        const std::array<URational, 3> time = {
+            URational { 12U, 1U },
+            URational { 34U, 1U },
+            URational { 56U, 1U },
+        };
+        const EntryId time_id
+            = add_exif_urational_array(&store, "gpsifd", 0x0007U,
+                                       std::span<const URational>(time.data(),
+                                                                  time.size()));
+        store.finalize();
+
+        const MetadataConceptResolution gps
+            = resolve_metadata_concept(store, MetadataConceptKind::Gps);
+        const MetadataConceptCandidate* timestamp
+            = find_role(gps, MetadataConceptRole::Timestamp);
+        ASSERT_NE(timestamp, nullptr);
+        EXPECT_EQ(timestamp->entry_id, time_id);
+        EXPECT_EQ(timestamp->text, "12:34:56Z");
+        EXPECT_FALSE(timestamp->has_date_time);
+    }
+
+    TEST(MetadataConcepts, ResolvesAsciiByteGpsReference)
+    {
+        MetaStore store;
+        static constexpr char kSouth[] = "S";
+        const EntryId ref_id
+            = add_exif_bytes(&store, "gpsifd", 0x0001U,
+                             std::string_view(kSouth, sizeof(kSouth) - 1U));
+        const std::array<URational, 3> coordinate = {
+            URational { 35U, 1U },
+            URational { 30U, 1U },
+            URational { 0U, 1U },
+        };
+        const EntryId coordinate_id = add_exif_urational_array(
+            &store, "gpsifd", 0x0002U,
+            std::span<const URational>(coordinate.data(), coordinate.size()));
+        store.finalize();
+
+        const MetadataConceptResolution gps
+            = resolve_metadata_concept(store, MetadataConceptKind::Gps);
+        const MetadataConceptCandidate* latitude
+            = find_role(gps, MetadataConceptRole::Latitude);
+        ASSERT_NE(latitude, nullptr);
+        EXPECT_EQ(latitude->entry_id, coordinate_id);
+        EXPECT_TRUE(contains_entry(latitude->source_entries, ref_id));
+        EXPECT_NEAR(latitude->numeric[0], -35.5, 1.0e-9);
+    }
+
+    TEST(MetadataConcepts, TrimsTrailingNulsFromExifDateTime)
+    {
+        MetaStore store;
+        static constexpr char kPaddedDateTime[] = "2024:04:19 12:34:56\0\0";
+        const EntryId date_id
+            = add_exif_text(&store, "ifd0", 0x0132U,
+                            std::string_view(kPaddedDateTime,
+                                             sizeof(kPaddedDateTime) - 1U));
+        store.finalize();
+
+        const MetadataConceptResolution date_time
+            = resolve_metadata_concept(store, MetadataConceptKind::DateTime);
+        const MetadataConceptCandidate* modified
+            = find_role(date_time, MetadataConceptRole::Modified);
+        ASSERT_NE(modified, nullptr);
+        EXPECT_EQ(modified->entry_id, date_id);
+        EXPECT_TRUE(modified->has_date_time);
+        EXPECT_EQ(modified->text, "2024:04:19 12:34:56");
+    }
+
+    TEST(MetadataConcepts, ResolvesAsciiByteExifDateTime)
+    {
+        MetaStore store;
+        static constexpr char kPaddedDateTime[] = "2024:04:19 12:34:56\0\0";
+        const EntryId date_id
+            = add_exif_bytes(&store, "exififd", 0x9004U,
+                             std::string_view(kPaddedDateTime,
+                                              sizeof(kPaddedDateTime) - 1U));
+        store.finalize();
+
+        const MetadataConceptResolution date_time
+            = resolve_metadata_concept(store, MetadataConceptKind::DateTime);
+        const MetadataConceptCandidate* digitized
+            = find_role(date_time, MetadataConceptRole::Digitized);
+        ASSERT_NE(digitized, nullptr);
+        EXPECT_EQ(digitized->entry_id, date_id);
+        EXPECT_TRUE(digitized->has_date_time);
+        EXPECT_EQ(digitized->text, "2024:04:19 12:34:56");
+    }
+
     TEST(MetadataConcepts, CombinesXmpGpsDateAndTimeStamp)
     {
         MetaStore store;
@@ -3358,6 +3461,28 @@ namespace {
         EXPECT_TRUE(candidate->preferred);
         EXPECT_EQ(candidate->family, MetadataConceptSourceFamily::Xmp);
         EXPECT_EQ(candidate->text, "Display P3");
+    }
+
+    TEST(MetadataConcepts, ResolvesXmpCreatorToolAsSourceSoftware)
+    {
+        MetaStore store;
+        const EntryId creator_tool
+            = add_xmp_text(&store, "http://ns.adobe.com/xap/1.0/",
+                           "CreatorTool", "OpenMeta Host");
+        store.finalize();
+
+        const MetadataConceptResolution descriptive
+            = resolve_metadata_concept(store, MetadataConceptKind::Descriptive);
+        const MetadataConceptCandidate* source_software
+            = find_record_role_scope(descriptive,
+                                     MetadataConceptRecordKind::SourceSoftware,
+                                     MetadataConceptRole::SoftwareAgent,
+                                     "SourceSoftware");
+        ASSERT_NE(source_software, nullptr);
+        EXPECT_EQ(source_software->entry_id, creator_tool);
+        EXPECT_EQ(source_software->text, "OpenMeta Host");
+        EXPECT_EQ(source_software->transfer_hint,
+                  MetadataConceptTransferHint::SourceBound);
     }
 
     TEST(MetadataConcepts, ResolvesSourceColorTransformAsRenderedUnsafe)

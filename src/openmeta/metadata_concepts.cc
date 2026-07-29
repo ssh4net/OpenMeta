@@ -638,6 +638,9 @@ namespace {
                 value.data.span);
             out->assign(reinterpret_cast<const char*>(bytes.data()),
                         bytes.size());
+            while (!out->empty() && out->back() == '\0') {
+                out->pop_back();
+            }
             return true;
         }
         if (value.kind != MetaValueKind::Scalar) {
@@ -661,6 +664,29 @@ namespace {
         }
         const std::span<const std::byte> bytes = arena.span(value.data.span);
         out->assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        return true;
+    }
+
+    static bool byte_value_to_ascii_field(const ByteArena& arena,
+                                          const MetaValue& value,
+                                          std::string* out)
+    {
+        if (!byte_value_to_text(arena, value, out)) {
+            return false;
+        }
+        while (!out->empty() && out->back() == '\0') {
+            out->pop_back();
+        }
+        if (out->empty()) {
+            return false;
+        }
+        for (size_t i = 0U; i < out->size(); ++i) {
+            const uint8_t c = static_cast<uint8_t>((*out)[i]);
+            if (c < 0x20U || c > 0x7eU) {
+                out->clear();
+                return false;
+            }
+        }
         return true;
     }
 
@@ -1855,7 +1881,8 @@ namespace {
             if (!exif_entry_ifd_and_tag(store, entry, ifd, tag)) {
                 continue;
             }
-            if (!value_to_text(store.arena(), entry.value, out)) {
+            if (!value_to_text(store.arena(), entry.value, out)
+                && !byte_value_to_ascii_field(store.arena(), entry.value, out)) {
                 continue;
             }
             if (out_id) {
@@ -2335,7 +2362,9 @@ namespace {
         }
 
         std::string text;
-        if (!value_to_text(store.arena(), entry.value, &text)) {
+        const bool byte_field = entry.value.kind == MetaValueKind::Bytes;
+        if (!value_to_text(store.arena(), entry.value, &text)
+            && !byte_value_to_ascii_field(store.arena(), entry.value, &text)) {
             return;
         }
         MetadataConceptCandidate candidate
@@ -2344,6 +2373,9 @@ namespace {
                                    MetadataQueryValueShape::Text, priority);
         candidate.text = text;
         if (!fill_datetime_from_text(text, &candidate)) {
+            if (byte_field) {
+                return;
+            }
             normalize_text_key(text, &candidate.value_key);
         } else {
             attach_exif_datetime_companions(store, offset_tag, subsecond_tag,
@@ -2643,10 +2675,7 @@ namespace {
 
     static bool is_raw_xmp_namespace(std::string_view ns) noexcept
     {
-        return ascii_contains_ci(ns, "camera-raw-settings")
-               || ascii_contains_ci(ns, "/crs/")
-               || ascii_contains_ci(ns, "photoshop/camera/raw")
-               || ascii_contains_ci(ns, "crs/1.0");
+        return ns == "http://ns.adobe.com/camera-raw-settings/1.0/";
     }
 
     static MetadataConceptRole
@@ -3425,6 +3454,29 @@ namespace {
         append_candidate(out, candidate);
     }
 
+    static void normalize_gps_coordinate_ref(std::string* ref, EntryId* ref_id,
+                                             char positive_ref,
+                                             char negative_ref)
+    {
+        if (!ref || !ref_id) {
+            return;
+        }
+        const std::string_view normalized = trim_ascii_field(*ref);
+        if (normalized.size() != 1U) {
+            ref->clear();
+            *ref_id = kInvalidEntryId;
+            return;
+        }
+        const char value = ascii_lower(normalized[0]);
+        if (value != ascii_lower(positive_ref)
+            && value != ascii_lower(negative_ref)) {
+            ref->clear();
+            *ref_id = kInvalidEntryId;
+            return;
+        }
+        ref->assign(normalized);
+    }
+
     static void append_exif_gps_candidate(const MetaStore& store, EntryId id,
                                           const Entry& entry,
                                           MetadataConceptResolution* out)
@@ -3439,6 +3491,7 @@ namespace {
             std::string ref;
             (void)find_exif_text_entry(store, "gpsifd", kGpsLatitudeRefTag,
                                        &ref_id, &ref);
+            normalize_gps_coordinate_ref(&ref, &ref_id, 'N', 'S');
             double value = 0.0;
             if (gps_coordinate_from_value(store, entry.value, ref, &value)) {
                 append_gps_numeric_candidate(store, id,
@@ -3450,6 +3503,7 @@ namespace {
             std::string ref;
             (void)find_exif_text_entry(store, "gpsifd", kGpsLongitudeRefTag,
                                        &ref_id, &ref);
+            normalize_gps_coordinate_ref(&ref, &ref_id, 'E', 'W');
             double value = 0.0;
             if (gps_coordinate_from_value(store, entry.value, ref, &value)) {
                 append_gps_numeric_candidate(store, id,
@@ -3461,6 +3515,7 @@ namespace {
             std::string ref;
             (void)find_exif_text_entry(store, "gpsifd", kGpsDestLatitudeRefTag,
                                        &ref_id, &ref);
+            normalize_gps_coordinate_ref(&ref, &ref_id, 'N', 'S');
             double value = 0.0;
             if (gps_coordinate_from_value(store, entry.value, ref, &value)) {
                 append_gps_numeric_candidate(
@@ -3472,6 +3527,7 @@ namespace {
             std::string ref;
             (void)find_exif_text_entry(store, "gpsifd", kGpsDestLongitudeRefTag,
                                        &ref_id, &ref);
+            normalize_gps_coordinate_ref(&ref, &ref_id, 'E', 'W');
             double value = 0.0;
             if (gps_coordinate_from_value(store, entry.value, ref, &value)) {
                 append_gps_numeric_candidate(
@@ -3511,7 +3567,10 @@ namespace {
         } else if (entry.key.data.exif_tag.tag == kGpsTimeStampTag
                    || entry.key.data.exif_tag.tag == kGpsDateStampTag) {
             std::string text;
-            if (!value_to_text(store.arena(), entry.value, &text)) {
+            const bool byte_field = entry.value.kind == MetaValueKind::Bytes;
+            if (!value_to_text(store.arena(), entry.value, &text)
+                && !byte_value_to_ascii_field(store.arena(), entry.value,
+                                              &text)) {
                 return;
             }
             MetadataConceptCandidate candidate
@@ -3521,6 +3580,9 @@ namespace {
                                        MetadataQueryValueShape::Text, 80U);
             candidate.text = text;
             if (!fill_datetime_from_text(text, &candidate)) {
+                if (byte_field) {
+                    return;
+                }
                 normalize_text_key(text, &candidate.value_key);
             }
             append_candidate(out, candidate);
@@ -3827,6 +3889,44 @@ namespace {
         append_candidate(out, candidate);
     }
 
+    static void
+    append_exif_gps_time_only_candidate(const MetaStore& store,
+                                        MetadataConceptResolution* out)
+    {
+        EntryId date_id = kInvalidEntryId;
+        std::string date_text;
+        if (find_exif_text_entry(store, "gpsifd", kGpsDateStampTag, &date_id,
+                                 &date_text)) {
+            MetadataConceptCandidate date_candidate;
+            if (fill_datetime_from_text(date_text, &date_candidate)) {
+                return;
+            }
+        }
+
+        EntryId time_id = kInvalidEntryId;
+        uint8_t hour    = 0U;
+        uint8_t minute  = 0U;
+        uint8_t second  = 0U;
+        if (!find_exif_time_entry(store, "gpsifd", kGpsTimeStampTag, &time_id,
+                                  &hour, &minute, &second)) {
+            return;
+        }
+
+        MetadataConceptCandidate candidate
+            = make_entry_candidate(store, time_id, MetadataConceptKind::Gps,
+                                   MetadataConceptRole::Timestamp,
+                                   MetadataQuerySemanticKind::Unknown,
+                                   MetadataQueryValueShape::Text, 75U);
+        char time_buf[16];
+        std::snprintf(time_buf, sizeof(time_buf), "%02u:%02u:%02uZ",
+                      static_cast<unsigned>(hour),
+                      static_cast<unsigned>(minute),
+                      static_cast<unsigned>(second));
+        candidate.text.assign(time_buf);
+        normalize_text_key(candidate.text, &candidate.value_key);
+        append_candidate(out, candidate);
+    }
+
     static bool find_xmp_text_entry_leaf(const MetaStore& store,
                                          std::string_view schema,
                                          std::string_view scope,
@@ -3945,6 +4045,7 @@ namespace {
             }
         }
         append_exif_gps_timestamp_composite(store, out);
+        append_exif_gps_time_only_candidate(store, out);
         append_xmp_gps_timestamp_composite(store, out);
     }
 
@@ -6048,7 +6149,11 @@ namespace {
             }
             priority = 92U;
         } else if (xmp_schema_matches(store, entry, kXmpBasicSchema)) {
-            if (ascii_equal_ci(leaf, "Identifier")) {
+            if (ascii_equal_ci(leaf, "CreatorTool")) {
+                role         = MetadataConceptRole::SoftwareAgent;
+                record_kind  = MetadataConceptRecordKind::SourceSoftware;
+                record_scope = "SourceSoftware";
+            } else if (ascii_equal_ci(leaf, "Identifier")) {
                 role         = MetadataConceptRole::ResourceIdentifier;
                 record_kind  = MetadataConceptRecordKind::ImageAsset;
                 record_scope = "ImageAsset";

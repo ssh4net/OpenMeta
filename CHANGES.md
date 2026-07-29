@@ -1,5 +1,48 @@
 # OpenMeta Changes
 
+## 0.4.87 - 2026-07-28
+
+Changes compared with `0.4.86`.
+
+### Added
+
+- Added explicit synthetic read-release gates for AVIF, GIF, JXL, and the
+  shared TIFF carrier used by Sony SR2/SRF metadata.
+- Added high-level prepared BMFF item/property payload emission through
+  `ExecutePreparedTransferOptions::emit_output_writer`, including deterministic
+  capacity preflight and emitted item/property summaries.
+
+### Changed
+
+- Read coverage documentation now distinguishes shared Sony TIFF-carrier
+  coverage from native legacy SR2/SRF private-structure coverage.
+
+## 0.4.86 - 2026-07-28
+
+Changes compared with `0.4.85`.
+
+### Added
+
+- Added stable URI-preserving identity for unknown nested XMP namespaces,
+  preventing equal local names from different namespaces from colliding.
+- Added standard EXIF/TIFF value names for YCbCr positioning, sensitivity
+  type, focal-plane units, sensing method, file source, scene type,
+  rendering controls, subject-distance range, additional compression modes,
+  photometric interpretations, and valid flash states.
+- Added source-software interpretation for XMP `CreatorTool`, exact Camera Raw
+  Settings source-processing classification, isolated EXIF GPS time
+  candidates, and validated ASCII-byte EXIF date/GPS field handling.
+
+### Changed
+
+- Nested XMP namespace path construction now preflights URI expansion and path
+  arithmetic before allocation.
+- Concept text strips trailing NUL padding without changing stored metadata
+  bytes, and Python text conversion preserves non-UTF-8 bytes through
+  `surrogateescape`.
+- Camera Raw Settings matching now requires the exact standard namespace
+  instead of accepting lookalike vendor namespace strings.
+
 ## 0.4.85 - 2026-07-28
 
 Changes compared with `0.4.84`.

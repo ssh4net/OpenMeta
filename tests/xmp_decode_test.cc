@@ -350,7 +350,8 @@ TEST(XmpDecodeTest, DecodesXmpMmPantryStructuredChildren)
           "xmlns:stRef='http://ns.adobe.com/xap/1.0/sType/ResourceRef#' "
           "xmlns:stEvt='http://ns.adobe.com/xap/1.0/sType/ResourceEvent#' "
           "xmlns:stVer='http://ns.adobe.com/xap/1.0/sType/Version#' "
-          "xmlns:vendor='https://example.invalid/xmp/vendor/'>"
+          "xmlns:vendor='https://example.invalid/xmp/vendor/' "
+          "xmlns:other='urn:openmeta:other'>"
           "<xmpMM:Pantry><rdf:Bag>"
           "<rdf:li rdf:parseType='Resource'>"
           "<xmpMM:InstanceID>uuid:pantry-1</xmpMM:InstanceID>"
@@ -372,6 +373,7 @@ TEST(XmpDecodeTest, DecodesXmpMmPantryStructuredChildren)
           "</rdf:li>"
           "</rdf:Seq></xmpMM:Versions>"
           "<vendor:Payload>opaque-vendor-data</vendor:Payload>"
+          "<other:Payload>other-vendor-data</other:Payload>"
           "</rdf:li>"
           "</rdf:Bag></xmpMM:Pantry>"
           "</rdf:Description>"
@@ -385,7 +387,7 @@ TEST(XmpDecodeTest, DecodesXmpMmPantryStructuredChildren)
     MetaStore store;
     const XmpDecodeResult r = decode_xmp_packet(bytes, store);
     EXPECT_EQ(r.status, XmpDecodeStatus::Ok);
-    EXPECT_EQ(r.entries_decoded, 7U);
+    EXPECT_EQ(r.entries_decoded, 8U);
 
     store.finalize();
 
@@ -414,7 +416,12 @@ TEST(XmpDecodeTest, DecodesXmpMmPantryStructuredChildren)
     expect_text("Pantry[1]/Versions[1]/stVer:comments", "Embedded component");
     expect_text("Pantry[1]/Versions[1]/stVer:event/stEvt:softwareAgent",
                 "Pantry Writer");
-    expect_text("Pantry[1]/ns:Payload", "opaque-vendor-data");
+    expect_text("Pantry[1]/"
+                "nsu_68747470733a2f2f6578616d706c652e696e76616c69642f786d702f"
+                "76656e646f722f:Payload",
+                "opaque-vendor-data");
+    expect_text("Pantry[1]/nsu_75726e3a6f70656e6d6574613a6f74686572:Payload",
+                "other-vendor-data");
 }
 
 TEST(XmpDecodeTest, DecodesLegacyUnqualifiedXmpMmStructuredChildren)

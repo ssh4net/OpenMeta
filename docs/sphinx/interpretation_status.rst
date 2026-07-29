@@ -6,7 +6,7 @@ meaningful interpretation. Interpretation means that decoded entries have
 stable names, typed values, semantic groups, query shapes, and transfer-safety
 classification that host applications can use directly.
 
-Current overall status: **high, about 98-99%** for the public target
+Current overall status: **high, measured above 99%** for the public target
 scope.
 This is intentionally lower than decode coverage. Decode parity only proves
 that metadata carriers and entries are visible; interpretation also requires
@@ -53,6 +53,15 @@ explicit outcome:
      - Duplicated cross-family concepts either have a documented precedence rule
        or surface enough source information for host conflict handling.
 
+Measured target audit
+---------------------
+
+The current target audit measures **99.85% interpretation coverage** and
+**99.77% query coverage**. The denominator contains only explicitly declared
+semantic targets. Unknown private numeric IDs and intentionally opaque
+payloads are reported separately, while malformed, undefined, and incomplete
+values remain visible as residual gaps instead of receiving guessed meanings.
+
 Coverage matrix
 ---------------
 
@@ -73,9 +82,9 @@ Coverage matrix
        correction/noise status values, and raw exposure-adjustment records now
        flow into concept candidates or stable display helpers where
        appropriate.
-     - High, about 93-96%.
-     - More enum-style human-readable values and richer conflict handling
-       between duplicated families.
+     - High, above 99% for declared enum targets.
+     - Undefined enum codes and malformed field encodings intentionally remain
+       raw.
    * - ICC profiles
      - ICC header/tag table decode plus interpreted ``desc``, text,
        signatures, XYZ, curves, named-color, measurement, viewing-condition,
@@ -110,7 +119,11 @@ Coverage matrix
        creator contacts, events, people, organizations, products,
        artwork/objects, encoded rights expressions, PLUS parties/assets/
        license policy, and model/property releases with record kind, record
-       scope, language, transfer hint, and independent sensitivity.
+       scope, language, transfer hint, and independent sensitivity. XMP
+       ``CreatorTool`` is interpreted as source software, Camera Raw Settings
+       requires the exact standard namespace, and unknown nested namespaces
+       retain full URI identity in collision-safe
+       ``nsu_<namespace-uri-hex>:`` path segments.
      - High, about 99%.
      - Deliberately unmodeled arbitrary pantry payloads and undocumented
        extension datasets remain bounded raw metadata.
@@ -360,9 +373,9 @@ Coverage matrix
        grouped value vectors, transfer hints, RAW applicability states,
        rendered/compatible safety booleans, and tolerance-aware
        GPS/exposure/color/geometry conflicts.
-     - High, about 99%.
-     - More long-tail per-model concept aliases, nested descriptive
-       structures, and richer localized policy wording.
+     - High, measured about 99.77% for declared targets.
+     - Incomplete GPS tuples, malformed dates, and undefined values remain
+       inspection data rather than normalized candidates.
    * - Transfer-safety classification
      - Compatible-file versus rendered-image safety policies classify
        source-specific image geometry, color/profile, RAW curves/linearity

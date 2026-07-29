@@ -47,6 +47,10 @@ Current tracked-gate status:
   XMP packets using alternate `xmpmeta` namespace prefixes.
 - BMFF edge-path tests include `iloc` construction-method-2 relation variants
   and safe-skip handling for invalid references.
+- Dedicated synthetic read-release gates decode metadata from AVIF, GIF, and
+  JXL containers. Separate SR2/SRF gates exercise their shared TIFF metadata
+  carrier only; they do not claim native legacy SR2/SRF private-structure
+  coverage.
 
 ## Container Coverage
 
@@ -70,7 +74,7 @@ Current tracked-gate status:
 | --- | --- | --- | --- | --- |
 | EXIF (`MetaKeyKind::ExifTag`) | Yes | Yes | Yes | Standard EXIF plus pointer IFDs, including current EXIF 3.1 learning/development/correction/noise tag names and bounded correction/noise value labels |
 | MakerNote | Partial / Yes | Partial / Yes | Lossless yes; portable limited | Broad vendor coverage; unknown tags may remain raw; selected version/firmware payloads, live-vendor scalar fields, Fujifilm flash white-balance and native RAF firmware names, selected Sony correction-offset routes, Reconyx scalar/string-coded fields, Microsoft stitch fields, Nintendo category fields, Sanyo public-context scalar fields, current Canon RF/Nikon Z lens labels, and an ambiguous Pentax Sigma/Samsung/Tokina lens-family label have bounded display helpers |
-| XMP (`MetaKeyKind::XmpProperty`) | Yes | Native schema/path | Yes | Requires Expat at build time; known nested namespaces use portable prefixes and unknown nested namespaces use the collision-safe `ns:` marker |
+| XMP (`MetaKeyKind::XmpProperty`) | Yes | Native schema/path | Yes | Requires Expat at build time; known nested namespaces use portable prefixes and unknown nested namespaces use a collision-safe `nsu_<namespace-uri-hex>:` segment that preserves full namespace identity |
 | ICC (`IccHeaderField`, `IccTag`) | Yes | Yes | Yes | Header fields plus tag table; raw tag payload preserved |
 | IPTC-IIM (`IptcDataset`) | Yes | Yes | Yes | Raw dataset bytes preserved |
 | Photoshop IRB (`PhotoshopIrb`) | Yes | Partial / Yes | Yes | Raw resources preserved, bounded interpreted subset, fixed-layout, Lightroom workflow, IPTC-NAA byte count, working-path and numbered clipping-path record summaries, descriptor-header, scalar/class/alias/reference, enum, and nested list/object summaries, embedded IPTC/XMP/ICC decode |

@@ -28714,8 +28714,56 @@ namespace {
             case TransferTargetFormat::Avif:
             case TransferTargetFormat::Cr3: {
                 if (options.emit_output_writer) {
-                    out.emit = skipped_emit_result(
-                        "emit_output_writer is not supported for bmff targets");
+                    PreparedTransferPackagePlan package;
+                    out.emit = build_prepared_transfer_emit_package(
+                        *bundle, &package, effective_plan->emit);
+                    if (out.emit.status != TransferStatus::Ok) {
+                        break;
+                    }
+
+                    const uint64_t writer_hint
+                        = options.emit_output_writer->remaining_capacity_hint();
+                    if (writer_hint != UINT64_MAX) {
+                        uint64_t needed_bytes = package.output_size;
+                        if (emit_repeat != 0U
+                            && needed_bytes > (UINT64_MAX / emit_repeat)) {
+                            out.emit.status = TransferStatus::LimitExceeded;
+                            out.emit.code = EmitTransferCode::BackendWriteFailed;
+                            out.emit.errors = 1U;
+                            out.emit.message
+                                = "emit_output_writer capacity exceeded";
+                            break;
+                        }
+                        needed_bytes *= emit_repeat;
+                        if (needed_bytes > writer_hint) {
+                            out.emit.status = TransferStatus::LimitExceeded;
+                            out.emit.code = EmitTransferCode::BackendWriteFailed;
+                            out.emit.errors = 1U;
+                            out.emit.message
+                                = "emit_output_writer capacity exceeded";
+                            break;
+                        }
+                    }
+
+                    CountingTransferByteWriter writer(
+                        *options.emit_output_writer);
+                    const std::span<const std::byte> empty_input;
+                    for (uint32_t rep = 0; rep < emit_repeat; ++rep) {
+                        out.emit = write_prepared_transfer_package(empty_input,
+                                                                   *bundle,
+                                                                   package,
+                                                                   writer);
+                        if (out.emit.status != TransferStatus::Ok) {
+                            break;
+                        }
+                    }
+                    out.emit_output_size = writer.bytes_written();
+                    if (out.emit.status == TransferStatus::Ok) {
+                        build_bmff_emit_summary_from_plan(
+                            *bundle, effective_plan->bmff_emit,
+                            effective_plan->emit, emit_repeat,
+                            &out.bmff_item_summary, &out.bmff_property_summary);
+                    }
                 } else {
                     ExecuteRecordingBmffEmitter emitter;
                     emitter.reset();

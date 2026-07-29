@@ -22,8 +22,23 @@ tiff_compression_name(uint64_t value) noexcept
     case 8U: return "Adobe Deflate";
     case 9U: return "JBIG B&W or VC-5";
     case 10U: return "JBIG Color";
+    case 32766U: return "NeXT or Sony ARW Compressed 2";
+    case 32767U: return "Sony ARW Compressed";
+    case 32769U: return "Packed RAW";
     case 32770U: return "Samsung SRW Compressed";
+    case 32772U: return "Samsung SRW Compressed 2";
     case 32773U: return "PackBits";
+    case 32867U: return "Kodak KDC Compressed";
+    case 32946U: return "Deflate";
+    case 34712U: return "JPEG 2000";
+    case 34713U: return "Nikon NEF Compressed";
+    case 34892U: return "Lossy JPEG";
+    case 50000U: return "Zstd";
+    case 50001U: return "WebP";
+    case 50002U: return "JPEG XL (old)";
+    case 52546U: return "JPEG XL";
+    case 65000U: return "Kodak DCR Compressed";
+    case 65535U: return "Pentax PEF Compressed";
     default: return "";
     }
 }
@@ -45,7 +60,10 @@ tiff_photometric_interpretation_name(uint64_t value) noexcept
     case 32803U: return "Color Filter Array";
     case 32844U: return "Pixar LogL";
     case 32845U: return "Pixar LogLuv";
+    case 32892U: return "Sequential Color Filter";
     case 34892U: return "Linear Raw";
+    case 51177U: return "Depth Map";
+    case 52527U: return "Semantic Mask";
     default: return "";
     }
 }
@@ -67,6 +85,16 @@ tiff_resolution_unit_name(uint64_t value) noexcept
     case 1U: return "None";
     case 2U: return "inches";
     case 3U: return "cm";
+    default: return "";
+    }
+}
+
+const char*
+tiff_ycbcr_positioning_name(uint64_t value) noexcept
+{
+    switch (value) {
+    case 1U: return "Centered";
+    case 2U: return "Co-sited";
     default: return "";
     }
 }
@@ -169,12 +197,21 @@ exif_flash_name(uint64_t value) noexcept
     case 13U: return "On, return not detected";
     case 15U: return "On, return detected";
     case 16U: return "Off, did not fire";
+    case 20U: return "Off, did not fire, return not detected";
     case 24U: return "Auto, did not fire";
     case 25U: return "Auto, fired";
     case 29U: return "Auto, fired, return not detected";
     case 31U: return "Auto, fired, return detected";
     case 32U: return "No flash function";
+    case 48U: return "Off, no flash function";
     case 65U: return "Fired, red-eye reduction";
+    case 69U: return "Fired, red-eye reduction, return not detected";
+    case 71U: return "Fired, red-eye reduction, return detected";
+    case 73U: return "On, red-eye reduction";
+    case 77U: return "On, red-eye reduction, return not detected";
+    case 79U: return "On, red-eye reduction, return detected";
+    case 80U: return "Off, red-eye reduction";
+    case 88U: return "Auto, did not fire, red-eye reduction";
     case 89U: return "Auto, fired, red-eye reduction";
     case 93U: return "Auto, fired, red-eye reduction, return not detected";
     case 95U: return "Auto, fired, red-eye reduction, return detected";
@@ -224,6 +261,123 @@ exif_gain_control_name(uint64_t value) noexcept
     case 2U: return "High gain up";
     case 3U: return "Low gain down";
     case 4U: return "High gain down";
+    default: return "";
+    }
+}
+
+const char*
+exif_sensitivity_type_name(uint64_t value) noexcept
+{
+    switch (value) {
+    case 0U: return "Unknown";
+    case 1U: return "Standard output sensitivity";
+    case 2U: return "Recommended exposure index";
+    case 3U: return "ISO speed";
+    case 4U:
+        return "Standard output sensitivity and recommended exposure index";
+    case 5U: return "Standard output sensitivity and ISO speed";
+    case 6U: return "Recommended exposure index and ISO speed";
+    case 7U:
+        return "Standard output sensitivity, recommended exposure index, and "
+               "ISO speed";
+    default: return "";
+    }
+}
+
+const char*
+exif_focal_plane_resolution_unit_name(uint64_t value) noexcept
+{
+    switch (value) {
+    case 1U: return "None";
+    case 2U: return "inches";
+    case 3U: return "cm";
+    case 4U: return "mm";
+    case 5U: return "micrometers";
+    default: return "";
+    }
+}
+
+const char*
+exif_sensing_method_name(uint64_t value) noexcept
+{
+    switch (value) {
+    case 1U: return "Not defined";
+    case 2U: return "One-chip color area";
+    case 3U: return "Two-chip color area";
+    case 4U: return "Three-chip color area";
+    case 5U: return "Color sequential area";
+    case 7U: return "Trilinear";
+    case 8U: return "Color sequential linear";
+    default: return "";
+    }
+}
+
+const char*
+exif_file_source_name(uint64_t value) noexcept
+{
+    switch (value) {
+    case 1U: return "Film scanner";
+    case 2U: return "Reflection print scanner";
+    case 3U: return "Digital camera";
+    default: return "";
+    }
+}
+
+const char*
+exif_scene_type_name(uint64_t value) noexcept
+{
+    switch (value) {
+    case 1U: return "Directly photographed";
+    default: return "";
+    }
+}
+
+const char*
+exif_custom_rendered_name(uint64_t value) noexcept
+{
+    switch (value) {
+    case 0U: return "Normal";
+    case 1U: return "Custom";
+    default: return "";
+    }
+}
+
+const char*
+exif_contrast_name(uint64_t value) noexcept
+{
+    switch (value) {
+    case 0U: return "Normal";
+    case 1U: return "Low";
+    case 2U: return "High";
+    default: return "";
+    }
+}
+
+const char*
+exif_saturation_name(uint64_t value) noexcept
+{
+    return exif_contrast_name(value);
+}
+
+const char*
+exif_sharpness_name(uint64_t value) noexcept
+{
+    switch (value) {
+    case 0U: return "Normal";
+    case 1U: return "Soft";
+    case 2U: return "Hard";
+    default: return "";
+    }
+}
+
+const char*
+exif_subject_distance_range_name(uint64_t value) noexcept
+{
+    switch (value) {
+    case 0U: return "Unknown";
+    case 1U: return "Macro";
+    case 2U: return "Close";
+    case 3U: return "Distant";
     default: return "";
     }
 }
@@ -7449,6 +7603,21 @@ append_char(char* out, std::size_t out_size, std::size_t* pos,
 }
 
 static bool
+copy_format_text(std::string_view value, char* out,
+                 std::size_t out_size) noexcept
+{
+    clear_format_output(out, out_size);
+    if (out == nullptr || value.empty() || value.size() >= out_size) {
+        return false;
+    }
+    for (std::size_t i = 0U; i < value.size(); ++i) {
+        out[i] = value[i];
+    }
+    out[value.size()] = '\0';
+    return true;
+}
+
+static bool
 append_decimal(char* out, std::size_t out_size, std::size_t* pos,
                uint64_t value, unsigned min_digits) noexcept
 {
@@ -7674,6 +7843,15 @@ exif_tag_byte_value_format(std::string_view ifd, uint16_t tag,
                            std::size_t out_size) noexcept
 {
     clear_format_output(out, out_size);
+    if (value.size() == 1U && !is_makernote_ifd(ifd)) {
+        const uint64_t numeric = static_cast<uint64_t>(
+            std::to_integer<unsigned char>(value[0]));
+        const std::string_view label = exif_tag_numeric_value_name(ifd, tag,
+                                                                   numeric);
+        if (!label.empty()) {
+            return copy_format_text(label, out, out_size);
+        }
+    }
     if (!is_standard_byte_version_tag(ifd, tag)
         && !is_nikon_version_like_tag(ifd, tag)) {
         return false;
@@ -7696,15 +7874,28 @@ exif_tag_numeric_value_name(std::string_view ifd, uint16_t tag,
     case 0x0106U: return tiff_photometric_interpretation_name(value);
     case 0x011CU: return tiff_planar_configuration_name(value);
     case 0x0128U: return tiff_resolution_unit_name(value);
+    case 0x0213U: return tiff_ycbcr_positioning_name(value);
     case 0x8822U: return exif_exposure_program_name(value);
+    case 0x8830U: return exif_sensitivity_type_name(value);
     case 0x9207U: return exif_metering_mode_name(value);
     case 0x9208U: return exif_light_source_name(value);
     case 0x9209U: return exif_flash_name(value);
+    case 0x9210U:
+    case 0xA210U: return exif_focal_plane_resolution_unit_name(value);
+    case 0x9217U:
+    case 0xA217U: return exif_sensing_method_name(value);
     case 0xA001U: return exif_color_space_name(value);
+    case 0xA300U: return exif_file_source_name(value);
+    case 0xA301U: return exif_scene_type_name(value);
+    case 0xA401U: return exif_custom_rendered_name(value);
     case 0xA402U: return exif_exposure_mode_name(value);
     case 0xA403U: return exif_white_balance_name(value);
     case 0xA406U: return exif_scene_capture_type_name(value);
     case 0xA407U: return exif_gain_control_name(value);
+    case 0xA408U: return exif_contrast_name(value);
+    case 0xA409U: return exif_saturation_name(value);
+    case 0xA40AU: return exif_sharpness_name(value);
+    case 0xA40CU: return exif_subject_distance_range_name(value);
     case 0xA40FU:
     case 0xA410U:
     case 0xA411U: return exif_lens_correction_name(value);

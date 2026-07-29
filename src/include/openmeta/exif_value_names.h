@@ -28,6 +28,9 @@ const char*
 tiff_resolution_unit_name(uint64_t value) noexcept;
 
 const char*
+tiff_ycbcr_positioning_name(uint64_t value) noexcept;
+
+const char*
 exif_exposure_program_name(uint64_t value) noexcept;
 
 const char*
@@ -53,6 +56,36 @@ exif_scene_capture_type_name(uint64_t value) noexcept;
 
 const char*
 exif_gain_control_name(uint64_t value) noexcept;
+
+const char*
+exif_sensitivity_type_name(uint64_t value) noexcept;
+
+const char*
+exif_focal_plane_resolution_unit_name(uint64_t value) noexcept;
+
+const char*
+exif_sensing_method_name(uint64_t value) noexcept;
+
+const char*
+exif_file_source_name(uint64_t value) noexcept;
+
+const char*
+exif_scene_type_name(uint64_t value) noexcept;
+
+const char*
+exif_custom_rendered_name(uint64_t value) noexcept;
+
+const char*
+exif_contrast_name(uint64_t value) noexcept;
+
+const char*
+exif_saturation_name(uint64_t value) noexcept;
+
+const char*
+exif_sharpness_name(uint64_t value) noexcept;
+
+const char*
+exif_subject_distance_range_name(uint64_t value) noexcept;
 
 const char*
 dng_cfa_layout_name(uint64_t value) noexcept;
@@ -86,12 +119,13 @@ exif_tag_numeric_value_format(std::string_view ifd, uint16_t tag,
                               std::size_t out_size) noexcept;
 
 /**
- * \brief Formats selected version/firmware-style byte payloads.
+ * \brief Formats selected one-byte enums and version/firmware-style payloads.
  *
- * Printable ASCII payloads are copied after NUL/space trimming. Non-text byte
- * payloads are formatted as bounded dotted decimal bytes only for version-like
- * contexts. Returns false when the context is unsupported or the output buffer
- * is too small; in both cases the output buffer is cleared when possible.
+ * Stable standard enum labels are emitted for one-byte payloads. Printable
+ * ASCII payloads are copied after NUL/space trimming. Other payloads are
+ * formatted as bounded dotted decimal bytes only for version-like contexts.
+ * Returns false when the context is unsupported or the output buffer is too
+ * small; in both cases the output buffer is cleared when possible.
  */
 bool
 exif_tag_byte_value_format(std::string_view ifd, uint16_t tag,

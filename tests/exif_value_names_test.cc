@@ -15,13 +15,19 @@ namespace {
         EXPECT_STREQ(tiff_compression_name(1U), "Uncompressed");
         EXPECT_STREQ(tiff_compression_name(8U), "Adobe Deflate");
         EXPECT_STREQ(tiff_compression_name(9U), "JBIG B&W or VC-5");
+        EXPECT_STREQ(tiff_compression_name(34713U), "Nikon NEF Compressed");
+        EXPECT_STREQ(tiff_compression_name(34892U), "Lossy JPEG");
+        EXPECT_STREQ(tiff_compression_name(32767U), "Sony ARW Compressed");
+        EXPECT_STREQ(tiff_compression_name(52546U), "JPEG XL");
         EXPECT_STREQ(tiff_photometric_interpretation_name(2U), "RGB");
         EXPECT_STREQ(tiff_photometric_interpretation_name(32803U),
                      "Color Filter Array");
+        EXPECT_STREQ(tiff_photometric_interpretation_name(32892U),
+                     "Sequential Color Filter");
         EXPECT_STREQ(tiff_planar_configuration_name(1U), "Chunky");
         EXPECT_STREQ(tiff_planar_configuration_name(2U), "Planar");
         EXPECT_STREQ(tiff_resolution_unit_name(3U), "cm");
-        EXPECT_STREQ(tiff_compression_name(65535U), "");
+        EXPECT_STREQ(tiff_compression_name(65534U), "");
     }
 
     TEST(ExifValueNames, MapsStandardExifEnums)
@@ -34,6 +40,10 @@ namespace {
         EXPECT_STREQ(exif_light_source_name(30U), "Daylight LED");
         EXPECT_STREQ(exif_light_source_name(34U), "Warm white LED");
         EXPECT_STREQ(exif_flash_name(25U), "Auto, fired");
+        EXPECT_STREQ(exif_flash_name(20U),
+                     "Off, did not fire, return not detected");
+        EXPECT_STREQ(exif_flash_name(88U),
+                     "Auto, did not fire, red-eye reduction");
         EXPECT_STREQ(exif_color_space_name(1U), "sRGB");
         EXPECT_STREQ(exif_color_space_name(0xFFFFU), "Uncalibrated");
         EXPECT_STREQ(exif_white_balance_name(1U), "Manual");
@@ -41,6 +51,17 @@ namespace {
         EXPECT_STREQ(exif_scene_capture_type_name(2U), "Portrait");
         EXPECT_STREQ(exif_scene_capture_type_name(3U), "Night");
         EXPECT_STREQ(exif_gain_control_name(2U), "High gain up");
+        EXPECT_STREQ(tiff_ycbcr_positioning_name(2U), "Co-sited");
+        EXPECT_STREQ(exif_sensitivity_type_name(3U), "ISO speed");
+        EXPECT_STREQ(exif_focal_plane_resolution_unit_name(5U), "micrometers");
+        EXPECT_STREQ(exif_sensing_method_name(2U), "One-chip color area");
+        EXPECT_STREQ(exif_file_source_name(3U), "Digital camera");
+        EXPECT_STREQ(exif_scene_type_name(1U), "Directly photographed");
+        EXPECT_STREQ(exif_custom_rendered_name(1U), "Custom");
+        EXPECT_STREQ(exif_contrast_name(1U), "Low");
+        EXPECT_STREQ(exif_saturation_name(2U), "High");
+        EXPECT_STREQ(exif_sharpness_name(1U), "Soft");
+        EXPECT_STREQ(exif_subject_distance_range_name(3U), "Distant");
         EXPECT_STREQ(exif_exposure_mode_name(42U), "");
         EXPECT_STREQ(exif_metering_mode_name(42U), "");
     }
@@ -66,6 +87,16 @@ namespace {
                      "High strength");
         EXPECT_STREQ(exif_tag_numeric_value_name("ifd0", 0xC617U, 1U),
                      "Rectangular");
+        EXPECT_STREQ(exif_tag_numeric_value_name("ifd0", 0x0213U, 1U),
+                     "Centered");
+        EXPECT_STREQ(exif_tag_numeric_value_name("exififd", 0x8830U, 6U),
+                     "Recommended exposure index and ISO speed");
+        EXPECT_STREQ(exif_tag_numeric_value_name("exififd", 0xA217U, 8U),
+                     "Color sequential linear");
+        EXPECT_STREQ(exif_tag_numeric_value_name("exififd", 0xA401U, 0U),
+                     "Normal");
+        EXPECT_STREQ(exif_tag_numeric_value_name("exififd", 0xA40AU, 2U),
+                     "Hard");
         EXPECT_STREQ(exif_tag_numeric_value_name("ifd0", 0x9999U, 1U), "");
     }
 
@@ -139,6 +170,20 @@ namespace {
                                                 dotted_version, tiny,
                                                 sizeof(tiny)));
         EXPECT_STREQ(tiny, "");
+    }
+
+    TEST(ExifValueNames, FormatsStandardByteEnums)
+    {
+        const std::array<std::byte, 1> file_source = { std::byte { 3U } };
+        const std::array<std::byte, 1> scene_type  = { std::byte { 1U } };
+        char out[64];
+
+        EXPECT_TRUE(exif_tag_byte_value_format("exififd", 0xA300U, file_source,
+                                               out, sizeof(out)));
+        EXPECT_STREQ(out, "Digital camera");
+        EXPECT_TRUE(exif_tag_byte_value_format("exififd", 0xA301U, scene_type,
+                                               out, sizeof(out)));
+        EXPECT_STREQ(out, "Directly photographed");
     }
 
     TEST(ExifValueNames, DispatchesCanonMakerNoteCameraSettingsEnums)

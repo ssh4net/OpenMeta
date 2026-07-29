@@ -58,7 +58,7 @@ The first public write-side sync controls are also in place:
 | WebP | Bounded but real | Prepared bundle, compiled emit, bounded chunk rewrite/edit, file-helper roundtrip | Not a general WebP chunk editor |
 | JP2 | Bounded but real | Prepared bundle, compiled emit, bounded box rewrite/edit, file-helper roundtrip | `jp2h` synthesis is still out of scope |
 | JXL | Bounded but real | Prepared bundle, compiled emit, bounded box rewrite/edit, file-helper roundtrip | Still narrower than JPEG/TIFF |
-| HEIF / AVIF / CR3 | Bounded but real | Prepared bundle, compiled emit, OpenMeta-managed BMFF item/property edit, constrained foreign-`meta` item merge/replacement/strip plus bounded ICC property merge, file-helper roundtrip | Not broad BMFF writer parity; arbitrary foreign `meta` scene/property-graph rewrite is still unsupported |
+| HEIF / AVIF / CR3 | Bounded but real | Prepared bundle, compiled emit, direct prepared item/property payload byte-writer handoff, OpenMeta-managed BMFF item/property edit, constrained foreign-`meta` item merge/replacement/strip plus bounded ICC property merge, file-helper roundtrip | Direct payload output is a host handoff rather than a standalone BMFF file; arbitrary foreign `meta` scene/property-graph rewrite is still unsupported |
 | EXR | Bounded but real | Prepared bundle, compiled emit, direct backend attribute emit, prepared-bundle to `ExrAdapterBatch` bridge, CLI/Python transfer surface | No file rewrite/edit path yet; current transfer payload is safe string attributes only |
 
 ## What Is Already Implemented
@@ -114,8 +114,9 @@ OpenMeta now has explicit end-to-end read-backed transfer tests for:
   external validation when local HEIF/AVIF/CR3 encoders can create usable
   targets
 - direct BMFF package planning/writing for prepared metadata items and bounded
-  ICC `colr/prof` property payloads, plus owned package replay for constrained
-  foreign-`meta` graph merges
+  ICC `colr/prof` property payloads, high-level byte-writer handoff with
+  capacity preflight and item/property summaries, plus owned package replay for
+  constrained foreign-`meta` graph merges
 - source XMP -> bounded BMFF XMP item edit/apply -> read-back and external
   validation on configured HEIF/AVIF/CR3 targets where local tools expose the
   transferred XMP payload

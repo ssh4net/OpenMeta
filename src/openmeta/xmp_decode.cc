@@ -379,6 +379,60 @@ namespace {
         }
     }
 
+    static bool assign_unknown_nested_segment(Ctx* ctx,
+                                              std::string_view namespace_uri,
+                                              std::string_view local,
+                                              std::string* out) noexcept
+    {
+        if (!ctx || !out) {
+            return false;
+        }
+
+        constexpr char kHex[]           = "0123456789abcdef";
+        constexpr uint64_t kMarkerBytes = 4U;
+        const uint64_t uri_bytes = static_cast<uint64_t>(namespace_uri.size());
+        const uint64_t local_bytes = static_cast<uint64_t>(local.size());
+        if (local_bytes > UINT64_MAX - kMarkerBytes - 1U) {
+            stop_parser(ctx, XmpDecodeStatus::LimitExceeded);
+            return false;
+        }
+        const uint64_t fixed_bytes = kMarkerBytes + 1U + local_bytes;
+        if (uri_bytes > (UINT64_MAX - fixed_bytes) / 2U) {
+            stop_parser(ctx, XmpDecodeStatus::LimitExceeded);
+            return false;
+        }
+        const uint64_t segment_bytes = fixed_bytes + uri_bytes * 2U;
+        uint64_t path_bytes          = static_cast<uint64_t>(ctx->path.size());
+        if (!ctx->path.empty()) {
+            if (path_bytes == UINT64_MAX) {
+                stop_parser(ctx, XmpDecodeStatus::LimitExceeded);
+                return false;
+            }
+            path_bytes += 1U;
+        }
+        const uint32_t max_path = ctx->options.limits.max_path_bytes;
+        if (segment_bytes > static_cast<uint64_t>(SIZE_MAX)
+            || path_bytes > UINT64_MAX - segment_bytes
+            || (max_path != 0U
+                && path_bytes + segment_bytes
+                       > static_cast<uint64_t>(max_path))) {
+            stop_parser(ctx, XmpDecodeStatus::LimitExceeded);
+            return false;
+        }
+
+        out->clear();
+        out->reserve(static_cast<size_t>(segment_bytes));
+        out->assign("nsu_");
+        for (size_t i = 0; i < namespace_uri.size(); ++i) {
+            const uint8_t c = static_cast<uint8_t>(namespace_uri[i]);
+            out->push_back(kHex[(c >> 4U) & 0x0FU]);
+            out->push_back(kHex[c & 0x0FU]);
+        }
+        out->push_back(':');
+        out->append(local.data(), local.size());
+        return true;
+    }
+
 
     static void XMLCALL start_doctype_decl(void* user_data,
                                            const XML_Char* /*doctype_name*/,
@@ -644,7 +698,12 @@ namespace {
                 std::string_view nested_prefix
                     = portable_nested_prefix_for_xmp_ns(parts.uri);
                 if (nested_prefix.empty() && !parts.uri.empty()) {
-                    nested_prefix = "ns";
+                    if (!assign_unknown_nested_segment(ctx, parts.uri,
+                                                       parts.local,
+                                                       &qualified_seg)) {
+                        return;
+                    }
+                    seg = qualified_seg;
                 }
                 if (!nested_prefix.empty()) {
                     qualified_seg.reserve(nested_prefix.size() + 1U

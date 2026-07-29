@@ -145,6 +145,10 @@ For the public per-target preserve/replace guarantees, see
   `write_prepared_transfer_package(...)` can serialize direct BMFF item and
   property payload bytes from prepared bundles. This is a host/adapter payload
   handoff, not a standalone BMFF file rewrite.
+- `execute_prepared_transfer(...)` exposes that same bounded payload sequence
+  through `ExecutePreparedTransferOptions::emit_output_writer`, with capacity
+  preflight and BMFF item/property summaries. The output remains a host handoff,
+  not a standalone BMFF container.
 - The shared package-batch persistence/replay layer can own and hand off
   stable BMFF item and property payload bytes.
 - `metatransfer` / `openmeta.transfer_probe(...)` expose BMFF summaries,

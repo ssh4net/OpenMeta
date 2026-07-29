@@ -59,6 +59,8 @@ namespace {
         = "http://ns.adobe.com/photoshop/1.0/";
     static constexpr std::string_view kXmpBasicSchema
         = "http://ns.adobe.com/xap/1.0/";
+    static constexpr std::string_view kCameraRawSettingsXmpSchema
+        = "http://ns.adobe.com/camera-raw-settings/1.0/";
     static constexpr std::string_view kXmpMmSchema
         = "http://ns.adobe.com/xap/1.0/mm/";
     static constexpr std::string_view kIptcCoreXmpSchema
@@ -1741,8 +1743,7 @@ namespace {
     static bool
     xmp_namespace_is_camera_raw_settings(std::string_view ns) noexcept
     {
-        return contains_ascii_case_insensitive(ns, "camera-raw-settings")
-               || contains_ascii_case_insensitive(ns, "/crs/");
+        return ns == kCameraRawSettingsXmpSchema;
     }
 
     static uint32_t
@@ -2610,6 +2611,12 @@ namespace {
             terms = xmp_descriptive_terms(path, &provenance);
         } else {
             terms = match_terms_for_kind(path, ns, kind, true, &provenance);
+        }
+        if (kind == MetadataQueryKind::RawProcessing
+            && xmp_namespace_is_camera_raw_settings(ns)) {
+            note_exact_match(&provenance);
+            terms |= static_cast<uint32_t>(
+                MetadataQueryMatchTerm::SourceProcessing);
         }
         MetadataQuerySemanticKind explicit_semantic
             = MetadataQuerySemanticKind::Unknown;

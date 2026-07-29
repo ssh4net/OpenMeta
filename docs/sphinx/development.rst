@@ -75,7 +75,7 @@ model should stay compact:
        and independent privacy/policy sensitivity,
        computational, thermal, stitch/panorama capture state, and
        vendor-private fields.
-     - High, about 99%.
+     - High, measured about 99.85% for declared semantic targets.
    * - Query
      - Find entries by name, fuzzy term, or semantic group, then expose
        normalized query candidates, structured interpretation records, and
@@ -90,7 +90,7 @@ model should stay compact:
        lens-correction, computational/thermal/stitch, and RAW/source-processing
        fields plus BMFF derived-image construction and tiled-image configuration
        evidence across standard and vendor metadata.
-     - High, about 99%.
+     - High, measured about 99.77% for declared query targets.
    * - Creation
      - Build fresh metadata entries from host-provided values.
      - Medium, about 55-65%.
@@ -118,6 +118,14 @@ model should stay compact:
        dumps, safety audits, tag-name lookup, version-value formatting, and
        orientation conversion.
      - Medium, about 65-75%.
+
+The measured interpretation and query values use explicit target sets.
+Unknown private numeric IDs and intentionally opaque payloads are tracked
+separately rather than counted as failed semantics. The remaining measured
+tail is primarily malformed, undefined, or incomplete metadata. Decoding
+retains a ``98-100%`` range because not every declared container lane has an
+independent conformance sample set, even though tracked inputs have explicit
+read outcomes.
 
 Query results should expose both inspection-level matches and interpreted
 candidates. A crop query, for example, may match separate

@@ -1523,6 +1523,8 @@ struct ExecutePreparedTransferOptions final {
 
     EmitTransferOptions emit;
     uint32_t emit_repeat                   = 1;
+    /// Optional metadata-only sink. BMFF targets write an ordered
+    /// item/property payload handoff, not a standalone BMFF container.
     TransferByteWriter* emit_output_writer = nullptr;
 
     bool edit_requested                    = false;
