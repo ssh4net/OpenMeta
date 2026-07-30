@@ -156,13 +156,10 @@ without treating them as portable rendered-image color or profile metadata.
 bounded EXIF/IPTC/XMP reconciliation view for common descriptive fields:
 title/headline, description/caption, creator/author, keywords/subject, and
 IPTC created/digital-creation date-time evidence.
-These helpers use deterministic built-in name/tag
-matching by default. If OpenMeta is configured with
-`-DOPENMETA_ENABLE_RAPIDFUZZ=ON`, the same query helpers also use RapidFuzz to
-match near-miss property names such as misspelled crop/border/padding paths.
-Every raw query match carries `exact_match`, `fuzzy_match`, and `fuzzy_score`
-fields, so inspection UI can label near-miss results separately from exact
-tag/name hits.
+These helpers use deterministic built-in name, namespace, and tag matching.
+Every raw query match retains `exact_match`, `fuzzy_match`, and `fuzzy_score`
+compatibility fields, but Semantic Query does not use partial matching because
+near names must not change metadata classification.
 
 For vendor MakerNote/RAW fields, the query layer also builds conservative
 per-family grouped candidates for related white-balance,
@@ -180,8 +177,29 @@ coverage includes DNG crop/active-area tags, Phase One/Leaf RAW geometry, and
 Fujifilm RAF raw crop/zoom fields, plus Canon, Nikon Capture, and Sony
 panorama crop/border patterns.
 
-Call `metadata_query_fuzzy_search_available()` when a UI wants to expose that
-the stronger fuzzy matcher is compiled in.
+For free-text metadata-name search, use the separate bounded API:
+
+```cpp
+#include "openmeta/metadata_fuzzy_search.h"
+
+openmeta::MetadataFuzzySearchOptions options;
+options.minimum_score = 80;
+options.max_results = 12;
+
+const openmeta::MetadataFuzzySearchResult search =
+    openmeta::fuzzy_search_metadata(store, "shuter speed", options);
+if (search.status == openmeta::MetadataFuzzySearchStatus::Ok) {
+    for (const openmeta::MetadataFuzzySearchMatch& match : search.matches) {
+        // match.entry_id, match.name, match.score, and match.match_kind
+    }
+}
+```
+
+Ranking is deterministic: score, then exact/alias/fuzzy provenance, then stable
+entry id. The current contract accepts ASCII query text only and returns an
+explicit status for non-ASCII input; it does not perform Unicode normalization
+or transliteration. Python exposes the same result through
+`Document.fuzzy_search(...)` and `TransferSourceSnapshot.fuzzy_search(...)`.
 
 For structured interpretation output, use `openmeta/metadata_interpretation.h`.
 It projects semantic query candidates into records that carry the query class,

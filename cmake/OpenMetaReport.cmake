@@ -82,7 +82,7 @@ function(openmeta_print_config_summary)
   openmeta_report_dependency("ZLIB (deflate)" "${OPENMETA_WITH_ZLIB}" "${OPENMETA_ZLIB_FOUND}" "system")
   openmeta_report_dependency("Brotli" "${OPENMETA_WITH_BROTLI}" "${OPENMETA_BROTLI_FOUND}" "system")
   openmeta_report_dependency("EXPAT (XMP XML)" "${OPENMETA_WITH_EXPAT}" "${OPENMETA_EXPAT_FOUND}" "system")
-  openmeta_report_dependency("RapidFuzz (metadata query)" "${OPENMETA_ENABLE_RAPIDFUZZ}"
+  openmeta_report_dependency("RapidFuzz (metadata search/query)" "${OPENMETA_ENABLE_RAPIDFUZZ}"
     "${OPENMETA_RAPIDFUZZ_FOUND}" "${OPENMETA_RAPIDFUZZ_PROVIDER}")
   openmeta_report_dependency("Adobe DNG SDK adapter" "${OPENMETA_WITH_DNG_SDK_ADAPTER}" "${OPENMETA_DNG_SDK_FOUND}" "dng_sdk package")
   set(_openmeta_native_needed OFF)

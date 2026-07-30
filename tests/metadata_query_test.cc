@@ -519,12 +519,12 @@ TEST(MetadataQuery, ClassifiesEditorialTaxonomyIdentityAndPlusTail)
 TEST(MetadataQuery, ClassifiesLegacyIptcWorkflowTail)
 {
     MetaStore store;
-    const EntryId object_type = add_iptc_text(&store, 2U, 3U, "01:news");
-    const EntryId edit_status = add_iptc_text(&store, 2U, 7U, "edited");
+    const EntryId object_type   = add_iptc_text(&store, 2U, 3U, "01:news");
+    const EntryId edit_status   = add_iptc_text(&store, 2U, 7U, "edited");
     const EntryId prior_service = add_iptc_text(&store, 2U, 45U, "NEWS");
-    const EntryId program = add_iptc_text(&store, 2U, 65U, "PhotoDesk");
-    const EntryId contact
-        = add_iptc_text(&store, 2U, 118U, "desk@example.test");
+    const EntryId program       = add_iptc_text(&store, 2U, 65U, "PhotoDesk");
+    const EntryId contact       = add_iptc_text(&store, 2U, 118U,
+                                                "desk@example.test");
     store.finalize();
 
     const MetadataQueryResult result = query_descriptive_metadata(store);
@@ -545,7 +545,8 @@ TEST(MetadataQuery, ClassifiesLegacyIptcWorkflowTail)
     ASSERT_NE(program_match, nullptr);
     ASSERT_NE(contact_match, nullptr);
     EXPECT_EQ(object_type_match->semantic, MetadataQuerySemanticKind::Taxonomy);
-    EXPECT_EQ(edit_status_match->semantic, MetadataQuerySemanticKind::Editorial);
+    EXPECT_EQ(edit_status_match->semantic,
+              MetadataQuerySemanticKind::Editorial);
     EXPECT_EQ(prior_service_match->semantic,
               MetadataQuerySemanticKind::DocumentLineage);
     EXPECT_EQ(program_match->semantic, MetadataQuerySemanticKind::Source);
@@ -1012,12 +1013,8 @@ TEST(MetadataQuery, ReportsRapidFuzzAvailability)
 #endif
 }
 
-TEST(MetadataQuery, RapidFuzzMatchesMisspelledXmpCropPath)
+TEST(MetadataQuery, DoesNotFuzzyClassifyMisspelledXmpCropPath)
 {
-    if (!metadata_query_fuzzy_search_available()) {
-        GTEST_SKIP() << "RapidFuzz metadata query matching is not enabled";
-    }
-
     MetaStore store;
     const EntryId entry_id
         = add_xmp_text(&store, "http://example.invalid/aux/1.0/",
@@ -1027,18 +1024,7 @@ TEST(MetadataQuery, RapidFuzzMatchesMisspelledXmpCropPath)
     const MetadataQueryResult result = query_crop_metadata(store);
 
     const MetadataQueryMatch* match = find_match_for_entry(result, entry_id);
-    ASSERT_NE(match, nullptr);
-    EXPECT_EQ(match->semantic, MetadataQuerySemanticKind::Border);
-    EXPECT_GE(match->confidence, 70U);
-    EXPECT_FALSE(match->exact_match);
-    EXPECT_TRUE(match->fuzzy_match);
-    EXPECT_GE(match->fuzzy_score, 83U);
-    EXPECT_NE((match->matched_terms
-               & static_cast<uint32_t>(MetadataQueryMatchTerm::Border)),
-              0U);
-    EXPECT_NE((match->matched_terms
-               & static_cast<uint32_t>(MetadataQueryMatchTerm::Padding)),
-              0U);
+    EXPECT_EQ(match, nullptr);
 }
 
 TEST(MetadataQuery, IgnoresDeletedEntries)

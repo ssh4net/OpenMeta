@@ -214,12 +214,21 @@ for (openmeta::EntryId id : store.find_all(key)) {
 
 Use exact lookup for deterministic key access. For inspection/search UI, prefer
 `openmeta/metadata_query.h` before building a separate layer. It returns source
-entries, confidence, value shape, and normalized candidates. The default matcher
-uses built-in tags and conservative substring/name rules; builds configured
-with `-DOPENMETA_ENABLE_RAPIDFUZZ=ON` add RapidFuzz-backed near-miss XMP/path
-matching. Raw matches include `exact_match`, `fuzzy_match`, and `fuzzy_score`
-fields; `metadata_query_fuzzy_search_available()` reports whether the stronger
-matcher is compiled in.
+entries, confidence, value shape, and normalized candidates. Semantic Query
+uses built-in tags and conservative namespace/name rules; it intentionally
+does not use partial matching because near names must not alter classification.
+Raw matches retain `exact_match`, `fuzzy_match`, and `fuzzy_score`
+compatibility fields.
+
+For a free-text search box, use `openmeta/metadata_fuzzy_search.h` instead of
+merging ranking policy into semantic Query. `fuzzy_search_metadata(...)`
+searches decoded names and property paths with explicit score and result
+bounds. It returns deterministic top-k results with exact, alias, or fuzzy
+provenance and stable entry-id tie-breaking. The current normalization contract
+is locale-independent ASCII; non-ASCII queries return
+`UnsupportedQueryText`, with no implicit transliteration. Thin Python
+`Document` and `TransferSourceSnapshot` wrappers return the same status,
+counts, truncation flag, and match fields.
 
 ## 3. Generic Host Metadata Traversal
 

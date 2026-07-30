@@ -1,5 +1,29 @@
 # OpenMeta Changes
 
+## 0.4.89 - 2026-07-30
+
+Changes compared with `0.4.88`.
+
+### Added
+
+- Added optional bounded `fuzzy_search_metadata(...)` entry search with
+  deterministic top-k ranking, exact/alias/fuzzy provenance, score cutoffs,
+  stable tie-breaking, bounded returned names with truncation flags, and
+  explicit ASCII-only query status.
+- Added thin `Document.fuzzy_search(...)` and
+  `TransferSourceSnapshot.fuzzy_search(...)` Python wrappers.
+- Added a synthetic typo/alias quality corpus with precision, recall,
+  false-positive, resource-bound, and ranking tests.
+- Added a dedicated RapidFuzz-enabled Release/libc++ CI release gate.
+
+### Changed
+
+- Semantic Query no longer applies fuzzy partial matching while classifying XMP
+  properties; tolerant free-text matching now stays in the separate ranked
+  Fuzzy Search stage, preventing near names from changing metadata meaning.
+- Fuzzy Search readiness is now tracked at about 70-80% after adding the
+  standalone API and quality gates.
+
 ## 0.4.88 - 2026-07-29
 
 Changes compared with `0.4.87`.
@@ -12,6 +36,8 @@ Changes compared with `0.4.87`.
   metadata.
 - TIFF/DNG rewrite preserves existing target-owned auxiliary IFD pointers and
   payload bytes when the corresponding source pointers are omitted.
+- Project readiness documentation now tracks optional Fuzzy Search separately
+  from measured exact and semantic Query coverage.
 
 ## 0.4.87 - 2026-07-28
 

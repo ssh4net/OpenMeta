@@ -112,3 +112,58 @@ jobs:
           ctest --test-dir build
           -R 'openmeta_(read|cli|transfer)_release_gate'
           --output-on-failure
+
+  linux-fuzzy-search:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Clang, libc++, RapidFuzz, and GoogleTest sources
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            libc++-dev \
+            libc++abi-dev \
+            libgtest-dev \
+            librapidfuzz-cpp-dev \
+            ninja-build
+
+      - name: Build GoogleTest with libc++
+        run: >
+          cmake -S /usr/src/googletest -B build-gtest -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_CXX_FLAGS=-stdlib=libc++
+          -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/deps"
+
+      - name: Install libc++ GoogleTest
+        run: |
+          cmake --build build-gtest --parallel
+          cmake --install build-gtest
+
+      - name: Configure RapidFuzz release gate
+        run: >
+          cmake -S . -B build-fuzzy -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/deps"
+          -DOPENMETA_USE_LIBCXX=ON
+          -DOPENMETA_ENABLE_RAPIDFUZZ=ON
+          -DOPENMETA_BUILD_STATIC=ON
+          -DOPENMETA_BUILD_SHARED=OFF
+          -DOPENMETA_BUILD_TESTS=ON
+          -DOPENMETA_BUILD_PYTHON=OFF
+          -DOPENMETA_WITH_DNG_SDK_ADAPTER=OFF
+
+      - name: Build fuzzy-search release gate
+        run: >
+          cmake --build build-fuzzy --parallel
+          --target openmeta_gate_fuzzy_search_release
+
+      - name: Run fuzzy-search release gate
+        run: >
+          ctest --test-dir build-fuzzy
+          -R openmeta_fuzzy_search_release_gate
+          --output-on-failure

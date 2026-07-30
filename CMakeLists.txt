@@ -41,7 +41,7 @@ option(OPENMETA_WITH_ZLIB "Enable zlib/deflate payload decompression" ON)
 option(OPENMETA_WITH_BROTLI "Enable brotli payload decompression" ON)
 option(OPENMETA_WITH_EXPAT "Enable XMP packet decode via Expat" ON)
 option(OPENMETA_ENABLE_RAPIDFUZZ
-  "Enable RapidFuzz-backed semantic metadata query matching" OFF)
+  "Enable RapidFuzz-backed metadata search and semantic query matching" OFF)
 option(OPENMETA_WITH_DNG_SDK_ADAPTER
   "Enable the optional Adobe DNG SDK adapter bridge" OFF)
 option(OPENMETA_ENABLE_C2PA_VERIFY "Enable draft C2PA verification scaffold fields" OFF)
@@ -357,6 +357,7 @@ set(OPENMETA_SOURCES
   src/openmeta/meta_key.cc
   src/openmeta/metadata_capabilities.cc
   src/openmeta/metadata_concepts.cc
+  src/openmeta/metadata_fuzzy_search.cc
   src/openmeta/metadata_interpretation.cc
   src/openmeta/metadata_query.cc
   src/openmeta/metadata_transfer.cc
@@ -784,6 +785,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/makernote_decode_test.cc
     tests/metadata_capabilities_test.cc
     tests/metadata_concepts_test.cc
+    tests/metadata_fuzzy_search_test.cc
     tests/metadata_interpretation_test.cc
     tests/metadata_query_test.cc
     tests/metadata_transfer_api_test.cc
@@ -813,6 +815,23 @@ if(OPENMETA_BUILD_TESTS)
   endif()
 
   add_test(NAME openmeta_tests COMMAND openmeta_tests)
+
+  if(OPENMETA_RAPIDFUZZ_FOUND)
+    add_custom_target(openmeta_gate_fuzzy_search_release
+      DEPENDS openmeta_tests
+      COMMAND ${CMAKE_COMMAND}
+        "-DOPENMETA_TESTS_BIN=$<TARGET_FILE:openmeta_tests>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzzy_search_release_gate.cmake"
+      COMMENT "Running fuzzy-search release gate"
+      VERBATIM
+    )
+    add_test(
+      NAME openmeta_fuzzy_search_release_gate
+      COMMAND ${CMAKE_COMMAND}
+        "-DOPENMETA_TESTS_BIN=$<TARGET_FILE:openmeta_tests>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzzy_search_release_gate.cmake"
+    )
+  endif()
 
   add_custom_target(openmeta_gate_read_release
     DEPENDS openmeta_tests

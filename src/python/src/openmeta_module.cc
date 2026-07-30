@@ -16,6 +16,7 @@
 #include "openmeta/mapped_file.h"
 #include "openmeta/metadata_capabilities.h"
 #include "openmeta/metadata_concepts.h"
+#include "openmeta/metadata_fuzzy_search.h"
 #include "openmeta/metadata_interpretation.h"
 #include "openmeta/metadata_query.h"
 #include "openmeta/metadata_transfer.h"
@@ -1066,6 +1067,45 @@ namespace {
     {
         const MetadataQueryResult result = query_metadata(store, kind);
         return metadata_query_result_to_python(result);
+    }
+
+    static nb::dict metadata_fuzzy_search_to_python(const MetaStore& store,
+                                                    const std::string& query,
+                                                    uint8_t minimum_score,
+                                                    uint32_t max_results)
+    {
+        MetadataFuzzySearchOptions options;
+        options.minimum_score = minimum_score;
+        options.max_results   = max_results;
+        const MetadataFuzzySearchResult result
+            = fuzzy_search_metadata(store, query, options);
+
+        nb::list matches;
+        for (size_t i = 0U; i < result.matches.size(); ++i) {
+            const MetadataFuzzySearchMatch& match = result.matches[i];
+            nb::dict item;
+            item["entry_id"]        = nb::int_(match.entry_id);
+            item["key_kind"]        = match.key_kind;
+            item["match_kind"]      = match.match_kind;
+            item["match_kind_name"] = nb::str(
+                metadata_fuzzy_search_match_kind_name(match.match_kind));
+            item["score"]           = nb::int_(match.score);
+            item["group_truncated"] = nb::bool_(match.group_truncated);
+            item["name_truncated"]  = nb::bool_(match.name_truncated);
+            item["group"]           = sv_to_py(match.group);
+            item["name"]            = sv_to_py(match.name);
+            matches.append(std::move(item));
+        }
+
+        nb::dict out;
+        out["status"]      = result.status;
+        out["status_name"] = nb::str(
+            metadata_fuzzy_search_status_name(result.status));
+        out["examined_entry_count"]  = nb::int_(result.examined_entry_count);
+        out["qualified_match_count"] = nb::int_(result.qualified_match_count);
+        out["truncated"]             = nb::bool_(result.truncated);
+        out["matches"]               = std::move(matches);
+        return out;
     }
 
     static nb::dict metadata_interpretation_record_to_python(
@@ -5657,6 +5697,15 @@ snapshot_metadata_query(const TransferSourceSnapshot& snapshot,
 }
 
 static nb::dict
+snapshot_fuzzy_search(const TransferSourceSnapshot& snapshot,
+                      const std::string& query, uint8_t minimum_score,
+                      uint32_t max_results)
+{
+    return metadata_fuzzy_search_to_python(snapshot.store, query, minimum_score,
+                                           max_results);
+}
+
+static nb::dict
 snapshot_query_crop_metadata(const TransferSourceSnapshot& snapshot)
 {
     return metadata_query_to_python(snapshot.store, MetadataQueryKind::Crop);
@@ -5818,6 +5867,14 @@ static nb::dict
 document_metadata_query(std::shared_ptr<PyDocument> d, MetadataQueryKind kind)
 {
     return metadata_query_to_python(d->store, kind);
+}
+
+static nb::dict
+document_fuzzy_search(std::shared_ptr<PyDocument> d, const std::string& query,
+                      uint8_t minimum_score, uint32_t max_results)
+{
+    return metadata_fuzzy_search_to_python(d->store, query, minimum_score,
+                                           max_results);
 }
 
 static nb::dict
@@ -6606,8 +6663,7 @@ NB_MODULE(_openmeta, m)
                MetadataConceptRole::RegionBoundaryVertex)
         .value("VersionComments", MetadataConceptRole::VersionComments)
         .value("VersionModifier", MetadataConceptRole::VersionModifier)
-        .value("ObjectTypeReference",
-               MetadataConceptRole::ObjectTypeReference)
+        .value("ObjectTypeReference", MetadataConceptRole::ObjectTypeReference)
         .value("ObjectAttributeReference",
                MetadataConceptRole::ObjectAttributeReference)
         .value("EditStatus", MetadataConceptRole::EditStatus)
@@ -6623,8 +6679,7 @@ NB_MODULE(_openmeta, m)
         .value("ReferenceDate", MetadataConceptRole::ReferenceDate)
         .value("ReferenceNumber", MetadataConceptRole::ReferenceNumber)
         .value("ObjectCycle", MetadataConceptRole::ObjectCycle)
-        .value("LanguageIdentifier",
-               MetadataConceptRole::LanguageIdentifier)
+        .value("LanguageIdentifier", MetadataConceptRole::LanguageIdentifier)
         .value("Contact", MetadataConceptRole::Contact)
         .value("RasterizedCaption", MetadataConceptRole::RasterizedCaption)
         .value("ImageType", MetadataConceptRole::ImageType)
@@ -6677,8 +6732,7 @@ NB_MODULE(_openmeta, m)
         .value("EditorialWorkflow",
                MetadataConceptRecordKind::EditorialWorkflow)
         .value("SourceSoftware", MetadataConceptRecordKind::SourceSoftware)
-        .value("EditorialContact",
-               MetadataConceptRecordKind::EditorialContact)
+        .value("EditorialContact", MetadataConceptRecordKind::EditorialContact)
         .value("TechnicalImage", MetadataConceptRecordKind::TechnicalImage)
         .value("AudioAsset", MetadataConceptRecordKind::AudioAsset)
         .value("PreviewAsset", MetadataConceptRecordKind::PreviewAsset);
@@ -7192,6 +7246,29 @@ NB_MODULE(_openmeta, m)
         .value("Bounded", MetadataCapabilitySupport::Bounded)
         .value("Disabled", MetadataCapabilitySupport::Disabled);
 
+    nb::enum_<MetadataFuzzySearchStatus>(m, "MetadataFuzzySearchStatus")
+        .value("Ok", MetadataFuzzySearchStatus::Ok)
+        .value("FeatureUnavailable",
+               MetadataFuzzySearchStatus::FeatureUnavailable)
+        .value("EmptyQuery", MetadataFuzzySearchStatus::EmptyQuery)
+        .value("QueryTooShort", MetadataFuzzySearchStatus::QueryTooShort)
+        .value("QueryTooLong", MetadataFuzzySearchStatus::QueryTooLong)
+        .value("UnsupportedQueryText",
+               MetadataFuzzySearchStatus::UnsupportedQueryText)
+        .value("InvalidOptions", MetadataFuzzySearchStatus::InvalidOptions);
+
+    nb::enum_<MetadataFuzzySearchMatchKind>(m, "MetadataFuzzySearchMatchKind")
+        .value("Exact", MetadataFuzzySearchMatchKind::Exact)
+        .value("Alias", MetadataFuzzySearchMatchKind::Alias)
+        .value("Fuzzy", MetadataFuzzySearchMatchKind::Fuzzy);
+
+    m.attr("METADATA_FUZZY_SEARCH_MAX_RESULTS") = nb::int_(
+        kMetadataFuzzySearchMaxResults);
+    m.attr("METADATA_FUZZY_SEARCH_MAX_QUERY_BYTES") = nb::int_(
+        kMetadataFuzzySearchMaxQueryBytes);
+    m.attr("METADATA_FUZZY_SEARCH_MAX_CANDIDATE_BYTES") = nb::int_(
+        kMetadataFuzzySearchMaxCandidateBytes);
+
     m.def("metadata_capability_family_name", &metadata_capability_family_name,
           "family"_a);
     m.def("metadata_capability_support_name", &metadata_capability_support_name,
@@ -7202,6 +7279,11 @@ NB_MODULE(_openmeta, m)
           "format"_a, "family"_a);
     m.def("metadata_query_fuzzy_search_available",
           &metadata_query_fuzzy_search_available);
+    m.def("metadata_fuzzy_search_available", &metadata_fuzzy_search_available);
+    m.def("metadata_fuzzy_search_status_name",
+          &metadata_fuzzy_search_status_name, "status"_a);
+    m.def("metadata_fuzzy_search_match_kind_name",
+          &metadata_fuzzy_search_match_kind_name, "kind"_a);
     m.def("tiff_compression_name", &tiff_compression_name, "value"_a);
     m.def("tiff_photometric_interpretation_name",
           &tiff_photometric_interpretation_name, "value"_a);
@@ -7601,6 +7683,8 @@ NB_MODULE(_openmeta, m)
         .def("vendor_raw_processing", &snapshot_vendor_raw_processing)
         .def("metadata_query", &snapshot_metadata_query,
              "kind"_a = MetadataQueryKind::Crop)
+        .def("fuzzy_search", &snapshot_fuzzy_search, "query"_a,
+             "minimum_score"_a = 80U, "max_results"_a = 16U)
         .def("query_crop_metadata", &snapshot_query_crop_metadata)
         .def("query_exposure_gain_metadata",
              &snapshot_query_exposure_gain_metadata)
@@ -7772,6 +7856,8 @@ NB_MODULE(_openmeta, m)
         .def("vendor_raw_processing", &document_vendor_raw_processing)
         .def("metadata_query", &document_metadata_query,
              "kind"_a = MetadataQueryKind::Crop)
+        .def("fuzzy_search", &document_fuzzy_search, "query"_a,
+             "minimum_score"_a = 80U, "max_results"_a = 16U)
         .def("query_crop_metadata", &document_query_crop_metadata)
         .def("query_exposure_gain_metadata",
              &document_query_exposure_gain_metadata)

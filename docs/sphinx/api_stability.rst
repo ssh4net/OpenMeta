@@ -136,8 +136,7 @@ Host-facing API map
        IPTC/ICC/EXIF/EXIF2/XMP byte-count fields, and optional embedded
        IPTC-IIM, XMP, and ICC payload decode.
    * - Semantic metadata query: ``query_metadata(...)``,
-       ``query_crop_metadata(...)``, focused query helpers, and
-       ``metadata_query_fuzzy_search_available()``
+       ``query_crop_metadata(...)``, and focused query helpers
      - ``openmeta/metadata_query.h``
      - Experimental
      - Query contract for inspection matches plus normalized candidates.
@@ -158,17 +157,17 @@ Host-facing API map
        Canon ambience-selection, Canon ColorData source color-transform,
        NikonSettings source-processing aliases, Nikon Capture crop bounds,
        Sony panorama crop margins, selected decoded vendor/MakerNote exposure
-       names, fuzzy XMP paths, and vendor RAW-processing classification.
-       Matches report
-       ``exact_match``,
-       ``fuzzy_match``, and ``fuzzy_score`` so tools can label exact results
-       separately from RapidFuzz near-miss hits.
+       names, crop/border XMP paths, and vendor RAW-processing classification.
+       Semantic Query uses deterministic tag, namespace, and name matching;
+       tolerant partial matching is isolated in the separate Fuzzy Search API
+       so near names cannot change metadata meaning. Matches retain
+       ``exact_match``, ``fuzzy_match``, and ``fuzzy_score`` compatibility
+       fields.
        Exact rights/license/credit/source matches may have zero
        ``matched_terms`` because the stable 32-bit legacy term mask is full;
        their explicit semantic and confidence remain authoritative.
-       ``OPENMETA_ENABLE_RAPIDFUZZ=ON`` adds optional near-miss
-       XMP/property-path scoring. Grouped candidates
-       include ``matrix_set``, ``vector_set``, and ``table`` shapes for related
+       Grouped candidates include ``matrix_set``, ``vector_set``, and
+       ``table`` shapes for related
        non-crop metadata, including RAW black/white levels, linearization, raw
        value curves, raw linearity limits, raw calibration curves, raw curve
        control points, CFA/sensor layout, source geometry, raw-storage
@@ -291,6 +290,18 @@ Host-facing API map
        record-scope and language fields and the thin
        ``MetadataRawDataDescriptor`` object with
        storage, compression, and plane-binding fields.
+   * - Bounded fuzzy entry search: ``fuzzy_search_metadata(...)``,
+       ``metadata_fuzzy_search_available()``
+     - ``openmeta/metadata_fuzzy_search.h``
+     - Experimental
+     - Optional RapidFuzz-backed search over decoded metadata names and
+       property paths. The API has bounded query/candidate/result sizes,
+       caller-selected score cutoff, deterministic top-k ordering, stable
+       entry-id ties, explicit exact/alias/fuzzy provenance, and status returns
+       for unavailable, invalid, short, long, or non-ASCII queries. The current
+       normalization contract is locale-independent ASCII without Unicode
+       normalization or transliteration. Python ``Document`` and
+       ``TransferSourceSnapshot`` expose thin dictionary wrappers.
    * - Transfer concept diagnostics:
        ``transfer_concept_diagnostics_from_store(...)``,
        ``transfer_concept_diagnostic_message(...)``,

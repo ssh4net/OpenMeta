@@ -46,6 +46,10 @@ explicit outcome:
      - Host/UI workflows can find the interpreted meaning through focused query
        helpers with source entries, confidence, value shape, and normalized
        fields where available.
+   * - Fuzzy-searchable
+     - Optional search can tolerate bounded spelling and property-path near
+       misses while reporting similarity and exact/fuzzy provenance without
+       silently changing interpretation.
    * - Structured
      - Host code can consume query-backed interpretation records without
        reassembling raw query candidates manually.
@@ -61,6 +65,7 @@ The current target audit measures **99.85% interpretation coverage** and
 semantic targets. Unknown private numeric IDs and intentionally opaque
 payloads are reported separately, while malformed, undefined, and incomplete
 values remain visible as residual gaps instead of receiving guessed meanings.
+Fuzzy Search is measured separately and is not part of the query percentage.
 
 Coverage matrix
 ---------------
@@ -139,7 +144,7 @@ Coverage matrix
      - DNG crop/active-area/masked-area tags, Phase One/Leaf geometry,
        Fujifilm RAF raw crop/zoom rectangles, Canon aspect/crop metadata,
        Nikon Capture crop bounds, Sony panorama crop margins, canonical border
-       margins, vendor RAW-processing geometry buckets, and fuzzy
+       margins, vendor RAW-processing geometry buckets, and
        crop/border-style paths are queryable.
      - High, about 88-92%.
      - More vendor-specific normalized rectangles and stronger output contracts
@@ -329,7 +334,7 @@ Coverage matrix
      - Medium-high, about 90-94%.
      - Full Photoshop action execution semantics, opaque alias/raw payload
        interpretation, and long-tail resource interpretation.
-   * - Semantic query/search and records
+   * - Semantic query and records
      - Query helpers expose raw matches, confidence, provenance, value shapes,
        normalized candidates, canonical crop/active-area rectangles, Fujifilm
        RAF raw crop/zoom rectangles, Canon/Nikon/Sony crop and border
@@ -352,8 +357,6 @@ Coverage matrix
        derived-image construction, tiled-image configuration, and
        whole-scene/primary-component/
        per-component multi-image policy,
-       optional
-       RapidFuzz near-miss matching,
        structured interpretation records, and bounded cross-family concept
        resolution for orientation, date/time, exposure/gain,
        color/profile, GPS, descriptive fields, geometry, lens-correction,
@@ -376,6 +379,15 @@ Coverage matrix
      - High, measured about 99.77% for declared targets.
      - Incomplete GPS tuples, malformed dates, and undefined values remain
        inspection data rather than normalized candidates.
+   * - Fuzzy Search
+     - Optional ``fuzzy_search_metadata(...)`` searches decoded names and
+       property paths with bounded score/result options, deterministic top-k
+       ordering, stable ties, and exact/alias/fuzzy provenance. Python
+       snapshot/document wrappers preserve the same result shape.
+     - Medium-high, about 70-80%.
+     - Broaden real-world typo/alias and negative corpora, then design and
+       validate Unicode normalization, transliteration, and multilingual
+       ranking.
    * - Transfer-safety classification
      - Compatible-file versus rendered-image safety policies classify
        source-specific image geometry, color/profile, RAW curves/linearity

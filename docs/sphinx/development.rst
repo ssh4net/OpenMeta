@@ -77,7 +77,7 @@ model should stay compact:
        vendor-private fields.
      - High, measured about 99.85% for declared semantic targets.
    * - Query
-     - Find entries by name, fuzzy term, or semantic group, then expose
+     - Find entries by exact name or semantic group, then expose
        normalized query candidates, structured interpretation records, and
        bounded cross-family concept resolutions, transfer hints, sensitivity,
        and conflict
@@ -91,6 +91,13 @@ model should stay compact:
        fields plus BMFF derived-image construction and tiled-image configuration
        evidence across standard and vendor metadata.
      - High, measured about 99.77% for declared query targets.
+   * - Fuzzy Search
+     - Optionally find misspelled, aliased, or near-match metadata names and
+       property paths with bounded deterministic top-k ranking and explicit
+       exact/alias/fuzzy provenance.
+     - Medium-high, about 70-80%; the standalone RapidFuzz-backed API,
+       synthetic quality corpus, false-positive gate, resource bounds, ASCII
+       policy, Python wrappers, and Release/libc++ CI gate are implemented.
    * - Creation
      - Build fresh metadata entries from host-provided values.
      - Medium, about 55-65%.
@@ -120,6 +127,8 @@ model should stay compact:
      - Medium, about 65-75%.
 
 The measured interpretation and query values use explicit target sets.
+Fuzzy Search is not included in the ``99.77%`` Query audit; its readiness is a
+separate architectural estimate.
 Unknown private numeric IDs and intentionally opaque payloads are tracked
 separately rather than counted as failed semantics. The remaining measured
 tail is primarily malformed, undefined, or incomplete metadata. Decoding
@@ -140,9 +149,9 @@ exposure/gain, white balance, color/profile, lens correction, orientation,
 descriptive, and RAW-processing queries.
 Crop queries include DNG crop tags, ``ActiveArea``, Phase One/Leaf raw
 geometry, Fujifilm RAF raw crop/zoom rectangles, Canon aspect/crop metadata,
-Nikon Capture crop bounds, Sony panorama crop margins, and fuzzy
+Nikon Capture crop bounds, Sony panorama crop margins, and
 crop/border-style XMP property paths. The non-crop queries expose per-entry
-value candidates and reuse standard tag names, selected DNG tags, fuzzy XMP
+value candidates and reuse standard tag names, selected DNG tags, matching XMP
 paths, canonical border-margin parsing, and vendor RAW-processing
 classification where applicable.
 They also append grouped candidates for related DNG color matrix/calibration/
@@ -176,14 +185,26 @@ correction, white-balance gains, and raw-development terms.
 Grouped candidates use ``matrix_set``, ``vector_set``, and ``table`` value
 shapes. Color matrix sets, white-balance vector sets, and lens-correction
 tables are promoted only when the numeric payloads meet conservative minimum
-shapes; other records stay visible as per-entry matches/candidates. When
-``OPENMETA_ENABLE_RAPIDFUZZ=ON``, the same query helpers also use RapidFuzz to
-score near-miss XMP/property paths; default builds keep the deterministic
-substring/tag matcher only. Each raw match reports ``exact_match``,
-``fuzzy_match``, and ``fuzzy_score`` so UI code can distinguish exact tag/name
-matches from near-miss search hits.
+shapes; other records stay visible as per-entry matches/candidates.
+Semantic Query always uses deterministic tag, namespace, and name matching so
+similar names cannot change classification. Raw matches retain ``exact_match``,
+``fuzzy_match``, and ``fuzzy_score`` compatibility fields, but tolerant
+free-text ranking belongs to the separate Fuzzy Search API.
 Python ``Document`` and ``TransferSourceSnapshot`` mirror this as thin wrappers
 returning the same match/candidate dictionary shape.
+
+Fuzzy Search is a separate optional stage layered over Query. The
+``openmeta/metadata_fuzzy_search.h`` API searches decoded entry names and
+property paths with caller-selected score and result bounds. Results are
+ordered by descending score, then exact/alias/fuzzy provenance, then stable
+entry id. Search is locale-independent and currently accepts ASCII query text
+only; non-ASCII queries return an explicit unsupported status rather than
+performing byte-wise similarity or implicit transliteration. The synthetic
+quality gate covers common spelling errors, aliases, unrelated negative
+queries, deterministic top-k truncation, and deleted-entry filtering. Higher
+readiness still requires broader real-world name/alias corpora and designed
+Unicode normalization, transliteration, and multilingual quality gates. Builds
+without RapidFuzz retain exact and semantic Query behavior.
 
 For code that wants an iterable semantic record stream instead of raw query
 matches, use ``openmeta/metadata_interpretation.h``. It projects query
@@ -323,8 +344,9 @@ dependencies let OpenMeta decode more content:
 
 - **Expat** (``OPENMETA_WITH_EXPAT``): parses XMP RDF/XML packets (embedded
   blocks and ``.xmp`` sidecars) using a streaming parser with strict limits.
-- **RapidFuzz** (``OPENMETA_ENABLE_RAPIDFUZZ``): opt-in semantic-query name
-  matching for inspection/search UI. It is disabled by default; when enabled,
+- **RapidFuzz** (``OPENMETA_ENABLE_RAPIDFUZZ``): opt-in bounded fuzzy entry
+  search and semantic-query name matching for inspection UI. It is disabled by
+  default; when enabled,
   CMake requires either a ``rapidfuzz::rapidfuzz`` package target or
   ``OPENMETA_RAPIDFUZZ_INCLUDE_DIR`` pointing at headers containing
   ``rapidfuzz/fuzz.hpp``.

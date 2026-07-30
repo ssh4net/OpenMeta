@@ -2610,7 +2610,7 @@ namespace {
         if (kind == MetadataQueryKind::Descriptive) {
             terms = xmp_descriptive_terms(path, &provenance);
         } else {
-            terms = match_terms_for_kind(path, ns, kind, true, &provenance);
+            terms = match_terms_for_kind(path, ns, kind, false, &provenance);
         }
         if (kind == MetadataQueryKind::RawProcessing
             && xmp_namespace_is_camera_raw_settings(ns)) {

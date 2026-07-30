@@ -209,6 +209,7 @@ query_raw_processing_metadata(const MetaStore& store);
 MetadataQueryResult
 query_descriptive_metadata(const MetaStore& store);
 
+/// Compatibility capability query; prefer metadata_fuzzy_search_available().
 bool
 metadata_query_fuzzy_search_available() noexcept;
 
