@@ -100,8 +100,13 @@ model should stay compact:
        ASCII contract, Python wrappers, Release/libc++ CI gate, and opt-in
        scaling benchmark are implemented.
    * - Creation
-     - Build fresh metadata entries from host-provided values.
-     - Medium, about 55-65%.
+     - Build fresh metadata entries from host-provided values through a
+       transactional, bounded logical-field request that produces a finalized
+       canonical portable-XMP store.
+     - Medium-high, about 70-75%; the v1 C++ contract, common descriptive and
+       capture fields, UTF-8/XML and typed-value validation, resource limits,
+       deterministic collection ordering, portable serialization,
+       semantic-query visibility, and thin Python wrapper are implemented.
    * - Editing
      - Modify existing logical metadata entries while preserving valid
        surrounding structure.
@@ -137,10 +142,13 @@ retains a ``98-100%`` range because not every declared container lane has an
 independent conformance sample set, even though tracked inputs have explicit
 read outcomes.
 
-The active implementation sequence after this Fuzzy Search milestone is
-Creation, Editing, Transfer, Translation, and Writing. Adapters and Utilities
-remain deferred until those five stages advance. Fuzzy Search resumes before
-Adapters and Utilities for independently sourced quality expansion, designed
+The first Creation milestone is implemented in
+``openmeta/metadata_creation.h`` and documented in :doc:`creation`. The active
+implementation sequence now advances to Editing, Transfer, Translation, and
+Writing. Creation resumes for arbitrary/custom properties, multilingual
+alternatives, structured values, and direct family projection. Adapters and
+Utilities remain deferred. Fuzzy Search resumes before those final two stages
+for independently sourced quality expansion, designed
 Unicode/transliteration behavior, multilingual gates, and an optional
 immutable index for repeated searches over large stores.
 

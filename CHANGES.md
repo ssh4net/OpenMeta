@@ -1,5 +1,30 @@
 # OpenMeta Changes
 
+## 0.4.91 - 2026-07-31
+
+Changes compared with `0.4.90`.
+
+### Added
+
+- Added the transactional v1 `create_metadata(...)` C++ contract for creating
+  a finalized canonical portable-XMP `MetaStore` from bounded logical fields.
+- Added common descriptive, rights, identity, capture, geometry, and exposure
+  fields with typed text, integer, and rational constructors.
+- Added deterministic creator/keyword collection construction, duplicate
+  singleton rejection, UTF-8/XML validation, numeric constraints, request
+  limits, stable statuses, and failed-field diagnostics.
+- Added thin Python creation fields and `create_metadata(...)`, returning a
+  normal `Document` that supports query, XMP output, and transfer snapshots.
+- Added C++ creation/serialization/query tests, a Python creation smoke gate,
+  and public field-mapping and safety documentation.
+- Installed package configuration now resolves exported EXPAT and optional
+  OpenSSL link dependencies before loading `OpenMetaTargets.cmake`.
+
+### Changed
+
+- Creation readiness is now tracked at about 70-75%; the active project
+  sequence advances to Editing, Transfer, Translation, and Writing.
+
 ## 0.4.90 - 2026-07-30
 
 Changes compared with `0.4.89`.

@@ -73,6 +73,16 @@ Host-facing API map
      - ``openmeta/interop_export.h``
      - Stable
      - Stable v1 flat host naming contract. See :doc:`flat_host_mapping`.
+   * - Fresh metadata creation: ``create_metadata(...)`` and typed field
+       helpers
+     - ``openmeta/metadata_creation.h``
+     - Experimental
+     - Transactional v1 contract for bounded host-provided logical fields.
+       Produces a finalized canonical portable-XMP ``MetaStore``, preserves
+       additive creator/keyword order, rejects duplicate singletons, validates
+       UTF-8/XML text and typed numeric constraints, and exposes the same C++
+       policy through thin Python bindings. Direct EXIF/IPTC projection remains
+       a Translation concern. See :doc:`creation`.
    * - EXIF/TIFF orientation helpers: ``interpret_exif_orientation(...)``,
        ``exif_orientation_name(...)``,
        ``exif_orientation_rotation_degrees_cw(...)``,

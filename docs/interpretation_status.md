@@ -70,10 +70,11 @@ outputs.
 
 ## Active Project Sequence
 
-The current implementation focus is Creation, Editing, Transfer, Translation,
-and Writing. Adapters and Utilities remain deferred. Fuzzy Search resumes
-before those final two stages for its Unicode/multilingual and optional-index
-milestones.
+The first bounded Creation milestone is complete. The current implementation
+focus advances to Editing, Transfer, Translation, and Writing. Adapters and
+Utilities remain deferred. Creation resumes for custom, multilingual,
+structured, and direct-family output; Fuzzy Search resumes before those final
+two stages for its Unicode/multilingual and optional-index milestones.
 
 ## Interpretation Maintenance Priorities
 

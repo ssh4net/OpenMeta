@@ -258,7 +258,40 @@ Sigma/Samsung/Ricoh MakerNote contexts, use
 `openmeta/exif_value_names.h`. Unknown values return an empty string and remain
 available as numeric `MetaStore` values.
 
-## 5. Build A `MetaStore` Manually
+## 5. Create Fresh Metadata
+
+Use the bounded high-level Creation API when the host has logical values rather
+than wire tag IDs:
+
+```cpp
+#include "openmeta/metadata_creation.h"
+
+#include <array>
+
+const std::array fields = {
+    openmeta::make_metadata_creation_text(
+        openmeta::MetadataCreationFieldKind::Title, "Evening frame"),
+    openmeta::make_metadata_creation_text(
+        openmeta::MetadataCreationFieldKind::Creator, "Alice"),
+    openmeta::make_metadata_creation_u32(
+        openmeta::MetadataCreationFieldKind::Orientation, 6),
+};
+
+openmeta::MetadataCreationRequest request;
+request.fields = fields;
+
+openmeta::MetaStore store;
+const openmeta::MetadataCreationResult created =
+    openmeta::create_metadata(request, &store);
+```
+
+The result is a finalized store of canonical portable-XMP entries. The call is
+transactional: validation failures leave `store` unchanged. See
+[creation.md](creation.md) for field mappings, value constraints, Python use,
+and destination-image safety requirements.
+
+Use the lower-level key/value API only when you need a wire-specific or custom
+entry.
 
 This is useful when your application creates or edits metadata directly.
 
@@ -284,6 +317,7 @@ store.finalize();
 
 The key/value helpers live in:
 
+- [metadata_creation.h](../src/include/openmeta/metadata_creation.h)
 - [meta_key.h](../src/include/openmeta/meta_key.h)
 - [meta_value.h](../src/include/openmeta/meta_value.h)
 

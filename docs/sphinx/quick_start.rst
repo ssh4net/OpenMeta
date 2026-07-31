@@ -239,8 +239,39 @@ Sigma/Samsung/Ricoh MakerNote contexts, use
 ``openmeta/exif_value_names.h``. Unknown values return an empty string and
 remain available as numeric ``MetaStore`` values.
 
-Build a ``MetaStore`` manually
-------------------------------
+Create fresh metadata
+---------------------
+
+Use the bounded Creation API when the host has logical values instead of wire
+tag IDs:
+
+.. code-block:: cpp
+
+   #include "openmeta/metadata_creation.h"
+
+   #include <array>
+
+   const std::array fields = {
+       openmeta::make_metadata_creation_text(
+           openmeta::MetadataCreationFieldKind::Title, "Evening frame"),
+       openmeta::make_metadata_creation_text(
+           openmeta::MetadataCreationFieldKind::Creator, "Alice"),
+       openmeta::make_metadata_creation_u32(
+           openmeta::MetadataCreationFieldKind::Orientation, 6),
+   };
+
+   openmeta::MetadataCreationRequest request;
+   request.fields = fields;
+
+   openmeta::MetaStore store;
+   const openmeta::MetadataCreationResult created =
+       openmeta::create_metadata(request, &store);
+
+The result is a finalized store of canonical portable-XMP entries. Validation
+is transactional. See :doc:`creation` for the full mapping, constraints,
+Python API, and destination-image safety requirements.
+
+Use the lower-level key/value API only for wire-specific or custom entries:
 
 .. code-block:: cpp
 

@@ -16,6 +16,7 @@ stable transfer/edit building blocks for export workflows.
   `heif/avif/cr3` (ISO-BMFF).
 - Reassemble chunked payloads and optionally decompress supported carriers.
 - Decode metadata into a normalized `MetaStore`.
+- Create a fresh finalized metadata store from bounded logical portable fields.
 - Export sidecars and previews.
 - Prepare, compile, emit, and edit metadata transfers for bounded target
   families.
@@ -66,6 +67,8 @@ If you already own the encoder, SDK objects, or output container, follow
   status and roadmap
 - [docs/fuzzy_search.md](docs/fuzzy_search.md): optional ranked metadata-name
   search contract, quality gates, and benchmark
+- [docs/creation.md](docs/creation.md): bounded fresh metadata construction,
+  field mapping, validation, and Python use
 - [docs/doxygen.md](docs/doxygen.md): API reference
 - [SECURITY.md](SECURITY.md): security model and reporting
 - [NOTICE.md](NOTICE.md): notices and third-party dependency information

@@ -280,6 +280,11 @@ if(OPENMETA_EXPAT_FOUND)
   set(OPENMETA_CONFIG_HAS_EXPAT 1)
 endif()
 
+set(OPENMETA_CONFIG_HAS_OPENSSL 0)
+if(OPENMETA_OPENSSL_FOUND)
+  set(OPENMETA_CONFIG_HAS_OPENSSL 1)
+endif()
+
 set(OPENMETA_CONFIG_HAS_DNG_SDK 0)
 if(OPENMETA_DNG_SDK_FOUND)
   set(OPENMETA_CONFIG_HAS_DNG_SDK 1)
@@ -358,6 +363,7 @@ set(OPENMETA_SOURCES
   src/openmeta/meta_key.cc
   src/openmeta/metadata_capabilities.cc
   src/openmeta/metadata_concepts.cc
+  src/openmeta/metadata_creation.cc
   src/openmeta/metadata_fuzzy_search.cc
   src/openmeta/metadata_interpretation.cc
   src/openmeta/metadata_query.cc
@@ -598,6 +604,16 @@ if(OPENMETA_BUILD_PYTHON)
       COMMENT "Running python metatransfer edit smoke gate"
       VERBATIM
     )
+
+    add_custom_target(openmeta_gate_python_metadata_creation_smoke
+      DEPENDS openmeta_python
+      COMMAND ${CMAKE_COMMAND}
+        "-DOPENMETA_PYTHON_EXECUTABLE=${Python_EXECUTABLE}"
+        "-DOPENMETA_PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/python_metadata_creation_smoke_test.cmake"
+      COMMENT "Running python metadata creation smoke gate"
+      VERBATIM
+    )
   endif()
 endif()
 
@@ -799,6 +815,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/makernote_decode_test.cc
     tests/metadata_capabilities_test.cc
     tests/metadata_concepts_test.cc
+    tests/metadata_creation_test.cc
     tests/metadata_fuzzy_search_test.cc
     tests/metadata_interpretation_test.cc
     tests/metadata_query_test.cc
@@ -1043,6 +1060,14 @@ if(OPENMETA_BUILD_TESTS)
         "-DOPENMETA_PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_python_metatransfer_edit_smoke"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/python_metatransfer_edit_smoke_test.cmake"
+    )
+
+    add_test(
+      NAME openmeta_python_metadata_creation_smoke
+      COMMAND ${CMAKE_COMMAND}
+        "-DOPENMETA_PYTHON_EXECUTABLE=${Python_EXECUTABLE}"
+        "-DOPENMETA_PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/python_metadata_creation_smoke_test.cmake"
     )
   endif()
 

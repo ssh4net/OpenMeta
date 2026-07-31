@@ -12,6 +12,14 @@ if(@OPENMETA_CONFIG_HAS_BROTLI@)
   find_dependency(Brotli)
 endif()
 
+if(@OPENMETA_CONFIG_HAS_EXPAT@)
+  find_dependency(EXPAT)
+endif()
+
+if(@OPENMETA_CONFIG_HAS_OPENSSL@)
+  find_dependency(OpenSSL)
+endif()
+
 if(@OPENMETA_CONFIG_HAS_DNG_SDK@)
   find_dependency(dng_sdk CONFIG)
 endif()

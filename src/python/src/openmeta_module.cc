@@ -16,6 +16,7 @@
 #include "openmeta/mapped_file.h"
 #include "openmeta/metadata_capabilities.h"
 #include "openmeta/metadata_concepts.h"
+#include "openmeta/metadata_creation.h"
 #include "openmeta/metadata_fuzzy_search.h"
 #include "openmeta/metadata_interpretation.h"
 #include "openmeta/metadata_query.h"
@@ -5657,6 +5658,110 @@ struct PyDocument final {
     SimpleMetaResult result;
 };
 
+struct PyMetadataCreationField final {
+    MetadataCreationFieldKind kind       = MetadataCreationFieldKind::Title;
+    MetadataCreationValueKind value_kind = MetadataCreationValueKind::Text;
+    std::string text;
+    uint32_t unsigned_value = 0U;
+    int32_t signed_value    = 0;
+    uint32_t numer          = 0U;
+    uint32_t denom          = 1U;
+};
+
+static PyMetadataCreationField
+metadata_creation_text_python(MetadataCreationFieldKind kind,
+                              const std::string& value)
+{
+    PyMetadataCreationField field;
+    field.kind       = kind;
+    field.value_kind = MetadataCreationValueKind::Text;
+    field.text       = value;
+    return field;
+}
+
+
+static PyMetadataCreationField
+metadata_creation_u32_python(MetadataCreationFieldKind kind, uint32_t value)
+{
+    PyMetadataCreationField field;
+    field.kind           = kind;
+    field.value_kind     = MetadataCreationValueKind::UnsignedInteger;
+    field.unsigned_value = value;
+    return field;
+}
+
+
+static PyMetadataCreationField
+metadata_creation_i32_python(MetadataCreationFieldKind kind, int32_t value)
+{
+    PyMetadataCreationField field;
+    field.kind         = kind;
+    field.value_kind   = MetadataCreationValueKind::SignedInteger;
+    field.signed_value = value;
+    return field;
+}
+
+
+static PyMetadataCreationField
+metadata_creation_urational_python(MetadataCreationFieldKind kind,
+                                   uint32_t numer, uint32_t denom)
+{
+    PyMetadataCreationField field;
+    field.kind       = kind;
+    field.value_kind = MetadataCreationValueKind::UnsignedRational;
+    field.numer      = numer;
+    field.denom      = denom;
+    return field;
+}
+
+
+static std::shared_ptr<PyDocument>
+create_metadata_document(const std::vector<PyMetadataCreationField>& fields,
+                         uint32_t max_fields, uint32_t max_text_bytes_per_field,
+                         uint64_t max_total_text_bytes)
+{
+    std::vector<MetadataCreationField> request_fields;
+    request_fields.reserve(fields.size());
+    for (const PyMetadataCreationField& source : fields) {
+        MetadataCreationField field;
+        field.kind           = source.kind;
+        field.value_kind     = source.value_kind;
+        field.text           = source.text;
+        field.unsigned_value = source.unsigned_value;
+        field.signed_value   = source.signed_value;
+        field.rational.numer = source.numer;
+        field.rational.denom = source.denom;
+        request_fields.push_back(field);
+    }
+
+    MetadataCreationRequest request;
+    request.fields                          = request_fields;
+    request.limits.max_fields               = max_fields;
+    request.limits.max_text_bytes_per_field = max_text_bytes_per_field;
+    request.limits.max_total_text_bytes     = max_total_text_bytes;
+
+    MetaStore created;
+    MetadataCreationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = create_metadata(request, &created);
+    }
+    if (result.status != MetadataCreationStatus::Ok) {
+        std::string message = "metadata creation failed: ";
+        message += metadata_creation_status_name(result.status);
+        if (result.failed_field_index != kInvalidMetadataCreationFieldIndex) {
+            message += " at field ";
+            message += std::to_string(result.failed_field_index);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(created);
+    document->result.xmp.entries_decoded = result.entries_created;
+    return document;
+}
+
 static std::string
 document_compatibility_dump(std::shared_ptr<PyDocument> d,
                             ExportNameStyle style, ExportNamePolicy name_policy,
@@ -6193,6 +6298,8 @@ NB_MODULE(_openmeta, m)
         kFlatHostExportContractVersion);
     m.attr("COMPATIBILITY_DUMP_CONTRACT_VERSION") = nb::int_(
         kCompatibilityDumpContractVersion);
+    m.attr("METADATA_CREATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataCreationContractVersion);
 
     nb::enum_<ScanStatus>(m, "ScanStatus")
         .value("Ok", ScanStatus::Ok)
@@ -7246,6 +7353,81 @@ NB_MODULE(_openmeta, m)
         .value("Bounded", MetadataCapabilitySupport::Bounded)
         .value("Disabled", MetadataCapabilitySupport::Disabled);
 
+    nb::enum_<MetadataCreationFieldKind>(m, "MetadataCreationFieldKind")
+        .value("Title", MetadataCreationFieldKind::Title)
+        .value("Description", MetadataCreationFieldKind::Description)
+        .value("Creator", MetadataCreationFieldKind::Creator)
+        .value("Keyword", MetadataCreationFieldKind::Keyword)
+        .value("Copyright", MetadataCreationFieldKind::Copyright)
+        .value("RightsUsageTerms", MetadataCreationFieldKind::RightsUsageTerms)
+        .value("Credit", MetadataCreationFieldKind::Credit)
+        .value("Source", MetadataCreationFieldKind::Source)
+        .value("CreateDate", MetadataCreationFieldKind::CreateDate)
+        .value("ModifyDate", MetadataCreationFieldKind::ModifyDate)
+        .value("Rating", MetadataCreationFieldKind::Rating)
+        .value("Label", MetadataCreationFieldKind::Label)
+        .value("CameraMake", MetadataCreationFieldKind::CameraMake)
+        .value("CameraModel", MetadataCreationFieldKind::CameraModel)
+        .value("Software", MetadataCreationFieldKind::Software)
+        .value("DateTimeOriginal", MetadataCreationFieldKind::DateTimeOriginal)
+        .value("Orientation", MetadataCreationFieldKind::Orientation)
+        .value("PixelWidth", MetadataCreationFieldKind::PixelWidth)
+        .value("PixelHeight", MetadataCreationFieldKind::PixelHeight)
+        .value("ColorSpace", MetadataCreationFieldKind::ColorSpace)
+        .value("ExposureTime", MetadataCreationFieldKind::ExposureTime)
+        .value("FNumber", MetadataCreationFieldKind::FNumber)
+        .value("IsoSensitivity", MetadataCreationFieldKind::IsoSensitivity)
+        .value("FocalLength", MetadataCreationFieldKind::FocalLength);
+
+    nb::enum_<MetadataCreationValueKind>(m, "MetadataCreationValueKind")
+        .value("Text", MetadataCreationValueKind::Text)
+        .value("UnsignedInteger", MetadataCreationValueKind::UnsignedInteger)
+        .value("SignedInteger", MetadataCreationValueKind::SignedInteger)
+        .value("UnsignedRational", MetadataCreationValueKind::UnsignedRational);
+
+    nb::enum_<MetadataCreationStatus>(m, "MetadataCreationStatus")
+        .value("Ok", MetadataCreationStatus::Ok)
+        .value("NullOutput", MetadataCreationStatus::NullOutput)
+        .value("InvalidLimits", MetadataCreationStatus::InvalidLimits)
+        .value("TooManyFields", MetadataCreationStatus::TooManyFields)
+        .value("WrongValueKind", MetadataCreationStatus::WrongValueKind)
+        .value("EmptyText", MetadataCreationStatus::EmptyText)
+        .value("TextTooLong", MetadataCreationStatus::TextTooLong)
+        .value("TotalTextTooLong", MetadataCreationStatus::TotalTextTooLong)
+        .value("InvalidText", MetadataCreationStatus::InvalidText)
+        .value("InvalidValue", MetadataCreationStatus::InvalidValue)
+        .value("DuplicateSingleton", MetadataCreationStatus::DuplicateSingleton)
+        .value("InternalError", MetadataCreationStatus::InternalError);
+
+    nb::class_<PyMetadataCreationField>(m, "MetadataCreationField")
+        .def_ro("kind", &PyMetadataCreationField::kind)
+        .def_ro("value_kind", &PyMetadataCreationField::value_kind)
+        .def_ro("text", &PyMetadataCreationField::text)
+        .def_ro("unsigned_value", &PyMetadataCreationField::unsigned_value)
+        .def_ro("signed_value", &PyMetadataCreationField::signed_value)
+        .def_ro("numer", &PyMetadataCreationField::numer)
+        .def_ro("denom", &PyMetadataCreationField::denom);
+
+    m.attr("METADATA_CREATION_MAX_FIELDS") = nb::int_(
+        kMetadataCreationMaxFields);
+    m.attr("METADATA_CREATION_MAX_TEXT_BYTES_PER_FIELD") = nb::int_(
+        kMetadataCreationMaxTextBytesPerField);
+    m.attr("METADATA_CREATION_MAX_TOTAL_TEXT_BYTES") = nb::int_(
+        kMetadataCreationMaxTotalTextBytes);
+
+    m.def("metadata_creation_text", &metadata_creation_text_python, "kind"_a,
+          "value"_a);
+    m.def("metadata_creation_u32", &metadata_creation_u32_python, "kind"_a,
+          "value"_a);
+    m.def("metadata_creation_i32", &metadata_creation_i32_python, "kind"_a,
+          "value"_a);
+    m.def("metadata_creation_urational", &metadata_creation_urational_python,
+          "kind"_a, "numer"_a, "denom"_a);
+    m.def("metadata_creation_field_kind_name",
+          &metadata_creation_field_kind_name, "kind"_a);
+    m.def("metadata_creation_status_name", &metadata_creation_status_name,
+          "status"_a);
+
     nb::enum_<MetadataFuzzySearchStatus>(m, "MetadataFuzzySearchStatus")
         .value("Ok", MetadataFuzzySearchStatus::Ok)
         .value("FeatureUnavailable",
@@ -8111,6 +8293,11 @@ NB_MODULE(_openmeta, m)
             e.id  = static_cast<EntryId>(i);
             return e;
         });
+
+    m.def("create_metadata", &create_metadata_document, "fields"_a,
+          "max_fields"_a               = kMetadataCreationMaxFields,
+          "max_text_bytes_per_field"_a = kMetadataCreationMaxTextBytesPerField,
+          "max_total_text_bytes"_a     = kMetadataCreationMaxTotalTextBytes);
 
     nb::class_<PyEntry>(m, "Entry")
         .def_prop_ro("key_kind",
