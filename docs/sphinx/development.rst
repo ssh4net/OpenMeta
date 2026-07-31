@@ -95,9 +95,10 @@ model should stay compact:
      - Optionally find misspelled, aliased, or near-match metadata names and
        property paths with bounded deterministic top-k ranking and explicit
        exact/alias/fuzzy provenance.
-     - Medium-high, about 70-80%; the standalone RapidFuzz-backed API,
-       synthetic quality corpus, false-positive gate, resource bounds, ASCII
-       policy, Python wrappers, and Release/libc++ CI gate are implemented.
+     - High enough for the current milestone, about 80-85%; the standalone
+       RapidFuzz-backed API, curated positive/adversarial quality gate, bounded
+       ASCII contract, Python wrappers, Release/libc++ CI gate, and opt-in
+       scaling benchmark are implemented.
    * - Creation
      - Build fresh metadata entries from host-provided values.
      - Medium, about 55-65%.
@@ -135,6 +136,13 @@ tail is primarily malformed, undefined, or incomplete metadata. Decoding
 retains a ``98-100%`` range because not every declared container lane has an
 independent conformance sample set, even though tracked inputs have explicit
 read outcomes.
+
+The active implementation sequence after this Fuzzy Search milestone is
+Creation, Editing, Transfer, Translation, and Writing. Adapters and Utilities
+remain deferred until those five stages advance. Fuzzy Search resumes before
+Adapters and Utilities for independently sourced quality expansion, designed
+Unicode/transliteration behavior, multilingual gates, and an optional
+immutable index for repeated searches over large stores.
 
 Query results should expose both inspection-level matches and interpreted
 candidates. A crop query, for example, may match separate
@@ -193,18 +201,21 @@ free-text ranking belongs to the separate Fuzzy Search API.
 Python ``Document`` and ``TransferSourceSnapshot`` mirror this as thin wrappers
 returning the same match/candidate dictionary shape.
 
-Fuzzy Search is a separate optional stage layered over Query. The
+Fuzzy Search is a separate optional stage layered over Query. See
+:doc:`fuzzy_search` for its complete text, ranking, resource, threading,
+quality, and benchmark contracts. The
 ``openmeta/metadata_fuzzy_search.h`` API searches decoded entry names and
 property paths with caller-selected score and result bounds. Results are
 ordered by descending score, then exact/alias/fuzzy provenance, then stable
 entry id. Search is locale-independent and currently accepts ASCII query text
 only; non-ASCII queries return an explicit unsupported status rather than
-performing byte-wise similarity or implicit transliteration. The synthetic
-quality gate covers common spelling errors, aliases, unrelated negative
-queries, deterministic top-k truncation, and deleted-entry filtering. Higher
-readiness still requires broader real-world name/alias corpora and designed
-Unicode normalization, transliteration, and multilingual quality gates. Builds
-without RapidFuzz retain exact and semantic Query behavior.
+performing byte-wise similarity or implicit transliteration. The curated
+quality gate covers common spelling errors, aliases, metadata-like adversarial
+negative queries, deterministic top-k truncation, deleted-entry filtering, and
+ASCII/UTF-8 boundary behavior. An opt-in benchmark confirms linear scaling and
+supports keeping the scan path for ordinary per-image stores; a reusable
+immutable index remains deferred for repeated GUI queries or aggregated
+stores. Builds without RapidFuzz retain exact and semantic Query behavior.
 
 For code that wants an iterable semantic record stream instead of raw query
 matches, use ``openmeta/metadata_interpretation.h``. It projects query
@@ -345,8 +356,7 @@ dependencies let OpenMeta decode more content:
 - **Expat** (``OPENMETA_WITH_EXPAT``): parses XMP RDF/XML packets (embedded
   blocks and ``.xmp`` sidecars) using a streaming parser with strict limits.
 - **RapidFuzz** (``OPENMETA_ENABLE_RAPIDFUZZ``): opt-in bounded fuzzy entry
-  search and semantic-query name matching for inspection UI. It is disabled by
-  default; when enabled,
+  search for inspection UI. It is disabled by default; when enabled,
   CMake requires either a ``rapidfuzz::rapidfuzz`` package target or
   ``OPENMETA_RAPIDFUZZ_INCLUDE_DIR`` pointing at headers containing
   ``rapidfuzz/fuzz.hpp``.

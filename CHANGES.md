@@ -1,5 +1,33 @@
 # OpenMeta Changes
 
+## 0.4.90 - 2026-07-30
+
+Changes compared with `0.4.89`.
+
+### Added
+
+- Expanded the curated Fuzzy Search alias vocabulary and quality gate across
+  descriptive, capture, geometry, color, RAW-processing, rights, location,
+  lens, and history terminology.
+- Added metadata-like adversarial negatives plus explicit ASCII separator,
+  camel-case, acronym-boundary, and UTF-8 policy tests.
+- Added the opt-in `OPENMETA_BUILD_BENCHMARKS` configuration and
+  `openmeta_benchmark_fuzzy_search` deterministic scaling workload, compiled
+  and executed by the RapidFuzz Release/libc++ CI job.
+- Added a dedicated Fuzzy Search contract covering ranking, resource and
+  threading bounds, quality gates, benchmark use, and indexing policy.
+
+### Changed
+
+- Fuzzy alias typos now require whole-phrase and per-token similarity, avoiding
+  unrelated matches caused by one shared word.
+- ASCII normalization now splits acronym-to-word boundaries such as
+  `GPSLatitude` and `ICCProfile`.
+- Fuzzy Search readiness is now tracked at about 80-85%; the active project
+  sequence moves to Creation, Editing, Transfer, Translation, and Writing.
+  Fuzzy Search resumes before Adapters and Utilities for Unicode/multilingual
+  behavior and an optional immutable large-store index.
+
 ## 0.4.89 - 2026-07-30
 
 Changes compared with `0.4.88`.

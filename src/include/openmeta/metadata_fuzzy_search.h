@@ -32,8 +32,11 @@ enum class MetadataFuzzySearchStatus : uint8_t {
 };
 
 enum class MetadataFuzzySearchMatchKind : uint8_t {
+    /// Exact normalized phrase match.
     Exact,
+    /// Exact or typo-tolerant match through the curated alias vocabulary.
     Alias,
+    /// General RapidFuzz candidate-name match.
     Fuzzy,
 };
 
@@ -72,11 +75,17 @@ struct MetadataFuzzySearchResult final {
  * bounded by \ref MetadataFuzzySearchOptions::max_results.
  *
  * The current normalization contract is ASCII-only and locale-independent.
+ * ASCII case and separators are normalized, including camel-case and
+ * acronym-to-word boundaries.
  * Non-ASCII query text returns
  * \ref MetadataFuzzySearchStatus::UnsupportedQueryText; no Unicode
- * normalization or transliteration is attempted. Query and candidate scanning
- * are bounded by `kMetadataFuzzySearchMaxQueryBytes` and
+ * normalization or transliteration is attempted. Non-ASCII candidate bytes
+ * act as separators while ASCII fragments remain searchable. Query and
+ * candidate scanning are bounded by `kMetadataFuzzySearchMaxQueryBytes` and
  * `kMetadataFuzzySearchMaxCandidateBytes`.
+ *
+ * The function keeps no global state and is safe for concurrent calls when the
+ * finalized input store is not being mutated.
  */
 MetadataFuzzySearchResult
 fuzzy_search_metadata(const MetaStore& store, std::string_view query,

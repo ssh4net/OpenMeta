@@ -297,11 +297,13 @@ Host-facing API map
      - Optional RapidFuzz-backed search over decoded metadata names and
        property paths. The API has bounded query/candidate/result sizes,
        caller-selected score cutoff, deterministic top-k ordering, stable
-       entry-id ties, explicit exact/alias/fuzzy provenance, and status returns
-       for unavailable, invalid, short, long, or non-ASCII queries. The current
-       normalization contract is locale-independent ASCII without Unicode
-       normalization or transliteration. Python ``Document`` and
-       ``TransferSourceSnapshot`` expose thin dictionary wrappers.
+       entry-id ties, explicit exact/curated-alias/general-fuzzy provenance,
+       and status returns for unavailable, invalid, short, long, or non-ASCII
+       queries. The current normalization contract is locale-independent ASCII
+       with separator, camel-case, and acronym-boundary normalization but
+       without Unicode normalization or transliteration. Calls use local state
+       and are safe against an immutable finalized store. Python ``Document``
+       and ``TransferSourceSnapshot`` expose thin dictionary wrappers.
    * - Transfer concept diagnostics:
        ``transfer_concept_diagnostics_from_store(...)``,
        ``transfer_concept_diagnostic_message(...)``,

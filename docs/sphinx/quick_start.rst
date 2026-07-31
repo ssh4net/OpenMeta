@@ -179,6 +179,8 @@ explicit status for non-ASCII input; it does not perform Unicode normalization
 or transliteration. Python exposes the same result through
 ``Document.fuzzy_search(...)`` and
 ``TransferSourceSnapshot.fuzzy_search(...)``.
+See :doc:`fuzzy_search` for alias behavior, resource/threading bounds, quality
+gates, benchmark usage, and the large-store indexing decision.
 
 For structured interpretation output, use
 ``openmeta/metadata_interpretation.h``. It projects semantic query candidates

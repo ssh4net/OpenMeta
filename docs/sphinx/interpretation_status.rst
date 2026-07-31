@@ -382,12 +382,13 @@ Coverage matrix
    * - Fuzzy Search
      - Optional ``fuzzy_search_metadata(...)`` searches decoded names and
        property paths with bounded score/result options, deterministic top-k
-       ordering, stable ties, and exact/alias/fuzzy provenance. Python
-       snapshot/document wrappers preserve the same result shape.
-     - Medium-high, about 70-80%.
-     - Broaden real-world typo/alias and negative corpora, then design and
-       validate Unicode normalization, transliteration, and multilingual
-       ranking.
+       ordering, stable ties, exact/alias/fuzzy provenance, curated
+       positive/adversarial quality gates, and an opt-in scaling benchmark.
+       Python snapshot/document wrappers preserve the same result shape.
+     - High enough for the current milestone, about 80-85%.
+     - Broaden independently sourced quality coverage, then design Unicode
+       normalization, transliteration, multilingual ranking, and an optional
+       immutable index for repeated large-store searches.
    * - Transfer-safety classification
      - Compatible-file versus rendered-image safety policies classify
        source-specific image geometry, color/profile, RAW curves/linearity
@@ -425,8 +426,16 @@ is the explicit safe-transfer and host-query model: it classifies whether data
 is portable, target-owned, source RAW-specific, or unsafe to move into rendered
 outputs.
 
-Next interpretation priorities
-------------------------------
+Active project sequence
+-----------------------
+
+The current implementation focus is Creation, Editing, Transfer, Translation,
+and Writing. Adapters and Utilities remain deferred. Fuzzy Search resumes
+before those final two stages for its Unicode/multilingual and optional-index
+milestones.
+
+Interpretation maintenance priorities
+-------------------------------------
 
 1. Validate the complete bounded BMFF tiled-image contract against
    independently authored conformance files as they become available.

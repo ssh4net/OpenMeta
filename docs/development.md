@@ -19,7 +19,7 @@ model should stay compact:
 | Decoding | Find metadata carriers and decode EXIF, XMP, IPTC, ICC, Photoshop IRB, JUMBF/C2PA, EXR, and related blocks into `MetaStore` entries. | High, about 98-100% for the current target scope. |
 | Interpretation | Normalize names and values, group entries by meaning, and classify source-bound data such as RAW crop, exposure adjustment, color/profile/source-color-transform evidence, RAW curves/linearity metadata with descriptor-backed compressed-storage applicability, lens-correction, sensor, BMFF brand/item-property associations and rollups including `avio` AVIF brands, item groups, item semantic counts, whole-scene policy hints, graph-component summaries with per-component roles, member item IDs, semantic composition, typed relation counts, bounded `grid`/`iovl`/`iden` construction semantics with recursive item-offset descriptors and graph-cycle/source validation, bounded complete `tili` configuration/reference/offset-table interpretation, `container_graph` concepts, primary item properties, primary metadata-carrier flags, primary sidecar and scene summaries, and display-transform summaries, JUMBF labels, Photoshop IRB embedded carriers plus fixed-layout, XML/text, working-path and numbered clipping-path records, byte-count, descriptor-header, scalar/class/alias/enum/reference, and bounded nested list/object summaries, EXIF 3.1 correction/noise labels, version/firmware-style value formatting for selected EXIF/Nikon/Olympus/native RAF contexts, selected Sony ILCE-7RM6 correction-offset routing, Fujifilm flash white-balance naming, Apple/FLIR/JVC/GE/Reconyx/Microsoft/Nintendo/Sanyo scalar MakerNote labels, current Canon RF/Nikon Z lens labels, an ambiguous Pentax Sigma/Samsung/Tokina lens-family label, EXIF/XMP GPS timestamp composites, EXIF `OffsetTime*`/`SubSecTime*` date composition with normalized-instant conflict checks, separate camera/destination/shown/created GPS roles with scope-aware structured-location conflicts, language-aware descriptive roles, legacy editorial duplicate reconciliation, non-equivalent IPTC taxonomy/workflow fields, content-location and prior-envelope scopes, editorial release/expiration date-time pairs, source software and editorial contacts, source-bound IPTC technical-image/audio/preview records, accessibility/taxonomy/registry/image-region/document-identity/lineage/history semantics, structured creator-contact/event/person/organization/product/artwork/rights/license/release/end-user/image-creator/image-supplier/image-asset/controlled-vocabulary/registry/image-region/image-region-boundary/resource-reference/resource-event/manifest-item/version/editorial-workflow/source-software/editorial-contact/technical-image/audio-asset/preview-asset/pantry records, bounded standard resource-reference/event/version/manifest structures nested in pantry items, explicit image-region shape and coordinate-unit contracts, independent privacy/policy sensitivity, computational, thermal, stitch/panorama capture state, and vendor-private fields. | High, measured about 99.85% for declared semantic targets. |
 | Query | Find entries by exact name or semantic group, then expose normalized query candidates, structured interpretation records, bounded cross-family concept resolutions, transfer hints, sensitivity, and conflict flags for crop/border/active-area, exposure/gain, color/WB/profile/source-color-transform, orientation, date/time, GPS, descriptive fields including contact/event/person/organization/product/artwork/rights/license/release, editorial, accessibility, taxonomy, registry, image-region, document-identity, document-lineage, document-history, technical-image, audio, and preview semantics, lens-correction, computational/thermal/stitch, RAW/source-processing fields, and BMFF derived-image construction and tiled-image configuration evidence across standard and vendor metadata. | High, measured about 99.77% for declared query targets. |
-| Fuzzy Search | Optionally find misspelled, aliased, or near-match metadata names and property paths with bounded deterministic top-k ranking and explicit exact/alias/fuzzy provenance. | Medium-high, about 70-80%; the standalone RapidFuzz-backed API, synthetic quality corpus, false-positive gate, resource bounds, ASCII policy, Python wrappers, and Release/libc++ CI gate are implemented. |
+| Fuzzy Search | Optionally find misspelled, aliased, or near-match metadata names and property paths with bounded deterministic top-k ranking and explicit exact/alias/fuzzy provenance. | High enough for the current milestone, about 80-85%; the standalone RapidFuzz-backed API, curated positive/adversarial quality gate, bounded ASCII contract, Python wrappers, Release/libc++ CI gate, and opt-in scaling benchmark are implemented. |
 | Creation | Build fresh metadata entries from host-provided values. | Medium, about 55-65%. |
 | Editing | Modify existing logical metadata entries while preserving valid surrounding structure. | Medium, about 60-70%. |
 | Transfer | Move metadata between files using explicit compatible-file or rendered-image safety policies. | Medium-high, about 80-85%. |
@@ -37,6 +37,13 @@ tail is primarily malformed, undefined, or incomplete metadata. Decoding
 retains a `98-100%` range because not every declared container lane has an
 independent conformance sample set, even though tracked inputs have explicit
 read outcomes.
+
+The active implementation sequence after this Fuzzy Search milestone is
+Creation, Editing, Transfer, Translation, and Writing. Adapters and Utilities
+remain deferred until those five stages advance. Fuzzy Search resumes before
+Adapters and Utilities for independently sourced quality expansion, designed
+Unicode/transliteration behavior, multilingual gates, and an optional immutable
+index for repeated searches over large stores.
 
 Query results should expose both inspection-level matches and
 interpreted candidates. A crop query, for example, may match separate
@@ -95,18 +102,21 @@ ranking belongs to the separate Fuzzy Search API.
 Python `Document` and `TransferSourceSnapshot` mirror this as thin wrappers
 returning the same match/candidate dictionary shape.
 
-Fuzzy Search is a separate optional stage layered over Query. The
+Fuzzy Search is a separate optional stage layered over Query. See
+[`fuzzy_search.md`](fuzzy_search.md) for its complete text, ranking, resource,
+threading, quality, and benchmark contracts. The
 `openmeta/metadata_fuzzy_search.h` API searches decoded entry names and
 property paths with caller-selected score and result bounds. Results are
 ordered by descending score, then exact/alias/fuzzy provenance, then stable
 entry id. Search is locale-independent and currently accepts ASCII query text
 only; non-ASCII queries return an explicit unsupported status rather than
-performing byte-wise similarity or implicit transliteration. The synthetic
-quality gate covers common spelling errors, aliases, unrelated negative
-queries, deterministic top-k truncation, and deleted-entry filtering. Higher
-readiness still requires broader real-world name/alias corpora and designed
-Unicode normalization, transliteration, and multilingual quality gates. Builds
-without RapidFuzz retain exact and semantic Query behavior.
+performing byte-wise similarity or implicit transliteration. The curated
+quality gate covers common spelling errors, aliases, metadata-like adversarial
+negative queries, deterministic top-k truncation, deleted-entry filtering, and
+ASCII/UTF-8 boundary behavior. An opt-in benchmark confirms linear scaling and
+supports keeping the scan path for ordinary per-image stores; a reusable
+immutable index remains deferred for repeated GUI queries or aggregated stores.
+Builds without RapidFuzz retain exact and semantic Query behavior.
 
 For code that wants an iterable semantic record stream instead of raw query
 matches, use `openmeta/metadata_interpretation.h`. It projects query candidates
@@ -154,8 +164,7 @@ dependencies let OpenMeta decode more content:
   and `.xmp` sidecars). Expat is used as a streaming parser so OpenMeta can
   enforce strict limits and avoid building a full XML DOM from untrusted input.
 - **RapidFuzz** (`OPENMETA_ENABLE_RAPIDFUZZ`): opt-in bounded fuzzy entry
-  search and semantic-query name matching for inspection UI. It is disabled by
-  default; when enabled,
+  search for inspection UI. It is disabled by default; when enabled,
   CMake requires either a `rapidfuzz::rapidfuzz` package target or
   `OPENMETA_RAPIDFUZZ_INCLUDE_DIR` pointing at headers containing
   `rapidfuzz/fuzz.hpp`.

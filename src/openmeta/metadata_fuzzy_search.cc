@@ -27,21 +27,55 @@ namespace {
 
     static constexpr SearchAlias kSearchAliases[] = {
         { "author", "creator" },
+        { "artist", "creator" },
+        { "photographer", "creator" },
         { "byline", "creator" },
         { "caption", "description" },
+        { "image caption", "description" },
         { "abstract", "description" },
+        { "tags", "keywords" },
+        { "tag list", "keywords" },
+        { "photo credit", "credit" },
+        { "license", "usage terms" },
+        { "license terms", "usage terms" },
         { "shutter speed", "exposure time" },
+        { "aperture", "f number" },
+        { "iso", "photographic sensitivity" },
+        { "iso speed", "photographic sensitivity" },
+        { "exposure compensation", "exposure bias" },
+        { "date taken", "date time original" },
+        { "capture time", "date time original" },
+        { "shooting date", "date time original" },
         { "rotation", "orientation" },
-        { "white point", "white balance" },
+        { "image rotation", "orientation" },
+        { "white balance setting", "white balance" },
         { "colour profile", "color profile" },
         { "camera profile", "color profile" },
+        { "icc profile", "color profile" },
+        { "colour space", "color space" },
         { "copyright owner", "copyright" },
         { "rights owner", "copyright" },
         { "crop rectangle", "crop" },
+        { "crop offset", "default crop origin" },
+        { "crop dimensions", "default crop size" },
         { "active rectangle", "active area" },
+        { "sensor area", "active area" },
+        { "raw black", "black level" },
+        { "raw white", "white level" },
+        { "linearisation table", "linearization table" },
+        { "tone mapping curve", "tone curve" },
         { "lens corrections", "lens correction" },
         { "camera make", "make" },
+        { "camera brand", "make" },
+        { "manufacturer", "make" },
         { "camera model", "model" },
+        { "camera serial", "serial number" },
+        { "lens name", "lens model" },
+        { "gps lat", "gps latitude" },
+        { "gps lon", "gps longitude" },
+        { "location latitude", "gps latitude" },
+        { "location longitude", "gps longitude" },
+        { "edit history", "history" },
     };
 
     struct SearchableKeyName final {
@@ -118,7 +152,9 @@ namespace {
                 continue;
             }
             if (ascii_is_upper(c)
-                && (ascii_is_lower(previous) || ascii_is_digit(previous))) {
+                && (ascii_is_lower(previous) || ascii_is_digit(previous)
+                    || (ascii_is_upper(previous) && i + 1U < text.size()
+                        && ascii_is_lower(text[i + 1U])))) {
                 append_normalized_space(out);
             }
             out->push_back(ascii_lower(c));
@@ -211,6 +247,59 @@ namespace {
 #endif
     }
 
+    static uint8_t fuzzy_alias_score(std::string_view alias,
+                                     std::string_view query,
+                                     uint8_t minimum_score) noexcept
+    {
+#if defined(OPENMETA_HAS_RAPIDFUZZ) && OPENMETA_HAS_RAPIDFUZZ
+        if (alias.empty() || query.empty()) {
+            return 0U;
+        }
+        const uint8_t full_score = score_to_u8(
+            rapidfuzz::fuzz::ratio(alias, query,
+                                   static_cast<double>(minimum_score)));
+        if (full_score < minimum_score) {
+            return 0U;
+        }
+
+        const uint8_t token_minimum_score = static_cast<uint8_t>(minimum_score
+                                                                 - 10U);
+        size_t alias_start                = 0U;
+        size_t query_start                = 0U;
+        while (alias_start < alias.size() && query_start < query.size()) {
+            const size_t alias_end    = alias.find(' ', alias_start);
+            const size_t query_end    = query.find(' ', query_start);
+            const size_t alias_count  = alias_end == std::string_view::npos
+                                            ? alias.size() - alias_start
+                                            : alias_end - alias_start;
+            const size_t query_count  = query_end == std::string_view::npos
+                                            ? query.size() - query_start
+                                            : query_end - query_start;
+            const uint8_t token_score = score_to_u8(rapidfuzz::fuzz::ratio(
+                alias.substr(alias_start, alias_count),
+                query.substr(query_start, query_count),
+                static_cast<double>(token_minimum_score)));
+            if (token_score < token_minimum_score) {
+                return 0U;
+            }
+            if (alias_end == std::string_view::npos
+                || query_end == std::string_view::npos) {
+                return alias_end == query_end ? full_score : 0U;
+            }
+            alias_start = alias_end + 1U;
+            query_start = query_end + 1U;
+        }
+        return alias_start == alias.size() && query_start == query.size()
+                   ? full_score
+                   : 0U;
+#else
+        (void)alias;
+        (void)query;
+        (void)minimum_score;
+        return 0U;
+#endif
+    }
+
     static int match_kind_priority(MetadataFuzzySearchMatchKind kind) noexcept
     {
         switch (kind) {
@@ -262,10 +351,11 @@ namespace {
                 note_score(&best, MetadataFuzzySearchMatchKind::Alias, 96U);
                 continue;
             }
-            const uint8_t score = fuzzy_score(kSearchAliases[i].alias,
-                                              normalized_query, minimum_score);
+            const uint8_t score = fuzzy_alias_score(kSearchAliases[i].alias,
+                                                    normalized_query,
+                                                    minimum_score);
             if (score >= minimum_score) {
-                note_score(&best, MetadataFuzzySearchMatchKind::Fuzzy,
+                note_score(&best, MetadataFuzzySearchMatchKind::Alias,
                            score > 95U ? 95U : score);
             }
         }

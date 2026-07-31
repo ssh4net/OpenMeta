@@ -228,7 +228,11 @@ provenance and stable entry-id tie-breaking. The current normalization contract
 is locale-independent ASCII; non-ASCII queries return
 `UnsupportedQueryText`, with no implicit transliteration. Thin Python
 `Document` and `TransferSourceSnapshot` wrappers return the same status,
-counts, truncation flag, and match fields.
+counts, truncation flag, and match fields. Calls keep local state and may run
+concurrently against an immutable finalized store. The current bounded linear
+scan is intended for ordinary per-image stores; see
+[fuzzy_search.md](fuzzy_search.md) for benchmark results and the deferred
+immutable-index boundary.
 
 ## 3. Generic Host Metadata Traversal
 

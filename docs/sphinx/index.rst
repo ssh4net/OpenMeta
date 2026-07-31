@@ -37,6 +37,7 @@ sanitization to reduce memory and output attack surface.
    xmp_sync_policy
    writer_target_contract
    interpretation_status
+   fuzzy_search
    raw_read_parity_plan
    build
    development

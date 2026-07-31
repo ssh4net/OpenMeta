@@ -154,6 +154,7 @@ jobs:
           -DOPENMETA_BUILD_STATIC=ON
           -DOPENMETA_BUILD_SHARED=OFF
           -DOPENMETA_BUILD_TESTS=ON
+          -DOPENMETA_BUILD_BENCHMARKS=ON
           -DOPENMETA_BUILD_PYTHON=OFF
           -DOPENMETA_WITH_DNG_SDK_ADAPTER=OFF
 
@@ -161,9 +162,13 @@ jobs:
         run: >
           cmake --build build-fuzzy --parallel
           --target openmeta_gate_fuzzy_search_release
+          openmeta_benchmark_fuzzy_search
 
       - name: Run fuzzy-search release gate
         run: >
           ctest --test-dir build-fuzzy
           -R openmeta_fuzzy_search_release_gate
           --output-on-failure
+
+      - name: Run informational fuzzy-search benchmark
+        run: ./build-fuzzy/openmeta_benchmark_fuzzy_search

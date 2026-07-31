@@ -64,6 +64,8 @@ If you already own the encoder, SDK objects, or output container, follow
 - [docs/metadata_support.md](docs/metadata_support.md): metadata support matrix
 - [docs/metadata_transfer_plan.md](docs/metadata_transfer_plan.md): transfer
   status and roadmap
+- [docs/fuzzy_search.md](docs/fuzzy_search.md): optional ranked metadata-name
+  search contract, quality gates, and benchmark
 - [docs/doxygen.md](docs/doxygen.md): API reference
 - [SECURITY.md](SECURITY.md): security model and reporting
 - [NOTICE.md](NOTICE.md): notices and third-party dependency information
