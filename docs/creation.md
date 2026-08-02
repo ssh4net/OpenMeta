@@ -120,6 +120,9 @@ Invalid requests raise `ValueError` with the C++ status and rejected field
 index. The returned object is a normal `Document`: it can be queried, dumped,
 or converted into a transfer snapshot.
 
+Use the matching transactional Editing API to modify these fields in an
+existing finalized store. See [editing.md](editing.md).
+
 ## Scope And Safety
 
 Creation writes canonical portable-XMP entries because that representation can

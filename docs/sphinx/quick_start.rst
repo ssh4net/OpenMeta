@@ -271,6 +271,35 @@ The result is a finalized store of canonical portable-XMP entries. Validation
 is transactional. See :doc:`creation` for the full mapping, constraints,
 Python API, and destination-image safety requirements.
 
+Edit logical metadata
+~~~~~~~~~~~~~~~~~~~~~
+
+Use the matching Editing API when a finalized store already exists:
+
+.. code-block:: cpp
+
+   #include "openmeta/metadata_editing.h"
+
+   const std::array operations = {
+       openmeta::make_metadata_edit_set(
+           openmeta::make_metadata_creation_text(
+               openmeta::MetadataCreationFieldKind::Title, "Edited title")),
+       openmeta::make_metadata_edit_add(
+           openmeta::make_metadata_creation_text(
+               openmeta::MetadataCreationFieldKind::Keyword, "approved")),
+   };
+
+   openmeta::MetadataEditingRequest edit_request;
+   edit_request.operations = operations;
+
+   openmeta::MetaStore edited;
+   const openmeta::MetadataEditingResult edit_result =
+       openmeta::edit_metadata(store, edit_request, &edited);
+
+The source is not mutated. The output is replaced only when every operation
+succeeds. Set preserves entry provenance; removal creates a dirty tombstone.
+See :doc:`editing` for occurrence and conflict semantics.
+
 Use the lower-level key/value API only for wire-specific or custom entries:
 
 .. code-block:: cpp

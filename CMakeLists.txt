@@ -364,10 +364,12 @@ set(OPENMETA_SOURCES
   src/openmeta/metadata_capabilities.cc
   src/openmeta/metadata_concepts.cc
   src/openmeta/metadata_creation.cc
+  src/openmeta/metadata_editing.cc
   src/openmeta/metadata_fuzzy_search.cc
   src/openmeta/metadata_interpretation.cc
   src/openmeta/metadata_query.cc
   src/openmeta/metadata_transfer.cc
+  src/openmeta/metadata_logical_field_internal.cc
   src/openmeta/meta_store.cc
   src/openmeta/meta_edit.cc
   src/openmeta/meta_value.cc
@@ -614,6 +616,16 @@ if(OPENMETA_BUILD_PYTHON)
       COMMENT "Running python metadata creation smoke gate"
       VERBATIM
     )
+
+    add_custom_target(openmeta_gate_python_metadata_editing_smoke
+      DEPENDS openmeta_python
+      COMMAND ${CMAKE_COMMAND}
+        "-DOPENMETA_PYTHON_EXECUTABLE=${Python_EXECUTABLE}"
+        "-DOPENMETA_PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/python_metadata_editing_smoke_test.cmake"
+      COMMENT "Running python metadata editing smoke gate"
+      VERBATIM
+    )
   endif()
 endif()
 
@@ -816,6 +828,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/metadata_capabilities_test.cc
     tests/metadata_concepts_test.cc
     tests/metadata_creation_test.cc
+    tests/metadata_editing_test.cc
     tests/metadata_fuzzy_search_test.cc
     tests/metadata_interpretation_test.cc
     tests/metadata_query_test.cc
@@ -1068,6 +1081,14 @@ if(OPENMETA_BUILD_TESTS)
         "-DOPENMETA_PYTHON_EXECUTABLE=${Python_EXECUTABLE}"
         "-DOPENMETA_PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/python_metadata_creation_smoke_test.cmake"
+    )
+
+    add_test(
+      NAME openmeta_python_metadata_editing_smoke
+      COMMAND ${CMAKE_COMMAND}
+        "-DOPENMETA_PYTHON_EXECUTABLE=${Python_EXECUTABLE}"
+        "-DOPENMETA_PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/python_metadata_editing_smoke_test.cmake"
     )
   endif()
 

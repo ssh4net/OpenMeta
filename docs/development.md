@@ -21,7 +21,7 @@ model should stay compact:
 | Query | Find entries by exact name or semantic group, then expose normalized query candidates, structured interpretation records, bounded cross-family concept resolutions, transfer hints, sensitivity, and conflict flags for crop/border/active-area, exposure/gain, color/WB/profile/source-color-transform, orientation, date/time, GPS, descriptive fields including contact/event/person/organization/product/artwork/rights/license/release, editorial, accessibility, taxonomy, registry, image-region, document-identity, document-lineage, document-history, technical-image, audio, and preview semantics, lens-correction, computational/thermal/stitch, RAW/source-processing fields, and BMFF derived-image construction and tiled-image configuration evidence across standard and vendor metadata. | High, measured about 99.77% for declared query targets. |
 | Fuzzy Search | Optionally find misspelled, aliased, or near-match metadata names and property paths with bounded deterministic top-k ranking and explicit exact/alias/fuzzy provenance. | High enough for the current milestone, about 80-85%; the standalone RapidFuzz-backed API, curated positive/adversarial quality gate, bounded ASCII contract, Python wrappers, Release/libc++ CI gate, and opt-in scaling benchmark are implemented. |
 | Creation | Build fresh metadata entries from host-provided values through a transactional, bounded logical-field request that produces a finalized canonical portable-XMP store. | Medium-high, about 70-75%; the v1 C++ contract, common descriptive/capture fields, UTF-8/XML and typed-value validation, resource limits, deterministic collection ordering, portable serialization, semantic-query visibility, and thin Python wrapper are implemented. |
-| Editing | Modify existing logical metadata entries while preserving valid surrounding structure. | Medium, about 60-70%. |
+| Editing | Modify existing logical metadata entries while preserving valid surrounding structure. | Medium-high, about 75-80%; the v1 logical add/set/remove transaction, deterministic occurrence handling, singleton conflict repair, dirty/tombstone behavior, provenance preservation, portable serialization, transfer visibility, and immutable thin Python wrapper are implemented. |
 | Transfer | Move metadata between files using explicit compatible-file or rendered-image safety policies. | Medium-high, about 80-85%. |
 | Translation | Project metadata between families, mainly bounded EXIF/IPTC/XMP portable mappings. | Medium, about 60-70%. |
 | Writing | Serialize metadata and write or rewrite it into target containers. | Medium, about 65-75%. |
@@ -38,12 +38,15 @@ retains a `98-100%` range because not every declared container lane has an
 independent conformance sample set, even though tracked inputs have explicit
 read outcomes.
 
-The first Creation milestone is implemented in
+The first Creation and Editing milestones are implemented in
 [`metadata_creation.h`](../src/include/openmeta/metadata_creation.h) and
-documented in [`creation.md`](creation.md). The active implementation sequence
-now advances to Editing, Transfer, Translation, and Writing. Creation resumes
-for arbitrary/custom properties, multilingual alternatives, structured values,
-and direct family projection. Adapters and Utilities remain deferred. Fuzzy
+[`metadata_editing.h`](../src/include/openmeta/metadata_editing.h), with their
+contracts documented in [`creation.md`](creation.md) and
+[`editing.md`](editing.md). The active implementation sequence now advances to
+Transfer, Translation, and Writing. Creation and Editing resume for
+arbitrary/custom properties, multilingual alternatives, structured values,
+direct family projection, structural block operations, and broader
+cross-family synchronization. Adapters and Utilities remain deferred. Fuzzy
 Search resumes before those final two stages for independently sourced quality
 expansion, designed Unicode/transliteration behavior, multilingual gates, and
 an optional immutable index for repeated searches over large stores.

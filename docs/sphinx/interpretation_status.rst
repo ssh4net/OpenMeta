@@ -429,11 +429,12 @@ outputs.
 Active project sequence
 -----------------------
 
-The first bounded Creation milestone is complete. The current implementation
-focus advances to Editing, Transfer, Translation, and Writing. Adapters and
-Utilities remain deferred. Creation resumes for custom, multilingual,
-structured, and direct-family output; Fuzzy Search resumes before those final
-two stages for its Unicode/multilingual and optional-index milestones.
+The first bounded Creation and Editing milestones are complete. The current
+implementation focus advances to Transfer, Translation, and Writing. Adapters
+and Utilities remain deferred. Creation and Editing resume for custom,
+multilingual, structured, direct-family output, structural block operations,
+and broader synchronization; Fuzzy Search resumes before those final two
+stages for its Unicode/multilingual and optional-index milestones.
 
 Interpretation maintenance priorities
 -------------------------------------

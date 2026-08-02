@@ -1,5 +1,33 @@
 # OpenMeta Changes
 
+## 0.4.92 - 2026-08-02
+
+Changes compared with `0.4.91`.
+
+### Added
+
+- Added the transactional v1 `edit_metadata(...)` C++ contract for bounded
+  logical add, set, remove, and remove-all operations over finalized stores.
+- Added deterministic repeated-field occurrence handling, explicit singleton
+  conflicts and repair, request-order semantics, stable statuses, operation
+  diagnostics, and resource limits shared with the Creation field map.
+- Added provenance-preserving value updates, dirty tombstones, deterministic
+  portable-XMP additions, and support for adding metadata to an empty finalized
+  store without inventing source-block provenance.
+- Added immutable thin Python editing operations and
+  `Document.edit_metadata(...)`, returning a detached edited document.
+- Added C++ creation/editing/transfer tests, a Python editing smoke gate, and
+  public editing, quick-start, stability, and lifecycle documentation.
+
+### Changed
+
+- Creation and Editing now share one private logical-field descriptor and
+  validation implementation, preventing mapping and constraint drift.
+- `MetaStore` now exposes `is_finalized()` so transactional editing can reject
+  incomplete source stores explicitly.
+- Editing readiness is now tracked at about 75-80%; the active implementation
+  sequence advances to Transfer, Translation, and Writing.
+
 ## 0.4.91 - 2026-07-31
 
 Changes compared with `0.4.90`.

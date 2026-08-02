@@ -96,6 +96,13 @@ MetaStore::rehash()
 }
 
 
+bool
+MetaStore::is_finalized() const noexcept
+{
+    return finalized_;
+}
+
+
 uint32_t
 MetaStore::block_count() const noexcept
 {

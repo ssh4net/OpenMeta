@@ -83,6 +83,15 @@ Host-facing API map
        UTF-8/XML text and typed numeric constraints, and exposes the same C++
        policy through thin Python bindings. Direct EXIF/IPTC projection remains
        a Translation concern. See :doc:`creation`.
+   * - Logical metadata editing: ``edit_metadata(...)`` and add/set/remove
+       helpers
+     - ``openmeta/metadata_editing.h``
+     - Experimental
+     - Transactional v1 contract over finalized stores and the Creation
+       logical field map. Set/remove preserve provenance through dirty values
+       and tombstones; add handles deterministic repeated fields and explicit
+       singleton conflicts. Python returns a detached edited ``Document``
+       without mutating its source. See :doc:`editing`.
    * - EXIF/TIFF orientation helpers: ``interpret_exif_orientation(...)``,
        ``exif_orientation_name(...)``,
        ``exif_orientation_rotation_degrees_cw(...)``,

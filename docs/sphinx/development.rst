@@ -110,7 +110,11 @@ model should stay compact:
    * - Editing
      - Modify existing logical metadata entries while preserving valid
        surrounding structure.
-     - Medium, about 60-70%.
+     - Medium-high, about 75-80%; the v1 logical add/set/remove transaction,
+       deterministic occurrence handling, singleton conflict repair,
+       dirty/tombstone behavior, provenance preservation, portable
+       serialization, transfer visibility, and immutable thin Python wrapper
+       are implemented.
    * - Transfer
      - Move metadata between files using explicit compatible-file or
        rendered-image safety policies.
@@ -142,15 +146,17 @@ retains a ``98-100%`` range because not every declared container lane has an
 independent conformance sample set, even though tracked inputs have explicit
 read outcomes.
 
-The first Creation milestone is implemented in
-``openmeta/metadata_creation.h`` and documented in :doc:`creation`. The active
-implementation sequence now advances to Editing, Transfer, Translation, and
-Writing. Creation resumes for arbitrary/custom properties, multilingual
-alternatives, structured values, and direct family projection. Adapters and
-Utilities remain deferred. Fuzzy Search resumes before those final two stages
-for independently sourced quality expansion, designed
-Unicode/transliteration behavior, multilingual gates, and an optional
-immutable index for repeated searches over large stores.
+The first Creation and Editing milestones are implemented in
+``openmeta/metadata_creation.h`` and ``openmeta/metadata_editing.h``, with
+their contracts documented in :doc:`creation` and :doc:`editing`. The active
+implementation sequence now advances to Transfer, Translation, and Writing.
+Creation and Editing resume for arbitrary/custom properties, multilingual
+alternatives, structured values, direct family projection, structural block
+operations, and broader cross-family synchronization. Adapters and Utilities
+remain deferred. Fuzzy Search resumes before those final two stages for
+independently sourced quality expansion, designed Unicode/transliteration
+behavior, multilingual gates, and an optional immutable index for repeated
+searches over large stores.
 
 Query results should expose both inspection-level matches and interpreted
 candidates. A crop query, for example, may match separate

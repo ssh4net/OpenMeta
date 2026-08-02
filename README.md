@@ -17,6 +17,8 @@ stable transfer/edit building blocks for export workflows.
 - Reassemble chunked payloads and optionally decompress supported carriers.
 - Decode metadata into a normalized `MetaStore`.
 - Create a fresh finalized metadata store from bounded logical portable fields.
+- Edit logical portable fields transactionally without mutating the source
+  store.
 - Export sidecars and previews.
 - Prepare, compile, emit, and edit metadata transfers for bounded target
   families.
@@ -69,6 +71,8 @@ If you already own the encoder, SDK objects, or output container, follow
   search contract, quality gates, and benchmark
 - [docs/creation.md](docs/creation.md): bounded fresh metadata construction,
   field mapping, validation, and Python use
+- [docs/editing.md](docs/editing.md): transactional logical add, set, remove,
+  provenance, conflict, and Python behavior
 - [docs/doxygen.md](docs/doxygen.md): API reference
 - [SECURITY.md](SECURITY.md): security model and reporting
 - [NOTICE.md](NOTICE.md): notices and third-party dependency information

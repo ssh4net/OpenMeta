@@ -290,6 +290,36 @@ transactional: validation failures leave `store` unchanged. See
 [creation.md](creation.md) for field mappings, value constraints, Python use,
 and destination-image safety requirements.
 
+### Edit Logical Metadata
+
+Use the matching transactional Editing API when a finalized store already
+exists:
+
+```cpp
+#include "openmeta/metadata_editing.h"
+
+const std::array operations = {
+    openmeta::make_metadata_edit_set(
+        openmeta::make_metadata_creation_text(
+            openmeta::MetadataCreationFieldKind::Title, "Edited title")),
+    openmeta::make_metadata_edit_add(
+        openmeta::make_metadata_creation_text(
+            openmeta::MetadataCreationFieldKind::Keyword, "approved")),
+};
+
+openmeta::MetadataEditingRequest edit_request;
+edit_request.operations = operations;
+
+openmeta::MetaStore edited;
+const openmeta::MetadataEditingResult edit_result =
+    openmeta::edit_metadata(store, edit_request, &edited);
+```
+
+`store` is not mutated. The output is replaced only if every operation
+succeeds. Set operations preserve entry provenance, while removal creates a
+dirty tombstone. See [editing.md](editing.md) for occurrence and conflict
+semantics.
+
 Use the lower-level key/value API only when you need a wire-specific or custom
 entry.
 
@@ -318,6 +348,7 @@ store.finalize();
 The key/value helpers live in:
 
 - [metadata_creation.h](../src/include/openmeta/metadata_creation.h)
+- [metadata_editing.h](../src/include/openmeta/metadata_editing.h)
 - [meta_key.h](../src/include/openmeta/meta_key.h)
 - [meta_value.h](../src/include/openmeta/meta_value.h)
 

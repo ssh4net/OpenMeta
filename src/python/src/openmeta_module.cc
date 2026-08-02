@@ -17,6 +17,7 @@
 #include "openmeta/metadata_capabilities.h"
 #include "openmeta/metadata_concepts.h"
 #include "openmeta/metadata_creation.h"
+#include "openmeta/metadata_editing.h"
 #include "openmeta/metadata_fuzzy_search.h"
 #include "openmeta/metadata_interpretation.h"
 #include "openmeta/metadata_query.h"
@@ -5668,6 +5669,26 @@ struct PyMetadataCreationField final {
     uint32_t denom          = 1U;
 };
 
+struct PyMetadataEditingOperation final {
+    MetadataEditingOperationKind kind = MetadataEditingOperationKind::Add;
+    PyMetadataCreationField field;
+    uint32_t occurrence = 0U;
+};
+
+static MetadataCreationField
+metadata_creation_field_view(const PyMetadataCreationField& source) noexcept
+{
+    MetadataCreationField field;
+    field.kind           = source.kind;
+    field.value_kind     = source.value_kind;
+    field.text           = source.text;
+    field.unsigned_value = source.unsigned_value;
+    field.signed_value   = source.signed_value;
+    field.rational.numer = source.numer;
+    field.rational.denom = source.denom;
+    return field;
+}
+
 static PyMetadataCreationField
 metadata_creation_text_python(MetadataCreationFieldKind kind,
                               const std::string& value)
@@ -5715,6 +5736,46 @@ metadata_creation_urational_python(MetadataCreationFieldKind kind,
 }
 
 
+static PyMetadataEditingOperation
+metadata_edit_add_python(const PyMetadataCreationField& field)
+{
+    PyMetadataEditingOperation operation;
+    operation.kind  = MetadataEditingOperationKind::Add;
+    operation.field = field;
+    return operation;
+}
+
+
+static PyMetadataEditingOperation
+metadata_edit_set_python(const PyMetadataCreationField& field,
+                         uint32_t occurrence)
+{
+    PyMetadataEditingOperation operation;
+    operation.kind       = MetadataEditingOperationKind::Set;
+    operation.field      = field;
+    operation.occurrence = occurrence;
+    return operation;
+}
+
+
+static PyMetadataEditingOperation
+metadata_edit_remove_python(MetadataCreationFieldKind kind, uint32_t occurrence)
+{
+    PyMetadataEditingOperation operation;
+    operation.kind       = MetadataEditingOperationKind::Remove;
+    operation.field.kind = kind;
+    operation.occurrence = occurrence;
+    return operation;
+}
+
+
+static PyMetadataEditingOperation
+metadata_edit_remove_all_python(MetadataCreationFieldKind kind)
+{
+    return metadata_edit_remove_python(kind, kMetadataEditingAllOccurrences);
+}
+
+
 static std::shared_ptr<PyDocument>
 create_metadata_document(const std::vector<PyMetadataCreationField>& fields,
                          uint32_t max_fields, uint32_t max_text_bytes_per_field,
@@ -5723,15 +5784,7 @@ create_metadata_document(const std::vector<PyMetadataCreationField>& fields,
     std::vector<MetadataCreationField> request_fields;
     request_fields.reserve(fields.size());
     for (const PyMetadataCreationField& source : fields) {
-        MetadataCreationField field;
-        field.kind           = source.kind;
-        field.value_kind     = source.value_kind;
-        field.text           = source.text;
-        field.unsigned_value = source.unsigned_value;
-        field.signed_value   = source.signed_value;
-        field.rational.numer = source.numer;
-        field.rational.denom = source.denom;
-        request_fields.push_back(field);
+        request_fields.push_back(metadata_creation_field_view(source));
     }
 
     MetadataCreationRequest request;
@@ -5759,6 +5812,70 @@ create_metadata_document(const std::vector<PyMetadataCreationField>& fields,
     auto document                        = std::make_shared<PyDocument>();
     document->store                      = std::move(created);
     document->result.xmp.entries_decoded = result.entries_created;
+    return document;
+}
+
+static uint32_t
+active_xmp_entry_count(const MetaStore& store) noexcept
+{
+    uint32_t count                       = 0U;
+    const std::span<const Entry> entries = store.entries();
+    for (size_t i = 0U; i < entries.size(); ++i) {
+        if (entries[i].key.kind != MetaKeyKind::XmpProperty
+            || any(entries[i].flags, EntryFlags::Deleted)) {
+            continue;
+        }
+        if (count != 0xffffffffU) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+static std::shared_ptr<PyDocument>
+edit_metadata_document(std::shared_ptr<PyDocument> source,
+                       const std::vector<PyMetadataEditingOperation>& operations,
+                       uint32_t max_operations,
+                       uint32_t max_text_bytes_per_operation,
+                       uint64_t max_total_text_bytes)
+{
+    std::vector<MetadataEditingOperation> request_operations;
+    request_operations.reserve(operations.size());
+    for (const PyMetadataEditingOperation& source_operation : operations) {
+        MetadataEditingOperation operation;
+        operation.kind  = source_operation.kind;
+        operation.field = metadata_creation_field_view(source_operation.field);
+        operation.occurrence = source_operation.occurrence;
+        request_operations.push_back(operation);
+    }
+
+    MetadataEditingRequest request;
+    request.operations                          = request_operations;
+    request.limits.max_operations               = max_operations;
+    request.limits.max_text_bytes_per_operation = max_text_bytes_per_operation;
+    request.limits.max_total_text_bytes         = max_total_text_bytes;
+
+    MetaStore edited;
+    MetadataEditingResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = edit_metadata(source->store, request, &edited);
+    }
+    if (result.status != MetadataEditingStatus::Ok) {
+        std::string message = "metadata editing failed: ";
+        message += metadata_editing_status_name(result.status);
+        if (result.failed_operation_index
+            != kInvalidMetadataEditingOperationIndex) {
+            message += " at operation ";
+            message += std::to_string(result.failed_operation_index);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(edited);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
     return document;
 }
 
@@ -6300,6 +6417,8 @@ NB_MODULE(_openmeta, m)
         kCompatibilityDumpContractVersion);
     m.attr("METADATA_CREATION_CONTRACT_VERSION") = nb::int_(
         kMetadataCreationContractVersion);
+    m.attr("METADATA_EDITING_CONTRACT_VERSION") = nb::int_(
+        kMetadataEditingContractVersion);
 
     nb::enum_<ScanStatus>(m, "ScanStatus")
         .value("Ok", ScanStatus::Ok)
@@ -7428,6 +7547,59 @@ NB_MODULE(_openmeta, m)
     m.def("metadata_creation_status_name", &metadata_creation_status_name,
           "status"_a);
 
+    nb::enum_<MetadataEditingOperationKind>(m, "MetadataEditingOperationKind")
+        .value("Add", MetadataEditingOperationKind::Add)
+        .value("Set", MetadataEditingOperationKind::Set)
+        .value("Remove", MetadataEditingOperationKind::Remove);
+
+    nb::enum_<MetadataEditingStatus>(m, "MetadataEditingStatus")
+        .value("Ok", MetadataEditingStatus::Ok)
+        .value("NullOutput", MetadataEditingStatus::NullOutput)
+        .value("BaseNotFinalized", MetadataEditingStatus::BaseNotFinalized)
+        .value("InvalidLimits", MetadataEditingStatus::InvalidLimits)
+        .value("TooManyOperations", MetadataEditingStatus::TooManyOperations)
+        .value("InvalidOperationKind",
+               MetadataEditingStatus::InvalidOperationKind)
+        .value("InvalidOccurrence", MetadataEditingStatus::InvalidOccurrence)
+        .value("WrongValueKind", MetadataEditingStatus::WrongValueKind)
+        .value("EmptyText", MetadataEditingStatus::EmptyText)
+        .value("TextTooLong", MetadataEditingStatus::TextTooLong)
+        .value("TotalTextTooLong", MetadataEditingStatus::TotalTextTooLong)
+        .value("InvalidText", MetadataEditingStatus::InvalidText)
+        .value("InvalidValue", MetadataEditingStatus::InvalidValue)
+        .value("SingletonAlreadyExists",
+               MetadataEditingStatus::SingletonAlreadyExists)
+        .value("TargetNotFound", MetadataEditingStatus::TargetNotFound)
+        .value("AmbiguousTarget", MetadataEditingStatus::AmbiguousTarget)
+        .value("EntryLimitExceeded", MetadataEditingStatus::EntryLimitExceeded)
+        .value("InternalError", MetadataEditingStatus::InternalError);
+
+    nb::class_<PyMetadataEditingOperation>(m, "MetadataEditingOperation")
+        .def_ro("kind", &PyMetadataEditingOperation::kind)
+        .def_ro("field", &PyMetadataEditingOperation::field)
+        .def_ro("occurrence", &PyMetadataEditingOperation::occurrence);
+
+    m.attr("METADATA_EDITING_MAX_OPERATIONS") = nb::int_(
+        kMetadataEditingMaxOperations);
+    m.attr("METADATA_EDITING_MAX_TEXT_BYTES_PER_OPERATION") = nb::int_(
+        kMetadataEditingMaxTextBytesPerOperation);
+    m.attr("METADATA_EDITING_MAX_TOTAL_TEXT_BYTES") = nb::int_(
+        kMetadataEditingMaxTotalTextBytes);
+    m.attr("METADATA_EDITING_ALL_OCCURRENCES") = nb::int_(
+        kMetadataEditingAllOccurrences);
+
+    m.def("metadata_edit_add", &metadata_edit_add_python, "field"_a);
+    m.def("metadata_edit_set", &metadata_edit_set_python, "field"_a,
+          "occurrence"_a = 0U);
+    m.def("metadata_edit_remove", &metadata_edit_remove_python, "kind"_a,
+          "occurrence"_a = 0U);
+    m.def("metadata_edit_remove_all", &metadata_edit_remove_all_python,
+          "kind"_a);
+    m.def("metadata_editing_operation_kind_name",
+          &metadata_editing_operation_kind_name, "kind"_a);
+    m.def("metadata_editing_status_name", &metadata_editing_status_name,
+          "status"_a);
+
     nb::enum_<MetadataFuzzySearchStatus>(m, "MetadataFuzzySearchStatus")
         .value("Ok", MetadataFuzzySearchStatus::Ok)
         .value("FeatureUnavailable",
@@ -8033,6 +8205,11 @@ NB_MODULE(_openmeta, m)
              "name_policy"_a    = ExportNamePolicy::ExifToolAlias,
              "include_values"_a = true, "include_origins"_a = true,
              "include_flags"_a = true, "max_value_bytes"_a = 256U)
+        .def("edit_metadata", &edit_metadata_document, "operations"_a,
+             "max_operations"_a = kMetadataEditingMaxOperations,
+             "max_text_bytes_per_operation"_a
+             = kMetadataEditingMaxTextBytesPerOperation,
+             "max_total_text_bytes"_a = kMetadataEditingMaxTotalTextBytes)
         .def("phaseone_raw_geometry", &document_phaseone_raw_geometry)
         .def("phaseone_raw_processing", &document_phaseone_raw_processing)
         .def("vendor_raw_processing", &document_vendor_raw_processing)

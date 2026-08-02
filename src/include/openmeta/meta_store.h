@@ -150,6 +150,9 @@ public:
     /// Rebuilds indices after an edit pipeline (invalidates previous spans).
     void rehash();
 
+    /// Returns whether lookup indices have been finalized.
+    bool is_finalized() const noexcept;
+
     uint32_t block_count() const noexcept;
     const BlockInfo& block_info(BlockId id) const noexcept;
 

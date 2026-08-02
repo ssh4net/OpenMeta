@@ -155,6 +155,9 @@ Python
 The returned object is a normal ``Document``. Invalid requests raise
 ``ValueError`` with the C++ status and rejected field index.
 
+Use the matching transactional Editing API to modify these fields in an
+existing finalized store. See :doc:`editing`.
+
 Scope and safety
 ----------------
 
