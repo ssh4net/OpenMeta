@@ -47,6 +47,16 @@ The first public write-side sync controls are also in place:
 - prepared bundles record those resolved projection decisions alongside the
   existing preservation policies
 
+Logical metadata edits are covered through preparation and typed backend
+execution for every public target: JPEG, TIFF/DNG, JXL, WebP, PNG, JP2, HEIF,
+AVIF, CR3, and EXR. The regression verifies an edited safe camera descriptor
+reaches every target, while title, creator, and keyword edits reach every
+XMP-capable target and replaced or removed values are not serialized again.
+TIFF/DNG and EXR execution intentionally uses their typed writer or adapter
+contracts rather than a generic byte stream. EXR does not embed XMP, so its
+safe string-attribute projection is intentionally narrower than the
+XMP-capable targets.
+
 ## Target Status Matrix
 
 | Target | Status | Current shape | Main limits |

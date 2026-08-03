@@ -1,5 +1,16 @@
 # OpenMeta Changes
 
+## 0.4.93 - 2026-08-03
+
+Changes compared with `0.4.92`.
+
+### Added
+
+- Added a transfer regression that feeds logical metadata edits through every
+  public target preparation and execution backend.
+- Verified edited values reach JPEG, TIFF/DNG, JXL, WebP, PNG, JP2, HEIF,
+  AVIF, CR3, and EXR routes while removed values do not reappear.
+
 ## 0.4.92 - 2026-08-02
 
 Changes compared with `0.4.91`.
