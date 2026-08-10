@@ -66,7 +66,23 @@ nanobind_add_module(openmeta_python
   src/openmeta_module.cc
 )
 
-set_target_properties(openmeta_python PROPERTIES OUTPUT_NAME "_openmeta")
+set_target_properties(openmeta_python PROPERTIES
+  OUTPUT_NAME "_openmeta"
+  # nanobind's suffix already contains the selected Python ABI marker, such as
+  # `_d.cp313-win_amd64.pyd`. A generic CMAKE_DEBUG_POSTFIX would duplicate it.
+  DEBUG_POSTFIX ""
+)
+
+if(WIN32 AND NB_SUFFIX MATCHES "^_d\\.")
+  # nanobind normally hides _DEBUG while including Python.h so a Debug module
+  # can use a release Python installation. The selected interpreter itself is
+  # a Py_DEBUG build here, so preserve that ABI for the module and nanobind's
+  # separately compiled runtime library.
+  target_compile_definitions(openmeta_python PRIVATE Py_DEBUG)
+  if(TARGET nanobind-static)
+    target_compile_definitions(nanobind-static PRIVATE Py_DEBUG)
+  endif()
+endif()
 
 target_compile_definitions(openmeta_python PRIVATE OPENMETA_VERSION_STRING="${PROJECT_VERSION}")
 
