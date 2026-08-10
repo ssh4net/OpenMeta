@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstddef>
@@ -13,6 +15,7 @@
  * \brief Decoder for XMP packets (RDF/XML).
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// XMP decode result status.
@@ -95,3 +98,4 @@ measure_xmp_packet(std::span<const std::byte> xmp_bytes,
                    = XmpDecodeOptions {}) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

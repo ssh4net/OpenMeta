@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/byte_arena.h"
 #include "openmeta/meta_flags.h"
 #include "openmeta/meta_key.h"
@@ -16,6 +18,7 @@
  * \brief In-memory representation of decoded metadata (keys/values + provenance).
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 class MetaEdit;
@@ -187,3 +190,4 @@ private:
 };
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

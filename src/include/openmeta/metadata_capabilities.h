@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/metadata_transfer.h"
 
 #include <cstdint>
@@ -14,6 +16,7 @@
  * Stable host-facing v1 query contract.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Stable metadata capability contract version.
@@ -75,3 +78,4 @@ metadata_capability(TransferTargetFormat format,
                     MetadataCapabilityFamily family) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

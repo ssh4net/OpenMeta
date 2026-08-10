@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/mapped_file.h"
 #include "openmeta/meta_store.h"
 #include "openmeta/simple_meta.h"
@@ -13,6 +15,7 @@
  * \brief Explicit orientation bridge for LibRaw-facing host integrations.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Result status for EXIF/XMP orientation to LibRaw flip mapping.
@@ -209,3 +212,4 @@ map_meta_orientation_to_libraw_flip_from_file(
                       = LibRawOrientationFileOptions {}) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

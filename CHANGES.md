@@ -1,5 +1,42 @@
 # OpenMeta Changes
 
+## 0.4.94 - 2026-08-10
+
+Changes compared with `0.4.93`.
+
+### Added
+
+- Added an installed shared-library consumer gate. It stages the configured
+  package, configures an independent CMake consumer against the installed
+  `OpenMeta::openmeta_shared` target, links a `std::string` API call, and runs
+  the result.
+- Added Linux and Windows CI lanes for the shared-only install-consumer gate.
+- Added the public shared-library ABI and runtime contract.
+
+### Changed
+
+- Shared Unix builds now hide implementation symbols and explicitly expose the
+  declarations in OpenMeta public headers. Static implementation archives are
+  also excluded from ELF dynamic exports; macOS shared builds reject static
+  implementation dependencies that would leak through the dylib.
+- Windows static archives and shared-library import archives now use distinct
+  names, avoiding `openmeta.lib` collisions in dual-library builds. The DLL
+  uses CMake's generated export table until the C++ API has a separately frozen
+  per-symbol export surface.
+- Shared libraries now carry ABI major `1` through platform versioning, while
+  the CMake package publishes `OpenMeta_ABI_VERSION`.
+- Shared packages no longer require compression, XML, crypto, or DNG SDK CMake
+  dependencies merely to configure a consumer. Static packages continue to
+  publish their full link closure.
+- An installed package built with `OPENMETA_USE_LIBCXX=ON` now propagates its
+  matching Clang/libc++ compile and link requirements to CMake consumers.
+- MSVC builds now have an explicit `CMAKE_MSVC_RUNTIME_LIBRARY` contract which
+  installed targets propagate to consumers, avoiding `/MT` and `/MD` mixing.
+- Shared-library unit tests now retain private formatter coverage without
+  exporting that implementation merely to satisfy a test-only call.
+- Test targets now receive their required optional dependencies directly rather
+  than relying on the private dependency closure of a shared OpenMeta target.
+
 ## 0.4.93 - 2026-08-03
 
 Changes compared with `0.4.92`.

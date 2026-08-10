@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -13,6 +15,7 @@
  * \brief Append-only byte arena used to store metadata payloads and strings.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// A span (offset,size) into a \ref ByteArena buffer.
@@ -63,3 +66,4 @@ private:
 };
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

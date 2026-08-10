@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/interop_export.h"
 #include "openmeta/metadata_transfer.h"
 
@@ -16,6 +18,7 @@
  * Stable host-facing v1 dump contract.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Stable compatibility dump contract version.
@@ -63,3 +66,4 @@ dump_transfer_compatibility(
     std::string* out) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

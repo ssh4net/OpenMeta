@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/metadata_creation.h"
 
 #include <cstdint>
@@ -12,6 +14,7 @@
  * \brief Bounded transactional editing of canonical logical metadata fields.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Stable high-level metadata editing contract version.
@@ -125,3 +128,4 @@ const char*
 metadata_editing_status_name(MetadataEditingStatus status) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

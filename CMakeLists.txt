@@ -27,6 +27,12 @@ project(OpenMeta VERSION "${OPENMETA_VERSION}" LANGUAGES CXX)
 
 option(OPENMETA_BUILD_STATIC "Build libopenmeta.a" ON)
 option(OPENMETA_BUILD_SHARED "Build libopenmeta.so/.dylib/.dll" ON)
+set(OPENMETA_ABI_VERSION "1" CACHE STRING
+  "OpenMeta shared-library ABI version; increase only for ABI breaks")
+if(NOT OPENMETA_ABI_VERSION MATCHES "^[1-9][0-9]*$")
+  message(FATAL_ERROR
+    "OPENMETA_ABI_VERSION must be a positive integer: '${OPENMETA_ABI_VERSION}'")
+endif()
 option(OPENMETA_BUILD_TOOLS "Build OpenMeta CLI tools" ON)
 option(OPENMETA_BUILD_TESTS "Build OpenMeta unit tests" OFF)
 option(OPENMETA_BUILD_BENCHMARKS "Build OpenMeta benchmark executables" OFF)
@@ -153,6 +159,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(MSVC AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+    CACHE STRING
+    "MSVC runtime library used by OpenMeta and its CMake consumers")
+endif()
+
 if(OPENMETA_USE_LIBCXX)
   if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "OPENMETA_USE_LIBCXX requires Clang.")
@@ -160,6 +172,37 @@ if(OPENMETA_USE_LIBCXX)
   add_compile_options(-stdlib=libc++)
   add_link_options(-stdlib=libc++)
 endif()
+
+function(openmeta_apply_msvc_runtime_contract target_name)
+  if(NOT MSVC)
+    return()
+  endif()
+
+  set(_openmeta_runtime_contract "${CMAKE_MSVC_RUNTIME_LIBRARY}")
+  if(_openmeta_runtime_contract STREQUAL "MultiThreaded")
+    target_compile_options(${target_name} INTERFACE /MT)
+  elseif(_openmeta_runtime_contract STREQUAL "MultiThreadedDebug")
+    target_compile_options(${target_name} INTERFACE /MTd)
+  elseif(_openmeta_runtime_contract STREQUAL "MultiThreadedDLL")
+    target_compile_options(${target_name} INTERFACE /MD)
+  elseif(_openmeta_runtime_contract STREQUAL "MultiThreadedDebugDLL")
+    target_compile_options(${target_name} INTERFACE /MDd)
+  elseif(_openmeta_runtime_contract
+      STREQUAL "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_compile_options(${target_name} INTERFACE
+      "$<$<CONFIG:Debug>:/MTd>"
+      "$<$<NOT:$<CONFIG:Debug>>:/MT>")
+  elseif(_openmeta_runtime_contract
+      STREQUAL "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    target_compile_options(${target_name} INTERFACE
+      "$<$<CONFIG:Debug>:/MDd>"
+      "$<$<NOT:$<CONFIG:Debug>>:/MD>")
+  else()
+    message(FATAL_ERROR
+      "Unsupported CMAKE_MSVC_RUNTIME_LIBRARY for OpenMeta: "
+      "${_openmeta_runtime_contract}")
+  endif()
+endfunction()
 
 if(NOT OPENMETA_BUILD_STATIC AND NOT OPENMETA_BUILD_SHARED)
   message(FATAL_ERROR "Enable at least one of OPENMETA_BUILD_STATIC/OPENMETA_BUILD_SHARED.")
@@ -414,47 +457,128 @@ endif()
 if(OPENMETA_BUILD_SHARED)
   add_library(openmeta_shared SHARED ${OPENMETA_SOURCES})
   openmeta_apply_target_settings(openmeta_shared)
-  set_target_properties(openmeta_shared PROPERTIES OUTPUT_NAME openmeta EXPORT_NAME openmeta_shared)
-  target_compile_definitions(openmeta_shared PRIVATE OPENMETA_BUILD_LINKAGE_SHARED=1)
+  set_target_properties(openmeta_shared PROPERTIES
+    OUTPUT_NAME openmeta
+    EXPORT_NAME openmeta_shared
+    VERSION "${PROJECT_VERSION}"
+    SOVERSION "${OPENMETA_ABI_VERSION}"
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+  )
+  target_compile_definitions(openmeta_shared PRIVATE
+    OPENMETA_BUILD_LINKAGE_SHARED=1
+    OPENMETA_BUILDING_SHARED=1
+  )
+  target_compile_definitions(openmeta_shared INTERFACE OPENMETA_USING_SHARED=1)
   target_include_directories(openmeta_shared PRIVATE "${_openmeta_generated_include_dir}")
+
+  if(UNIX AND NOT APPLE)
+    # A custom prefix can supply static zlib/Brotli/Expat archives. Keep their
+    # implementation symbols out of the ELF dynamic symbol table so they never
+    # become part of OpenMeta's public ABI.
+    target_link_options(openmeta_shared PRIVATE "-Wl,--exclude-libs,ALL")
+  endif()
 endif()
+
+if(WIN32)
+  # A DLL import library and a static archive otherwise both install as
+  # `openmeta.lib`. Keep the shared runtime name stable and make archives
+  # unambiguous for direct consumers as well as CMake package targets.
+  if(TARGET openmeta_static)
+    set_target_properties(openmeta_static PROPERTIES
+      ARCHIVE_OUTPUT_NAME openmeta_static)
+  endif()
+  if(TARGET openmeta_shared)
+    set_target_properties(openmeta_shared PROPERTIES
+      ARCHIVE_OUTPUT_NAME openmeta_shared
+      WINDOWS_EXPORT_ALL_SYMBOLS YES)
+  endif()
+endif()
+
+function(openmeta_reject_apple_static_shared_dependency dependency_target)
+  if(NOT APPLE OR NOT OPENMETA_BUILD_SHARED OR NOT TARGET ${dependency_target})
+    return()
+  endif()
+
+  get_target_property(_openmeta_dependency_type ${dependency_target} TYPE)
+  if(_openmeta_dependency_type STREQUAL "STATIC_LIBRARY")
+    message(FATAL_ERROR
+      "Shared OpenMeta builds on macOS require dynamic ${dependency_target}; "
+      "a static dependency would expose its symbols through the dylib.")
+  endif()
+
+  get_target_property(_openmeta_dependency_configs ${dependency_target}
+    IMPORTED_CONFIGURATIONS)
+  set(_openmeta_dependency_location_properties IMPORTED_LOCATION)
+  foreach(_openmeta_dependency_config IN LISTS _openmeta_dependency_configs)
+    list(APPEND _openmeta_dependency_location_properties
+      "IMPORTED_LOCATION_${_openmeta_dependency_config}")
+  endforeach()
+
+  foreach(_openmeta_dependency_location_property
+      IN LISTS _openmeta_dependency_location_properties)
+    get_target_property(_openmeta_dependency_location ${dependency_target}
+      ${_openmeta_dependency_location_property})
+    if(_openmeta_dependency_location MATCHES "\\.a$")
+      message(FATAL_ERROR
+        "Shared OpenMeta builds on macOS require dynamic ${dependency_target}; "
+        "found static archive: ${_openmeta_dependency_location}")
+    endif()
+  endforeach()
+endfunction()
 
 foreach(_tgt IN ITEMS openmeta_static openmeta_shared)
   if(TARGET ${_tgt})
+    set(_openmeta_dependency_visibility PRIVATE)
+    if(_tgt STREQUAL "openmeta_static")
+      # A static archive does not carry its dependency closure. Export it to
+      # consumers, while the shared target keeps implementation dependencies
+      # private and records them in its own runtime link closure.
+      set(_openmeta_dependency_visibility PUBLIC)
+    endif()
     if(OPENMETA_ZLIB_FOUND)
-      target_link_libraries(${_tgt} PUBLIC ZLIB::ZLIB)
-      target_compile_definitions(${_tgt} PUBLIC OPENMETA_HAS_ZLIB=1)
+      openmeta_reject_apple_static_shared_dependency(ZLIB::ZLIB)
+      target_link_libraries(${_tgt} ${_openmeta_dependency_visibility} ZLIB::ZLIB)
+      target_compile_definitions(${_tgt} PRIVATE OPENMETA_HAS_ZLIB=1)
     endif()
     if(OPENMETA_BROTLI_FOUND)
-      target_link_libraries(${_tgt} PUBLIC Brotli::decoder)
-      target_compile_definitions(${_tgt} PUBLIC OPENMETA_HAS_BROTLI=1)
+      openmeta_reject_apple_static_shared_dependency(Brotli::decoder)
+      target_link_libraries(${_tgt} ${_openmeta_dependency_visibility} Brotli::decoder)
+      target_compile_definitions(${_tgt} PRIVATE OPENMETA_HAS_BROTLI=1)
     endif()
     if(OPENMETA_EXPAT_FOUND)
-      openmeta_apply_expat_dep(${_tgt} PUBLIC)
+      openmeta_apply_expat_dep(${_tgt} ${_openmeta_dependency_visibility})
     endif()
-    openmeta_apply_rapidfuzz_dep(${_tgt} PUBLIC)
+    openmeta_apply_rapidfuzz_dep(${_tgt})
     if(OPENMETA_DNG_SDK_FOUND)
-      target_link_libraries(${_tgt} PUBLIC dng_sdk::dng_sdk)
-      target_compile_definitions(${_tgt} PUBLIC OPENMETA_HAS_DNG_SDK=1)
+      openmeta_reject_apple_static_shared_dependency(dng_sdk::dng_sdk)
+      target_link_libraries(${_tgt} ${_openmeta_dependency_visibility} dng_sdk::dng_sdk)
+      target_compile_definitions(${_tgt} PRIVATE OPENMETA_HAS_DNG_SDK=1)
     else()
-      target_compile_definitions(${_tgt} PUBLIC OPENMETA_HAS_DNG_SDK=0)
+      target_compile_definitions(${_tgt} PRIVATE OPENMETA_HAS_DNG_SDK=0)
     endif()
     if(OPENMETA_ENABLE_C2PA_VERIFY)
-      target_compile_definitions(${_tgt} PUBLIC OPENMETA_ENABLE_C2PA_VERIFY=1)
+      target_compile_definitions(${_tgt} PRIVATE OPENMETA_ENABLE_C2PA_VERIFY=1)
     else()
-      target_compile_definitions(${_tgt} PUBLIC OPENMETA_ENABLE_C2PA_VERIFY=0)
+      target_compile_definitions(${_tgt} PRIVATE OPENMETA_ENABLE_C2PA_VERIFY=0)
     endif()
     if(OPENMETA_C2PA_VERIFY_NATIVE_AVAILABLE)
-      target_compile_definitions(${_tgt} PUBLIC OPENMETA_C2PA_VERIFY_NATIVE_AVAILABLE=1)
+      target_compile_definitions(${_tgt} PRIVATE OPENMETA_C2PA_VERIFY_NATIVE_AVAILABLE=1)
     else()
-      target_compile_definitions(${_tgt} PUBLIC OPENMETA_C2PA_VERIFY_NATIVE_AVAILABLE=0)
+      target_compile_definitions(${_tgt} PRIVATE OPENMETA_C2PA_VERIFY_NATIVE_AVAILABLE=0)
     endif()
     if(OPENMETA_OPENSSL_FOUND)
-      target_link_libraries(${_tgt} PUBLIC OpenSSL::Crypto)
-      target_compile_definitions(${_tgt} PUBLIC OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE=1)
+      openmeta_reject_apple_static_shared_dependency(OpenSSL::Crypto)
+      target_link_libraries(${_tgt} ${_openmeta_dependency_visibility} OpenSSL::Crypto)
+      target_compile_definitions(${_tgt} PRIVATE OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE=1)
     else()
-      target_compile_definitions(${_tgt} PUBLIC OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE=0)
+      target_compile_definitions(${_tgt} PRIVATE OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE=0)
     endif()
+    if(OPENMETA_USE_LIBCXX)
+      target_compile_options(${_tgt} INTERFACE -stdlib=libc++)
+      target_link_options(${_tgt} INTERFACE -stdlib=libc++)
+    endif()
+    openmeta_apply_msvc_runtime_contract(${_tgt})
   endif()
 endforeach()
 
@@ -462,6 +586,23 @@ if(OPENMETA_BUILD_STATIC)
   set(OPENMETA_LIB_TARGET openmeta_static)
 else()
   set(OPENMETA_LIB_TARGET openmeta_shared)
+endif()
+
+if(TARGET openmeta_shared)
+  add_custom_target(openmeta_gate_shared_install
+    DEPENDS openmeta_shared
+    COMMAND ${CMAKE_COMMAND}
+      "-DOPENMETA_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+      "-DOPENMETA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DOPENMETA_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_shared_library_install"
+      "-DOPENMETA_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
+      "-DOPENMETA_CONFIG=$<CONFIG>"
+      "-DOPENMETA_GENERATOR=${CMAKE_GENERATOR}"
+      "-DOPENMETA_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/shared_library_install_test.cmake"
+    COMMENT "Running installed shared-library consumer gate"
+    VERBATIM
+  )
 endif()
 
 if(OPENMETA_BUILD_BENCHMARKS)
@@ -800,6 +941,20 @@ endif()
 
 if(OPENMETA_BUILD_TESTS)
   enable_testing()
+  if(TARGET openmeta_shared)
+    add_test(
+      NAME openmeta_shared_library_install_consumer
+      COMMAND ${CMAKE_COMMAND}
+        "-DOPENMETA_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        "-DOPENMETA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DOPENMETA_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_shared_library_install"
+        "-DOPENMETA_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
+        "-DOPENMETA_CONFIG=$<CONFIG>"
+        "-DOPENMETA_GENERATOR=${CMAKE_GENERATOR}"
+        "-DOPENMETA_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/shared_library_install_test.cmake"
+    )
+  endif()
   openmeta_add_googletest()
 
   add_executable(openmeta_tests
@@ -852,7 +1007,47 @@ if(OPENMETA_BUILD_TESTS)
     tests/xmp_decode_test.cc
     tests/xmp_dump_test.cc
   )
+  if(OPENMETA_BUILD_SHARED)
+    # This test probes a private formatter. Static linkage can resolve it from
+    # the archive, but a shared library correctly keeps the implementation
+    # hidden, so compile the test-only copy into the test executable.
+    target_sources(openmeta_tests PRIVATE
+      src/openmeta/interop_value_format_internal.cc)
+  endif()
   target_link_libraries(openmeta_tests PRIVATE ${OPENMETA_LIB_TARGET} gtest_main)
+  # Tests need to select expectations matching the library configuration, but
+  # those implementation flags must not become installed consumer usage
+  # requirements of the shared library.
+  target_compile_definitions(openmeta_tests PRIVATE
+    OPENMETA_HAS_ZLIB=$<BOOL:${OPENMETA_ZLIB_FOUND}>
+    OPENMETA_HAS_BROTLI=$<BOOL:${OPENMETA_BROTLI_FOUND}>
+    OPENMETA_HAS_EXPAT=$<BOOL:${OPENMETA_EXPAT_FOUND}>
+    OPENMETA_HAS_RAPIDFUZZ=$<BOOL:${OPENMETA_RAPIDFUZZ_FOUND}>
+    OPENMETA_HAS_DNG_SDK=$<BOOL:${OPENMETA_DNG_SDK_FOUND}>
+    OPENMETA_ENABLE_C2PA_VERIFY=$<BOOL:${OPENMETA_ENABLE_C2PA_VERIFY}>
+    OPENMETA_C2PA_VERIFY_NATIVE_AVAILABLE=$<BOOL:${OPENMETA_C2PA_VERIFY_NATIVE_AVAILABLE}>
+    OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE=$<BOOL:${OPENMETA_OPENSSL_FOUND}>
+  )
+  if(OPENMETA_ZLIB_FOUND)
+    target_link_libraries(openmeta_tests PRIVATE ZLIB::ZLIB)
+  endif()
+  if(OPENMETA_BROTLI_FOUND)
+    target_link_libraries(openmeta_tests PRIVATE Brotli::decoder)
+  endif()
+  if(OPENMETA_EXPAT_FOUND)
+    if(TARGET EXPAT::EXPAT)
+      target_link_libraries(openmeta_tests PRIVATE EXPAT::EXPAT)
+    else()
+      target_include_directories(openmeta_tests PRIVATE "${EXPAT_INCLUDE_DIRS}")
+      target_link_libraries(openmeta_tests PRIVATE "${EXPAT_LIBRARIES}")
+    endif()
+  endif()
+  if(OPENMETA_DNG_SDK_FOUND)
+    target_link_libraries(openmeta_tests PRIVATE dng_sdk::dng_sdk)
+  endif()
+  if(OPENMETA_OPENSSL_FOUND)
+    target_link_libraries(openmeta_tests PRIVATE OpenSSL::Crypto)
+  endif()
   if(TARGET Brotli::encoder)
     # Used by tests that synthesize brob payloads.
     target_link_libraries(openmeta_tests PRIVATE Brotli::encoder)
@@ -1427,6 +1622,16 @@ if(OPENMETA_BUILD_DOCS OR OPENMETA_BUILD_SPHINX_DOCS)
 endif()
 
 set(_openmeta_pkg_dir "${CMAKE_INSTALL_LIBDIR}/cmake/OpenMeta")
+
+set(OPENMETA_CONFIG_HAS_STATIC_TARGET 0)
+if(TARGET openmeta_static)
+  set(OPENMETA_CONFIG_HAS_STATIC_TARGET 1)
+endif()
+
+set(OPENMETA_CONFIG_USE_LIBCXX 0)
+if(OPENMETA_USE_LIBCXX)
+  set(OPENMETA_CONFIG_USE_LIBCXX 1)
+endif()
 
 install(
   EXPORT OpenMetaTargets

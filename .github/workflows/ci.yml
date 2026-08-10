@@ -66,6 +66,68 @@ jobs:
           -R 'openmeta_(read|cli|transfer)_release_gate'
           --output-on-failure
 
+  linux-shared:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            zlib1g-dev \
+            libbrotli-dev \
+            libexpat1-dev
+
+      - name: Configure shared-only package
+        run: >
+          cmake -S . -B build-shared -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DOPENMETA_BUILD_STATIC=OFF
+          -DOPENMETA_BUILD_SHARED=ON
+          -DOPENMETA_BUILD_TOOLS=OFF
+          -DOPENMETA_BUILD_TESTS=OFF
+          -DOPENMETA_BUILD_PYTHON=OFF
+          -DOPENMETA_WITH_DNG_SDK_ADAPTER=OFF
+
+      - name: Build installed shared-library consumer gate
+        run: >
+          cmake --build build-shared --parallel
+          --target openmeta_gate_shared_install
+
+  windows-shared:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install shared-library dependencies
+        shell: pwsh
+        run: >
+          vcpkg install zlib:x64-windows brotli:x64-windows expat:x64-windows
+
+      - name: Configure shared-only package
+        shell: pwsh
+        run: >
+          cmake -S . -B build-shared -G "Visual Studio 17 2022" -A x64
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+          -DOPENMETA_BUILD_STATIC=OFF
+          -DOPENMETA_BUILD_SHARED=ON
+          -DOPENMETA_BUILD_TOOLS=OFF
+          -DOPENMETA_BUILD_TESTS=OFF
+          -DOPENMETA_BUILD_PYTHON=OFF
+          -DOPENMETA_WITH_DNG_SDK_ADAPTER=OFF
+
+      - name: Build installed DLL consumer gate
+        shell: pwsh
+        run: >
+          cmake --build build-shared --config Release --parallel
+          --target openmeta_gate_shared_install
+
   linux-python:
     runs-on: ubuntu-latest
     steps:

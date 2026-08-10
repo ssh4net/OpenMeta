@@ -26,6 +26,17 @@ The exported CMake package is installed under
 path such as ``lib/x86_64-linux-gnu/cmake/OpenMeta`` when the install prefix is
 ``/usr``.
 
+Shared Library
+--------------
+
+For a runtime package, configure with
+``-DOPENMETA_BUILD_STATIC=OFF -DOPENMETA_BUILD_SHARED=ON`` and link consumers
+to ``OpenMeta::openmeta_shared``. The installed package carries its ABI major
+and, for a libc++ build, propagates the matching Clang/libc++ consumer flags.
+Run ``openmeta_gate_shared_install`` to validate an installed package with an
+independent CMake consumer. See :doc:`../shared_library` for ABI, dependency,
+Windows DLL deployment, and platform-validation details.
+
 Options
 -------
 

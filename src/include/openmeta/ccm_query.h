@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstdint>
@@ -13,6 +15,7 @@
  * \brief Query helpers for normalized DNG/RAW color matrix metadata.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Query status for \ref collect_dng_ccm_fields.
@@ -119,3 +122,4 @@ collect_dng_ccm_fields(const MetaStore& store, std::vector<CcmField>* out,
                        std::vector<CcmIssue>* issues  = nullptr) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

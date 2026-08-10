@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/byte_arena.h"
 
 #include <cstdint>
@@ -12,6 +14,7 @@
  * \brief Normalized key identifiers for EXIF/IPTC/XMP/etc. metadata entries.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Namespace for different metadata key spaces.
@@ -245,3 +248,4 @@ compare_key_view(const ByteArena& arena, const MetaKeyView& a,
                  const MetaKey& b) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

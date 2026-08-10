@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/metadata_transfer.h"
 
 #include <cstdint>
@@ -16,6 +18,7 @@ class dng_host;
 class dng_negative;
 class dng_stream;
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Result status for the optional DNG SDK adapter.
@@ -131,3 +134,4 @@ update_dng_sdk_file_from_file(
     = ApplyDngSdkMetadataFileOptions {}) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

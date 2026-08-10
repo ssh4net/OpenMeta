@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include <cstdint>
 
 /**
@@ -9,6 +11,7 @@
  * \brief Flags attached to metadata entries.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Per-entry flags used during edits and provenance tracking.
@@ -60,3 +63,4 @@ any(EntryFlags flags, EntryFlags test) noexcept
 }
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

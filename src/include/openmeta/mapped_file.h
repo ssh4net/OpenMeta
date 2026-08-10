@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -11,6 +13,7 @@
  * \brief Read-only file mapping helper.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Status code for \ref MappedFile operations.
@@ -63,4 +66,4 @@ private:
 };
 
 }  // namespace openmeta
-
+OPENMETA_PUBLIC_END

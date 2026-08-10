@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -11,6 +13,7 @@
  * \brief Container scanners that locate metadata blocks within file bytes.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Scanner result status.
@@ -204,3 +207,4 @@ ScanResult
 measure_scan_bmff(std::span<const std::byte> bytes) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

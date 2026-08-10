@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <span>
@@ -12,6 +14,7 @@
  * \brief Batch edit operations for MetaStore (append/set/tombstone).
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// The operation kind for a MetaEdit command stream.
@@ -69,3 +72,4 @@ MetaStore
 compact(const MetaStore& base);
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

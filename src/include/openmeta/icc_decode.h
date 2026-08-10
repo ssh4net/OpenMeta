@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstddef>
@@ -13,6 +15,7 @@
  * \brief Decoder for ICC profile blobs (header + tag table).
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// ICC decode result status.
@@ -65,3 +68,4 @@ measure_icc_profile(std::span<const std::byte> icc_bytes,
                     = IccDecodeOptions {}) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

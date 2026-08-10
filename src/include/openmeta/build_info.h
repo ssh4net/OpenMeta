@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include <string>
 #include <string_view>
 
@@ -10,6 +12,7 @@
  * \brief Runtime information about how OpenMeta was built.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /**
@@ -90,3 +93,4 @@ void
 format_build_info_lines(std::string* line1, std::string* line2) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

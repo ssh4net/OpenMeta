@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstdint>
@@ -12,6 +14,7 @@
  * processing tags.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 enum class PhaseOneRawGeometryStatus : uint8_t {
@@ -124,3 +127,4 @@ phaseone_raw_processing_status_name(PhaseOneRawProcessingStatus status)
     noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

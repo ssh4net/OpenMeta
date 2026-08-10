@@ -75,6 +75,7 @@ function(openmeta_apply_expat_dep target_name visibility)
   endif()
 
   if(TARGET EXPAT::EXPAT)
+    openmeta_reject_apple_static_shared_dependency(EXPAT::EXPAT)
     target_link_libraries(${target_name} ${visibility} EXPAT::EXPAT)
   else()
     target_include_directories(${target_name} ${visibility}
@@ -82,11 +83,11 @@ function(openmeta_apply_expat_dep target_name visibility)
     target_link_libraries(${target_name} ${visibility} "${EXPAT_LIBRARIES}")
   endif()
 
-  target_compile_definitions(${target_name} ${visibility} OPENMETA_HAS_EXPAT=1)
+  target_compile_definitions(${target_name} PRIVATE OPENMETA_HAS_EXPAT=1)
 
   openmeta_expat_needs_xml_static(_openmeta_needs_xml_static)
   if(_openmeta_needs_xml_static)
-    target_compile_definitions(${target_name} ${visibility} XML_STATIC)
+    target_compile_definitions(${target_name} PRIVATE XML_STATIC)
   endif()
 endfunction()
 
@@ -198,7 +199,7 @@ function(openmeta_apply_core_deps target_name)
     openmeta_apply_expat_dep(${target_name} PRIVATE)
   endif()
 
-  openmeta_apply_rapidfuzz_dep(${target_name} PRIVATE)
+  openmeta_apply_rapidfuzz_dep(${target_name})
 
   if(OPENMETA_ENABLE_C2PA_VERIFY)
     target_compile_definitions(${target_name} PRIVATE OPENMETA_ENABLE_C2PA_VERIFY=1)
@@ -220,11 +221,11 @@ function(openmeta_apply_core_deps target_name)
   endif()
 endfunction()
 
-function(openmeta_apply_rapidfuzz_dep target_name visibility)
+function(openmeta_apply_rapidfuzz_dep target_name)
   if(OPENMETA_RAPIDFUZZ_FOUND)
     target_compile_definitions(
       ${target_name}
-      ${visibility}
+      PRIVATE
         OPENMETA_HAS_RAPIDFUZZ=1)
     if(TARGET rapidfuzz::rapidfuzz)
       get_target_property(
@@ -248,7 +249,7 @@ function(openmeta_apply_rapidfuzz_dep target_name visibility)
   else()
     target_compile_definitions(
       ${target_name}
-      ${visibility}
+      PRIVATE
         OPENMETA_HAS_RAPIDFUZZ=0)
   endif()
 endfunction()

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 #include "openmeta/metadata_query.h"
 
@@ -14,6 +16,7 @@
  * \brief Experimental cross-family metadata concept resolution.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 enum class MetadataConceptKind : uint8_t {
@@ -550,3 +553,4 @@ const char*
 metadata_concept_gps_altitude_reference_name(uint8_t code) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

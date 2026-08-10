@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/byte_arena.h"
 
 #include <cstdint>
@@ -13,6 +15,7 @@
  * \brief Typed metadata value representation (scalar/array/bytes/text).
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Unsigned rational (numerator/denominator), typically used by EXIF/TIFF.
@@ -174,3 +177,4 @@ make_srational_array(ByteArena& arena, std::span<const SRational> values);
 /** @} */
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

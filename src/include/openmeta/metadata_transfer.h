@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 #include "openmeta/metadata_concepts.h"
 #include "openmeta/resource_policy.h"
@@ -26,6 +28,7 @@
  * metadata transfer workflows.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Stable metadata transfer contract version.
@@ -3030,3 +3033,4 @@ deserialize_prepared_transfer_package_batch(
     PreparedTransferPackageBatch* out_batch) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

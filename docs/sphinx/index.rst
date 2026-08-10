@@ -42,6 +42,7 @@ sanitization to reduce memory and output attack surface.
    editing
    raw_read_parity_plan
    build
+   shared_library
    development
    interop_api
    exr_metadata_contract

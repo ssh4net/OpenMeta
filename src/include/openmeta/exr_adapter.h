@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/exr_decode.h"
 #include "openmeta/meta_store.h"
 #include "openmeta/metadata_transfer.h"
@@ -17,6 +19,7 @@
  * \brief EXR-native attribute bridge for OpenEXR-style host integrations.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Result status for EXR adapter export.
@@ -184,3 +187,4 @@ replay_exr_attribute_batch(const ExrAdapterBatch& batch,
                            const ExrAdapterReplayCallbacks& callbacks) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

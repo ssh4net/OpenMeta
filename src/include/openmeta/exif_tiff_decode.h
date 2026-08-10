@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstddef>
@@ -14,6 +16,7 @@
  * \brief Decoder for TIFF-IFD tag streams (used by EXIF and TIFF/DNG).
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// EXIF/TIFF decode result status.
@@ -136,3 +139,4 @@ measure_exif_tiff(std::span<const std::byte> tiff_bytes,
                   = ExifDecodeOptions {}) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

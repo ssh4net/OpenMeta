@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/container_scan.h"
 
 #include <cstddef>
@@ -13,6 +15,7 @@
  * \brief Read-only preview/thumbnail candidate discovery and extraction.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Candidate preview source kind.
@@ -129,3 +132,4 @@ extract_preview_candidate(std::span<const std::byte> file_bytes,
                           const PreviewExtractOptions& options) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

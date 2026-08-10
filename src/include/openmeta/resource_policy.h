@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/container_payload.h"
 #include "openmeta/exif_tiff_decode.h"
 #include "openmeta/exr_decode.h"
@@ -20,6 +22,7 @@
  * \brief Draft resource-budget policy for OpenMeta read/dump workflows.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /**
@@ -235,3 +238,4 @@ apply_resource_policy(const OpenMetaResourcePolicy& policy,
 }
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

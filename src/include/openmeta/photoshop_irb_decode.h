@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/icc_decode.h"
 #include "openmeta/iptc_iim_decode.h"
 #include "openmeta/meta_store.h"
@@ -17,6 +19,7 @@
  * \brief Decoder for Photoshop Image Resource Blocks (IRB / 8BIM resources).
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Photoshop IRB decode result status.
@@ -144,3 +147,4 @@ std::string_view
 photoshop_irb_resource_name(uint16_t resource_id) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

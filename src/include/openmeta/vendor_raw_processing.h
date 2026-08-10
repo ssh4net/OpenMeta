@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstdint>
@@ -12,6 +14,7 @@
  * \brief Conservative vendor RAW-processing metadata classification helpers.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 enum class VendorRawProcessingFamily : uint8_t {
@@ -97,3 +100,4 @@ const char*
 vendor_raw_processing_group_name(VendorRawProcessingGroup group) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 #include "openmeta/metadata_query.h"
 
@@ -14,6 +16,7 @@
  * query candidates.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /**
@@ -58,3 +61,4 @@ MetadataInterpretationResult
 interpret_metadata(const MetaStore& store);
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

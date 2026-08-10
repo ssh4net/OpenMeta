@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstddef>
@@ -13,6 +15,7 @@
  * \brief Decoder for OpenEXR header attributes.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Stable EXR canonical value encoding contract version.
@@ -82,3 +85,4 @@ measure_exr_header(std::span<const std::byte> exr_bytes,
                    = ExrDecodeOptions {}) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

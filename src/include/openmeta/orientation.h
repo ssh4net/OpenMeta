@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include <cstdint>
 
 /**
@@ -9,6 +11,7 @@
  * \brief Helpers for interpreting EXIF/TIFF orientation values.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Result status for EXIF/TIFF orientation interpretation.
@@ -66,3 +69,4 @@ ExifOrientationInterpretation
 interpret_exif_orientation(uint16_t orientation) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

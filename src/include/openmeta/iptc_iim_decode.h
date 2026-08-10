@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstddef>
@@ -13,6 +15,7 @@
  * \brief Decoder for IPTC-IIM dataset streams.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// IPTC-IIM decode result status.
@@ -67,3 +70,4 @@ measure_iptc_iim(std::span<const std::byte> iptc_bytes,
                  = IptcIimDecodeOptions {}) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

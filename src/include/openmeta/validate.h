@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/ccm_query.h"
 #include "openmeta/jumbf_decode.h"
 #include "openmeta/resource_policy.h"
@@ -16,6 +18,7 @@
  * \brief High-level metadata validation API (decode health + DNG/CCM checks).
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Top-level validation status for \ref validate_file.
@@ -105,3 +108,4 @@ validate_file(const char* path,
               const ValidateOptions& options = ValidateOptions {}) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

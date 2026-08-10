@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_store.h"
 
@@ -15,6 +17,7 @@
  * \brief Optional bounded fuzzy search over metadata names and property paths.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 static constexpr uint32_t kMetadataFuzzySearchMaxResults        = 256U;
@@ -102,3 +105,4 @@ metadata_fuzzy_search_match_kind_name(
     MetadataFuzzySearchMatchKind kind) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstddef>
@@ -14,6 +16,7 @@
  * \brief XMP sidecar generation for a decoded \ref MetaStore.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Conflict policy for existing XMP versus generated portable XMP properties.
@@ -266,3 +269,4 @@ dump_xmp_sidecar(const MetaStore& store, std::vector<std::byte>* out,
                  const XmpSidecarRequest& request) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/interop_export.h"
 
 #include <cstdint>
@@ -13,6 +15,7 @@
  * \brief Adapter helpers for OCIO-style metadata trees.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Minimal tree node similar to OCIO FormatMetadata composition.
@@ -95,3 +98,4 @@ build_ocio_metadata_tree_safe(const MetaStore& store, OcioMetadataNode* root,
                               InteropSafetyError* error) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

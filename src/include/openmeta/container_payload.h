@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/container_scan.h"
 
 #include <cstddef>
@@ -13,6 +15,7 @@
  * \brief Reassembles and optionally decompresses logical metadata payloads.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Payload extraction result status.
@@ -73,3 +76,4 @@ extract_payload(std::span<const std::byte> file_bytes,
                 const PayloadOptions& options) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

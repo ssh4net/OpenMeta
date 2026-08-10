@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstddef>
@@ -13,6 +15,7 @@
  * \brief Decoder for the EXIF PrintIM (0xC4A5) embedded block.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// PrintIM decode result status.
@@ -56,3 +59,4 @@ decode_printim(std::span<const std::byte> bytes, MetaStore& store,
                const PrintImDecodeLimits& limits) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstddef>
@@ -13,6 +15,7 @@
  * \brief Decoder for JUMBF/C2PA payload blocks.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// JUMBF decode result status.
@@ -151,3 +154,4 @@ measure_jumbf_structure(std::span<const std::byte> bytes,
                         = JumbfDecodeLimits {}) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

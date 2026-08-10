@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -14,6 +16,7 @@
  * \brief Selected ICC tag-name and tag-payload interpretation helpers.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Best-effort status for \ref interpret_icc_tag.
@@ -103,3 +106,4 @@ format_icc_tag_display_value(uint32_t signature,
                              std::string* out) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/container_payload.h"
 #include "openmeta/container_scan.h"
 #include "openmeta/exif_tiff_decode.h"
@@ -21,6 +23,7 @@
  * \brief High-level "read" helper for scanning containers and decoding metadata.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 struct SimpleMetaResult final {
@@ -89,3 +92,4 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
                  const PayloadOptions& payload_options) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

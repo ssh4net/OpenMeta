@@ -2,12 +2,15 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 // Appends an ASCII-only, terminal-safe representation of `s` into `out`.
@@ -29,3 +32,4 @@ append_hex_bytes(std::span<const std::byte> bytes, uint32_t max_bytes,
                  std::string* out) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

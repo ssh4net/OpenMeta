@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include <cstdint>
 #include <string_view>
 
@@ -10,6 +12,7 @@
  * \brief Human-readable names for common EXIF/TIFF tags.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 class MetaStore;
@@ -41,3 +44,4 @@ exif_entry_name(const MetaStore& store, const Entry& entry,
                 ExifTagNamePolicy policy) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

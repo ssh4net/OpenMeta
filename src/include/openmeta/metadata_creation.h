@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstdint>
@@ -13,6 +15,7 @@
  * \brief Bounded construction of fresh portable metadata stores.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Stable metadata creation contract version.
@@ -153,3 +156,4 @@ const char*
 metadata_creation_status_name(MetadataCreationStatus status) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

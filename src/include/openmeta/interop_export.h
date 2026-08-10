@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_store.h"
 
 #include <cstdint>
@@ -13,6 +15,7 @@
  * \brief Metadata export traversal API for interop adapters.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Stable interop export naming contract version.
@@ -122,3 +125,4 @@ visit_metadata(const MetaStore& store, const ExportOptions& options,
                MetadataSink& sink) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

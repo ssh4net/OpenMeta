@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_store.h"
 
@@ -14,6 +16,7 @@
  * \brief Experimental semantic metadata query helpers.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 enum class MetadataQueryKind : uint8_t {
@@ -223,3 +226,4 @@ const char*
 metadata_query_value_shape_name(MetadataQueryValueShape shape) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END

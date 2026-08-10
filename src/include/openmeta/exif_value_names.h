@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "openmeta/api.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -13,6 +15,7 @@
  * selected bounded MakerNote contexts.
  */
 
+OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 const char*
@@ -133,3 +136,4 @@ exif_tag_byte_value_format(std::string_view ifd, uint16_t tag,
                            std::size_t out_size) noexcept;
 
 }  // namespace openmeta
+OPENMETA_PUBLIC_END
