@@ -7094,7 +7094,8 @@ NB_MODULE(_openmeta, m)
         .value("MaxIfds", ExifLimitReason::MaxIfds)
         .value("MaxEntriesPerIfd", ExifLimitReason::MaxEntriesPerIfd)
         .value("MaxTotalEntries", ExifLimitReason::MaxTotalEntries)
-        .value("ValueCountTooLarge", ExifLimitReason::ValueCountTooLarge);
+        .value("ValueCountTooLarge", ExifLimitReason::ValueCountTooLarge)
+        .value("MaxArenaBytes", ExifLimitReason::MaxArenaBytes);
 
     nb::enum_<ExrDecodeStatus>(m, "ExrDecodeStatus")
         .value("Ok", ExrDecodeStatus::Ok)
@@ -7298,7 +7299,9 @@ NB_MODULE(_openmeta, m)
         .value("InvalidSignature", C2paVerifyStatus::InvalidSignature)
         .value("VerificationFailed", C2paVerifyStatus::VerificationFailed)
         .value("Verified", C2paVerifyStatus::Verified)
-        .value("NotImplemented", C2paVerifyStatus::NotImplemented);
+        .value("NotImplemented", C2paVerifyStatus::NotImplemented)
+        .value("SignatureVerifiedOnly",
+               C2paVerifyStatus::SignatureVerifiedOnly);
 
     nb::enum_<C2paVerifyBackend>(m, "C2paVerifyBackend")
         .value("None", C2paVerifyBackend::None)
@@ -7886,7 +7889,8 @@ NB_MODULE(_openmeta, m)
         .def_rw("max_ifds", &ExifDecodeLimits::max_ifds)
         .def_rw("max_entries_per_ifd", &ExifDecodeLimits::max_entries_per_ifd)
         .def_rw("max_total_entries", &ExifDecodeLimits::max_total_entries)
-        .def_rw("max_value_bytes", &ExifDecodeLimits::max_value_bytes);
+        .def_rw("max_value_bytes", &ExifDecodeLimits::max_value_bytes)
+        .def_rw("max_arena_bytes", &ExifDecodeLimits::max_arena_bytes);
 
     nb::class_<XmpDecodeLimits>(m, "XmpDecodeLimits")
         .def(nb::init<>())
@@ -7894,9 +7898,11 @@ NB_MODULE(_openmeta, m)
         .def_rw("max_properties", &XmpDecodeLimits::max_properties)
         .def_rw("max_input_bytes", &XmpDecodeLimits::max_input_bytes)
         .def_rw("max_path_bytes", &XmpDecodeLimits::max_path_bytes)
+        .def_rw("max_namespace_bytes", &XmpDecodeLimits::max_namespace_bytes)
         .def_rw("max_value_bytes", &XmpDecodeLimits::max_value_bytes)
         .def_rw("max_total_value_bytes",
-                &XmpDecodeLimits::max_total_value_bytes);
+                &XmpDecodeLimits::max_total_value_bytes)
+        .def_rw("max_arena_bytes", &XmpDecodeLimits::max_arena_bytes);
 
     nb::class_<ExrDecodeLimits>(m, "ExrDecodeLimits")
         .def(nb::init<>())

@@ -397,7 +397,8 @@ namespace {
             || options.verify_require_trusted_chain) {
             return;
         }
-        if (out->read.jumbf.verify_status != C2paVerifyStatus::Verified) {
+        if (out->read.jumbf.verify_status
+            != C2paVerifyStatus::SignatureVerifiedOnly) {
             return;
         }
 
@@ -504,22 +505,29 @@ namespace {
                           "verification_failed", "verification_failed");
                 break;
             case C2paVerifyStatus::BackendUnavailable:
-                add_issue(out, ValidateIssueSeverity::Warning, "c2pa",
+                add_issue(out, ValidateIssueSeverity::Error, "c2pa",
                           "backend_unavailable", "backend_unavailable");
                 break;
             case C2paVerifyStatus::DisabledByBuild:
-                add_issue(out, ValidateIssueSeverity::Warning, "c2pa",
+                add_issue(out, ValidateIssueSeverity::Error, "c2pa",
                           "disabled_by_build", "disabled_by_build");
                 break;
             case C2paVerifyStatus::NoSignatures:
-                add_issue(out, ValidateIssueSeverity::Warning, "c2pa",
+                add_issue(out, ValidateIssueSeverity::Error, "c2pa",
                           "no_signatures", "no_signatures");
                 break;
             case C2paVerifyStatus::NotImplemented:
-                add_issue(out, ValidateIssueSeverity::Warning, "c2pa",
+                add_issue(out, ValidateIssueSeverity::Error, "c2pa",
                           "not_implemented", "not_implemented");
                 break;
             case C2paVerifyStatus::NotRequested:
+                add_issue(out, ValidateIssueSeverity::Error, "c2pa",
+                          "not_requested", "not_requested");
+                break;
+            case C2paVerifyStatus::SignatureVerifiedOnly:
+                add_issue(out, ValidateIssueSeverity::Error, "c2pa",
+                          "signature_verified_only", "signature_verified_only");
+                break;
             case C2paVerifyStatus::Verified: break;
             }
         }

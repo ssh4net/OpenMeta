@@ -400,6 +400,8 @@ namespace {
         case C2paVerifyStatus::VerificationFailed: return "verification_failed";
         case C2paVerifyStatus::Verified: return "verified";
         case C2paVerifyStatus::NotImplemented: return "not_implemented";
+        case C2paVerifyStatus::SignatureVerifiedOnly:
+            return "signature_verified_only";
         }
         return "unknown";
     }
@@ -3709,17 +3711,9 @@ namespace {
     static EVP_PKEY* openssl_load_public_key_from_candidate(
         const C2paVerifySignatureCandidate& candidate) noexcept
     {
-        if (candidate.has_public_key_der && !candidate.public_key_der.empty()) {
-            const unsigned char* p = reinterpret_cast<const unsigned char*>(
-                candidate.public_key_der.data());
-            EVP_PKEY* key = d2i_PUBKEY(nullptr, &p,
-                                       static_cast<long>(
-                                           candidate.public_key_der.size()));
-            if (key) {
-                return key;
-            }
-        }
-
+        // A supplied certificate is authoritative for the signature key. Do
+        // not fall back to an independent key when certificate parsing fails
+        // or the signature does not match that leaf certificate.
         if (candidate.has_certificate_der
             && !candidate.certificate_der.empty()) {
             const unsigned char* p = reinterpret_cast<const unsigned char*>(
@@ -3733,6 +3727,18 @@ namespace {
                 if (key) {
                     return key;
                 }
+            }
+            return nullptr;
+        }
+
+        if (candidate.has_public_key_der && !candidate.public_key_der.empty()) {
+            const unsigned char* p = reinterpret_cast<const unsigned char*>(
+                candidate.public_key_der.data());
+            EVP_PKEY* key = d2i_PUBKEY(nullptr, &p,
+                                       static_cast<long>(
+                                           candidate.public_key_der.size()));
+            if (key) {
+                return key;
             }
         }
 
@@ -9975,7 +9981,11 @@ namespace {
                     == C2paVerifyDetailStatus::NotChecked) {
                     evaluation.chain_reason = "no_certificate";
                 }
-                evaluation.status = C2paVerifyStatus::Verified;
+                // Only the selected claim/signature bytes have been checked.
+                // The decoder does not receive the complete containing asset,
+                // so it cannot establish a C2PA hard binding and must never
+                // report full asset verification here.
+                evaluation.status = C2paVerifyStatus::SignatureVerifiedOnly;
                 return evaluation;
             }
 

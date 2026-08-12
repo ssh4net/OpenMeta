@@ -122,6 +122,8 @@ def main(argv: list[str]) -> int:
         openmeta.C2paVerifyStatus.VerificationFailed: "verification_failed",
         openmeta.C2paVerifyStatus.Verified: "verified",
         openmeta.C2paVerifyStatus.NotImplemented: "not_implemented",
+        openmeta.C2paVerifyStatus.SignatureVerifiedOnly:
+            "signature_verified_only",
     }
     backend_name_map = {
         c2pa_backend_none: "none",

@@ -283,6 +283,24 @@ TEST(ValidateFile, ReportsMalformedExifAsError)
     EXPECT_TRUE(has_issue(result, "exif", "malformed"));
 }
 
+
+TEST(ValidateFile, ExplicitC2paVerificationFailsWhenNoManifestWasEvaluated)
+{
+    const std::string path = make_temp_path(".jpg");
+    ASSERT_TRUE(write_bytes_file(path, make_minimal_jpeg()));
+    const ScopedFile cleanup(path);
+
+    ValidateOptions options;
+    options.verify_c2pa         = true;
+    const ValidateResult result = validate_file(path.c_str(), options);
+
+    EXPECT_EQ(result.status, ValidateStatus::Ok);
+    EXPECT_EQ(result.read.jumbf.verify_status, C2paVerifyStatus::NotRequested);
+    EXPECT_TRUE(result.failed);
+    EXPECT_GE(result.error_count, 1U);
+    EXPECT_TRUE(has_issue(result, "c2pa", "not_requested"));
+}
+
 TEST(ValidateFile, ReportsLargeSparseFileSize)
 {
     const std::string path                = make_temp_path(".bin");

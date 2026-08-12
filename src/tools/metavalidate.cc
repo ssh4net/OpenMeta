@@ -2,6 +2,7 @@
 
 #include "cli_parse.h"
 #include "openmeta/build_info.h"
+#include "openmeta/console_format.h"
 #include "openmeta/validate.h"
 
 #include <cstdio>
@@ -13,6 +14,13 @@
 
 namespace openmeta {
 namespace {
+
+    static std::string console_path(std::string_view path)
+    {
+        std::string escaped;
+        (void)append_console_escaped_ascii(path, 4096U, &escaped);
+        return escaped;
+    }
 
     struct ValidationSummary final {
         uint32_t files_checked = 0;
@@ -237,6 +245,8 @@ namespace {
         case C2paVerifyStatus::VerificationFailed: return "verification_failed";
         case C2paVerifyStatus::Verified: return "verified";
         case C2paVerifyStatus::NotImplemented: return "not_implemented";
+        case C2paVerifyStatus::SignatureVerifiedOnly:
+            return "signature_verified_only";
         }
         return "unknown";
     }
@@ -814,7 +824,7 @@ main(int argc, char** argv)
             continue;
         }
 
-        std::printf("== %s\n", path);
+        std::printf("== %s\n", console_path(path).c_str());
         print_result_header(result, options);
 
         for (size_t i = 0; i < result.issues.size(); ++i) {

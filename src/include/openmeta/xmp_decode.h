@@ -49,11 +49,17 @@ struct XmpDecodeLimits final {
     /// Max bytes per decoded property path string.
     uint32_t max_path_bytes = 1024;
 
+    /// Max bytes in a schema namespace URI copied into a property key.
+    uint32_t max_namespace_bytes = 4096;
+
     /// Max text bytes per decoded value (element/attribute).
     uint32_t max_value_bytes = 8U * 1024U * 1024U;
 
     /// Max total text bytes accumulated across values (0 = unlimited).
     uint64_t max_total_value_bytes = 64ULL * 1024ULL * 1024ULL;
+
+    /// Cumulative bytes copied into the destination store (0 = unlimited).
+    uint64_t max_arena_bytes = 64ULL * 1024ULL * 1024ULL;
 };
 
 /// Decoder options for \ref decode_xmp_packet.

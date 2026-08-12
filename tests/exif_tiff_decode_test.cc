@@ -132,6 +132,36 @@ namespace {
         return key;
     }
 
+
+    TEST(ExifTiffDecodeTest, SharedArenaBudgetStopsAliasedValueAmplification)
+    {
+        std::vector<std::byte> tiff;
+        append_bytes(&tiff, "II");
+        append_u16le(&tiff, 42U);
+        append_u32le(&tiff, 8U);
+        append_u16le(&tiff, 2U);
+        for (uint16_t tag : { uint16_t { 0x010E }, uint16_t { 0x010F } }) {
+            append_u16le(&tiff, tag);
+            append_u16le(&tiff, 2U);  // ASCII
+            append_u32le(&tiff, 8U);
+            append_u32le(&tiff, 38U);  // Both entries alias one source value.
+        }
+        append_u32le(&tiff, 0U);
+        append_bytes(&tiff, "1234567");
+        tiff.push_back(std::byte { 0 });
+
+        ExifDecodeOptions options;
+        options.limits.max_arena_bytes = 20U;
+        MetaStore store;
+        const ExifDecodeResult result = decode_exif_tiff(tiff, store, {},
+                                                         options);
+
+        EXPECT_EQ(result.status, ExifDecodeStatus::LimitExceeded);
+        EXPECT_TRUE(store.resource_limit_exceeded());
+        EXPECT_LE(store.arena().bytes().size(), 20U);
+        EXPECT_LT(store.entries().size(), 2U);
+    }
+
     struct X3fPropPair final {
         std::string_view key;
         std::string_view value;

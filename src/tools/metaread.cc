@@ -30,6 +30,13 @@
 namespace openmeta {
 namespace {
 
+    static std::string console_path(std::string_view path)
+    {
+        std::string escaped;
+        (void)append_console_escaped_ascii(path, 4096U, &escaped);
+        return escaped;
+    }
+
     static const char* scan_status_name(ScanStatus status) noexcept
     {
         switch (status) {
@@ -63,6 +70,7 @@ namespace {
         case ExifLimitReason::MaxTotalEntries: return "max_total_entries";
         case ExifLimitReason::ValueCountTooLarge:
             return "value_count_too_large";
+        case ExifLimitReason::MaxArenaBytes: return "max_arena_bytes";
         }
         return "unknown";
     }
@@ -115,6 +123,8 @@ namespace {
         case C2paVerifyStatus::VerificationFailed: return "verification_failed";
         case C2paVerifyStatus::Verified: return "verified";
         case C2paVerifyStatus::NotImplemented: return "not_implemented";
+        case C2paVerifyStatus::SignatureVerifiedOnly:
+            return "signature_verified_only";
         }
         return "unknown";
     }
@@ -2062,6 +2072,7 @@ main(int argc, char** argv)
         if (!path || !*path) {
             continue;
         }
+        const std::string display_path = console_path(path);
 
         MappedFile file;
         const MappedFileStatus st = file.open(path, max_file_bytes);
@@ -2072,12 +2083,15 @@ main(int argc, char** argv)
                 std::fprintf(
                     stderr,
                     "metaread: refusing to read `%s` (size=%llu > --max-file-bytes=%llu)\n",
-                    path, static_cast<unsigned long long>(file_size),
+                    display_path.c_str(),
+                    static_cast<unsigned long long>(file_size),
                     static_cast<unsigned long long>(max_file_bytes));
             } else if (st == MappedFileStatus::OpenFailed) {
-                std::fprintf(stderr, "metaread: failed to open `%s`\n", path);
+                std::fprintf(stderr, "metaread: failed to open `%s`\n",
+                             display_path.c_str());
             } else {
-                std::fprintf(stderr, "metaread: failed to read `%s`\n", path);
+                std::fprintf(stderr, "metaread: failed to read `%s`\n",
+                             display_path.c_str());
             }
             exit_code = 1;
             continue;
@@ -2085,7 +2099,7 @@ main(int argc, char** argv)
 
         const std::span<const std::byte> bytes = file.bytes();
 
-        std::printf("== %s\n", path);
+        std::printf("== %s\n", display_path.c_str());
         std::printf("size=%llu\n",
                     static_cast<unsigned long long>(file.size()));
 
@@ -2132,6 +2146,7 @@ main(int argc, char** argv)
                 if (!sp || !*sp) {
                     continue;
                 }
+                const std::string display_sp = console_path(sp);
                 std::vector<std::byte> xmp_bytes;
                 uint64_t sc_size = 0;
                 const ReadFileStatus sc_st
@@ -2144,12 +2159,13 @@ main(int argc, char** argv)
                         std::fprintf(
                             stderr,
                             "metaread: refusing to read sidecar `%s` (size=%llu > --max-file-bytes=%llu)\n",
-                            sp, static_cast<unsigned long long>(sc_size),
+                            display_sp.c_str(),
+                            static_cast<unsigned long long>(sc_size),
                             static_cast<unsigned long long>(max_file_bytes));
                     } else {
                         std::fprintf(stderr,
                                      "metaread: failed to read sidecar `%s`\n",
-                                     sp);
+                                     display_sp.c_str());
                     }
                     exit_code = 1;
                     continue;
@@ -2160,8 +2176,8 @@ main(int argc, char** argv)
                                         decode_options.xmp);
                 merge_xmp_status(&read.xmp.status, one.status);
                 read.xmp.entries_decoded += one.entries_decoded;
-                std::printf("xmp_sidecar=%s status=%s entries=%u\n", sp,
-                            xmp_status_name(one.status),
+                std::printf("xmp_sidecar=%s status=%s entries=%u\n",
+                            display_sp.c_str(), xmp_status_name(one.status),
                             static_cast<unsigned>(one.entries_decoded));
             }
         }

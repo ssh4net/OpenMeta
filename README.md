@@ -65,9 +65,8 @@ OpenMeta currently covers these major families:
 
 **C2PA security warning:** the optional verification scaffold is diagnostic
 only and must not be used as an asset-authenticity or trust gate. It does not
-currently establish the manifest's hard binding to the complete asset, and its
-certificate-chain result is not reliably bound to the signature key. See the
-[2026-08-12 security review](https://github.com/ssh4net/OpenMeta/blob/main/code_review_20260812.md).
+currently establish the manifest's hard binding to the complete asset.
+Cryptographic signature success is reported as `signature_verified_only`.
 
 For the detailed support matrix, see
 [docs/metadata_support.md](docs/metadata_support.md).

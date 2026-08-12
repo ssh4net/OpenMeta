@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -19,8 +20,30 @@
 #include <string_view>
 #include <vector>
 
+#if defined(_WIN32)
+#    define WIN32_LEAN_AND_MEAN
+#    include <fcntl.h>
+#    include <io.h>
+#    include <process.h>
+#    include <sys/stat.h>
+#    include <windows.h>
+#else
+#    include <cerrno>
+#    include <fcntl.h>
+#    include <sys/stat.h>
+#    include <sys/types.h>
+#    include <unistd.h>
+#endif
+
 namespace openmeta {
 namespace {
+
+    static std::string console_path(std::string_view path)
+    {
+        std::string escaped;
+        (void)append_console_escaped_ascii(path, 4096U, &escaped);
+        return escaped;
+    }
 
     struct PendingTimePatch final {
         TimePatchField field = TimePatchField::DateTime;
@@ -1167,6 +1190,47 @@ namespace {
     }
 
 
+    static bool paths_refer_to_same_file(const std::string& a,
+                                         const std::string& b) noexcept
+    {
+        if (a.empty() || b.empty()) {
+            return false;
+        }
+#if defined(_WIN32)
+        const DWORD flags = FILE_FLAG_BACKUP_SEMANTICS;
+        HANDLE ah         = CreateFileA(a.c_str(), 0,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE
+                                            | FILE_SHARE_DELETE,
+                                        nullptr, OPEN_EXISTING, flags, nullptr);
+        if (ah == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+        HANDLE bh = CreateFileA(b.c_str(), 0,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE
+                                    | FILE_SHARE_DELETE,
+                                nullptr, OPEN_EXISTING, flags, nullptr);
+        if (bh == INVALID_HANDLE_VALUE) {
+            CloseHandle(ah);
+            return false;
+        }
+        BY_HANDLE_FILE_INFORMATION ai {};
+        BY_HANDLE_FILE_INFORMATION bi {};
+        const bool ok = GetFileInformationByHandle(ah, &ai) != 0
+                        && GetFileInformationByHandle(bh, &bi) != 0;
+        CloseHandle(ah);
+        CloseHandle(bh);
+        return ok && ai.dwVolumeSerialNumber == bi.dwVolumeSerialNumber
+               && ai.nFileIndexHigh == bi.nFileIndexHigh
+               && ai.nFileIndexLow == bi.nFileIndexLow;
+#else
+        struct stat as {};
+        struct stat bs {};
+        return ::stat(a.c_str(), &as) == 0 && ::stat(b.c_str(), &bs) == 0
+               && as.st_dev == bs.st_dev && as.st_ino == bs.st_ino;
+#endif
+    }
+
+
     static bool write_file_bytes(const std::string& path,
                                  std::span<const std::byte> bytes)
     {
@@ -1258,7 +1322,8 @@ namespace {
             return false;
         }
 
-        std::printf("  output=%s bytes=%llu\n", persisted.output_path.c_str(),
+        std::printf("  output=%s bytes=%llu\n",
+                    console_path(persisted.output_path).c_str(),
                     static_cast<unsigned long long>(persisted.output_bytes));
 
         if (file_state.xmp_sidecar_requested) {
@@ -1268,11 +1333,10 @@ namespace {
                 return false;
             }
             if (persisted.xmp_sidecar_bytes != 0U) {
-                std::printf(
-                    "  xmp_sidecar_output=%s bytes=%llu\n",
-                    persisted.xmp_sidecar_path.c_str(),
-                    static_cast<unsigned long long>(
-                        persisted.xmp_sidecar_bytes));
+                std::printf("  xmp_sidecar_output=%s bytes=%llu\n",
+                            console_path(persisted.xmp_sidecar_path).c_str(),
+                            static_cast<unsigned long long>(
+                                persisted.xmp_sidecar_bytes));
             }
         }
 
@@ -1283,8 +1347,9 @@ namespace {
                 return false;
             }
             if (persisted.xmp_sidecar_cleanup_removed) {
-                std::printf("  xmp_sidecar_removed=%s\n",
-                            persisted.xmp_sidecar_cleanup_path.c_str());
+                std::printf(
+                    "  xmp_sidecar_removed=%s\n",
+                    console_path(persisted.xmp_sidecar_cleanup_path).c_str());
             }
         }
 
@@ -1485,8 +1550,9 @@ namespace {
 
     class FileByteWriter final : public TransferByteWriter {
     public:
-        explicit FileByteWriter(std::string path)
+        explicit FileByteWriter(std::string path, bool overwrite)
             : path_(std::move(path))
+            , overwrite_(overwrite)
         {
         }
 
@@ -1516,12 +1582,28 @@ namespace {
             if (!file_) {
                 return status_;
             }
+            bool ok = std::fflush(file_) == 0;
+#if defined(_WIN32)
+            if (ok && _commit(_fileno(file_)) != 0) {
+                ok = false;
+            }
+#else
+            if (ok && ::fsync(fileno(file_)) != 0) {
+                ok = false;
+            }
+#endif
             if (std::fclose(file_) != 0) {
+                ok = false;
+            }
+            file_ = nullptr;
+            if (!ok || !publish()) {
+                if (!temp_path_.empty()) {
+                    std::remove(temp_path_.c_str());
+                }
                 file_   = nullptr;
                 status_ = TransferStatus::InternalError;
                 return status_;
             }
-            file_   = nullptr;
             status_ = TransferStatus::Ok;
             return status_;
         }
@@ -1535,7 +1617,51 @@ namespace {
             if (file_) {
                 return true;
             }
-            file_ = std::fopen(path_.c_str(), "wb");
+            static std::atomic<uint64_t> nonce { 1U };
+            for (uint32_t attempt = 0; attempt < 128U && !file_; ++attempt) {
+                temp_path_ = path_;
+                temp_path_.append(".openmeta-tmp-");
+#if defined(_WIN32)
+                temp_path_.append(
+                    std::to_string(static_cast<unsigned long>(_getpid())));
+#else
+                temp_path_.append(
+                    std::to_string(static_cast<unsigned long>(::getpid())));
+#endif
+                temp_path_.push_back('-');
+                temp_path_.append(
+                    std::to_string(static_cast<unsigned long long>(
+                        nonce.fetch_add(1U, std::memory_order_relaxed))));
+#if defined(_WIN32)
+                const int fd = _open(temp_path_.c_str(),
+                                     _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY
+                                         | _O_NOINHERIT,
+                                     _S_IREAD | _S_IWRITE);
+                if (fd >= 0) {
+                    file_ = _fdopen(fd, "wb");
+                    if (!file_) {
+                        _close(fd);
+                    }
+                }
+#else
+                const int fd = ::open(temp_path_.c_str(),
+                                      O_WRONLY | O_CREAT | O_EXCL
+#    if defined(O_CLOEXEC)
+                                          | O_CLOEXEC
+#    endif
+#    if defined(O_NOFOLLOW)
+                                          | O_NOFOLLOW
+#    endif
+                                      ,
+                                      0666);
+                if (fd >= 0) {
+                    file_ = fdopen(fd, "wb");
+                    if (!file_) {
+                        ::close(fd);
+                    }
+                }
+#endif
+            }
             if (!file_) {
                 status_ = TransferStatus::InternalError;
                 return false;
@@ -1550,13 +1676,36 @@ namespace {
                 std::fclose(file_);
                 file_ = nullptr;
             }
+            if (!temp_path_.empty()) {
+                std::remove(temp_path_.c_str());
+            }
+        }
+
+
+        bool publish() noexcept
+        {
+#if defined(_WIN32)
+            const DWORD flags = MOVEFILE_WRITE_THROUGH
+                                | (overwrite_ ? MOVEFILE_REPLACE_EXISTING : 0U);
+            return MoveFileExA(temp_path_.c_str(), path_.c_str(), flags) != 0;
+#else
+            if (overwrite_) {
+                return ::rename(temp_path_.c_str(), path_.c_str()) == 0;
+            }
+            if (::link(temp_path_.c_str(), path_.c_str()) != 0) {
+                return false;
+            }
+            return ::unlink(temp_path_.c_str()) == 0;
+#endif
         }
 
 
         std::string path_;
+        std::string temp_path_;
         std::FILE* file_        = nullptr;
         TransferStatus status_  = TransferStatus::Ok;
         uint64_t bytes_written_ = 0;
+        bool overwrite_         = false;
     };
 
 
@@ -2559,7 +2708,8 @@ main(int argc, char** argv)
             PendingTimePatch p;
             std::string err;
             if (!parse_time_patch_arg(argv[i + 1], &p, &err)) {
-                std::fprintf(stderr, "%s: %s\n", err.c_str(), argv[i + 1]);
+                std::fprintf(stderr, "%s: %s\n", err.c_str(),
+                             console_path(argv[i + 1]).c_str());
                 return 2;
             }
             pending_time_patches.push_back(std::move(p));
@@ -2791,8 +2941,9 @@ main(int argc, char** argv)
 
         std::vector<std::byte> batch_bytes;
         if (!read_file_bytes(transfer_payload_batch_input_path, &batch_bytes)) {
-            std::fprintf(stderr, "failed to read transfer payload batch: %s\n",
-                         transfer_payload_batch_input_path.c_str());
+            std::fprintf(
+                stderr, "failed to read transfer payload batch: %s\n",
+                console_path(transfer_payload_batch_input_path).c_str());
             return 1;
         }
 
@@ -2815,7 +2966,7 @@ main(int argc, char** argv)
         }
 
         std::printf("== transfer_payload_batch=%s\n",
-                    transfer_payload_batch_input_path.c_str());
+                    console_path(transfer_payload_batch_input_path).c_str());
         std::printf(
             "  transfer_payload_batch: status=%s code=%s bytes=%llu payloads=%u target=%s\n",
             transfer_status_name(batch_io.status),
@@ -2871,7 +3022,7 @@ main(int argc, char** argv)
         std::vector<std::byte> handoff_bytes;
         if (!read_file_bytes(jxl_encoder_handoff_input_path, &handoff_bytes)) {
             std::fprintf(stderr, "failed to read jxl encoder handoff: %s\n",
-                         jxl_encoder_handoff_input_path.c_str());
+                         console_path(jxl_encoder_handoff_input_path).c_str());
             return 1;
         }
 
@@ -2882,7 +3033,7 @@ main(int argc, char** argv)
                                            handoff_bytes.size()),
                 &handoff);
         std::printf("== jxl_encoder_handoff=%s\n",
-                    jxl_encoder_handoff_input_path.c_str());
+                    console_path(jxl_encoder_handoff_input_path).c_str());
         std::printf(
             "  jxl_encoder_handoff: status=%s code=%s bytes=%llu box_count=%u box_payload_bytes=%llu\n",
             transfer_status_name(handoff_io.status),
@@ -2932,7 +3083,7 @@ main(int argc, char** argv)
         std::vector<std::byte> artifact_bytes;
         if (!read_file_bytes(transfer_artifact_input_path, &artifact_bytes)) {
             std::fprintf(stderr, "failed to read transfer artifact: %s\n",
-                         transfer_artifact_input_path.c_str());
+                         console_path(transfer_artifact_input_path).c_str());
             return 1;
         }
 
@@ -2943,7 +3094,7 @@ main(int argc, char** argv)
                                            artifact_bytes.size()),
                 &info);
         std::printf("== transfer_artifact=%s\n",
-                    transfer_artifact_input_path.c_str());
+                    console_path(transfer_artifact_input_path).c_str());
         std::printf(
             "  transfer_artifact: status=%s code=%s kind=%s bytes=%llu target=%s\n",
             transfer_status_name(artifact_io.status),
@@ -3030,8 +3181,9 @@ main(int argc, char** argv)
 
         std::vector<std::byte> batch_bytes;
         if (!read_file_bytes(transfer_package_batch_input_path, &batch_bytes)) {
-            std::fprintf(stderr, "failed to read transfer package batch: %s\n",
-                         transfer_package_batch_input_path.c_str());
+            std::fprintf(
+                stderr, "failed to read transfer package batch: %s\n",
+                console_path(transfer_package_batch_input_path).c_str());
             return 1;
         }
 
@@ -3054,7 +3206,7 @@ main(int argc, char** argv)
         }
 
         std::printf("== transfer_package_batch=%s\n",
-                    transfer_package_batch_input_path.c_str());
+                    console_path(transfer_package_batch_input_path).c_str());
         std::printf(
             "  transfer_package_batch: status=%s code=%s bytes=%llu chunks=%u target=%s\n",
             transfer_status_name(batch_io.status),
@@ -3149,9 +3301,8 @@ main(int argc, char** argv)
                                         &dump_text);
 
         if (!force && file_exists(exr_attribute_batch_output_path)) {
-            std::fprintf(stderr,
-                         "dump path already exists (use --force): %s\n",
-                         exr_attribute_batch_output_path.c_str());
+            std::fprintf(stderr, "dump path already exists (use --force): %s\n",
+                         console_path(exr_attribute_batch_output_path).c_str());
             return 1;
         }
         if (!write_file_bytes(
@@ -3159,15 +3310,16 @@ main(int argc, char** argv)
                 std::span<const std::byte>(
                     reinterpret_cast<const std::byte*>(dump_text.data()),
                     dump_text.size()))) {
-            std::fprintf(stderr, "failed to write exr attribute batch dump: %s\n",
-                         exr_attribute_batch_output_path.c_str());
+            std::fprintf(stderr,
+                         "failed to write exr attribute batch dump: %s\n",
+                         console_path(exr_attribute_batch_output_path).c_str());
             return 1;
         }
 
         std::printf(
             "exr_attribute_batch_dump: status=%s path=%s entries=%u exported=%u errors=%u\n",
             exr_adapter_status_name(result.adapter.status),
-            exr_attribute_batch_output_path.c_str(),
+            console_path(exr_attribute_batch_output_path).c_str(),
             static_cast<unsigned>(batch.attributes.size()),
             static_cast<unsigned>(result.adapter.exported),
             static_cast<unsigned>(result.adapter.errors));
@@ -3238,7 +3390,8 @@ main(int argc, char** argv)
         std::printf(
             "dng_sdk_file_update: status=%s source=%s target=%s available=%s file_status=%s prepare=%s applied_blocks=%u skipped_blocks=%u updated_stream=%s\n",
             dng_sdk_adapter_status_name(result.adapter.status),
-            input_paths[0].c_str(), dng_sdk_update_target_path.c_str(),
+            console_path(input_paths[0]).c_str(),
+            console_path(dng_sdk_update_target_path).c_str(),
             dng_sdk_adapter_available() ? "true" : "false",
             transfer_file_status_name(result.prepared.file_status),
             transfer_status_name(result.prepared.prepare.status),
@@ -3407,9 +3560,13 @@ main(int argc, char** argv)
             target_path = job_path;
         }
 
-        std::printf("== source=%s\n", source_path.c_str());
+        const std::string display_source = console_path(source_path);
+        const std::string display_target = console_path(target_path);
+        const std::string display_output = console_path(output_path);
+
+        std::printf("== source=%s\n", display_source.c_str());
         if (target_path != source_path) {
-            std::printf("   target=%s\n", target_path.c_str());
+            std::printf("   target=%s\n", display_target.c_str());
         }
 
         const bool need_jpeg_edit
@@ -3440,7 +3597,15 @@ main(int argc, char** argv)
 
         const bool output_exists = !output_path.empty()
                                    && file_exists(output_path);
-        FileByteWriter output_writer(output_path);
+        if (!output_path.empty()
+            && (paths_refer_to_same_file(output_path, source_path)
+                || paths_refer_to_same_file(output_path, target_path))) {
+            std::fprintf(stderr,
+                         "  output aliases an input file; refusing transfer\n");
+            any_failed = true;
+            continue;
+        }
+        FileByteWriter output_writer(output_path, force);
         const bool use_output_writer = !output_path.empty() && !dry_run
                                        && (!output_exists || force);
         if (xmp_include_existing_sidecar) {
@@ -3519,7 +3684,7 @@ main(int argc, char** argv)
             std::vector<std::byte> jpeg_jumbf_bytes;
             if (!read_file_bytes(jpeg_jumbf_path, &jpeg_jumbf_bytes)) {
                 std::fprintf(stderr, "  append_jumbf: read_failed: %s\n",
-                             jpeg_jumbf_path.c_str());
+                             console_path(jpeg_jumbf_path).c_str());
                 any_failed = true;
                 continue;
             }
@@ -3538,8 +3703,9 @@ main(int argc, char** argv)
                 std::vector<std::byte> signed_package_bytes;
                 if (!read_file_bytes(c2pa_signed_package_input_path,
                                      &signed_package_bytes)) {
-                    std::fprintf(stderr, "  c2pa_stage: read_failed: %s\n",
-                                 c2pa_signed_package_input_path.c_str());
+                    std::fprintf(
+                        stderr, "  c2pa_stage: read_failed: %s\n",
+                        console_path(c2pa_signed_package_input_path).c_str());
                     any_failed = true;
                     continue;
                 }
@@ -3567,23 +3733,25 @@ main(int argc, char** argv)
                 if (!jpeg_c2pa_signed_path.empty()
                     && !read_file_bytes(jpeg_c2pa_signed_path, &signed_bytes)) {
                     std::fprintf(stderr, "  c2pa_stage: read_failed: %s\n",
-                                 jpeg_c2pa_signed_path.c_str());
+                                 console_path(jpeg_c2pa_signed_path).c_str());
                     any_failed = true;
                     continue;
                 }
                 if (!c2pa_manifest_output_path.empty()
                     && !read_file_bytes(c2pa_manifest_output_path,
                                         &manifest_bytes)) {
-                    std::fprintf(stderr, "  c2pa_stage: read_failed: %s\n",
-                                 c2pa_manifest_output_path.c_str());
+                    std::fprintf(
+                        stderr, "  c2pa_stage: read_failed: %s\n",
+                        console_path(c2pa_manifest_output_path).c_str());
                     any_failed = true;
                     continue;
                 }
                 if (!c2pa_certificate_chain_path.empty()
                     && !read_file_bytes(c2pa_certificate_chain_path,
                                         &certificate_bytes)) {
-                    std::fprintf(stderr, "  c2pa_stage: read_failed: %s\n",
-                                 c2pa_certificate_chain_path.c_str());
+                    std::fprintf(
+                        stderr, "  c2pa_stage: read_failed: %s\n",
+                        console_path(c2pa_certificate_chain_path).c_str());
                     any_failed = true;
                     continue;
                 }
@@ -3936,7 +4104,7 @@ main(int argc, char** argv)
                                             options.policy.max_file_bytes);
                 if (map_status != MappedFileStatus::Ok) {
                     std::fprintf(stderr, "  edit_input: map_failed: %s\n",
-                                 target_path.c_str());
+                                 display_target.c_str());
                     any_failed = true;
                     continue;
                 }
@@ -4037,8 +4205,9 @@ main(int argc, char** argv)
                             prepared.xmp_existing_sidecar_status),
                         prepared.xmp_existing_sidecar_loaded ? "yes" : "no");
             if (!prepared.xmp_existing_sidecar_path.empty()) {
-                std::printf(" path=%s",
-                            prepared.xmp_existing_sidecar_path.c_str());
+                std::printf(
+                    " path=%s",
+                    console_path(prepared.xmp_existing_sidecar_path).c_str());
             }
             std::printf("\n");
             if (!prepared.xmp_existing_sidecar_message.empty()) {
@@ -4054,9 +4223,10 @@ main(int argc, char** argv)
                 prepared.xmp_existing_destination_embedded_loaded ? "yes"
                                                                   : "no");
             if (!prepared.xmp_existing_destination_embedded_path.empty()) {
-                std::printf(
-                    " path=%s",
-                    prepared.xmp_existing_destination_embedded_path.c_str());
+                std::printf(" path=%s",
+                            console_path(
+                                prepared.xmp_existing_destination_embedded_path)
+                                .c_str());
             }
             std::printf("\n");
             if (!prepared.xmp_existing_destination_embedded_message.empty()) {
@@ -4070,7 +4240,7 @@ main(int argc, char** argv)
             std::printf("  xmp_sidecar: status=%s",
                         transfer_status_name(xmp_sidecar_status));
             if (!xmp_sidecar_path.empty()) {
-                std::printf(" path=%s", xmp_sidecar_path.c_str());
+                std::printf(" path=%s", console_path(xmp_sidecar_path).c_str());
             }
             std::printf(" bytes=%llu\n",
                         static_cast<unsigned long long>(
@@ -4089,7 +4259,8 @@ main(int argc, char** argv)
                         transfer_status_name(xmp_sidecar_cleanup_status),
                         xmp_sidecar_cleanup_requested ? "yes" : "no");
             if (!xmp_sidecar_cleanup_path.empty()) {
-                std::printf(" path=%s", xmp_sidecar_cleanup_path.c_str());
+                std::printf(" path=%s",
+                            console_path(xmp_sidecar_cleanup_path).c_str());
             }
             std::printf("\n");
             if (!xmp_sidecar_cleanup_message.empty()) {
@@ -4320,7 +4491,8 @@ main(int argc, char** argv)
                 transfer_status_name(c2pa_handoff.binding.status),
                 emit_transfer_code_name(c2pa_handoff.binding.code),
                 static_cast<unsigned long long>(c2pa_handoff.binding.written),
-                c2pa_handoff.binding.errors, c2pa_binding_output_path.c_str());
+                c2pa_handoff.binding.errors,
+                console_path(c2pa_binding_output_path).c_str());
             if (!c2pa_handoff.request.carrier_route.empty()) {
                 std::printf(
                     "  c2pa_handoff: carrier=%s manifest_label=%s bytes=%llu source_ranges=%u prepared_segments=%u\n",
@@ -4342,7 +4514,8 @@ main(int argc, char** argv)
                 transfer_status_name(c2pa_handoff_io.status),
                 emit_transfer_code_name(c2pa_handoff_io.code),
                 static_cast<unsigned long long>(c2pa_handoff_io.bytes),
-                c2pa_handoff_io.errors, c2pa_handoff_output_path.c_str());
+                c2pa_handoff_io.errors,
+                console_path(c2pa_handoff_output_path).c_str());
             if (!c2pa_handoff_io.message.empty()) {
                 std::printf("  c2pa_handoff_package_message=%s\n",
                             c2pa_handoff_io.message.c_str());
@@ -4355,7 +4528,7 @@ main(int argc, char** argv)
                 emit_transfer_code_name(c2pa_signed_package_io.code),
                 static_cast<unsigned long long>(c2pa_signed_package_io.bytes),
                 c2pa_signed_package_io.errors,
-                c2pa_signed_package_input_path.c_str());
+                console_path(c2pa_signed_package_input_path).c_str());
             if (!c2pa_signed_package_io.message.empty()) {
                 std::printf("  c2pa_signed_package_input_message=%s\n",
                             c2pa_signed_package_io.message.c_str());
@@ -4368,7 +4541,7 @@ main(int argc, char** argv)
                 emit_transfer_code_name(c2pa_signed_package_io.code),
                 static_cast<unsigned long long>(c2pa_signed_package_io.bytes),
                 c2pa_signed_package_io.errors,
-                c2pa_signed_package_output_path.c_str());
+                console_path(c2pa_signed_package_output_path).c_str());
             if (!c2pa_signed_package_io.message.empty()) {
                 std::printf("  c2pa_signed_package_message=%s\n",
                             c2pa_signed_package_io.message.c_str());
@@ -4381,7 +4554,7 @@ main(int argc, char** argv)
                 emit_transfer_code_name(transfer_payload_batch_io.code),
                 static_cast<unsigned long long>(transfer_payload_batch_io.bytes),
                 transfer_payload_batch_io.errors,
-                transfer_payload_batch_output_path.c_str());
+                console_path(transfer_payload_batch_output_path).c_str());
             if (!transfer_payload_batch_io.message.empty()) {
                 std::printf("  transfer_payload_batch_message=%s\n",
                             transfer_payload_batch_io.message.c_str());
@@ -4394,7 +4567,7 @@ main(int argc, char** argv)
                 emit_transfer_code_name(transfer_package_batch_io.code),
                 static_cast<unsigned long long>(transfer_package_batch_io.bytes),
                 transfer_package_batch_io.errors,
-                transfer_package_batch_output_path.c_str());
+                console_path(transfer_package_batch_output_path).c_str());
             if (!transfer_package_batch_io.message.empty()) {
                 std::printf("  transfer_package_batch_message=%s\n",
                             transfer_package_batch_io.message.c_str());
@@ -4407,7 +4580,7 @@ main(int argc, char** argv)
                 emit_transfer_code_name(jxl_encoder_handoff_io.code),
                 static_cast<unsigned long long>(jxl_encoder_handoff_io.bytes),
                 jxl_encoder_handoff_io.errors,
-                jxl_encoder_handoff_output_path.c_str());
+                console_path(jxl_encoder_handoff_output_path).c_str());
             if (!jxl_encoder_handoff_io.message.empty()) {
                 std::printf("  jxl_encoder_handoff_message=%s\n",
                             jxl_encoder_handoff_io.message.c_str());
@@ -4515,7 +4688,7 @@ main(int argc, char** argv)
                                                            block, bi);
             if (!force && file_exists(out_path)) {
                 std::fprintf(stderr, "  [%u] exists: %s (use --force)\n", bi,
-                             out_path.c_str());
+                             console_path(out_path).c_str());
                 any_failed = true;
                 continue;
             }
@@ -4523,11 +4696,12 @@ main(int argc, char** argv)
                                                 block.payload.data(),
                                                 block.payload.size()))) {
                 std::fprintf(stderr, "  [%u] write_failed: %s\n", bi,
-                             out_path.c_str());
+                             console_path(out_path).c_str());
                 any_failed = true;
                 continue;
             }
-            std::printf("  [%u] wrote=%s\n", bi, out_path.c_str());
+            std::printf("  [%u] wrote=%s\n", bi,
+                        console_path(out_path).c_str());
         }
 
         if (prepared.bundle.target_format == TransferTargetFormat::Jpeg) {
@@ -4570,7 +4744,7 @@ main(int argc, char** argv)
                 if (!force && output_exists) {
                     std::fprintf(stderr,
                                  "  edit_apply: exists: %s (use --force)\n",
-                                 output_path.c_str());
+                                 display_output.c_str());
                     any_failed = true;
                     continue;
                 }
@@ -4591,9 +4765,8 @@ main(int argc, char** argv)
                     }
                     if (use_output_writer
                         && output_writer.finish() != TransferStatus::Ok) {
-                        std::fprintf(stderr,
-                                     "  edit_apply: write_failed: %s\n",
-                                     output_path.c_str());
+                        std::fprintf(stderr, "  edit_apply: write_failed: %s\n",
+                                     display_output.c_str());
                         any_failed = true;
                         continue;
                     }
@@ -4690,8 +4863,7 @@ main(int argc, char** argv)
                 if (!force && output_exists) {
                     std::fprintf(stderr,
                                  "  %s_apply: exists: %s (use --force)\n",
-                                 edit_prefix,
-                                 output_path.c_str());
+                                 edit_prefix, display_output.c_str());
                     any_failed = true;
                     continue;
                 }
@@ -4713,10 +4885,8 @@ main(int argc, char** argv)
                     }
                     if (use_output_writer
                         && output_writer.finish() != TransferStatus::Ok) {
-                        std::fprintf(stderr,
-                                     "  %s_apply: write_failed: %s\n",
-                                     edit_prefix,
-                                     output_path.c_str());
+                        std::fprintf(stderr, "  %s_apply: write_failed: %s\n",
+                                     edit_prefix, display_output.c_str());
                         any_failed = true;
                         continue;
                     }
@@ -4810,7 +4980,7 @@ main(int argc, char** argv)
                 if (!force && output_exists) {
                     std::fprintf(stderr,
                                  "  edit_apply: exists: %s (use --force)\n",
-                                 output_path.c_str());
+                                 display_output.c_str());
                     any_failed = true;
                     continue;
                 }
@@ -4831,9 +5001,8 @@ main(int argc, char** argv)
                     }
                     if (use_output_writer
                         && output_writer.finish() != TransferStatus::Ok) {
-                        std::fprintf(stderr,
-                                     "  edit_apply: write_failed: %s\n",
-                                     output_path.c_str());
+                        std::fprintf(stderr, "  edit_apply: write_failed: %s\n",
+                                     display_output.c_str());
                         any_failed = true;
                         continue;
                     }
@@ -4943,10 +5112,9 @@ main(int argc, char** argv)
 
             if (!output_path.empty()) {
                 if (!force && output_exists) {
-                    std::fprintf(
-                        stderr,
-                        "  webp_edit_apply: exists: %s (use --force)\n",
-                        output_path.c_str());
+                    std::fprintf(stderr,
+                                 "  webp_edit_apply: exists: %s (use --force)\n",
+                                 display_output.c_str());
                     any_failed = true;
                     continue;
                 }
@@ -4969,7 +5137,7 @@ main(int argc, char** argv)
                         && output_writer.finish() != TransferStatus::Ok) {
                         std::fprintf(stderr,
                                      "  webp_edit_apply: write_failed: %s\n",
-                                     output_path.c_str());
+                                     display_output.c_str());
                         any_failed = true;
                         continue;
                     }
@@ -5059,7 +5227,7 @@ main(int argc, char** argv)
                 if (!force && output_exists) {
                     std::fprintf(stderr,
                                  "  png_edit_apply: exists: %s (use --force)\n",
-                                 output_path.c_str());
+                                 display_output.c_str());
                     any_failed = true;
                     continue;
                 }
@@ -5082,7 +5250,7 @@ main(int argc, char** argv)
                         && output_writer.finish() != TransferStatus::Ok) {
                         std::fprintf(stderr,
                                      "  png_edit_apply: write_failed: %s\n",
-                                     output_path.c_str());
+                                     display_output.c_str());
                         any_failed = true;
                         continue;
                     }
@@ -5172,7 +5340,7 @@ main(int argc, char** argv)
                 if (!force && output_exists) {
                     std::fprintf(stderr,
                                  "  jp2_edit_apply: exists: %s (use --force)\n",
-                                 output_path.c_str());
+                                 display_output.c_str());
                     any_failed = true;
                     continue;
                 }
@@ -5195,7 +5363,7 @@ main(int argc, char** argv)
                         && output_writer.finish() != TransferStatus::Ok) {
                         std::fprintf(stderr,
                                      "  jp2_edit_apply: write_failed: %s\n",
-                                     output_path.c_str());
+                                     display_output.c_str());
                         any_failed = true;
                         continue;
                     }
@@ -5328,7 +5496,7 @@ main(int argc, char** argv)
                 if (!force && output_exists) {
                     std::fprintf(stderr,
                                  "  bmff_edit_apply: exists: %s (use --force)\n",
-                                 output_path.c_str());
+                                 display_output.c_str());
                     any_failed = true;
                     continue;
                 }
@@ -5351,7 +5519,7 @@ main(int argc, char** argv)
                         && output_writer.finish() != TransferStatus::Ok) {
                         std::fprintf(stderr,
                                      "  bmff_edit_apply: write_failed: %s\n",
-                                     output_path.c_str());
+                                     display_output.c_str());
                         any_failed = true;
                         continue;
                     }

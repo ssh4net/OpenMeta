@@ -56,6 +56,19 @@ namespace {
     }
 
 
+    static void append_u64be(std::vector<std::byte>* out, uint64_t v)
+    {
+        out->push_back(std::byte { static_cast<uint8_t>((v >> 56) & 0xFF) });
+        out->push_back(std::byte { static_cast<uint8_t>((v >> 48) & 0xFF) });
+        out->push_back(std::byte { static_cast<uint8_t>((v >> 40) & 0xFF) });
+        out->push_back(std::byte { static_cast<uint8_t>((v >> 32) & 0xFF) });
+        out->push_back(std::byte { static_cast<uint8_t>((v >> 24) & 0xFF) });
+        out->push_back(std::byte { static_cast<uint8_t>((v >> 16) & 0xFF) });
+        out->push_back(std::byte { static_cast<uint8_t>((v >> 8) & 0xFF) });
+        out->push_back(std::byte { static_cast<uint8_t>((v >> 0) & 0xFF) });
+    }
+
+
     static void append_fourcc(std::vector<std::byte>* out, uint32_t f)
     {
         out->push_back(std::byte { static_cast<uint8_t>((f >> 24) & 0xFF) });
@@ -223,6 +236,79 @@ namespace {
             }
         }
         EXPECT_FALSE(found_xmp);
+    }
+
+
+    TEST(ContainerScan, BigTiffRejectsWrappedExternalValueRange)
+    {
+        std::vector<std::byte> tiff;
+        append_bytes(&tiff, "II");
+        append_u16le(&tiff, 43);
+        append_u16le(&tiff, 8);
+        append_u16le(&tiff, 0);
+        append_u64le(&tiff, 16U);
+
+        append_u64le(&tiff, 1U);
+        append_u16le(&tiff, 0x02BC);  // XMP
+        append_u16le(&tiff, 1);       // BYTE
+        append_u64le(&tiff, 16U);
+        append_u64le(&tiff, UINT64_MAX - 7U);
+        append_u64le(&tiff, 0U);
+
+        ASSERT_EQ(tiff.size(), 52U);
+        std::array<ContainerBlockRef, 4> blocks {};
+        const ScanResult res = scan_tiff(tiff, blocks);
+        EXPECT_EQ(res.status, ScanStatus::Ok);
+        for (uint32_t i = 0; i < res.written && i < blocks.size(); ++i) {
+            EXPECT_FALSE(blocks[i].kind == ContainerBlockKind::Xmp
+                         && blocks[i].id == 0x02BCU);
+        }
+    }
+
+
+    TEST(ContainerScan, Jp2RejectsWrappedExtendedBoxSize)
+    {
+        std::vector<std::byte> jp2;
+        append_u32be(&jp2, 12);
+        append_fourcc(&jp2, fourcc('j', 'P', ' ', ' '));
+        append_u32be(&jp2, 0x0D0A870A);
+        append_u32be(&jp2, 1U);
+        append_fourcc(&jp2, fourcc('j', 'p', '2', 'h'));
+        append_u64be(&jp2, UINT64_MAX - 11U);
+
+        std::array<ContainerBlockRef, 4> blocks {};
+        EXPECT_EQ(scan_jp2(jp2, blocks).status, ScanStatus::Malformed);
+    }
+
+
+    TEST(ContainerScan, JxlRejectsWrappedExtendedBoxSize)
+    {
+        std::vector<std::byte> jxl;
+        append_u32be(&jxl, 12);
+        append_fourcc(&jxl, fourcc('J', 'X', 'L', ' '));
+        append_u32be(&jxl, 0x0D0A870A);
+        append_u32be(&jxl, 1U);
+        append_fourcc(&jxl, fourcc('E', 'x', 'i', 'f'));
+        append_u64be(&jxl, UINT64_MAX - 11U);
+
+        std::array<ContainerBlockRef, 4> blocks {};
+        EXPECT_EQ(scan_jxl(jxl, blocks).status, ScanStatus::Malformed);
+    }
+
+
+    TEST(ContainerScan, BmffRejectsWrappedNestedExtendedBoxSize)
+    {
+        std::vector<std::byte> bmff;
+        std::vector<std::byte> ftyp_payload;
+        append_fourcc(&ftyp_payload, fourcc('h', 'e', 'i', 'c'));
+        append_u32be(&ftyp_payload, 0U);
+        append_bmff_box(&bmff, fourcc('f', 't', 'y', 'p'), ftyp_payload);
+        append_u32be(&bmff, 1U);
+        append_fourcc(&bmff, fourcc('m', 'o', 'o', 'v'));
+        append_u64be(&bmff, UINT64_MAX - 15U);
+
+        std::array<ContainerBlockRef, 4> blocks {};
+        EXPECT_EQ(scan_bmff(bmff, blocks).status, ScanStatus::Malformed);
     }
 
     TEST(ContainerScan, RafStandaloneXmp)

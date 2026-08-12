@@ -118,4 +118,44 @@ TEST(PrintImDecode, DecodesPrintImTagIntoFields)
     EXPECT_EQ(e1.value.data.u64, 0x00160016U);
 }
 
+
+TEST(PrintImDecode, SharesParentEntryBudget)
+{
+    std::vector<std::byte> tiff;
+    append_bytes(&tiff, "II");
+    append_u16le(&tiff, 42);
+    append_u32le(&tiff, 8);
+    append_u16le(&tiff, 1);
+
+    const uint32_t payload_off = 26;
+    const uint16_t entry_count = 3;
+    const uint32_t payload_len = 16 + static_cast<uint32_t>(entry_count) * 6;
+    append_u16le(&tiff, 0xC4A5);
+    append_u16le(&tiff, 7);
+    append_u32le(&tiff, payload_len);
+    append_u32le(&tiff, payload_off);
+    append_u32le(&tiff, 0);
+
+    append_bytes(&tiff, "PrintIM");
+    tiff.push_back(std::byte { 0 });
+    append_bytes(&tiff, "0300");
+    append_u16le(&tiff, 0);
+    append_u16le(&tiff, entry_count);
+    for (uint16_t i = 0; i < entry_count; ++i) {
+        append_u16le(&tiff, static_cast<uint16_t>(i + 1U));
+        append_u32le(&tiff, i + 10U);
+    }
+
+    ExifDecodeOptions options;
+    options.decode_printim             = true;
+    options.limits.max_total_entries   = 2U;
+    options.limits.max_entries_per_ifd = 8U;
+    MetaStore store;
+    const ExifDecodeResult result = decode_exif_tiff(tiff, store, {}, options);
+
+    EXPECT_EQ(result.status, ExifDecodeStatus::LimitExceeded);
+    EXPECT_EQ(store.entries().size(), 2U);
+    EXPECT_TRUE(store.resource_limit_exceeded());
+}
+
 }  // namespace openmeta

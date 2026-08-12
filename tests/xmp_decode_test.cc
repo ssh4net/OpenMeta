@@ -110,6 +110,33 @@ TEST(XmpDecodeTest, DecodesAttributesArraysAndRdfResource)
     expect_text("http://ns.adobe.com/xap/1.0/mm/", "InstanceID", "uuid:123");
 }
 
+
+TEST(XmpDecodeTest, RejectsOversizedNamespaceBeforeArenaAmplification)
+{
+    const std::string ns(256U, 'n');
+    const std::string xmp
+        = "<x:xmpmeta xmlns:x='adobe:ns:meta/'>"
+          "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>"
+          "<rdf:Description xmlns:v='"
+          + ns
+          + "'><v:A>1</v:A><v:B>2</v:B></rdf:Description>"
+            "</rdf:RDF></x:xmpmeta>";
+
+    XmpDecodeOptions options;
+    options.limits.max_namespace_bytes = 32U;
+    options.limits.max_arena_bytes     = 128U;
+    MetaStore store;
+    const XmpDecodeResult result
+        = decode_xmp_packet(std::span<const std::byte>(
+                                reinterpret_cast<const std::byte*>(xmp.data()),
+                                xmp.size()),
+                            store, EntryFlags::None, options);
+
+    EXPECT_EQ(result.status, XmpDecodeStatus::LimitExceeded);
+    EXPECT_EQ(result.entries_decoded, 0U);
+    EXPECT_LE(store.arena().bytes().size(), 128U);
+}
+
 TEST(XmpDecodeTest, TrimsXmpMetaCloseWithAlternatePrefix)
 {
     std::string xmp

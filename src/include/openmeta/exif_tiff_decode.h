@@ -35,6 +35,7 @@ enum class ExifLimitReason : uint8_t {
     MaxEntriesPerIfd,
     MaxTotalEntries,
     ValueCountTooLarge,
+    MaxArenaBytes,
 };
 
 /// Logical IFD kinds exposed by decode_exif_tiff().
@@ -60,6 +61,9 @@ struct ExifDecodeLimits final {
     uint32_t max_entries_per_ifd = 4096;
     uint32_t max_total_entries   = 200000;
     uint64_t max_value_bytes     = 16ULL * 1024ULL * 1024ULL;
+    /// Cumulative bytes copied into the destination store by this decode and
+    /// all nested decoders (0 = unlimited).
+    uint64_t max_arena_bytes = 64ULL * 1024ULL * 1024ULL;
 };
 
 /// Token strings used to label decoded IFD blocks.

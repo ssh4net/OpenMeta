@@ -37,6 +37,9 @@ struct SimpleMetaResult final {
 
 /// Full decoder option set for \ref simple_meta_read.
 struct SimpleMetaDecodeOptions final {
+    /// Global ceilings shared by every decoder and nested decoder in one read.
+    uint32_t max_total_entries = 200000U;
+    uint64_t max_arena_bytes   = 64ULL * 1024ULL * 1024ULL;
     ExifDecodeOptions exif;
     PayloadOptions payload;
     XmpDecodeOptions xmp;

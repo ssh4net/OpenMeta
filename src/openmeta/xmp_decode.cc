@@ -595,6 +595,10 @@ namespace {
         if (schema_ns.empty() || property_path.empty()) {
             return false;
         }
+        if (schema_ns.size() > ctx->options.limits.max_namespace_bytes) {
+            stop_parser(ctx, XmpDecodeStatus::LimitExceeded);
+            return false;
+        }
         if (ctx->result.entries_decoded >= ctx->options.limits.max_properties) {
             stop_parser(ctx, XmpDecodeStatus::LimitExceeded);
             return false;
@@ -620,7 +624,10 @@ namespace {
         entry.origin.wire_count     = static_cast<uint32_t>(value.size());
         entry.flags                 = ctx->flags;
 
-        (void)ctx->store->add_entry(entry);
+        if (ctx->store->add_entry(entry) == kInvalidEntryId) {
+            stop_parser(ctx, XmpDecodeStatus::LimitExceeded);
+            return false;
+        }
         ctx->result.entries_decoded += 1;
         ctx->order_in_block += 1;
         ctx->total_value_bytes += static_cast<uint64_t>(value.size());
@@ -907,6 +914,13 @@ decode_xmp_packet(std::span<const std::byte> xmp_bytes, MetaStore& store,
 {
     XmpDecodeResult result;
 
+    store.constrain_resources(options.limits.max_properties,
+                              options.limits.max_arena_bytes);
+    if (store.resource_limit_exceeded()) {
+        result.status = XmpDecodeStatus::LimitExceeded;
+        return result;
+    }
+
     const uint64_t max_in = options.limits.max_input_bytes;
     if (max_in != 0U && xmp_bytes.size() > max_in) {
         result.status = XmpDecodeStatus::LimitExceeded;
@@ -923,6 +937,10 @@ decode_xmp_packet(std::span<const std::byte> xmp_bytes, MetaStore& store,
     Ctx ctx;
     ctx.store                  = &store;
     ctx.block                  = store.add_block(BlockInfo {});
+    if (ctx.block == kInvalidBlockId) {
+        result.status = XmpDecodeStatus::LimitExceeded;
+        return result;
+    }
     ctx.flags                  = flags;
     ctx.options                = options;
     ctx.result.status          = XmpDecodeStatus::Ok;
@@ -977,6 +995,9 @@ decode_xmp_packet(std::span<const std::byte> xmp_bytes, MetaStore& store,
     ctx.parser = nullptr;
 
     result = ctx.result;
+    if (store.resource_limit_exceeded()) {
+        merge_status(&result, XmpDecodeStatus::LimitExceeded);
+    }
     if (result.status == XmpDecodeStatus::Malformed
         && options.malformed_mode == XmpDecodeMalformedMode::OutputTruncated) {
         result.status = XmpDecodeStatus::OutputTruncated;

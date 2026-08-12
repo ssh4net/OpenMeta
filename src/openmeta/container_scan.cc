@@ -82,11 +82,18 @@ namespace {
     }
 
 
+    static constexpr bool checked_range(uint64_t offset, uint64_t length,
+                                        uint64_t total) noexcept
+    {
+        return offset <= total && length <= total - offset;
+    }
+
+
     static bool match(std::span<const std::byte> bytes, uint64_t offset,
                       const char* s, uint32_t s_len) noexcept
     {
         const uint64_t size = static_cast<uint64_t>(bytes.size());
-        if (offset + s_len > size) {
+        if (!checked_range(offset, s_len, size)) {
             return false;
         }
         return std::memcmp(bytes.data() + static_cast<size_t>(offset), s,
@@ -99,7 +106,7 @@ namespace {
                             const std::byte* data, uint32_t data_len) noexcept
     {
         const uint64_t size = static_cast<uint64_t>(bytes.size());
-        if (offset + data_len > size) {
+        if (!checked_range(offset, data_len, size)) {
             return false;
         }
         return std::memcmp(bytes.data() + static_cast<size_t>(offset), data,
@@ -132,10 +139,11 @@ namespace {
     static bool has_xmp_packet_hint(std::span<const std::byte> bytes,
                                     uint64_t offset, uint64_t size) noexcept
     {
-        const uint64_t end = (size < 512U) ? (offset + size) : (offset + 512U);
-        if (end > bytes.size() || offset > end) {
+        const uint64_t probe_size = (size < 512U) ? size : 512U;
+        if (!checked_range(offset, probe_size, bytes.size())) {
             return false;
         }
+        const uint64_t end = offset + probe_size;
 
         if (find_match(bytes, offset, end, "<?xpacket", 9U) != UINT64_MAX) {
             return true;
@@ -171,7 +179,7 @@ namespace {
     static bool read_u16be(std::span<const std::byte> bytes, uint64_t offset,
                            uint16_t* out) noexcept
     {
-        if (offset + 2 > bytes.size()) {
+        if (!checked_range(offset, 2, bytes.size())) {
             return false;
         }
         const uint16_t v = static_cast<uint16_t>(u8(bytes[offset + 0]) << 8)
@@ -184,7 +192,7 @@ namespace {
     static bool read_u32be(std::span<const std::byte> bytes, uint64_t offset,
                            uint32_t* out) noexcept
     {
-        if (offset + 4 > bytes.size()) {
+        if (!checked_range(offset, 4, bytes.size())) {
             return false;
         }
         const uint32_t v
@@ -200,7 +208,7 @@ namespace {
     static bool read_u32le(std::span<const std::byte> bytes, uint64_t offset,
                            uint32_t* out) noexcept
     {
-        if (offset + 4 > bytes.size()) {
+        if (!checked_range(offset, 4, bytes.size())) {
             return false;
         }
         const uint32_t v
@@ -225,7 +233,7 @@ namespace {
     static bool read_u64be(std::span<const std::byte> bytes, uint64_t offset,
                            uint64_t* out) noexcept
     {
-        if (offset + 8 > bytes.size()) {
+        if (!checked_range(offset, 8, bytes.size())) {
             return false;
         }
         uint64_t v = 0;
@@ -240,7 +248,7 @@ namespace {
     static bool read_u64le(std::span<const std::byte> bytes, uint64_t offset,
                            uint64_t* out) noexcept
     {
-        if (offset + 8 > bytes.size()) {
+        if (!checked_range(offset, 8, bytes.size())) {
             return false;
         }
         uint64_t v = 0;
@@ -255,7 +263,7 @@ namespace {
     static bool looks_like_tiff_at(std::span<const std::byte> bytes,
                                    uint64_t offset) noexcept
     {
-        if (offset + 8 > bytes.size()) {
+        if (!checked_range(offset, 8, bytes.size())) {
             return false;
         }
 
@@ -289,12 +297,13 @@ namespace {
                     return false;
                 }
             }
-            return offset + static_cast<uint64_t>(ifd0) < bytes.size();
+            return offset < bytes.size()
+                   && static_cast<uint64_t>(ifd0) < bytes.size() - offset;
         }
 
         // BigTIFF header:
         //   u16 version=43, u16 offsize (8), u16 zero, u64 IFD0 offset.
-        if (offset + 16 > bytes.size()) {
+        if (!checked_range(offset, 16, bytes.size())) {
             return false;
         }
         const uint16_t offsize
@@ -315,7 +324,7 @@ namespace {
                 return false;
             }
         }
-        return offset + ifd0 < bytes.size();
+        return offset < bytes.size() && ifd0 < bytes.size() - offset;
     }
 
     static ScanResult scan_exif_preamble_tiff(std::span<const std::byte> bytes,
@@ -503,7 +512,8 @@ namespace {
 
             const uint64_t jpeg_off = static_cast<uint64_t>(section_off) + 28U;
             if (!match(bytes, section_off, "SECi", 4U)
-                || jpeg_off + 2U > bytes.size() || u8(bytes[jpeg_off]) != 0xffU
+                || !checked_range(jpeg_off, 2U, bytes.size())
+                || u8(bytes[jpeg_off]) != 0xffU
                 || u8(bytes[jpeg_off + 1U]) != 0xd8U) {
                 continue;
             }
@@ -1030,7 +1040,8 @@ namespace {
     looks_like_bmff_box_header_fragment(std::span<const std::byte> bytes,
                                         const ContainerBlockRef& b) noexcept
     {
-        if (b.data_size < 8U || b.data_offset + 8U > bytes.size()) {
+        if (b.data_size < 8U
+            || !checked_range(b.data_offset, 8U, bytes.size())) {
             return false;
         }
         uint32_t size32 = 0;
@@ -1046,7 +1057,8 @@ namespace {
             return true;
         }
         if (size32 == 1U) {
-            if (b.data_size < 16U || b.data_offset + 16U > bytes.size()) {
+            if (b.data_size < 16U
+                || !checked_range(b.data_offset, 16U, bytes.size())) {
                 return false;
             }
             uint64_t size64 = 0;
@@ -1651,6 +1663,7 @@ namespace {
     struct BmffBox final {
         uint64_t offset      = 0;
         uint64_t size        = 0;
+        uint64_t end         = 0;
         uint64_t header_size = 0;
         uint32_t type        = 0;
         bool has_uuid        = false;
@@ -1661,7 +1674,8 @@ namespace {
                                uint64_t offset, uint64_t parent_end,
                                BmffBox* out) noexcept
     {
-        if (offset + 8 > parent_end || offset + 8 > bytes.size()) {
+        if (!out || parent_end > bytes.size()
+            || !checked_range(offset, 8, parent_end)) {
             return false;
         }
         uint32_t size32 = 0;
@@ -1675,7 +1689,8 @@ namespace {
         uint64_t box_size    = size32;
         if (size32 == 1) {
             uint64_t size64 = 0;
-            if (!read_u64be(bytes, offset + 8, &size64)) {
+            if (!checked_range(offset, 16, parent_end)
+                || !read_u64be(bytes, offset + 8, &size64)) {
                 return false;
             }
             header_size = 16;
@@ -1684,23 +1699,24 @@ namespace {
             box_size = parent_end - offset;
         }
 
-        if (box_size < header_size) {
+        if (box_size < header_size
+            || !checked_range(offset, box_size, parent_end)) {
             return false;
         }
-        if (offset + box_size > parent_end
-            || offset + box_size > bytes.size()) {
+        const uint64_t box_end = offset + box_size;
+        if (box_end <= offset) {
             return false;
         }
 
         bool has_uuid = false;
         std::array<std::byte, 16> uuid {};
         if (type == fourcc('u', 'u', 'i', 'd')) {
-            if (header_size + 16 > box_size) {
+            if (header_size > box_size || 16 > box_size - header_size) {
                 return false;
             }
             has_uuid                = true;
             const uint64_t uuid_off = offset + header_size;
-            if (uuid_off + 16 > bytes.size()) {
+            if (!checked_range(uuid_off, 16, box_end)) {
                 return false;
             }
             for (uint32_t i = 0; i < 16; ++i) {
@@ -1711,6 +1727,7 @@ namespace {
 
         out->offset      = offset;
         out->size        = box_size;
+        out->end         = box_end;
         out->header_size = header_size;
         out->type        = type;
         out->has_uuid    = has_uuid;
@@ -1838,7 +1855,14 @@ scan_jp2(std::span<const std::byte> bytes,
 
     uint64_t offset    = 0;
     const uint64_t end = bytes.size();
+    const uint32_t kMaxBoxes = 1U << 16;
+    uint32_t boxes_remaining = kMaxBoxes;
     while (offset < end) {
+        if (boxes_remaining == 0) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
+        }
+        boxes_remaining -= 1;
         BmffBox box;
         if (!parse_bmff_box(bytes, offset, end, &box)) {
             sink.result.status = ScanStatus::Malformed;
@@ -1850,24 +1874,24 @@ scan_jp2(std::span<const std::byte> bytes,
         // jp2h contains child boxes (ihdr/colr/...). Scan its children for ICC.
         if (box.type == fourcc('j', 'p', '2', 'h')) {
             uint64_t child_off       = box.offset + box.header_size;
-            const uint64_t child_end = box.offset + box.size;
+            const uint64_t child_end = box.end;
             while (child_off < child_end) {
+                if (boxes_remaining == 0) {
+                    sink.result.status = ScanStatus::Malformed;
+                    return sink.result;
+                }
+                boxes_remaining -= 1;
                 BmffBox child;
                 if (!parse_bmff_box(bytes, child_off, child_end, &child)) {
-                    break;
+                    sink.result.status = ScanStatus::Malformed;
+                    return sink.result;
                 }
                 scan_jp2_box_payload(bytes, child, &sink);
-                child_off += child.size;
-                if (child.size == 0) {
-                    break;
-                }
+                child_off = child.end;
             }
         }
 
-        offset += box.size;
-        if (box.size == 0) {
-            break;
-        }
+        offset = box.end;
     }
 
     return sink.result;
@@ -1905,7 +1929,14 @@ scan_jxl(std::span<const std::byte> bytes,
 
     uint64_t offset    = 0;
     const uint64_t end = bytes.size();
+    const uint32_t kMaxBoxes = 1U << 16;
+    uint32_t boxes_remaining = kMaxBoxes;
     while (offset < end) {
+        if (boxes_remaining == 0) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
+        }
+        boxes_remaining -= 1;
         BmffBox box;
         if (!parse_bmff_box(bytes, offset, end, &box)) {
             sink.result.status = ScanStatus::Malformed;
@@ -1967,10 +1998,7 @@ scan_jxl(std::span<const std::byte> bytes,
             }
         }
 
-        offset += box.size;
-        if (box.size == 0) {
-            break;
-        }
+        offset = box.end;
     }
 
     return sink.result;
@@ -2288,8 +2316,8 @@ namespace {
                                         uint32_t* out_count) noexcept
     {
         const uint64_t payload_off = iinf.offset + iinf.header_size;
-        const uint64_t payload_end = iinf.offset + iinf.size;
-        if (payload_off + 4 > payload_end) {
+        const uint64_t payload_end = iinf.end;
+        if (!checked_range(payload_off, 4, payload_end)) {
             return false;
         }
 
@@ -2330,8 +2358,8 @@ namespace {
             if (infe.type == fourcc('i', 'n', 'f', 'e')) {
                 const uint64_t infe_payload_off = infe.offset
                                                   + infe.header_size;
-                const uint64_t infe_end = infe.offset + infe.size;
-                if (infe_payload_off + 4 > infe_end) {
+                const uint64_t infe_end = infe.end;
+                if (!checked_range(infe_payload_off, 4, infe_end)) {
                     return false;
                 }
 
@@ -2494,10 +2522,7 @@ namespace {
                 }
             }
 
-            p += infe.size;
-            if (infe.size == 0) {
-                break;
-            }
+            p = infe.end;
             seen += 1;
         }
         return true;
@@ -2526,8 +2551,9 @@ namespace {
         *out = BmffDrefTable {};
 
         const uint64_t payload_off = dref.offset + dref.header_size;
-        const uint64_t payload_end = dref.offset + dref.size;
-        if (payload_off + 8 > payload_end || payload_end > bytes.size()) {
+        const uint64_t payload_end = dref.end;
+        if (payload_end > bytes.size()
+            || !checked_range(payload_off, 8, payload_end)) {
             return false;
         }
 
@@ -2540,7 +2566,7 @@ namespace {
         const uint32_t kMaxEnt = 1U << 16;
         const uint32_t take = (entry_count < kMaxEnt) ? entry_count : kMaxEnt;
         uint32_t idx        = 0;
-        while (off + 8 <= payload_end && idx < take) {
+        while (checked_range(off, 8, payload_end) && idx < take) {
             BmffBox ent;
             if (!parse_bmff_box(bytes, off, payload_end, &ent)) {
                 return false;
@@ -2550,9 +2576,9 @@ namespace {
             if (ent.type == fourcc('u', 'r', 'l', ' ')
                 || ent.type == fourcc('u', 'r', 'n', ' ')) {
                 const uint64_t ent_payload_off = ent.offset + ent.header_size;
-                const uint64_t ent_payload_end = ent.offset + ent.size;
-                if (ent_payload_off + 4 <= ent_payload_end
-                    && ent_payload_end <= bytes.size()) {
+                const uint64_t ent_payload_end = ent.end;
+                if (ent_payload_end <= bytes.size()
+                    && checked_range(ent_payload_off, 4, ent_payload_end)) {
                     uint32_t vf = 0;
                     if (read_u32be(bytes, ent_payload_off, &vf)) {
                         const uint32_t flags = vf & 0x00FFFFFFU;
@@ -2566,10 +2592,7 @@ namespace {
             }
             idx += 1;
 
-            off += ent.size;
-            if (ent.size == 0) {
-                break;
-            }
+            off = ent.end;
         }
 
         out->count  = idx;
@@ -2716,8 +2739,9 @@ namespace {
         *out = BmffIlocRefTable {};
 
         const uint64_t payload_off = iref.offset + iref.header_size;
-        const uint64_t payload_end = iref.offset + iref.size;
-        if (payload_off + 4 > payload_end || payload_end > bytes.size()) {
+        const uint64_t payload_end = iref.end;
+        if (payload_end > bytes.size()
+            || !checked_range(payload_off, 4, payload_end)) {
             return false;
         }
 
@@ -2729,7 +2753,7 @@ namespace {
         uint64_t child_off       = payload_off + 4;
         const uint32_t kMaxBoxes = 1U << 16;
         uint32_t seen            = 0;
-        while (child_off + 8 <= payload_end) {
+        while (checked_range(child_off, 8, payload_end)) {
             seen += 1;
             if (seen > kMaxBoxes) {
                 return false;
@@ -2739,17 +2763,14 @@ namespace {
             if (!parse_bmff_box(bytes, child_off, payload_end, &child)) {
                 return false;
             }
-            child_off += child.size;
-            if (child.size == 0) {
-                break;
-            }
+            child_off = child.end;
 
             if (child.type != fourcc('i', 'l', 'o', 'c')) {
                 continue;
             }
 
             const uint64_t child_payload_off = child.offset + child.header_size;
-            const uint64_t child_payload_end = child.offset + child.size;
+            const uint64_t child_payload_end = child.end;
             if (child_payload_off > child_payload_end
                 || child_payload_end > bytes.size()) {
                 return false;
@@ -3559,7 +3580,7 @@ namespace {
         }
 
         const uint64_t payload_off = ipco.offset + ipco.header_size;
-        const uint64_t payload_end = ipco.offset + ipco.size;
+        const uint64_t payload_end = ipco.end;
         if (payload_off > payload_end || payload_end > bytes.size()) {
             return;
         }
@@ -3567,7 +3588,7 @@ namespace {
         uint64_t off             = payload_off;
         const uint32_t kMaxProps = 1U << 16;
         uint32_t seen            = 0;
-        while (off + 8 <= payload_end) {
+        while (checked_range(off, 8, payload_end)) {
             seen += 1;
             if (seen > kMaxProps) {
                 // Avoid pathological property lists; treat as malformed meta.
@@ -3577,17 +3598,18 @@ namespace {
 
             BmffBox child;
             if (!parse_bmff_box(bytes, off, payload_end, &child)) {
-                break;
+                sink->result.status = ScanStatus::Malformed;
+                return;
             }
 
             if (child.type == fourcc('c', 'o', 'l', 'r')) {
                 const uint64_t colr_payload_off = child.offset
                                                   + child.header_size;
-                const uint64_t colr_payload_end  = child.offset + child.size;
+                const uint64_t colr_payload_end  = child.end;
                 const uint64_t colr_payload_size = child.size
                                                    - child.header_size;
-                if (colr_payload_off + 4 <= colr_payload_end
-                    && colr_payload_end <= bytes.size()
+                if (colr_payload_end <= bytes.size()
+                    && checked_range(colr_payload_off, 4, colr_payload_end)
                     && colr_payload_size >= 4) {
                     uint32_t colr_type = 0;
                     if (read_u32be(bytes, colr_payload_off, &colr_type)) {
@@ -3608,10 +3630,7 @@ namespace {
                 }
             }
 
-            off += child.size;
-            if (child.size == 0) {
-                break;
-            }
+            off = child.end;
         }
     }
 
@@ -3625,7 +3644,7 @@ namespace {
         }
 
         const uint64_t payload_off = iprp.offset + iprp.header_size;
-        const uint64_t payload_end = iprp.offset + iprp.size;
+        const uint64_t payload_end = iprp.end;
         if (payload_off > payload_end || payload_end > bytes.size()) {
             return;
         }
@@ -3633,7 +3652,7 @@ namespace {
         uint64_t off             = payload_off;
         const uint32_t kMaxBoxes = 1U << 16;
         uint32_t seen            = 0;
-        while (off + 8 <= payload_end) {
+        while (checked_range(off, 8, payload_end)) {
             seen += 1;
             if (seen > kMaxBoxes) {
                 sink->result.status = ScanStatus::Malformed;
@@ -3642,7 +3661,8 @@ namespace {
 
             BmffBox child;
             if (!parse_bmff_box(bytes, off, payload_end, &child)) {
-                break;
+                sink->result.status = ScanStatus::Malformed;
+                return;
             }
 
             if (child.type == fourcc('i', 'p', 'c', 'o')) {
@@ -3652,10 +3672,7 @@ namespace {
                 }
             }
 
-            off += child.size;
-            if (child.size == 0) {
-                break;
-            }
+            off = child.end;
         }
     }
 
@@ -3685,11 +3702,18 @@ namespace {
         bool has_dinf = false;
 
         uint64_t child_off       = payload_off + 4;  // FullBox header.
-        const uint64_t child_end = meta.offset + meta.size;
+        const uint64_t child_end    = meta.end;
+        const uint32_t kMaxChildren = 1U << 16;
+        uint32_t child_count        = 0;
         while (child_off < child_end) {
+            if (++child_count > kMaxChildren) {
+                sink->result.status = ScanStatus::Malformed;
+                return;
+            }
             BmffBox child;
             if (!parse_bmff_box(bytes, child_off, child_end, &child)) {
-                break;
+                sink->result.status = ScanStatus::Malformed;
+                return;
             }
 
             if (child.type == fourcc('i', 'i', 'n', 'f')) {
@@ -3712,10 +3736,7 @@ namespace {
                 has_dinf = true;
             }
 
-            child_off += child.size;
-            if (child.size == 0) {
-                break;
-            }
+            child_off = child.end;
         }
 
         std::array<BmffMetaItem, 32> items {};
@@ -3734,21 +3755,19 @@ namespace {
         BmffDrefTable dref {};
         if (has_dinf) {
             const uint64_t dinf_payload_off = dinf.offset + dinf.header_size;
-            const uint64_t dinf_end         = dinf.offset + dinf.size;
+            const uint64_t dinf_end         = dinf.end;
             uint64_t off                    = dinf_payload_off;
-            while (off + 8 <= dinf_end) {
+            while (checked_range(off, 8, dinf_end)) {
                 BmffBox child;
                 if (!parse_bmff_box(bytes, off, dinf_end, &child)) {
-                    break;
+                    sink->result.status = ScanStatus::Malformed;
+                    return;
                 }
                 if (child.type == fourcc('d', 'r', 'e', 'f')) {
                     (void)bmff_parse_dref_table(bytes, child, &dref);
                     break;
                 }
-                off += child.size;
-                if (child.size == 0) {
-                    break;
-                }
+                off = child.end;
             }
         }
 
@@ -3916,7 +3935,7 @@ namespace {
                                          BlockSink* sink) noexcept
     {
         const uint64_t payload_off0 = box.offset + box.header_size;
-        const uint64_t payload_end  = box.offset + box.size;
+        const uint64_t payload_end  = box.end;
         if (payload_off0 >= payload_end) {
             return;
         }
@@ -3945,7 +3964,7 @@ namespace {
             }
 
             uint64_t off = r.begin;
-            while (off + 8 <= r.end) {
+            while (checked_range(off, 8, r.end)) {
                 seen_boxes += 1;
                 if (seen_boxes > kMaxBoxes) {
                     // Treat excessively nested/fragmented UUID payloads as
@@ -3963,12 +3982,12 @@ namespace {
 
                 const uint64_t child_payload_off = child.offset
                                                    + child.header_size;
-                const uint64_t child_payload_end  = child.offset + child.size;
+                const uint64_t child_payload_end  = child.end;
                 const uint64_t child_payload_size = child.size
                                                     - child.header_size;
 
                 const bool payload_looks_boxes
-                    = child_payload_off + 8 <= child_payload_end
+                    = checked_range(child_payload_off, 8, child_payload_end)
                       && bmff_payload_may_contain_boxes(bytes,
                                                         child_payload_off,
                                                         child_payload_end);
@@ -4012,10 +4031,7 @@ namespace {
                                           r.depth + 1 };
                 }
 
-                off += child.size;
-                if (child.size == 0) {
-                    break;
-                }
+                off = child.end;
             }
         }
     }
@@ -4120,27 +4136,30 @@ namespace {
     }
 
 
+    struct BmffScanBudget final {
+        uint32_t boxes_remaining = 1U << 18;
+    };
+
     static void bmff_scan_for_meta(std::span<const std::byte> bytes,
                                    uint64_t begin, uint64_t end, uint32_t depth,
-                                   ContainerFormat format,
-                                   BlockSink* sink) noexcept
+                                   ContainerFormat format, BlockSink* sink,
+                                   BmffScanBudget* budget) noexcept
     {
-        if (sink->result.status != ScanStatus::Ok) {
+        if (!budget || sink->result.status != ScanStatus::Ok) {
             return;
         }
         if (depth > 8) {
+            sink->result.status = ScanStatus::Malformed;
             return;
         }
 
-        uint64_t offset          = begin;
-        const uint32_t kMaxBoxes = 1U << 18;
-        uint32_t seen            = 0;
+        uint64_t offset = begin;
         while (offset < end) {
-            seen += 1;
-            if (seen > kMaxBoxes) {
+            if (budget->boxes_remaining == 0) {
                 sink->result.status = ScanStatus::Malformed;
                 return;
             }
+            budget->boxes_remaining -= 1;
 
             BmffBox box;
             if (!parse_bmff_box(bytes, offset, end, &box)) {
@@ -4190,20 +4209,17 @@ namespace {
                 }
             } else if (bmff_is_container_box(box.type)) {
                 const uint64_t child_off = box.offset + box.header_size;
-                const uint64_t child_end = box.offset + box.size;
+                const uint64_t child_end = box.end;
                 if (child_off < child_end) {
                     bmff_scan_for_meta(bytes, child_off, child_end, depth + 1,
-                                       format, sink);
+                                       format, sink, budget);
                     if (sink->result.status != ScanStatus::Ok) {
                         return;
                     }
                 }
             }
 
-            offset += box.size;
-            if (box.size == 0) {
-                break;
-            }
+            offset = box.end;
         }
     }
 
@@ -4230,7 +4246,7 @@ scan_bmff(std::span<const std::byte> bytes,
     uint64_t off             = 0;
     const uint32_t kMaxBoxes = 1U << 14;
     uint32_t seen            = 0;
-    while (off + 8 <= bytes.size()) {
+    while (checked_range(off, 8, bytes.size())) {
         seen += 1;
         if (seen > kMaxBoxes) {
             sink.result.status = ScanStatus::Malformed;
@@ -4247,10 +4263,7 @@ scan_bmff(std::span<const std::byte> bytes,
             found_ftyp = true;
             break;
         }
-        off += box.size;
-        if (box.size == 0) {
-            break;
-        }
+        off = box.end;
     }
     if (!found_ftyp) {
         sink.result.status = ScanStatus::Unsupported;
@@ -4263,7 +4276,8 @@ scan_bmff(std::span<const std::byte> bytes,
         return sink.result;
     }
 
-    bmff_scan_for_meta(bytes, 0, bytes.size(), 0, format, &sink);
+    BmffScanBudget budget;
+    bmff_scan_for_meta(bytes, 0, bytes.size(), 0, format, &sink, &budget);
     return sink.result;
 }
 
@@ -4280,7 +4294,7 @@ namespace {
                               uint16_t* out) noexcept
     {
         if (cfg.le) {
-            if (offset + 2 > bytes.size()) {
+            if (!checked_range(offset, 2, bytes.size())) {
                 return false;
             }
             const uint16_t v = static_cast<uint16_t>(u8(bytes[offset + 0]) << 0)
@@ -4591,7 +4605,7 @@ scan_tiff(std::span<const std::byte> bytes,
                     value_off = value_or_off;
                 }
             }
-            if (value_off + value_bytes > bytes.size()) {
+            if (!checked_range(value_off, value_bytes, bytes.size())) {
                 continue;
             }
 
@@ -4651,7 +4665,8 @@ scan_tiff(std::span<const std::byte> bytes,
             // containing a `jumb` superbox). Detect when the tag value is
             // exactly one BMFF box of type `jumb`/`c2pa` and expose it as a
             // JUMBF block for higher-level decode.
-            if (value_bytes >= 8U && value_off + 8U <= bytes.size()) {
+            if (value_bytes >= 8U
+                && checked_range(value_off, 8U, bytes.size())) {
                 uint32_t box_size32 = 0;
                 uint32_t box_type   = 0;
                 if (read_u32be(bytes, value_off + 0U, &box_size32)

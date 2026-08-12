@@ -1,5 +1,36 @@
 # OpenMeta Changes
 
+## 0.4.95 - 2026-08-12
+
+Changes compared with `0.4.94`.
+
+### Added
+
+- Added cumulative metadata-entry and arena-byte limits that remain shared
+  across parent and nested decoders, including PrintIM and XMP paths.
+- Added security regressions for malformed BMFF/BigTIFF sizes, C2PA
+  certificate/key mismatches, cumulative decode amplification, unsafe output
+  links, explicit verification failure, and terminal-control filenames.
+
+### Changed
+
+- Advanced the shared-library ABI major to `2` for the new public resource
+  budget fields and cumulative store state.
+- C2PA cryptographic signature success is now reported as
+  `signature_verified_only`; `verified` is reserved for future verification
+  that also binds the manifest to the complete asset. Certificate-bearing
+  signatures are verified exclusively with the leaf certificate public key.
+- Explicit C2PA verification now fails validation for every result except a
+  future complete asset-bound `verified` result.
+- BMFF and BigTIFF scanners now use overflow-safe ranges, checked box ends,
+  strict forward progress, and bounded nested box traversal.
+- Output and XMP sidecar persistence now use same-directory temporary files
+  and atomic publication. No-overwrite mode rejects existing links and other
+  destinations without a check-then-open race.
+- Streaming transfer rejects direct, hard-link, and symlink aliases between
+  its output and mapped inputs before writing.
+- Command-line path diagnostics now escape terminal control bytes.
+
 ## 0.4.94 - 2026-08-10
 
 Changes compared with `0.4.93`.

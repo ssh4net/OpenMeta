@@ -41,6 +41,12 @@ public:
     /// Reserves at least \p size_bytes capacity (may allocate).
     void reserve(size_t size_bytes);
 
+    /// Applies a cumulative size ceiling. Repeated calls retain the lowest
+    /// non-zero limit, so nested decoders cannot widen a parent budget.
+    void constrain_max_size(uint64_t max_size_bytes) noexcept;
+    /// Returns true after an allocation was refused by the cumulative ceiling.
+    bool limit_exceeded() const noexcept;
+
     /// Appends raw bytes and returns a \ref ByteSpan to the stored copy.
     /// Returns an empty span if the payload would exceed \ref ByteSpan limits.
     /// Source bytes may alias the current arena buffer.
@@ -63,6 +69,8 @@ public:
 
 private:
     std::vector<std::byte> buffer_;
+    uint64_t max_size_bytes_ = UINT32_MAX;
+    bool limit_exceeded_     = false;
 };
 
 }  // namespace openmeta

@@ -45,8 +45,13 @@ enum class C2paVerifyStatus : uint8_t {
     NoSignatures,
     InvalidSignature,
     VerificationFailed,
+    /// Complete asset binding, signature, and trust policy were validated.
+    /// Current OpenMeta verification code does not emit this status.
     Verified,
     NotImplemented,
+    /// The internal claim/signature bytes matched, but the signature was not
+    /// validated against the complete containing asset.
+    SignatureVerifiedOnly,
 };
 
 /// Resource limits for JUMBF/C2PA decode.

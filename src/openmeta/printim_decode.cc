@@ -120,7 +120,10 @@ decode_printim(std::span<const std::byte> bytes, MetaStore& store,
         e.origin.wire_type      = WireType { WireFamily::Other, 0 };
         e.origin.wire_count     = 4;
         e.flags                 = EntryFlags::Derived;
-        (void)store.add_entry(e);
+        if (store.add_entry(e) == kInvalidEntryId) {
+            out.status = PrintImDecodeStatus::LimitExceeded;
+            return out;
+        }
         out.entries_decoded += 1;
     }
 
@@ -147,7 +150,10 @@ decode_printim(std::span<const std::byte> bytes, MetaStore& store,
         e.origin.wire_type      = WireType { WireFamily::Other, 0 };
         e.origin.wire_count     = 1;
         e.flags                 = EntryFlags::Derived;
-        (void)store.add_entry(e);
+        if (store.add_entry(e) == kInvalidEntryId) {
+            out.status = PrintImDecodeStatus::LimitExceeded;
+            return out;
+        }
         out.entries_decoded += 1;
     }
 

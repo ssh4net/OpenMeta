@@ -45,6 +45,10 @@ MetaStore::add_block(const BlockInfo& info)
     if (finalized_) {
         return kInvalidBlockId;
     }
+    if (blocks_.size() >= max_entries_ || arena_.limit_exceeded()) {
+        entry_limit_exceeded_ = true;
+        return kInvalidBlockId;
+    }
     const BlockId id = static_cast<BlockId>(blocks_.size());
     blocks_.push_back(info);
     return id;
@@ -57,9 +61,34 @@ MetaStore::add_entry(const Entry& entry)
     if (finalized_) {
         return kInvalidEntryId;
     }
+    if (entries_.size() >= max_entries_ || arena_.limit_exceeded()) {
+        entry_limit_exceeded_ = true;
+        return kInvalidEntryId;
+    }
     const EntryId id = static_cast<EntryId>(entries_.size());
     entries_.push_back(entry);
     return id;
+}
+
+
+void
+MetaStore::constrain_resources(uint32_t max_entries,
+                               uint64_t max_arena_bytes) noexcept
+{
+    if (max_entries != 0U && max_entries < max_entries_) {
+        max_entries_ = max_entries;
+    }
+    arena_.constrain_max_size(max_arena_bytes);
+    if (entries_.size() > max_entries_ || blocks_.size() > max_entries_) {
+        entry_limit_exceeded_ = true;
+    }
+}
+
+
+bool
+MetaStore::resource_limit_exceeded() const noexcept
+{
+    return entry_limit_exceeded_ || arena_.limit_exceeded();
 }
 
 

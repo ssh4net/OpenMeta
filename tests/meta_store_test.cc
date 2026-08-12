@@ -6,6 +6,30 @@
 
 namespace openmeta {
 
+TEST(MetaStoreTest, CumulativeResourceConstraintsCannotBeWidened)
+{
+    MetaStore store;
+    store.constrain_resources(2U, 12U);
+    store.constrain_resources(100U, 1024U);
+
+    const BlockId block = store.add_block(BlockInfo {});
+    ASSERT_NE(block, kInvalidBlockId);
+
+    Entry first;
+    first.key = make_exif_tag_key(store.arena(), "a", 1U);
+    ASSERT_NE(store.add_entry(first), kInvalidEntryId);
+
+    Entry second;
+    second.key = make_exif_tag_key(store.arena(), "b", 2U);
+    ASSERT_NE(store.add_entry(second), kInvalidEntryId);
+
+    Entry third;
+    third.key = make_exif_tag_key(store.arena(), "c", 3U);
+    EXPECT_EQ(store.add_entry(third), kInvalidEntryId);
+    EXPECT_TRUE(store.resource_limit_exceeded());
+    EXPECT_LE(store.arena().bytes().size(), 12U);
+}
+
 TEST(MetaStoreTest, SupportsDuplicateKeys)
 {
     MetaStore store;

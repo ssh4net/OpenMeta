@@ -1,11 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 
-if(NOT DEFINED METAREAD_BIN OR METAREAD_BIN STREQUAL "")
-  message(FATAL_ERROR "METAREAD_BIN is required")
-endif()
-if(NOT EXISTS "${METAREAD_BIN}")
-  message(FATAL_ERROR "metaread binary not found: ${METAREAD_BIN}")
-endif()
+foreach(_var IN ITEMS METAREAD_BIN METADUMP_BIN METATRANSFER_BIN
+                      METAVALIDATE_BIN)
+  if(NOT DEFINED ${_var} OR "${${_var}}" STREQUAL "")
+    message(FATAL_ERROR "${_var} is required")
+  endif()
+  if(NOT EXISTS "${${_var}}")
+    message(FATAL_ERROR "${_var} binary not found: ${${_var}}")
+  endif()
+endforeach()
 
 if(NOT DEFINED WORK_DIR OR WORK_DIR STREQUAL "")
   set(WORK_DIR "${CMAKE_CURRENT_BINARY_DIR}/_cli_metaread_safe_text_smoke")
@@ -46,4 +49,18 @@ if(NOT _out MATCHES "CORRUPTED_TEXT")
     "metaread output missing CORRUPTED_TEXT placeholder\nstdout:\n${_out}\nstderr:\n${_err}")
 endif()
 
-message(STATUS "metaread safe-text smoke gate passed")
+if(NOT WIN32)
+  execute_process(
+    COMMAND python3 -c
+      "import pathlib,subprocess,sys; d=pathlib.Path(r'''${WORK_DIR}'''); suffix=chr(27)+']52;c;Zm9v'+chr(7); p=d/('unsafe_'+suffix+'.jpg'); out=d/('unsafe_out_'+suffix+'.xmp'); p.write_bytes(bytes([255,216,255,217])); specs=[([r'''${METAREAD_BIN}''','--no-build-info',str(p)],0),([r'''${METADUMP_BIN}''','--no-build-info','--force','--out',str(out),str(p)],0),([r'''${METATRANSFER_BIN}''','--no-build-info','--output',str(p),str(p)],1),([r'''${METATRANSFER_BIN}''','--no-build-info','--load-transfer-artifact',str(p)],1),([r'''${METAVALIDATE_BIN}''','--no-build-info',str(p)],0)]; results=[(subprocess.run(cmd,capture_output=True),expected) for cmd,expected in specs]; sys.exit(0 if all(r.returncode==expected and bytes([27]) not in r.stdout+r.stderr and bytes([92,120,49,66]) in r.stdout+r.stderr for r,expected in results) else 1)"
+    RESULT_VARIABLE _rv_path
+    OUTPUT_VARIABLE _out_path
+    ERROR_VARIABLE _err_path
+  )
+  if(NOT _rv_path EQUAL 0)
+    message(FATAL_ERROR
+      "CLI terminal-path escaping failed (${_rv_path})\nstdout:\n${_out_path}\nstderr:\n${_err_path}")
+  endif()
+endif()
+
+message(STATUS "CLI safe-text smoke gate passed")

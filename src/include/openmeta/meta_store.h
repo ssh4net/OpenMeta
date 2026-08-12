@@ -145,6 +145,13 @@ public:
     /// Appends an entry and returns its id.
     EntryId add_entry(const Entry& entry);
 
+    /// Applies cumulative decode ceilings. Repeated calls retain the lowest
+    /// non-zero limits, including across nested decoder calls.
+    void constrain_resources(uint32_t max_entries,
+                             uint64_t max_arena_bytes) noexcept;
+    /// Returns true after a block, entry, or arena allocation was refused.
+    bool resource_limit_exceeded() const noexcept;
+
     ByteArena& arena() noexcept;
     const ByteArena& arena() const noexcept;
 
@@ -187,6 +194,8 @@ private:
     std::vector<KeySpan> key_spans_;
 
     bool finalized_ = false;
+    uint64_t max_entries_      = UINT32_MAX;
+    bool entry_limit_exceeded_ = false;
 };
 
 }  // namespace openmeta

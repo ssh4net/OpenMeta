@@ -2,6 +2,7 @@
 
 #include "cli_parse.h"
 #include "openmeta/build_info.h"
+#include "openmeta/console_format.h"
 #include "openmeta/mapped_file.h"
 #include "openmeta/preview_extract.h"
 #include "openmeta/resource_policy.h"
@@ -21,6 +22,13 @@
 
 namespace openmeta {
 namespace {
+
+    static std::string console_path(std::string_view path)
+    {
+        std::string escaped;
+        (void)append_console_escaped_ascii(path, 4096U, &escaped);
+        return escaped;
+    }
 
     static void usage(const char* argv0)
     {
@@ -116,6 +124,8 @@ namespace {
         case C2paVerifyStatus::VerificationFailed: return "verification_failed";
         case C2paVerifyStatus::Verified: return "verified";
         case C2paVerifyStatus::NotImplemented: return "not_implemented";
+        case C2paVerifyStatus::SignatureVerifiedOnly:
+            return "signature_verified_only";
         }
         return "unknown";
     }
@@ -794,11 +804,13 @@ main(int argc, char** argv)
         if (!path || !*path) {
             continue;
         }
+        const std::string display_path = console_path(path);
 
         MappedFile file;
         const MappedFileStatus st = file.open(path, max_file_bytes);
         if (st != MappedFileStatus::Ok) {
-            std::fprintf(stderr, "metadump: failed to read `%s`\n", path);
+            std::fprintf(stderr, "metadump: failed to read `%s`\n",
+                         display_path.c_str());
             exit_code = 1;
             continue;
         }
@@ -818,7 +830,8 @@ main(int argc, char** argv)
                 preview_scan);
 
             if (scan.status == PreviewScanStatus::Unsupported) {
-                std::printf("== %s\n  previews=none (unsupported)\n", path);
+                std::printf("== %s\n  previews=none (unsupported)\n",
+                            display_path.c_str());
                 continue;
             }
             if (scan.status == PreviewScanStatus::Malformed
@@ -826,7 +839,7 @@ main(int argc, char** argv)
                 std::fprintf(
                     stderr,
                     "metadump: preview scan failed for `%s` (status=%u)\n",
-                    path, static_cast<unsigned>(scan.status));
+                    display_path.c_str(), static_cast<unsigned>(scan.status));
                 exit_code = 1;
                 continue;
             }
@@ -834,7 +847,7 @@ main(int argc, char** argv)
             const uint32_t avail = (scan.written < previews.size())
                                        ? scan.written
                                        : static_cast<uint32_t>(previews.size());
-            std::printf("== %s\n", path);
+            std::printf("== %s\n", display_path.c_str());
             std::printf("  preview_scan=%u written=%u needed=%u\n",
                         static_cast<unsigned>(scan.status), scan.written,
                         scan.needed);
@@ -849,7 +862,8 @@ main(int argc, char** argv)
                 if (candidate.size > static_cast<uint64_t>(
                         std::numeric_limits<size_t>::max())) {
                     std::fprintf(stderr,
-                                 "metadump: preview too large in `%s`\n", path);
+                                 "metadump: preview too large in `%s`\n",
+                                 display_path.c_str());
                     exit_code = 1;
                     continue;
                 }
@@ -867,7 +881,8 @@ main(int argc, char** argv)
                     std::fprintf(
                         stderr,
                         "metadump: preview extract failed for `%s` (status=%u)\n",
-                        path, static_cast<unsigned>(extracted.status));
+                        display_path.c_str(),
+                        static_cast<unsigned>(extracted.status));
                     exit_code = 1;
                     continue;
                 }
@@ -881,10 +896,12 @@ main(int argc, char** argv)
                           : out_path;
 
                 if (!force_overwrite && file_exists(out_preview_path)) {
+                    const std::string display_out = console_path(
+                        out_preview_path);
                     std::fprintf(
                         stderr,
                         "metadump: refusing to overwrite `%s` (use --force)\n",
-                        out_preview_path.c_str());
+                        display_out.c_str());
                     exit_code = 1;
                     continue;
                 }
@@ -894,14 +911,17 @@ main(int argc, char** argv)
                         std::span<const std::byte>(out_preview.data(),
                                                    static_cast<size_t>(
                                                        extracted.written)))) {
+                    const std::string display_out = console_path(
+                        out_preview_path);
                     std::fprintf(stderr, "metadump: failed to write `%s`\n",
-                                 out_preview_path.c_str());
+                                 display_out.c_str());
                     exit_code = 1;
                     continue;
                 }
 
+                const std::string display_out = console_path(out_preview_path);
                 std::printf("  [%u] wrote=%s kind=%u bytes=%llu\n", pi,
-                            out_preview_path.c_str(),
+                            display_out.c_str(),
                             static_cast<unsigned>(candidate.kind),
                             static_cast<unsigned long long>(extracted.written));
                 exported += 1U;
@@ -916,11 +936,12 @@ main(int argc, char** argv)
         const std::string out = out_path.empty()
                                     ? default_out_path_for(path, out_dir)
                                     : out_path;
+        const std::string display_out = console_path(out);
 
         if (!force_overwrite && file_exists(out)) {
             std::fprintf(stderr,
                          "metadump: refusing to overwrite `%s` (use --force)\n",
-                         out.c_str());
+                         display_out.c_str());
             exit_code = 1;
             continue;
         }
@@ -994,7 +1015,7 @@ main(int argc, char** argv)
 
         if (dump_res.status != XmpDumpStatus::Ok) {
             std::fprintf(stderr, "metadump: dump failed for `%s` (status=%s)\n",
-                         path,
+                         display_path.c_str(),
                          (dump_res.status == XmpDumpStatus::LimitExceeded)
                              ? "limit_exceeded"
                              : "output_truncated");
@@ -1005,7 +1026,7 @@ main(int argc, char** argv)
         if (!write_file_bytes(out, std::span<const std::byte>(out_buf.data(),
                                                               out_buf.size()))) {
             std::fprintf(stderr, "metadump: failed to write `%s`\n",
-                         out.c_str());
+                         display_out.c_str());
             exit_code = 1;
             continue;
         }
@@ -1014,7 +1035,7 @@ main(int argc, char** argv)
             "wrote=%s format=%s bytes=%llu entries=%u c2pa_verify=%s "
             "c2pa_backend=%s c2pa_require_trusted_chain=%s "
             "c2pa_require_resolved_refs=%s\n",
-            out.c_str(),
+            display_out.c_str(),
             (format == XmpSidecarFormat::Portable) ? "portable" : "lossless",
             static_cast<unsigned long long>(dump_res.written),
             static_cast<unsigned>(dump_res.entries),

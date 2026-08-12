@@ -45,13 +45,37 @@ void
 ByteArena::clear() noexcept
 {
     buffer_.clear();
+    limit_exceeded_ = false;
 }
 
 
 void
 ByteArena::reserve(size_t size_bytes)
 {
+    if (size_bytes > max_size_bytes_) {
+        limit_exceeded_ = true;
+        return;
+    }
     buffer_.reserve(size_bytes);
+}
+
+
+void
+ByteArena::constrain_max_size(uint64_t max_size_bytes) noexcept
+{
+    if (max_size_bytes != 0U && max_size_bytes < max_size_bytes_) {
+        max_size_bytes_ = max_size_bytes;
+    }
+    if (buffer_.size() > max_size_bytes_) {
+        limit_exceeded_ = true;
+    }
+}
+
+
+bool
+ByteArena::limit_exceeded() const noexcept
+{
+    return limit_exceeded_;
 }
 
 
@@ -61,11 +85,14 @@ ByteArena::append(std::span<const std::byte> bytes)
     const size_t old_size = buffer_.size();
     if (old_size > static_cast<size_t>(UINT32_MAX)
         || bytes.size() > static_cast<size_t>(UINT32_MAX)) {
+        limit_exceeded_ = true;
         return ByteSpan {};
     }
     size_t new_size = 0;
     if (!checked_add_size(old_size, bytes.size(), &new_size)
-        || new_size > static_cast<size_t>(UINT32_MAX)) {
+        || new_size > static_cast<size_t>(UINT32_MAX)
+        || new_size > max_size_bytes_) {
+        limit_exceeded_ = true;
         return ByteSpan {};
     }
 
@@ -109,23 +136,24 @@ ByteArena::allocate(uint32_t size_bytes, uint32_t alignment)
 {
     const size_t old_size = buffer_.size();
     if (old_size > static_cast<size_t>(UINT32_MAX)) {
+        limit_exceeded_ = true;
         return ByteSpan {};
     }
     size_t start = 0;
     if (!align_up_size(old_size, alignment, &start)
         || start > static_cast<size_t>(UINT32_MAX)) {
+        limit_exceeded_ = true;
         return ByteSpan {};
     }
     size_t total_size = 0;
     if (!checked_add_size(start, static_cast<size_t>(size_bytes), &total_size)
-        || total_size > static_cast<size_t>(UINT32_MAX)) {
+        || total_size > static_cast<size_t>(UINT32_MAX)
+        || total_size > max_size_bytes_) {
+        limit_exceeded_ = true;
         return ByteSpan {};
     }
-    if (start > buffer_.size()) {
-        buffer_.resize(start, std::byte { 0 });
-    }
     const uint32_t offset = static_cast<uint32_t>(start);
-    buffer_.resize(total_size);
+    buffer_.resize(total_size, std::byte { 0 });
     return ByteSpan { offset, size_bytes };
 }
 

@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -26,6 +27,19 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#if defined(_WIN32)
+#    define WIN32_LEAN_AND_MEAN
+#    include <io.h>
+#    include <process.h>
+#    include <windows.h>
+#else
+#    include <cerrno>
+#    include <fcntl.h>
+#    include <sys/stat.h>
+#    include <sys/types.h>
+#    include <unistd.h>
+#endif
 
 #if defined(OPENMETA_HAS_ZLIB) && OPENMETA_HAS_ZLIB
 #    include <zlib.h>
@@ -2502,22 +2516,214 @@ namespace {
         return true;
     }
 
-    static bool write_file_bytes(const std::string& path,
-                                 std::span<const std::byte> bytes) noexcept
+    enum class AtomicWriteStatus : uint8_t {
+        Ok,
+        Exists,
+        UnsafeTarget,
+        IoError,
+    };
+
+    static std::string make_atomic_temp_path(const std::string& path,
+                                             uint64_t nonce)
+    {
+        std::string temp = path;
+        temp.append(".openmeta-tmp-");
+#if defined(_WIN32)
+        temp.append(std::to_string(static_cast<unsigned long>(_getpid())));
+#else
+        temp.append(std::to_string(static_cast<unsigned long>(::getpid())));
+#endif
+        temp.push_back('-');
+        temp.append(std::to_string(static_cast<unsigned long long>(nonce)));
+        return temp;
+    }
+
+    static AtomicWriteStatus
+    atomic_write_file_bytes(const std::string& path,
+                            std::span<const std::byte> bytes,
+                            bool overwrite) noexcept
     {
         if (path.empty()) {
-            return false;
+            return AtomicWriteStatus::IoError;
         }
-        std::FILE* f = std::fopen(path.c_str(), "wb");
-        if (!f) {
-            return false;
+
+        static std::atomic<uint64_t> next_nonce { 1U };
+        std::string temp_path;
+
+#if defined(_WIN32)
+        HANDLE temp = INVALID_HANDLE_VALUE;
+        for (uint32_t attempt = 0; attempt < 128U; ++attempt) {
+            temp_path = make_atomic_temp_path(
+                path, next_nonce.fetch_add(1U, std::memory_order_relaxed));
+            temp = CreateFileA(temp_path.c_str(), GENERIC_WRITE, 0, nullptr,
+                               CREATE_NEW,
+                               FILE_ATTRIBUTE_TEMPORARY
+                                   | FILE_FLAG_OPEN_REPARSE_POINT,
+                               nullptr);
+            if (temp != INVALID_HANDLE_VALUE) {
+                break;
+            }
+            if (GetLastError() != ERROR_FILE_EXISTS
+                && GetLastError() != ERROR_ALREADY_EXISTS) {
+                return AtomicWriteStatus::IoError;
+            }
         }
-        size_t written = 0U;
-        if (!bytes.empty()) {
-            written = std::fwrite(bytes.data(), 1, bytes.size(), f);
+        if (temp == INVALID_HANDLE_VALUE) {
+            return AtomicWriteStatus::IoError;
         }
-        std::fclose(f);
-        return written == bytes.size();
+
+        bool ok       = true;
+        size_t offset = 0;
+        while (offset < bytes.size()) {
+            const size_t remaining = bytes.size() - offset;
+            const DWORD chunk      = static_cast<DWORD>(
+                remaining > static_cast<size_t>(UINT32_MAX) ? UINT32_MAX
+                                                            : remaining);
+            DWORD written = 0;
+            if (!WriteFile(temp, bytes.data() + offset, chunk, &written, nullptr)
+                || written != chunk) {
+                ok = false;
+                break;
+            }
+            offset += written;
+        }
+        if (ok && !FlushFileBuffers(temp)) {
+            ok = false;
+        }
+        CloseHandle(temp);
+        if (!ok) {
+            DeleteFileA(temp_path.c_str());
+            return AtomicWriteStatus::IoError;
+        }
+
+        const DWORD attrs = GetFileAttributesA(path.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES) {
+            if (!overwrite) {
+                DeleteFileA(temp_path.c_str());
+                return AtomicWriteStatus::Exists;
+            }
+            if ((attrs
+                 & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
+                != 0U) {
+                DeleteFileA(temp_path.c_str());
+                return AtomicWriteStatus::UnsafeTarget;
+            }
+        }
+
+        const DWORD flags = MOVEFILE_WRITE_THROUGH
+                            | (overwrite ? MOVEFILE_REPLACE_EXISTING : 0U);
+        if (!MoveFileExA(temp_path.c_str(), path.c_str(), flags)) {
+            const DWORD error = GetLastError();
+            DeleteFileA(temp_path.c_str());
+            if (!overwrite
+                && (error == ERROR_FILE_EXISTS
+                    || error == ERROR_ALREADY_EXISTS)) {
+                return AtomicWriteStatus::Exists;
+            }
+            return AtomicWriteStatus::IoError;
+        }
+#else
+        int fd = -1;
+        for (uint32_t attempt = 0; attempt < 128U; ++attempt) {
+            temp_path = make_atomic_temp_path(
+                path, next_nonce.fetch_add(1U, std::memory_order_relaxed));
+            fd = ::open(temp_path.c_str(),
+                        O_WRONLY | O_CREAT | O_EXCL
+#    if defined(O_CLOEXEC)
+                            | O_CLOEXEC
+#    endif
+#    if defined(O_NOFOLLOW)
+                            | O_NOFOLLOW
+#    endif
+                        ,
+                        0666);
+            if (fd >= 0) {
+                break;
+            }
+            if (errno != EEXIST) {
+                return AtomicWriteStatus::IoError;
+            }
+        }
+        if (fd < 0) {
+            return AtomicWriteStatus::IoError;
+        }
+
+        struct stat opened {};
+        bool ok = ::fstat(fd, &opened) == 0 && S_ISREG(opened.st_mode)
+                  && opened.st_nlink == 1;
+        size_t offset = 0;
+        while (ok && offset < bytes.size()) {
+            const size_t remaining = bytes.size() - offset;
+            const size_t chunk     = remaining > static_cast<size_t>(
+                                     std::numeric_limits<ssize_t>::max())
+                                         ? static_cast<size_t>(
+                                           std::numeric_limits<ssize_t>::max())
+                                         : remaining;
+            const ssize_t written  = ::write(fd, bytes.data() + offset, chunk);
+            if (written <= 0) {
+                if (written < 0 && errno == EINTR) {
+                    continue;
+                }
+                ok = false;
+                break;
+            }
+            offset += static_cast<size_t>(written);
+        }
+        if (ok && ::fsync(fd) != 0) {
+            ok = false;
+        }
+
+        struct stat named {};
+        if (ok
+            && (::lstat(temp_path.c_str(), &named) != 0
+                || named.st_dev != opened.st_dev
+                || named.st_ino != opened.st_ino || !S_ISREG(named.st_mode))) {
+            ok = false;
+        }
+        if (!ok) {
+            ::close(fd);
+            ::unlink(temp_path.c_str());
+            return AtomicWriteStatus::IoError;
+        }
+
+        struct stat target {};
+        if (::lstat(path.c_str(), &target) == 0) {
+            if (!overwrite) {
+                ::close(fd);
+                ::unlink(temp_path.c_str());
+                return AtomicWriteStatus::Exists;
+            }
+            if (!S_ISREG(target.st_mode)) {
+                ::close(fd);
+                ::unlink(temp_path.c_str());
+                return AtomicWriteStatus::UnsafeTarget;
+            }
+        } else if (errno != ENOENT) {
+            ::close(fd);
+            ::unlink(temp_path.c_str());
+            return AtomicWriteStatus::IoError;
+        }
+
+        int publish_result = 0;
+        if (overwrite) {
+            publish_result = ::rename(temp_path.c_str(), path.c_str());
+        } else {
+            publish_result = ::link(temp_path.c_str(), path.c_str());
+            if (publish_result == 0) {
+                (void)::unlink(temp_path.c_str());
+            }
+        }
+        const int publish_errno = errno;
+        ::close(fd);
+        if (publish_result != 0) {
+            ::unlink(temp_path.c_str());
+            if (!overwrite && publish_errno == EEXIST) {
+                return AtomicWriteStatus::Exists;
+            }
+            return AtomicWriteStatus::IoError;
+        }
+#endif
+        return AtomicWriteStatus::Ok;
     }
 
     static bool find_existing_xmp_sidecar_path(const char* base_path,
@@ -31776,22 +31982,21 @@ persist_prepared_transfer_file_result(
             return out;
         }
 
-        if (!options.overwrite_output
-            && path_exists(options.output_path.c_str())) {
-            out.status         = TransferStatus::Unsupported;
-            out.output_status  = TransferStatus::Unsupported;
-            out.output_message = "output path exists";
-            out.message        = out.output_message;
-            return out;
-        }
-
         const std::span<const std::byte> output_bytes(
             prepared.execute.edited_output.data(),
             prepared.execute.edited_output.size());
-        if (!write_file_bytes(options.output_path, output_bytes)) {
+        const AtomicWriteStatus write_status
+            = atomic_write_file_bytes(options.output_path, output_bytes,
+                                      options.overwrite_output);
+        if (write_status != AtomicWriteStatus::Ok) {
             out.status         = TransferStatus::Unsupported;
             out.output_status  = TransferStatus::Unsupported;
-            out.output_message = "failed to write output bytes";
+            out.output_message = write_status == AtomicWriteStatus::Exists
+                                     ? "output path exists"
+                                 : write_status
+                                         == AtomicWriteStatus::UnsafeTarget
+                                     ? "output path is not a regular file"
+                                     : "failed to write output bytes";
             out.message        = out.output_message;
             return out;
         }
@@ -31818,17 +32023,21 @@ persist_prepared_transfer_file_result(
             out.xmp_sidecar_message = prepared.xmp_sidecar_message.empty()
                                           ? "no xmp sidecar output bytes"
                                           : prepared.xmp_sidecar_message;
-        } else if (!options.overwrite_xmp_sidecar
-                   && path_exists(out.xmp_sidecar_path.c_str())) {
-            out.xmp_sidecar_status  = TransferStatus::Unsupported;
-            out.xmp_sidecar_message = "xmp sidecar path exists";
         } else {
             const std::span<const std::byte> sidecar_bytes(
                 prepared.xmp_sidecar_output.data(),
                 prepared.xmp_sidecar_output.size());
-            if (!write_file_bytes(out.xmp_sidecar_path, sidecar_bytes)) {
+            const AtomicWriteStatus write_status
+                = atomic_write_file_bytes(out.xmp_sidecar_path, sidecar_bytes,
+                                          options.overwrite_xmp_sidecar);
+            if (write_status != AtomicWriteStatus::Ok) {
                 out.xmp_sidecar_status  = TransferStatus::Unsupported;
-                out.xmp_sidecar_message = "failed to write xmp sidecar bytes";
+                out.xmp_sidecar_message
+                    = write_status == AtomicWriteStatus::Exists
+                          ? "xmp sidecar path exists"
+                      : write_status == AtomicWriteStatus::UnsafeTarget
+                          ? "xmp sidecar path is not a regular file"
+                          : "failed to write xmp sidecar bytes";
             } else {
                 out.xmp_sidecar_status = TransferStatus::Ok;
                 out.xmp_sidecar_bytes  = static_cast<uint64_t>(

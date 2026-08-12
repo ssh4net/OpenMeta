@@ -19,6 +19,9 @@ file(MAKE_DIRECTORY "${WORK_DIR}")
 execute_process(
   COMMAND ${CMAKE_COMMAND}
     "-DMETAREAD_BIN=${METAREAD_BIN}"
+    "-DMETADUMP_BIN=${METADUMP_BIN}"
+    "-DMETATRANSFER_BIN=${METATRANSFER_BIN}"
+    "-DMETAVALIDATE_BIN=${METAVALIDATE_BIN}"
     "-DWORK_DIR=${WORK_DIR}/cli_metaread_safe_text_smoke"
     -P "${CMAKE_CURRENT_LIST_DIR}/cli_metaread_safe_text_smoke_test.cmake"
   RESULT_VARIABLE _rv_metaread

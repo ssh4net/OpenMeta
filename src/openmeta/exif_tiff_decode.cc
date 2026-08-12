@@ -4330,6 +4330,13 @@ decode_exif_tiff(std::span<const std::byte> tiff_bytes, MetaStore& store,
     sink.out = out_ifds.data();
     sink.cap = static_cast<uint32_t>(out_ifds.size());
 
+    store.constrain_resources(options.limits.max_total_entries,
+                              options.limits.max_arena_bytes);
+    if (store.resource_limit_exceeded()) {
+        mark_limit_exceeded(&sink.result, ExifLimitReason::MaxArenaBytes, 0, 0);
+        return sink.result;
+    }
+
     if (tiff_bytes.size() < 8) {
         sink.result.status = ExifDecodeStatus::Malformed;
         return sink.result;
@@ -4712,7 +4719,14 @@ decode_exif_tiff(std::span<const std::byte> tiff_bytes, MetaStore& store,
             }
 
             maybe_mark_contextual_name(ifd_name, tag, store, &entry);
-            (void)store.add_entry(entry);
+            if (store.add_entry(entry) == kInvalidEntryId) {
+                mark_limit_exceeded(&sink.result,
+                                    store.arena().limit_exceeded()
+                                        ? ExifLimitReason::MaxArenaBytes
+                                        : ExifLimitReason::MaxTotalEntries,
+                                    task.offset, tag);
+                continue;
+            }
             sink.result.entries_decoded += 1;
 
             // PrintIM (0xC4A5) is an embedded binary block that ExifTool
@@ -4723,10 +4737,15 @@ decode_exif_tiff(std::span<const std::byte> tiff_bytes, MetaStore& store,
                 PrintImDecodeLimits plim;
                 plim.max_entries = options.limits.max_entries_per_ifd;
                 plim.max_bytes   = options.limits.max_value_bytes;
-                (void)decode_printim(
+                const PrintImDecodeResult printim = decode_printim(
                     tiff_bytes.subspan(static_cast<size_t>(value_off),
                                        static_cast<size_t>(value_bytes)),
                     store, plim);
+                if (printim.status == PrintImDecodeStatus::LimitExceeded) {
+                    mark_limit_exceeded(&sink.result,
+                                        ExifLimitReason::MaxTotalEntries,
+                                        task.offset, tag);
+                }
             }
 
             // DNGPrivateData (0xC634) may embed a vendor MakerNote block.
@@ -5103,6 +5122,14 @@ decode_exif_tiff(std::span<const std::byte> tiff_bytes, MetaStore& store,
 
     maybe_decode_nikon_nefinfo_blocks(store, options, &sink.result);
     exif_internal::decode_nikon_preview_aliases(store, options, &sink.result);
+
+    if (store.resource_limit_exceeded()) {
+        mark_limit_exceeded(&sink.result,
+                            store.arena().limit_exceeded()
+                                ? ExifLimitReason::MaxArenaBytes
+                                : ExifLimitReason::MaxTotalEntries,
+                            0, 0);
+    }
 
     return sink.result;
 }

@@ -327,16 +327,14 @@ What this means in practice:
   information
 - the current verification result must not be used as an asset-authenticity or
   trust gate: it does not establish the manifest's hard binding to the complete
-  asset, certificate-chain validation is not reliably bound to the signature
-  key, and explicit verification can currently fail open at the CLI layer
+  asset; cryptographic signature success is reported as
+  `signature_verified_only`
 - `verify_require_trusted_chain` and
-  `--c2pa-verify-require-trusted-chain` exercise draft diagnostics only; they
-  do not make the current result suitable for security decisions
+  `--c2pa-verify-require-trusted-chain` additionally require a trusted chain
+  bound to the signature key, but do not establish asset binding
 - OpenMeta does not claim full C2PA manifest semantics, asset binding, or policy
   validation
 
-These limitations are tracked as `OM-SEC-01`, `OM-SEC-02`, and `OM-SEC-09` in
-the [2026-08-12 security review](https://github.com/ssh4net/OpenMeta/blob/main/code_review_20260812.md).
 Structural JUMBF and C2PA metadata decode remains available independently of
 the optional verification scaffold.
 

@@ -780,6 +780,7 @@ namespace {
         case C2paVerifyStatus::DisabledByBuild: return 50U;
         case C2paVerifyStatus::NoSignatures: return 40U;
         case C2paVerifyStatus::NotImplemented: return 30U;
+        case C2paVerifyStatus::SignatureVerifiedOnly: return 25U;
         case C2paVerifyStatus::Verified: return 20U;
         case C2paVerifyStatus::NotRequested: return 0U;
         }
@@ -1032,6 +1033,16 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
                  const SimpleMetaDecodeOptions& options) noexcept
 {
     SimpleMetaResult result;
+    store.constrain_resources(options.max_total_entries,
+                              options.max_arena_bytes);
+    if (store.resource_limit_exceeded()) {
+        result.exif.status       = ExifDecodeStatus::LimitExceeded;
+        result.exif.limit_reason = ExifLimitReason::MaxArenaBytes;
+        result.exr.status        = ExrDecodeStatus::LimitExceeded;
+        result.jumbf.status      = JumbfDecodeStatus::LimitExceeded;
+        result.xmp.status        = XmpDecodeStatus::LimitExceeded;
+        return result;
+    }
     result.scan            = scan_auto(file_bytes, out_blocks);
     result.payload.status  = PayloadStatus::Ok;
     result.payload.written = 0;
@@ -1627,6 +1638,14 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
     }
 
     exr = decode_exr_header(file_bytes, store, EntryFlags::None, options.exr);
+
+    if (store.resource_limit_exceeded()) {
+        exif.status       = ExifDecodeStatus::LimitExceeded;
+        exif.limit_reason = ExifLimitReason::MaxArenaBytes;
+        exr.status        = ExrDecodeStatus::LimitExceeded;
+        jumbf.status      = JumbfDecodeStatus::LimitExceeded;
+        xmp.status        = XmpDecodeStatus::LimitExceeded;
+    }
 
     // If EXR decode succeeded, preserve "unsupported" EXIF/XMP statuses: EXR
     // metadata is a separate key space and may be the only metadata in file.

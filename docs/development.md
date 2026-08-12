@@ -184,10 +184,9 @@ dependencies let OpenMeta decode more content:
   (`none|auto|native|openssl`) and draft verification flow. Native backend
   availability is platform-based (Windows/macOS), while OpenSSL availability
   is discovered via `find_package(OpenSSL)` when needed. Current results are
-  diagnostic only: they do not establish asset hard binding, and certificate
-  trust is not reliably bound to the signature key. Do not use this scaffold as
-  an authenticity or trust gate. See `OM-SEC-01`, `OM-SEC-02`, and `OM-SEC-09`
-  in [the current security review](https://github.com/ssh4net/OpenMeta/blob/main/code_review_20260812.md).
+  diagnostic only: cryptographic signature success is reported as
+  `signature_verified_only` and does not establish asset hard binding. Do not
+  use this scaffold as an authenticity or trust gate.
 
 If you link against dependencies that were built with `libc++` (common when
 using Clang), configure OpenMeta with:

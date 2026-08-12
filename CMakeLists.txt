@@ -27,7 +27,7 @@ project(OpenMeta VERSION "${OPENMETA_VERSION}" LANGUAGES CXX)
 
 option(OPENMETA_BUILD_STATIC "Build libopenmeta.a" ON)
 option(OPENMETA_BUILD_SHARED "Build libopenmeta.so/.dylib/.dll" ON)
-set(OPENMETA_ABI_VERSION "1" CACHE STRING
+set(OPENMETA_ABI_VERSION "2" CACHE STRING
   "OpenMeta shared-library ABI version; increase only for ABI breaks")
 if(NOT OPENMETA_ABI_VERSION MATCHES "^[1-9][0-9]*$")
   message(FATAL_ERROR
@@ -652,12 +652,15 @@ if(OPENMETA_BUILD_TOOLS)
 
   if(TARGET metaread)
     add_custom_target(openmeta_gate_metaread_safe_text_smoke
-      DEPENDS metaread
+      DEPENDS metaread metadump metatransfer metavalidate
       COMMAND ${CMAKE_COMMAND}
         "-DMETAREAD_BIN=$<TARGET_FILE:metaread>"
+        "-DMETADUMP_BIN=$<TARGET_FILE:metadump>"
+        "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
+        "-DMETAVALIDATE_BIN=$<TARGET_FILE:metavalidate>"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_cli_metaread_safe_text_smoke"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_metaread_safe_text_smoke_test.cmake"
-      COMMENT "Running metaread safe-text smoke gate"
+      COMMENT "Running CLI safe-text smoke gate"
       VERBATIM
     )
 
@@ -1175,6 +1178,17 @@ if(OPENMETA_BUILD_TESTS)
   endif()
 
   if(TARGET metaread)
+    add_test(
+      NAME openmeta_cli_safe_text_smoke
+      COMMAND ${CMAKE_COMMAND}
+        "-DMETAREAD_BIN=$<TARGET_FILE:metaread>"
+        "-DMETADUMP_BIN=$<TARGET_FILE:metadump>"
+        "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
+        "-DMETAVALIDATE_BIN=$<TARGET_FILE:metavalidate>"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_cli_metaread_safe_text_smoke"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_metaread_safe_text_smoke_test.cmake"
+    )
+
     add_test(
       NAME openmeta_cli_metaread_photoshop_irb_smoke
       COMMAND ${CMAKE_COMMAND}

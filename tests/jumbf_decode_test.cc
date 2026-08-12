@@ -800,6 +800,38 @@ namespace {
         return make_jumbf_payload_with_cbor(cbor_payload);
     }
 
+
+    static std::vector<std::byte> make_c2pa_manifest_with_key_and_certificate(
+        std::string_view algorithm, std::span<const std::byte> signing_input,
+        std::span<const std::byte> signature,
+        std::span<const std::byte> public_key_der,
+        std::span<const std::byte> certificate_der)
+    {
+        std::vector<std::byte> cbor_payload;
+        append_cbor_map(&cbor_payload, 1U);
+        append_cbor_text(&cbor_payload, "manifests");
+        append_cbor_map(&cbor_payload, 1U);
+        append_cbor_text(&cbor_payload, "active_manifest");
+        append_cbor_map(&cbor_payload, 1U);
+        append_cbor_text(&cbor_payload, "claims");
+        append_cbor_array(&cbor_payload, 1U);
+        append_cbor_map(&cbor_payload, 1U);
+        append_cbor_text(&cbor_payload, "signatures");
+        append_cbor_array(&cbor_payload, 1U);
+        append_cbor_map(&cbor_payload, 5U);
+        append_cbor_text(&cbor_payload, "alg");
+        append_cbor_text(&cbor_payload, algorithm);
+        append_cbor_text(&cbor_payload, "signing_input");
+        append_cbor_bytes(&cbor_payload, signing_input);
+        append_cbor_text(&cbor_payload, "signature");
+        append_cbor_bytes(&cbor_payload, signature);
+        append_cbor_text(&cbor_payload, "public_key_der");
+        append_cbor_bytes(&cbor_payload, public_key_der);
+        append_cbor_text(&cbor_payload, "certificate_der");
+        append_cbor_bytes(&cbor_payload, certificate_der);
+        return make_jumbf_payload_with_cbor(cbor_payload);
+    }
+
 }  // namespace
 
 TEST(JumbfDecode, DecodesStructureAndCborMap)
@@ -5896,7 +5928,7 @@ TEST(JumbfDecode, C2paVerifyScaffoldInvalidSignatureShape)
 #endif
 }
 
-TEST(JumbfDecode, C2paVerifyScaffoldVerifiedEs256)
+TEST(JumbfDecode, C2paVerifyScaffoldReportsSignatureOnlyEs256)
 {
     const std::array<std::byte, 3U> message
         = { std::byte { 'a' }, std::byte { 'b' }, std::byte { 'c' } };
@@ -5924,7 +5956,8 @@ TEST(JumbfDecode, C2paVerifyScaffoldVerifiedEs256)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_NE(result.verify_status, C2paVerifyStatus::Verified);
     EXPECT_EQ(result.verify_backend_selected, C2paVerifyBackend::OpenSsl);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
@@ -5992,7 +6025,7 @@ TEST(JumbfDecode, C2paVerifySkipsIncompleteSignatureCandidate)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -6062,7 +6095,7 @@ TEST(JumbfDecode, C2paVerifyMultipleSignaturesSelectsVerifiedCandidate)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -6101,7 +6134,7 @@ TEST(JumbfDecode, C2paVerifyStrictChainRequiresTrustedCertificate)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
     store.finalize();
     const std::string chain_reason
         = read_jumbf_field_text(store, "c2pa.verify.chain_reason");
@@ -6168,11 +6201,14 @@ TEST(JumbfDecode, ValidateFileC2paStrictChainRequiresTrustedCertificate)
     ASSERT_EQ(loose_result.status, ValidateStatus::Ok);
     EXPECT_EQ(loose_result.read.jumbf.status, JumbfDecodeStatus::Ok);
     EXPECT_EQ(loose_result.read.jumbf.verify_status,
-              C2paVerifyStatus::Verified);
-    EXPECT_FALSE(loose_result.failed);
+              C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_TRUE(loose_result.failed);
+    EXPECT_GE(loose_result.error_count, 1U);
     EXPECT_GE(loose_result.warning_count, 1U);
     EXPECT_TRUE(validate_result_has_issue(loose_result, "c2pa",
-                                          "untrusted_chain"));
+                                          "signature_verified_only"));
+    EXPECT_TRUE(
+        validate_result_has_issue(loose_result, "c2pa", "untrusted_chain"));
 
     ValidateOptions warnings_as_errors_options = options;
     warnings_as_errors_options.warnings_as_errors = true;
@@ -6182,9 +6218,9 @@ TEST(JumbfDecode, ValidateFileC2paStrictChainRequiresTrustedCertificate)
     EXPECT_EQ(warnings_as_errors_result.read.jumbf.status,
               JumbfDecodeStatus::Ok);
     EXPECT_EQ(warnings_as_errors_result.read.jumbf.verify_status,
-              C2paVerifyStatus::Verified);
+              C2paVerifyStatus::SignatureVerifiedOnly);
     EXPECT_TRUE(warnings_as_errors_result.failed);
-    EXPECT_EQ(warnings_as_errors_result.error_count, 0U);
+    EXPECT_GE(warnings_as_errors_result.error_count, 1U);
     EXPECT_TRUE(validate_result_has_issue(warnings_as_errors_result, "c2pa",
                                           "untrusted_chain"));
 
@@ -6199,8 +6235,68 @@ TEST(JumbfDecode, ValidateFileC2paStrictChainRequiresTrustedCertificate)
                 || strict_result.read.jumbf.verify_status
                        == C2paVerifyStatus::BackendUnavailable);
     EXPECT_NE(strict_result.read.jumbf.verify_status,
-              C2paVerifyStatus::Verified);
+              C2paVerifyStatus::SignatureVerifiedOnly);
     EXPECT_GT(strict_result.error_count + strict_result.warning_count, 0U);
+#else
+    GTEST_SKIP() << "OpenSSL C2PA verification is unavailable";
+#endif
+}
+
+
+TEST(JumbfDecode, C2paCertificateKeyOverridesMismatchedIndependentKey)
+{
+#if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
+    const std::array<std::byte, 3U> message
+        = { std::byte { 'a' }, std::byte { 'b' }, std::byte { 'c' } };
+
+    EVP_PKEY* signing_key = nullptr;
+    EVP_PKEY* cert_key    = nullptr;
+    ASSERT_TRUE(make_ec_p256_keypair(&signing_key));
+    ASSERT_TRUE(make_ec_p256_keypair(&cert_key));
+
+    const std::vector<std::byte> signing_public_key = public_key_der_from_key(
+        signing_key);
+    const std::vector<std::byte> matching_certificate
+        = self_signed_cert_der_from_key(signing_key);
+    const std::vector<std::byte> mismatched_certificate
+        = self_signed_cert_der_from_key(cert_key);
+    const std::vector<std::byte> signature = ecdsa_sign_sha256(signing_key,
+                                                               message);
+    EVP_PKEY_free(signing_key);
+    EVP_PKEY_free(cert_key);
+
+    ASSERT_FALSE(signing_public_key.empty());
+    ASSERT_FALSE(matching_certificate.empty());
+    ASSERT_FALSE(mismatched_certificate.empty());
+    ASSERT_FALSE(signature.empty());
+
+    JumbfDecodeOptions options;
+    options.verify_c2pa    = true;
+    options.verify_backend = C2paVerifyBackend::OpenSsl;
+
+    MetaStore matching_store;
+    const std::vector<std::byte> matching_payload
+        = make_c2pa_manifest_with_key_and_certificate("es256", message,
+                                                      signature,
+                                                      signing_public_key,
+                                                      matching_certificate);
+    const JumbfDecodeResult matching_result
+        = decode_jumbf_payload(matching_payload, matching_store,
+                               EntryFlags::None, options);
+    EXPECT_EQ(matching_result.verify_status,
+              C2paVerifyStatus::SignatureVerifiedOnly);
+
+    MetaStore mismatched_store;
+    const std::vector<std::byte> mismatched_payload
+        = make_c2pa_manifest_with_key_and_certificate("es256", message,
+                                                      signature,
+                                                      signing_public_key,
+                                                      mismatched_certificate);
+    const JumbfDecodeResult mismatched_result
+        = decode_jumbf_payload(mismatched_payload, mismatched_store,
+                               EntryFlags::None, options);
+    EXPECT_EQ(mismatched_result.verify_status,
+              C2paVerifyStatus::VerificationFailed);
 #else
     GTEST_SKIP() << "OpenSSL C2PA verification is unavailable";
 #endif
@@ -6623,7 +6719,7 @@ TEST(JumbfDecode, C2paVerifyCoseSign1ArrayEs256)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
     store.finalize();
     EXPECT_EQ(read_jumbf_field_text(store, "c2pa.verify.chain_reason"),
               "no_certificate");
@@ -6697,7 +6793,7 @@ TEST(JumbfDecode, C2paVerifyCoseSign1BytesEs256)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
     store.finalize();
     EXPECT_EQ(read_jumbf_field_text(store, "c2pa.verify.chain_reason"),
               "no_certificate");
@@ -6938,7 +7034,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadFromClaimBytes)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -7081,7 +7177,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadFromNestedClaimPrefix)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -7169,7 +7265,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadFromJumbfClaimBox)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -7382,7 +7478,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadFromCrossManifestClaim)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -7479,7 +7575,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadFromClaimReferenceIndex)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -7576,7 +7672,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadFromClaimReferenceScalarIndex)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -7675,7 +7771,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadFromClaimReferenceArrayElements)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -7803,7 +7899,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadConflictingReferences)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -8344,7 +8440,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadPercentEncodedClaimReference)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -8472,7 +8568,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadPercentEncodedJumbfLabel)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -8572,7 +8668,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadQueryStyleClaimIndexReference)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -8722,10 +8818,10 @@ TEST(JumbfDecode,
         = read_jumbf_field_text(store2, "c2pa.verify.chain_reason");
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result0.verify_status, C2paVerifyStatus::Verified);
-    EXPECT_EQ(result1.verify_status, C2paVerifyStatus::Verified);
-    EXPECT_EQ(result2.verify_status, C2paVerifyStatus::Verified);
-    EXPECT_EQ(status0, "verified");
+    EXPECT_EQ(result0.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(result1.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(result2.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(status0, "signature_verified_only");
     EXPECT_EQ(status1, status0);
     EXPECT_EQ(status2, status0);
     EXPECT_EQ(reason1, reason0);
@@ -8858,10 +8954,10 @@ TEST(JumbfDecode,
     const C2paVerifyStatus v2 = decode_once(&s2, &r2);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(v0, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v1, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v2, C2paVerifyStatus::Verified);
-    EXPECT_EQ(s0, "verified");
+    EXPECT_EQ(v0, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v1, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v2, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(s0, "signature_verified_only");
     EXPECT_EQ(s1, s0);
     EXPECT_EQ(s2, s0);
     EXPECT_EQ(r1, r0);
@@ -9087,7 +9183,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadNestedReferenceMapQueryLabelUri)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -9183,7 +9279,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadNestedReferenceMapLinkField)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -9343,10 +9439,10 @@ TEST(JumbfDecode,
     const C2paVerifyStatus v2 = decode_once(&s2, &r2);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(v0, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v1, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v2, C2paVerifyStatus::Verified);
-    EXPECT_EQ(s0, "verified");
+    EXPECT_EQ(v0, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v1, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v2, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(s0, "signature_verified_only");
     EXPECT_EQ(s1, s0);
     EXPECT_EQ(s2, s0);
     EXPECT_EQ(r1, r0);
@@ -9490,7 +9586,7 @@ TEST(JumbfDecode,
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -9629,10 +9725,10 @@ TEST(JumbfDecode,
     const C2paVerifyStatus v2 = decode_once(&s2, &r2);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(v0, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v1, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v2, C2paVerifyStatus::Verified);
-    EXPECT_EQ(s0, "verified");
+    EXPECT_EQ(v0, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v1, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v2, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(s0, "signature_verified_only");
     EXPECT_EQ(s1, s0);
     EXPECT_EQ(s2, s0);
     EXPECT_EQ(r1, r0);
@@ -9837,7 +9933,7 @@ TEST(JumbfDecode,
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -9966,7 +10062,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadFromReferenceMapEntries)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -10066,7 +10162,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadFromReferenceMapClaimsArray)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -10167,7 +10263,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadFromReferenceMapIndexAndUriKeys)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -10288,7 +10384,7 @@ TEST(JumbfDecode,
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else
@@ -10490,10 +10586,10 @@ TEST(JumbfDecode,
     const C2paVerifyStatus v2 = decode_once(&s2, &r2);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(v0, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v1, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v2, C2paVerifyStatus::Verified);
-    EXPECT_EQ(s0, "verified");
+    EXPECT_EQ(v0, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v1, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v2, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(s0, "signature_verified_only");
     EXPECT_EQ(s1, s0);
     EXPECT_EQ(s2, s0);
     EXPECT_EQ(r1, r0);
@@ -10708,10 +10804,10 @@ TEST(JumbfDecode,
     const C2paVerifyStatus v2 = decode_once(&s2, &r2);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(v0, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v1, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v2, C2paVerifyStatus::Verified);
-    EXPECT_EQ(s0, "verified");
+    EXPECT_EQ(v0, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v1, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v2, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(s0, "signature_verified_only");
     EXPECT_EQ(s1, s0);
     EXPECT_EQ(s2, s0);
     EXPECT_EQ(r1, r0);
@@ -11054,10 +11150,10 @@ TEST(JumbfDecode,
     const C2paVerifyStatus v2 = decode_once(&s2, &r2);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(v0, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v1, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v2, C2paVerifyStatus::Verified);
-    EXPECT_EQ(s0, "verified");
+    EXPECT_EQ(v0, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v1, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v2, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(s0, "signature_verified_only");
     EXPECT_EQ(s1, s0);
     EXPECT_EQ(s2, s0);
     EXPECT_EQ(r1, r0);
@@ -11392,10 +11488,10 @@ TEST(JumbfDecode,
     const C2paVerifyStatus v2 = decode_once(&s2, &r2);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(v0, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v1, C2paVerifyStatus::Verified);
-    EXPECT_EQ(v2, C2paVerifyStatus::Verified);
-    EXPECT_EQ(s0, "verified");
+    EXPECT_EQ(v0, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v1, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(v2, C2paVerifyStatus::SignatureVerifiedOnly);
+    EXPECT_EQ(s0, "signature_verified_only");
     EXPECT_EQ(s1, s0);
     EXPECT_EQ(s2, s0);
     EXPECT_EQ(r1, r0);
@@ -11668,7 +11764,7 @@ TEST(JumbfDecode, C2paVerifyCoseDetachedPayloadMultiClaimMultiSignatureLayout)
     EXPECT_EQ(result.status, JumbfDecodeStatus::Ok);
 
 #if OPENMETA_ENABLE_C2PA_VERIFY && OPENMETA_C2PA_VERIFY_OPENSSL_AVAILABLE
-    EXPECT_EQ(result.verify_status, C2paVerifyStatus::Verified);
+    EXPECT_EQ(result.verify_status, C2paVerifyStatus::SignatureVerifiedOnly);
 #elif OPENMETA_ENABLE_C2PA_VERIFY
     EXPECT_EQ(result.verify_status, C2paVerifyStatus::BackendUnavailable);
 #else

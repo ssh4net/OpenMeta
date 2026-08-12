@@ -22,6 +22,11 @@
 #include <utility>
 #include <vector>
 
+#if !defined(_WIN32)
+#    include <sys/stat.h>
+#    include <unistd.h>
+#endif
+
 #if defined(OPENMETA_HAS_BROTLI) && OPENMETA_HAS_BROTLI \
     && defined(OPENMETA_HAS_BROTLI_ENCODER) && OPENMETA_HAS_BROTLI_ENCODER
 #    include <brotli/encode.h>
@@ -34301,6 +34306,136 @@ TEST(MetadataTransferApi,
                                           "CreatorTool"),
                              "OpenMeta Transfer Source"));
 }
+
+
+#if !defined(_WIN32)
+TEST(MetadataTransferApi,
+     PersistPreparedTransferRejectsDanglingOutputSymlinkWithoutFollowingIt)
+{
+    const std::string output_path = unique_temp_path(".jpg");
+    const std::string target_path = unique_temp_path(".target");
+    ASSERT_EQ(::symlink(target_path.c_str(), output_path.c_str()), 0);
+
+    openmeta::ExecutePreparedTransferFileResult prepared;
+    prepared.execute.edited_output = { std::byte { 0x01 }, std::byte { 0x02 } };
+    openmeta::PersistPreparedTransferFileOptions options;
+    options.output_path      = output_path;
+    options.overwrite_output = false;
+    const openmeta::PersistPreparedTransferFileResult result
+        = openmeta::persist_prepared_transfer_file_result(prepared, options);
+
+    struct stat target {};
+    EXPECT_NE(result.status, openmeta::TransferStatus::Ok);
+    EXPECT_NE(::lstat(output_path.c_str(), &target), -1);
+    EXPECT_TRUE(S_ISLNK(target.st_mode));
+    EXPECT_NE(::stat(target_path.c_str(), &target), 0);
+    std::remove(output_path.c_str());
+}
+
+
+TEST(MetadataTransferApi,
+     PersistPreparedTransferRejectsDanglingSidecarSymlinkWithoutFollowingIt)
+{
+    const std::string output_path  = unique_temp_path(".jpg");
+    const std::string sidecar_path = unique_temp_path(".xmp");
+    const std::string target_path  = unique_temp_path(".target");
+    ASSERT_EQ(::symlink(target_path.c_str(), sidecar_path.c_str()), 0);
+
+    openmeta::ExecutePreparedTransferFileResult prepared;
+    prepared.xmp_sidecar_requested = true;
+    prepared.xmp_sidecar_status    = openmeta::TransferStatus::Ok;
+    prepared.xmp_sidecar_path      = sidecar_path;
+    prepared.xmp_sidecar_output    = { std::byte { '<' }, std::byte { '/' } };
+    openmeta::PersistPreparedTransferFileOptions options;
+    options.output_path           = output_path;
+    options.write_output          = false;
+    options.overwrite_xmp_sidecar = false;
+    const openmeta::PersistPreparedTransferFileResult result
+        = openmeta::persist_prepared_transfer_file_result(prepared, options);
+
+    struct stat target {};
+    EXPECT_NE(result.status, openmeta::TransferStatus::Ok);
+    EXPECT_NE(::lstat(sidecar_path.c_str(), &target), -1);
+    EXPECT_TRUE(S_ISLNK(target.st_mode));
+    EXPECT_NE(::stat(target_path.c_str(), &target), 0);
+    std::remove(sidecar_path.c_str());
+}
+
+
+TEST(MetadataTransferApi, PersistPreparedTransferRejectsExistingHardLink)
+{
+    const std::string target_path           = unique_temp_path(".target");
+    const std::string output_path           = unique_temp_path(".jpg");
+    const std::array<std::byte, 2> original = { std::byte { 0xAA },
+                                                std::byte { 0xBB } };
+    ASSERT_TRUE(write_bytes_file(target_path, original));
+    ASSERT_EQ(::link(target_path.c_str(), output_path.c_str()), 0);
+
+    openmeta::ExecutePreparedTransferFileResult prepared;
+    prepared.execute.edited_output = { std::byte { 0x01 } };
+    openmeta::PersistPreparedTransferFileOptions options;
+    options.output_path = output_path;
+    const openmeta::PersistPreparedTransferFileResult result
+        = openmeta::persist_prepared_transfer_file_result(prepared, options);
+
+    std::vector<std::byte> after;
+    ASSERT_TRUE(read_bytes_file(target_path, &after));
+    EXPECT_NE(result.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(after, std::vector<std::byte>(original.begin(), original.end()));
+    std::remove(output_path.c_str());
+    std::remove(target_path.c_str());
+}
+
+
+TEST(MetadataTransferApi,
+     PersistPreparedTransferRejectsExistingSymlinkAndPreservesTarget)
+{
+    const std::string target_path           = unique_temp_path(".target");
+    const std::string output_path           = unique_temp_path(".jpg");
+    const std::array<std::byte, 2> original = { std::byte { 0xAA },
+                                                std::byte { 0xBB } };
+    ASSERT_TRUE(write_bytes_file(target_path, original));
+    ASSERT_EQ(::symlink(target_path.c_str(), output_path.c_str()), 0);
+
+    openmeta::ExecutePreparedTransferFileResult prepared;
+    prepared.execute.edited_output = { std::byte { 0x01 } };
+    openmeta::PersistPreparedTransferFileOptions options;
+    options.output_path = output_path;
+    const openmeta::PersistPreparedTransferFileResult result
+        = openmeta::persist_prepared_transfer_file_result(prepared, options);
+
+    std::vector<std::byte> after;
+    struct stat output {};
+    ASSERT_TRUE(read_bytes_file(target_path, &after));
+    EXPECT_NE(result.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(after, std::vector<std::byte>(original.begin(), original.end()));
+    ASSERT_EQ(::lstat(output_path.c_str(), &output), 0);
+    EXPECT_TRUE(S_ISLNK(output.st_mode));
+    std::remove(output_path.c_str());
+    std::remove(target_path.c_str());
+}
+
+
+TEST(MetadataTransferApi,
+     PersistPreparedTransferRejectsNonRegularOutputDestination)
+{
+    const std::string output_path = unique_temp_path(".dir");
+    ASSERT_EQ(::mkdir(output_path.c_str(), 0700), 0);
+
+    openmeta::ExecutePreparedTransferFileResult prepared;
+    prepared.execute.edited_output = { std::byte { 0x01 } };
+    openmeta::PersistPreparedTransferFileOptions options;
+    options.output_path = output_path;
+    const openmeta::PersistPreparedTransferFileResult result
+        = openmeta::persist_prepared_transfer_file_result(prepared, options);
+
+    struct stat output {};
+    EXPECT_NE(result.status, openmeta::TransferStatus::Ok);
+    ASSERT_EQ(::lstat(output_path.c_str(), &output), 0);
+    EXPECT_TRUE(S_ISDIR(output.st_mode));
+    EXPECT_EQ(::rmdir(output_path.c_str()), 0);
+}
+#endif
 
 TEST(MetadataTransferApi,
      PersistPreparedTransferFileResultRemovesDestinationSidecar)
