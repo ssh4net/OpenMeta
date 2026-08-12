@@ -4,6 +4,13 @@ This page tracks the public read-path work needed to move OpenMeta closer to
 ExifTool-level camera RAW coverage. It is about decoding and interpretation,
 not writer policy.
 
+Here, camera RAW support means metadata carrier discovery and metadata
+interpretation. OpenMeta does not decode compressed sensor samples, demosaic or
+render RAW pixels, or provide a general native camera RAW writer. A strong
+shared TIFF/EXIF lane can still have partial vendor-private or model-specific
+interpretation, and preserving a raw MakerNote block is not the same as naming
+every entry inside it.
+
 OpenMeta should keep a conservative rule here: preserve raw payloads whenever a
 family is only partially understood, and only promote fields to structured
 entries when their location, type, byte order, and meaning are stable enough to

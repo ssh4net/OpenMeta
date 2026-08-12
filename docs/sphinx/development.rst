@@ -390,10 +390,12 @@ default to reduce terminal injection risk.
 
 ``metavalidate`` reports decode/validation issues in text or JSON and emits
 machine-readable issue codes (for example ``xmp/output_truncated`` and
-``xmp/invalid_or_malformed_xml_text``) suitable for CI gating. For draft C2PA
-verification, use ``--c2pa-verify-require-trusted-chain`` when an untrusted or
-missing certificate chain must fail validation instead of being reported as a
-separate chain-detail signal.
+``xmp/invalid_or_malformed_xml_text``) suitable for CI gating. Draft C2PA
+verification results are diagnostic only: they do not establish asset hard
+binding, certificate trust is not reliably bound to the signature key, and an
+explicit verification request can currently fail open. Do not use
+``--c2pa-verify-require-trusted-chain`` or any current C2PA result as an
+authenticity or trust gate.
 
 Python
 ------

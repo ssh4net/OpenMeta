@@ -1,6 +1,7 @@
 # Metadata Support Matrix (Draft)
 
-This document summarizes the current read-path coverage in OpenMeta.
+This document summarizes the current metadata read-path coverage in OpenMeta.
+OpenMeta does not decode, decompress, demosaic, or render image pixels.
 
 It is meant to answer four basic questions:
 - which containers are scanned
@@ -18,6 +19,12 @@ Host integrations can query the same kind of runtime support information with
 `openmeta/metadata_capabilities.h`. That API reports read, structured decode,
 transfer preparation, target edit, and raw-preservation support by target
 format and metadata family.
+
+Some capabilities depend on build-time discovery. Structured XMP requires
+Expat, Deflate-compressed metadata requires zlib, JPEG XL `brob` metadata
+requires Brotli, and ranked fuzzy search requires explicitly enabling and
+finding RapidFuzz C++. The configured build report and runtime capability API
+are authoritative for a particular binary.
 
 For the public camera RAW read-depth plan against ExifTool-style coverage, see
 [raw_read_parity_plan.md](raw_read_parity_plan.md).
@@ -67,6 +74,27 @@ Current tracked-gate status:
 | JXL | Yes | Yes | EXIF, XMP, and bounded JUMBF/C2PA; supported `brob` wrapped metadata is decoded |
 | HEIF / AVIF / CR3 | Yes | Partial | EXIF, XMP, ICC, CR3 maker blocks, BMFF derived fields including `avif`/`avis`/`avio` AVIF brands, and bounded JUMBF/C2PA |
 | EXR | n/a via `scan_auto(...)` | Yes | Header attributes only; no pixel decode |
+
+## Camera RAW Support Tiers
+
+Camera RAW extensions are not equivalent to independent complete decoders.
+Several families use the shared TIFF/EXIF path, and structured decode depth can
+differ from raw block preservation.
+
+| Camera RAW lane | Metadata read | Vendor-private interpretation | Metadata write / transfer |
+| --- | --- | --- | --- |
+| DNG | Strong TIFF/EXIF/DNG baseline | DNG tags plus available MakerNote interpretation | Bounded TIFF-backed DNG target; not a RAW pixel writer |
+| CR2, NEF/NRW, ARW, RW2, ORF, PEF, and other TIFF-based RAW | Yes through the shared TIFF/EXIF carrier | Varies by vendor, model, MakerNote version, and private table | No general native vendor-RAW writer |
+| Legacy Sony SR2/SRF | Shared TIFF metadata carrier covered | Older native private structures remain partial | No native writer |
+| CR3 | Yes through the dedicated ISO-BMFF lane | Bounded metadata graph, EXIF/XMP/ICC, and Canon maker metadata | Bounded metadata graph edit; not a CR3 image encoder |
+| CRW/CIFF | Yes through a dedicated native lane | Partial | No native writer |
+| RAF and X3F | Partial dedicated native lanes | Partial | No native writer |
+
+Vendor metadata for Phase One/Leaf, Panasonic, Olympus, Pentax, Kodak, Minolta,
+Samsung, Ricoh, Apple, DJI, Google, FLIR, and other families is interpreted
+where layouts are stable and testable. This is not a claim that every model or
+private table is decoded. For the detailed family gaps, see
+[raw_read_parity_plan.md](raw_read_parity_plan.md).
 
 ## Metadata Family Coverage
 
@@ -292,16 +320,25 @@ Current support is intentionally draft:
 - JUMBF box labels from parsed `jumd` boxes
 - bounded CBOR traversal
 - draft `c2pa.semantic.*` projection
-- draft verify scaffolding with opt-in trusted certificate-chain enforcement
+- optional signature and certificate-chain diagnostic scaffolding
 
 What this means in practice:
 - OpenMeta can expose useful manifest / claim / signature / ingredient shape
   information
-- OpenMeta can report signature verification and certificate-chain trust as
-  separate signals, or fail verification when
-  `verify_require_trusted_chain` / `--c2pa-verify-require-trusted-chain` is set
-- OpenMeta does not yet claim full C2PA manifest semantics or full policy
+- the current verification result must not be used as an asset-authenticity or
+  trust gate: it does not establish the manifest's hard binding to the complete
+  asset, certificate-chain validation is not reliably bound to the signature
+  key, and explicit verification can currently fail open at the CLI layer
+- `verify_require_trusted_chain` and
+  `--c2pa-verify-require-trusted-chain` exercise draft diagnostics only; they
+  do not make the current result suitable for security decisions
+- OpenMeta does not claim full C2PA manifest semantics, asset binding, or policy
   validation
+
+These limitations are tracked as `OM-SEC-01`, `OM-SEC-02`, and `OM-SEC-09` in
+the [2026-08-12 security review](https://github.com/ssh4net/OpenMeta/blob/main/code_review_20260812.md).
+Structural JUMBF and C2PA metadata decode remains available independently of
+the optional verification scaffold.
 
 ## Tool-Level Behavior
 

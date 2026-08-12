@@ -3,17 +3,17 @@
 [![CI](https://github.com/ssh4net/OpenMeta/actions/workflows/ci.yml/badge.svg)](https://github.com/ssh4net/OpenMeta/actions?query=workflow%3ACI)
 [![docs-pages](https://github.com/ssh4net/OpenMeta/actions/workflows/docs-pages.yml/badge.svg)](https://github.com/ssh4net/OpenMeta/actions?query=workflow%3Adocs-pages)
 
-OpenMeta is a metadata processing library for image files.
+OpenMeta is a metadata processing library for image files. It does not decode,
+decompress, demosaic, or render image pixels.
 
-The current focus is safe, format-agnostic reads: find metadata blocks in
+The current focus is format-agnostic metadata reads: find metadata blocks in
 common containers, decode them into a normalized in-memory model, and expose
-stable transfer/edit building blocks for export workflows.
+bounded transfer/edit building blocks for export workflows.
 
 ## What OpenMeta Does
 
-- Scan containers to locate metadata blocks in `jpeg`, `png`, `webp`, `gif`,
-  `tiff/dng`, `crw/ciff`, `raf`, `x3f`, `jp2`, `jxl`, and
-  `heif/avif/cr3` (ISO-BMFF).
+- Scan containers to locate metadata blocks in JPEG, PNG, WebP, GIF, TIFF/DNG,
+  JP2, JXL, ISO-BMFF (HEIF/AVIF/CR3), CRW/CIFF, RAF, and X3F files.
 - Reassemble chunked payloads and optionally decompress supported carriers.
 - Decode metadata into a normalized `MetaStore`.
 - Create a fresh finalized metadata store from bounded logical portable fields.
@@ -22,6 +22,30 @@ stable transfer/edit building blocks for export workflows.
 - Export sidecars and previews.
 - Prepare, compile, emit, and edit metadata transfers for bounded target
   families.
+
+## Camera RAW Metadata Scope
+
+Camera RAW names do not all identify separate OpenMeta scanners. Many camera
+formats share a TIFF/EXIF metadata carrier, while CR3, CRW, RAF, and X3F need
+dedicated container handling.
+
+| Read lane | Camera RAW families | Current metadata scope |
+| --- | --- | --- |
+| Shared TIFF/EXIF carrier | DNG, CR2, NEF/NRW, ARW, RW2, ORF, PEF, SR2/SRF, and other TIFF-based RAW | Strong common TIFF/EXIF decoding; MakerNote and vendor-private interpretation varies by family and model. Legacy SR2/SRF coverage includes the shared metadata carrier, not every native private structure. |
+| Dedicated ISO-BMFF lane | CR3 | Bounded EXIF/XMP/ICC, Canon maker blocks, and metadata item/property graph interpretation; not complete CR3 private-structure conformance. |
+| Dedicated native lanes | CRW/CIFF, RAF, X3F | Partial native container and private metadata interpretation with raw preservation where the structure is not safely understood. |
+
+Vendor metadata for additional camera families is interpreted where layouts
+are stable and testable; that does not imply that every model-specific private
+table is named. In this documentation, camera RAW *read support* means metadata
+carrier discovery plus the documented structured interpretation. It does not
+mean RAW pixel decoding, raw-sample decompression, demosaicing, complete vendor
+private-data decoding, or native camera RAW writing. Apart from the bounded DNG
+and CR3 target contracts described below, read support does not imply write
+support.
+
+For vendor-by-vendor depth and known gaps, see
+[docs/raw_read_parity_plan.md](docs/raw_read_parity_plan.md).
 
 ## Metadata Families
 
@@ -38,6 +62,12 @@ OpenMeta currently covers these major families:
   whole-scene graph policy, and auxiliary semantics.
 - JUMBF / C2PA draft structural and semantic projection.
 - EXR header attributes.
+
+**C2PA security warning:** the optional verification scaffold is diagnostic
+only and must not be used as an asset-authenticity or trust gate. It does not
+currently establish the manifest's hard binding to the complete asset, and its
+certificate-chain result is not reliably bound to the signature key. See the
+[2026-08-12 security review](https://github.com/ssh4net/OpenMeta/blob/main/code_review_20260812.md).
 
 For the detailed support matrix, see
 [docs/metadata_support.md](docs/metadata_support.md).
@@ -76,8 +106,10 @@ If you already own the encoder, SDK objects, or output container, follow
 - [docs/shared_library.md](docs/shared_library.md): shared-library ABI,
   toolchain, runtime, and installed-consumer contract
 - [docs/doxygen.md](docs/doxygen.md): API reference
-- [SECURITY.md](SECURITY.md): security model and reporting
-- [NOTICE.md](NOTICE.md): notices and third-party dependency information
+- [SECURITY.md](https://github.com/ssh4net/OpenMeta/blob/main/SECURITY.md):
+  security model and reporting
+- [NOTICE.md](https://github.com/ssh4net/OpenMeta/blob/main/NOTICE.md): notices
+  and third-party dependency information
 
 ## Naming Model
 
@@ -99,19 +131,20 @@ OpenMeta now has a real transfer core built around:
 - `execute_prepared_transfer(...)`
 - `execute_prepared_transfer_file(...)`
 
-Current target status:
+Current target status is described in terms of bounded metadata operations,
+not complete arbitrary container or image writers:
 
-| Target | Status |
+| Target | Current contract |
 | --- | --- |
-| JPEG | First-class |
-| TIFF | First-class |
-| DNG | First-class |
-| PNG | Bounded but real |
-| WebP | Bounded but real |
-| JP2 | Bounded but real |
-| JXL | Bounded but real |
-| HEIF / AVIF / CR3 | Bounded but real |
-| EXR | Bounded but real |
+| JPEG | Strongest current managed-metadata edit path |
+| TIFF | Strongest current managed-metadata edit path, with documented nested-IFD bounds |
+| DNG | Strong TIFF-backed metadata target; not a general DNG image writer |
+| PNG | Bounded managed-metadata edit path |
+| WebP | Bounded managed-metadata edit path |
+| JP2 | Bounded managed-metadata edit path |
+| JXL | Bounded managed-metadata edit path |
+| HEIF / AVIF / CR3 | Bounded ISO-BMFF metadata-graph edit path |
+| EXR | Bounded host attribute emission; no full EXR file rewrite |
 
 In practice:
 - JPEG, TIFF, and DNG are the strongest transfer targets today.
@@ -153,7 +186,7 @@ In practice:
   this SDK-backed lane because Adobe DNG SDK licensing and redistribution
   terms are not part of the public CI dependency story; SDK-backed coverage is
   treated as maintainer or release validation.
-- PNG, WebP, JP2, JXL, bounded BMFF, and EXR all have real first-class
+- PNG, WebP, JP2, JXL, bounded BMFF, and EXR all have implemented, bounded
   transfer entry points. BMFF file edits can replace OpenMeta-authored
   metadata-only `meta` boxes and can merge, replace, or strip bounded
   Exif/XMP/JUMBF/C2PA metadata items plus bounded ICC `colr/prof` properties
@@ -224,8 +257,9 @@ OpenMeta ships a small set of CLI tools:
 | `metatransfer` | Transfer/edit smoke tool over the core transfer APIs |
 | `thumdump` | Preview extractor |
 
-The Python bindings expose the same read and transfer core through thin wrapper
-helpers in `src/python/`.
+The optional Python bindings remain a thin layer over the same C++ read, query,
+fuzzy-search, creation, editing, and transfer core. Available Python features
+follow the capabilities compiled into the C++ library.
 
 ## Layout
 
@@ -242,13 +276,18 @@ Read-path coverage is broad and regression-gated. Write/edit support is real
 for the main transfer targets, but parts of that API surface are still draft
 and may change as the transfer contract stabilizes.
 
-Current planning estimate:
+The following values are roadmap estimates for the currently tracked public
+scope. They are not percentages of every vendor tag or file in existence, full
+format conformance, direct competitor parity, or overall product completion.
 
 | Milestone | Status |
 | --- | --- |
-| Read parity on tracked still-image corpora | About `99-100%` |
+| Decoding/read milestone for the current target scope | About `98-100%` |
 | Transfer / export milestone | About `80-85%` |
-| Overall product milestone | About `97-98%` |
+
+Creation, Editing, Translation, Writing, Adapters, and Utilities have separate
+readiness levels. See [docs/development.md](docs/development.md) for the full
+stage table.
 
 Current baseline-gated snapshot on tracked corpora:
 - HEIC/HEIF, CR3, and mixed RAW EXIF tag-id compare gates are passing.
@@ -266,9 +305,20 @@ cmake --build build
 ```
 
 Useful options:
+- `-DOPENMETA_BUILD_STATIC=ON|OFF` and
+  `-DOPENMETA_BUILD_SHARED=ON|OFF` to select library variants
 - `-DOPENMETA_BUILD_TOOLS=ON|OFF`
 - `-DOPENMETA_BUILD_TESTS=ON` for GoogleTest-based unit tests
 - `-DOPENMETA_BUILD_FUZZERS=ON` for Clang + libFuzzer targets
+- `-DOPENMETA_BUILD_PYTHON=ON` for the optional nanobind bindings
+- `-DOPENMETA_BUILD_WHEEL=ON` to add the isolated Python wheel target
+- `-DOPENMETA_WITH_ZLIB=ON`, `-DOPENMETA_WITH_BROTLI=ON`, and
+  `-DOPENMETA_WITH_EXPAT=ON` to request compressed metadata and structured XMP
+  decoding. These capabilities are enabled only when CMake discovers the
+  matching dependency.
+- `-DOPENMETA_ENABLE_RAPIDFUZZ=ON` for optional RapidFuzz-backed fuzzy search
+- `-DOPENMETA_ENABLE_C2PA_VERIFY=ON` for the draft diagnostic verification
+  scaffold. Do not use its current result as an authenticity or trust gate.
 - `-DOPENMETA_USE_LIBCXX=ON` when linking against dependencies built with
   `libc++`
 - `-DOPENMETA_TEST_RUNTIME_LIBRARY_PATH=/path/to/runtime-libs` when CTest

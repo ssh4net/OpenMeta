@@ -51,6 +51,13 @@ Core toggles:
 - ``OPENMETA_WITH_ZLIB`` / ``OPENMETA_WITH_BROTLI``: enable payload decompression
   when the system libraries are available.
 - ``OPENMETA_WITH_EXPAT``: enable XMP packet parsing when Expat is available.
+- ``OPENMETA_ENABLE_RAPIDFUZZ``: enable optional RapidFuzz C++ ranked metadata
+  search; configuration fails if enabled but RapidFuzz cannot be found.
+- ``OPENMETA_WITH_DNG_SDK_ADAPTER``: enable the optional Adobe DNG SDK host
+  bridge when a compatible ``dng_sdk`` package is available.
+- ``OPENMETA_ENABLE_C2PA_VERIFY``: enable the draft C2PA verification
+  diagnostics. Current results must not be used as an authenticity or trust
+  gate; see :doc:`security`.
 - ``OPENMETA_USE_LIBCXX``: build against ``libc++`` (useful when deps were built with ``libc++``).
 - ``OPENMETA_TEST_RUNTIME_LIBRARY_PATH``: prepend a runtime library directory to
   CTest tests that launch external tools.
@@ -62,6 +69,12 @@ Optional dependency notes:
 - Brotli enables JPEG XL ``brob`` compressed metadata decoding.
 - Expat enables parsing XMP RDF/XML into structured properties. Without it,
   OpenMeta still locates XMP blocks but does not decode them into entries.
+- RapidFuzz C++ is disabled by default and is required only for ranked fuzzy
+  metadata-name search.
+
+The configured CMake report and runtime metadata capability API are
+authoritative for a particular build; enabling a discovery-based option does
+not by itself guarantee that its dependency was found.
 
 Docs (optional):
 

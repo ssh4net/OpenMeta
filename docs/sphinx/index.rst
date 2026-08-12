@@ -1,8 +1,8 @@
 OpenMeta
 ========
 
-OpenMeta is a C++ library for reading metadata safely across common image and
-media containers.
+OpenMeta is a C++ library for reading metadata across common image and media
+containers. It does not decode, decompress, demosaic, or render image pixels.
 
 What it does today:
 
@@ -23,8 +23,14 @@ Read-path coverage snapshot:
 - MakerNote support is broad and baseline-gated; unknown tags remain lossless.
 - RAW read-depth gaps are tracked by family in :doc:`raw_read_parity_plan`.
 
-OpenMeta treats metadata as **untrusted input** and applies explicit limits and
-sanitization to reduce memory and output attack surface.
+Camera RAW support refers to metadata carrier discovery and documented
+metadata interpretation. It does not imply RAW pixel decoding, complete vendor
+private-table interpretation, or native camera RAW writing.
+
+OpenMeta is designed to treat metadata as **untrusted input** and provides
+explicit limits and sanitization controls. See :doc:`security` for current
+known limitations. The optional C2PA verification scaffold is diagnostic only
+and must not be used as an asset-authenticity or trust gate.
 
 .. toctree::
    :maxdepth: 2

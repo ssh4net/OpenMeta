@@ -183,10 +183,11 @@ dependencies let OpenMeta decode more content:
   `OPENMETA_C2PA_VERIFY_BACKEND`): enables backend selection/reporting fields
   (`none|auto|native|openssl`) and draft verification flow. Native backend
   availability is platform-based (Windows/macOS), while OpenSSL availability
-  is discovered via `find_package(OpenSSL)` when needed. By default this
-  reports cryptographic signature status and trust-chain detail separately;
-  use `--c2pa-verify-require-trusted-chain` when validation must fail for an
-  untrusted or missing certificate chain.
+  is discovered via `find_package(OpenSSL)` when needed. Current results are
+  diagnostic only: they do not establish asset hard binding, and certificate
+  trust is not reliably bound to the signature key. Do not use this scaffold as
+  an authenticity or trust gate. See `OM-SEC-01`, `OM-SEC-02`, and `OM-SEC-09`
+  in [the current security review](https://github.com/ssh4net/OpenMeta/blob/main/code_review_20260812.md).
 
 If you link against dependencies that were built with `libc++` (common when
 using Clang), configure OpenMeta with:
@@ -227,7 +228,7 @@ runtime directory:
 #Validate with sidecar + MakerNotes + C2PA verify status
 ./build/metavalidate --xmp-sidecar --makernotes --c2pa-verify input.jpg
 
-#Require C2PA signature verification and a trusted certificate chain
+#Exercise the draft trusted-chain diagnostic (not an authenticity gate)
 ./build/metavalidate --c2pa-verify --c2pa-verify-require-trusted-chain input.jpg
 ```
 `metavalidate` CLI is a thin wrapper over `openmeta::validate_file(...)`.
@@ -249,7 +250,7 @@ example `xmp/output_truncated` and `xmp/invalid_or_malformed_xml_text`.
 #Portable sidecar + draft C2PA verify scaffold status reporting
 ./build/metadump --format portable --c2pa-verify --c2pa-verify-backend auto input.jpg output.xmp
 
-#Portable sidecar with trusted-chain C2PA verification required
+#Portable sidecar with the draft trusted-chain diagnostic enabled
 ./build/metadump --format portable --c2pa-verify --c2pa-verify-require-trusted-chain input.jpg output.xmp
 
 #Explicit input / output form
