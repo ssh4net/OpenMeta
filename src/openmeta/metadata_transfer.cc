@@ -23684,6 +23684,16 @@ namespace {
         bool parsed = false;
     };
 
+    struct BmffForeignDrefTable final {
+        std::vector<uint8_t> self_contained;
+        bool parsed = false;
+    };
+
+    struct BmffForeignManagedItemReplacement final {
+        uint32_t old_item_id = 0U;
+        uint32_t new_item_id = 0U;
+    };
+
     struct BmffForeignMetaContext final {
         TransferBmffBox iinf {};
         TransferBmffBox iloc {};
@@ -23691,12 +23701,16 @@ namespace {
         TransferBmffBox iref {};
         TransferBmffBox iprp {};
         TransferBmffBox pitm {};
+        TransferBmffBox dinf {};
+        TransferBmffBox grpl {};
         bool has_iinf            = false;
         bool has_iloc            = false;
         bool has_idat            = false;
         bool has_iref            = false;
         bool has_iprp            = false;
         bool has_pitm            = false;
+        bool has_dinf            = false;
+        bool has_grpl            = false;
         uint8_t iinf_version     = 0U;
         uint8_t iloc_version     = 0U;
         uint8_t iloc_sizes0      = 0U;
@@ -24637,6 +24651,115 @@ namespace {
         return false;
     }
 
+    enum class BmffManagedItemFamily : uint8_t {
+        Unknown = 0,
+        Exif,
+        Xmp,
+        Jumbf,
+        C2pa,
+    };
+
+    static BmffManagedItemFamily
+    bmff_managed_item_family(uint32_t item_type, bool mime_xmp) noexcept
+    {
+        if (item_type == fourcc('E', 'x', 'i', 'f')) {
+            return BmffManagedItemFamily::Exif;
+        }
+        if (mime_xmp || item_type == fourcc('x', 'm', 'l', ' ')) {
+            return BmffManagedItemFamily::Xmp;
+        }
+        if (item_type == fourcc('j', 'u', 'm', 'b')) {
+            return BmffManagedItemFamily::Jumbf;
+        }
+        if (item_type == fourcc('c', '2', 'p', 'a')) {
+            return BmffManagedItemFamily::C2pa;
+        }
+        return BmffManagedItemFamily::Unknown;
+    }
+
+    static uint32_t bmff_managed_replacement_item_id(
+        const std::vector<BmffForeignManagedItemReplacement>& replacements,
+        uint32_t old_item_id) noexcept
+    {
+        for (size_t i = 0; i < replacements.size(); ++i) {
+            if (replacements[i].old_item_id == old_item_id) {
+                return replacements[i].new_item_id;
+            }
+        }
+        return 0U;
+    }
+
+    static uint32_t bmff_remap_managed_item_id(
+        const std::vector<uint32_t>& removed_item_ids,
+        const std::vector<BmffForeignManagedItemReplacement>& replacements,
+        uint32_t item_id) noexcept
+    {
+        if (!bmff_removed_item_id(removed_item_ids, item_id)) {
+            return item_id;
+        }
+        return bmff_managed_replacement_item_id(replacements, item_id);
+    }
+
+    static bool bmff_u32_vector_contains(const std::vector<uint32_t>& values,
+                                         uint32_t value) noexcept
+    {
+        for (size_t i = 0; i < values.size(); ++i) {
+            if (values[i] == value) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static void bmff_build_managed_item_replacements(
+        const std::vector<BmffForeignIinfEntry>& entries,
+        const std::vector<uint32_t>& removed_item_ids,
+        const std::vector<BmffRewriteItemSource>& items,
+        std::vector<BmffForeignManagedItemReplacement>* replacements) noexcept
+    {
+        if (!replacements) {
+            return;
+        }
+        replacements->clear();
+
+        static constexpr std::array<BmffManagedItemFamily, 4> kFamilies = {
+            BmffManagedItemFamily::Exif,
+            BmffManagedItemFamily::Xmp,
+            BmffManagedItemFamily::Jumbf,
+            BmffManagedItemFamily::C2pa,
+        };
+        for (size_t family_index = 0; family_index < kFamilies.size();
+             ++family_index) {
+            uint32_t old_item_id = 0U;
+            uint32_t new_item_id = 0U;
+            size_t old_count     = 0U;
+            size_t new_count     = 0U;
+            for (size_t i = 0; i < entries.size(); ++i) {
+                if (bmff_removed_item_id(removed_item_ids, entries[i].item_id)
+                    && bmff_managed_item_family(entries[i].item_type,
+                                                entries[i].mime_xmp)
+                           == kFamilies[family_index]) {
+                    old_item_id = entries[i].item_id;
+                    old_count += 1U;
+                }
+            }
+            for (size_t i = 0; i < items.size(); ++i) {
+                if (bmff_managed_item_family(items[i].item_type,
+                                             items[i].mime_xmp)
+                    == kFamilies[family_index]) {
+                    new_item_id = items[i].item_id;
+                    new_count += 1U;
+                }
+            }
+            if (old_count == 1U && new_count == 1U) {
+                BmffForeignManagedItemReplacement replacement;
+                replacement.old_item_id = old_item_id;
+                replacement.new_item_id = new_item_id;
+                replacements->push_back(replacement);
+            }
+        }
+    }
+
     static bool bmff_u_nbe_fits(size_t width, uint64_t value) noexcept
     {
         if (width > 8U) {
@@ -24867,6 +24990,24 @@ namespace {
                 }
                 ctx->pitm     = child;
                 ctx->has_pitm = true;
+            } else if (child.type == fourcc('d', 'i', 'n', 'f')) {
+                if (ctx->has_dinf) {
+                    return fail_bmff_foreign_meta_merge(
+                        out, TransferStatus::Unsupported,
+                        EmitTransferCode::InvalidArgument,
+                        "multiple dinf boxes are not supported");
+                }
+                ctx->dinf     = child;
+                ctx->has_dinf = true;
+            } else if (child.type == fourcc('g', 'r', 'p', 'l')) {
+                if (ctx->has_grpl) {
+                    return fail_bmff_foreign_meta_merge(
+                        out, TransferStatus::Unsupported,
+                        EmitTransferCode::InvalidArgument,
+                        "multiple grpl boxes are not supported");
+                }
+                ctx->grpl     = child;
+                ctx->has_grpl = true;
             }
 
             if (child.size == 0U) {
@@ -25360,23 +25501,192 @@ namespace {
         return true;
     }
 
+    static bool bmff_parse_foreign_self_contained_drefs(
+        std::span<const std::byte> bytes, const BmffForeignMetaContext& ctx,
+        BmffForeignDrefTable* table, EmitTransferResult* out) noexcept
+    {
+        if (!table) {
+            return false;
+        }
+        *table = BmffForeignDrefTable {};
+        if (!ctx.has_dinf) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::Unsupported,
+                EmitTransferCode::InvalidArgument,
+                "iloc data reference requires dinf/dref");
+        }
+
+        const uint64_t payload_begin = ctx.dinf.offset + ctx.dinf.header_size;
+        const uint64_t payload_end   = ctx.dinf.offset + ctx.dinf.size;
+        if (payload_begin > payload_end || payload_end > bytes.size()) {
+            return fail_bmff_foreign_meta_merge(out, TransferStatus::Malformed,
+                                                EmitTransferCode::InvalidPayload,
+                                                "dinf box is malformed");
+        }
+
+        TransferBmffBox dref;
+        bool has_dref = false;
+        uint64_t off  = payload_begin;
+        while (off + 8U <= payload_end) {
+            TransferBmffBox child;
+            if (!parse_transfer_bmff_box(bytes, off, payload_end, &child)) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Malformed,
+                    EmitTransferCode::InvalidPayload,
+                    "failed to parse dinf child box");
+            }
+            if (child.type == fourcc('d', 'r', 'e', 'f')) {
+                if (has_dref) {
+                    return fail_bmff_foreign_meta_merge(
+                        out, TransferStatus::Unsupported,
+                        EmitTransferCode::InvalidArgument,
+                        "multiple dref boxes are not supported");
+                }
+                dref     = child;
+                has_dref = true;
+            }
+            if (child.size == 0U) {
+                break;
+            }
+            off += child.size;
+        }
+        if (off != payload_end || !has_dref) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::Unsupported,
+                EmitTransferCode::InvalidArgument,
+                "iloc data reference requires one parseable dref box");
+        }
+
+        const uint64_t dref_payload_begin = dref.offset + dref.header_size;
+        const uint64_t dref_payload_end   = dref.offset + dref.size;
+        if (dref_payload_begin + 8U > dref_payload_end
+            || dref_payload_end > bytes.size()) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::Malformed,
+                EmitTransferCode::InvalidPayload,
+                "dref fullbox header is truncated");
+        }
+        const uint8_t version = std::to_integer<uint8_t>(
+            bytes[dref_payload_begin]);
+        if (version != 0U) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::Unsupported,
+                EmitTransferCode::InvalidArgument,
+                "dref version is not supported");
+        }
+
+        uint32_t entry_count = 0U;
+        if (!read_u32be(bytes, dref_payload_begin + 4U, &entry_count)) {
+            return fail_bmff_foreign_meta_merge(out, TransferStatus::Malformed,
+                                                EmitTransferCode::InvalidPayload,
+                                                "dref entry count is truncated");
+        }
+        if (entry_count > 0xFFFFU) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::LimitExceeded,
+                EmitTransferCode::InvalidPayload,
+                "dref entry count exceeds iloc index range");
+        }
+        table->self_contained.reserve(entry_count);
+
+        off = dref_payload_begin + 8U;
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            TransferBmffBox entry;
+            if (!parse_transfer_bmff_box(bytes, off, dref_payload_end, &entry)) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Malformed,
+                    EmitTransferCode::InvalidPayload,
+                    "failed to parse dref entry");
+            }
+            const uint64_t entry_payload_begin = entry.offset
+                                                 + entry.header_size;
+            const uint64_t entry_payload_end = entry.offset + entry.size;
+            if (entry_payload_begin + 4U > entry_payload_end
+                || entry_payload_end > bytes.size()) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Malformed,
+                    EmitTransferCode::InvalidPayload,
+                    "dref entry fullbox header is truncated");
+            }
+
+            bool self_contained = false;
+            if (entry.type == fourcc('u', 'r', 'l', ' ')
+                || entry.type == fourcc('u', 'r', 'n', ' ')) {
+                uint32_t version_and_flags = 0U;
+                if (!read_u32be(bytes, entry_payload_begin,
+                                &version_and_flags)) {
+                    return fail_bmff_foreign_meta_merge(
+                        out, TransferStatus::Malformed,
+                        EmitTransferCode::InvalidPayload,
+                        "dref entry flags are truncated");
+                }
+                const uint8_t entry_version = static_cast<uint8_t>(
+                    version_and_flags >> 24U);
+                if (entry_version == 0U
+                    && (version_and_flags & 0x000001U) != 0U) {
+                    self_contained = true;
+                }
+            }
+            table->self_contained.push_back(self_contained ? 1U : 0U);
+            if (entry.size == 0U) {
+                off = dref_payload_end;
+                break;
+            }
+            off += entry.size;
+        }
+        if (off != dref_payload_end) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::Malformed,
+                EmitTransferCode::InvalidPayload,
+                "dref entry table has trailing bytes");
+        }
+        table->parsed = true;
+        return true;
+    }
+
+    static bool bmff_dref_is_self_contained(const BmffForeignDrefTable& table,
+                                            uint16_t index) noexcept
+    {
+        if (index == 0U) {
+            return true;
+        }
+        const size_t table_index = static_cast<size_t>(index - 1U);
+        return table.parsed && table_index < table.self_contained.size()
+               && table.self_contained[table_index] != 0U;
+    }
+
     static bool bmff_validate_foreign_iloc_records_for_merge(
         std::span<const std::byte> bytes, const BmffForeignMetaContext& ctx,
         const std::vector<BmffForeignIlocRecord>& records,
         const std::vector<uint32_t>& removed_item_ids,
         EmitTransferResult* out) noexcept
     {
-        bool needs_ref_table = false;
+        bool needs_ref_table  = false;
+        bool needs_dref_table = false;
+        for (size_t i = 0; i < records.size(); ++i) {
+            if (!bmff_removed_item_id(removed_item_ids, records[i].item_id)
+                && records[i].data_reference_index != 0U) {
+                needs_dref_table = true;
+                break;
+            }
+        }
+        BmffForeignDrefTable dref_table;
+        if (needs_dref_table
+            && !bmff_parse_foreign_self_contained_drefs(bytes, ctx, &dref_table,
+                                                        out)) {
+            return false;
+        }
         for (size_t i = 0; i < records.size(); ++i) {
             const BmffForeignIlocRecord& record = records[i];
             if (bmff_removed_item_id(removed_item_ids, record.item_id)) {
                 continue;
             }
-            if (record.data_reference_index != 0U) {
+            if (!bmff_dref_is_self_contained(dref_table,
+                                             record.data_reference_index)) {
                 return fail_bmff_foreign_meta_merge(
                     out, TransferStatus::Unsupported,
                     EmitTransferCode::InvalidArgument,
-                    "iloc external data references are not supported");
+                    "iloc data reference is not self-contained");
             }
             if ((record.construction_method & 0xFFF0U) != 0U) {
                 return fail_bmff_foreign_meta_merge(
@@ -25943,6 +26253,7 @@ namespace {
     static bool build_bmff_foreign_merge_iref_box(
         std::span<const std::byte> bytes, const BmffForeignMetaContext& ctx,
         const std::vector<uint32_t>& removed_item_ids,
+        const std::vector<BmffForeignManagedItemReplacement>& replacements,
         const std::vector<BmffRewriteItemSource>& items,
         std::vector<std::byte>* out_box, EmitTransferResult* out) noexcept
     {
@@ -25959,6 +26270,7 @@ namespace {
             }
         }
         std::vector<std::byte> payload;
+        std::vector<uint32_t> primary_cdsc_item_ids;
         if (ctx.has_iref) {
             const uint64_t payload_begin = ctx.iref.offset
                                            + ctx.iref.header_size;
@@ -26020,7 +26332,10 @@ namespace {
                             EmitTransferCode::InvalidPayload,
                             "iref reference count is truncated");
                     }
-                    const uint32_t from_id   = static_cast<uint32_t>(from_id64);
+                    const uint32_t input_from_id = static_cast<uint32_t>(
+                        from_id64);
+                    const uint32_t from_id = bmff_remap_managed_item_id(
+                        removed_item_ids, replacements, input_from_id);
                     const uint16_t ref_count = read_u16be(bytes, cursor);
                     cursor += 2U;
 
@@ -26037,14 +26352,17 @@ namespace {
                                 "iref to_item_id is not supported");
                         }
                         cursor += input_id_width;
-                        const uint32_t to_id = static_cast<uint32_t>(to_id64);
-                        if (!bmff_removed_item_id(removed_item_ids, to_id)) {
+                        const uint32_t input_to_id = static_cast<uint32_t>(
+                            to_id64);
+                        const uint32_t to_id = bmff_remap_managed_item_id(
+                            removed_item_ids, replacements, input_to_id);
+                        if (to_id != 0U
+                            && !bmff_u32_vector_contains(kept_to_ids, to_id)) {
                             kept_to_ids.push_back(to_id);
                         }
                     }
 
-                    if (bmff_removed_item_id(removed_item_ids, from_id)
-                        || kept_to_ids.empty()
+                    if (from_id == 0U || kept_to_ids.empty()
                         || kept_to_ids.size() > 0xFFFFU) {
                         continue;
                     }
@@ -26063,6 +26381,12 @@ namespace {
                                 out, TransferStatus::LimitExceeded,
                                 EmitTransferCode::InvalidPayload,
                                 "iref to_item_id does not fit version");
+                        }
+                        if (child.type == fourcc('c', 'd', 's', 'c')
+                            && kept_to_ids[i] == ctx.primary_item_id
+                            && !bmff_u32_vector_contains(primary_cdsc_item_ids,
+                                                         from_id)) {
+                            primary_cdsc_item_ids.push_back(from_id);
                         }
                     }
                 }
@@ -26091,6 +26415,10 @@ namespace {
         }
 
         for (size_t i = 0; i < items.size(); ++i) {
+            if (bmff_u32_vector_contains(primary_cdsc_item_ids,
+                                         items[i].item_id)) {
+                continue;
+            }
             std::vector<std::byte> cdsc_payload;
             if (!bmff_append_iref_id(&cdsc_payload, version, items[i].item_id)
                 || !append_bmff_u_nbe_checked(&cdsc_payload, 2U, 1U)
@@ -26124,6 +26452,155 @@ namespace {
         return true;
     }
 
+    static bool build_bmff_foreign_merge_grpl_box(
+        std::span<const std::byte> bytes, const BmffForeignMetaContext& ctx,
+        const std::vector<uint32_t>& removed_item_ids,
+        const std::vector<BmffForeignManagedItemReplacement>& replacements,
+        std::vector<std::byte>* out_box, EmitTransferResult* out) noexcept
+    {
+        if (!out_box || !ctx.has_grpl) {
+            return false;
+        }
+        out_box->clear();
+
+        const uint64_t payload_begin = ctx.grpl.offset + ctx.grpl.header_size;
+        const uint64_t payload_end   = ctx.grpl.offset + ctx.grpl.size;
+        if (payload_begin > payload_end || payload_end > bytes.size()) {
+            return fail_bmff_foreign_meta_merge(out, TransferStatus::Malformed,
+                                                EmitTransferCode::InvalidPayload,
+                                                "grpl box is malformed");
+        }
+
+        std::vector<std::byte> payload;
+        uint64_t off = payload_begin;
+        while (off + 8U <= payload_end) {
+            TransferBmffBox child;
+            if (!parse_transfer_bmff_box(bytes, off, payload_end, &child)) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Malformed,
+                    EmitTransferCode::InvalidPayload,
+                    "failed to parse grpl child box");
+            }
+
+            const uint64_t child_payload_begin = child.offset
+                                                 + child.header_size;
+            const uint64_t child_payload_end = child.offset + child.size;
+            if (child_payload_begin > child_payload_end
+                || child_payload_end > bytes.size()
+                || child_payload_end - child_payload_begin < 12U) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Malformed,
+                    EmitTransferCode::InvalidPayload,
+                    "grpl entity group is truncated");
+            }
+            const uint8_t version = std::to_integer<uint8_t>(
+                bytes[child_payload_begin]);
+            if (version != 0U) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Unsupported,
+                    EmitTransferCode::InvalidArgument,
+                    "grpl entity group version is not supported");
+            }
+
+            uint32_t entity_count = 0U;
+            if (!read_u32be(bytes, child_payload_begin + 8U, &entity_count)) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Malformed,
+                    EmitTransferCode::InvalidPayload,
+                    "grpl entity count is truncated");
+            }
+            if (entity_count > (1U << 20U)) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::LimitExceeded,
+                    EmitTransferCode::InvalidPayload,
+                    "grpl entity count is too large");
+            }
+            const uint64_t entity_begin = child_payload_begin + 12U;
+            const uint64_t entity_bytes = static_cast<uint64_t>(entity_count)
+                                          * 4U;
+            if (entity_bytes > child_payload_end - entity_begin) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Malformed,
+                    EmitTransferCode::InvalidPayload,
+                    "grpl entity table is truncated");
+            }
+
+            std::vector<uint32_t> kept_entity_ids;
+            kept_entity_ids.reserve(entity_count);
+            uint64_t entity_off = entity_begin;
+            for (uint32_t i = 0U; i < entity_count; ++i) {
+                uint32_t entity_id = 0U;
+                if (!read_u32be(bytes, entity_off, &entity_id)) {
+                    return fail_bmff_foreign_meta_merge(
+                        out, TransferStatus::Malformed,
+                        EmitTransferCode::InvalidPayload,
+                        "grpl entity id is truncated");
+                }
+                entity_id = bmff_remap_managed_item_id(removed_item_ids,
+                                                       replacements, entity_id);
+                if (entity_id != 0U
+                    && !bmff_u32_vector_contains(kept_entity_ids, entity_id)) {
+                    kept_entity_ids.push_back(entity_id);
+                }
+                entity_off += 4U;
+            }
+
+            if (!kept_entity_ids.empty()) {
+                std::vector<std::byte> child_payload;
+                child_payload.insert(child_payload.end(),
+                                     bytes.begin()
+                                         + static_cast<std::ptrdiff_t>(
+                                             child_payload_begin),
+                                     bytes.begin()
+                                         + static_cast<std::ptrdiff_t>(
+                                             child_payload_begin + 8U));
+                append_u32be(&child_payload,
+                             static_cast<uint32_t>(kept_entity_ids.size()));
+                for (size_t i = 0; i < kept_entity_ids.size(); ++i) {
+                    append_u32be(&child_payload, kept_entity_ids[i]);
+                }
+                child_payload.insert(
+                    child_payload.end(),
+                    bytes.begin() + static_cast<std::ptrdiff_t>(entity_off),
+                    bytes.begin()
+                        + static_cast<std::ptrdiff_t>(child_payload_end));
+                if (!append_bmff_box_bytes_checked(
+                        &payload, child.type,
+                        std::span<const std::byte>(child_payload.data(),
+                                                   child_payload.size()))) {
+                    return fail_bmff_foreign_meta_merge(
+                        out, TransferStatus::LimitExceeded,
+                        EmitTransferCode::InvalidPayload,
+                        "grpl entity group exceeds 32-bit size");
+                }
+            }
+
+            if (child.size == 0U) {
+                off = payload_end;
+                break;
+            }
+            off += child.size;
+        }
+        if (off != payload_end) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::Malformed,
+                EmitTransferCode::InvalidPayload,
+                "grpl child table has trailing bytes");
+        }
+        if (payload.empty()) {
+            return true;
+        }
+        if (!append_bmff_box_bytes_checked(
+                out_box, fourcc('g', 'r', 'p', 'l'),
+                std::span<const std::byte>(payload.data(), payload.size()))) {
+            return fail_bmff_foreign_meta_merge(out,
+                                                TransferStatus::LimitExceeded,
+                                                EmitTransferCode::InvalidPayload,
+                                                "grpl box exceeds 32-bit size");
+        }
+        return true;
+    }
+
     static bool
     bmff_ipco_property_is_icc_colr(std::span<const std::byte> bytes,
                                    const TransferBmffBox& property) noexcept
@@ -26148,7 +26625,7 @@ namespace {
 
     static bool bmff_rebuild_ipco_payload_replacing_icc(
         std::span<const std::byte> bytes, const TransferBmffBox& ipco,
-        std::vector<std::byte>* out_payload,
+        bool replace_icc, std::vector<std::byte>* out_payload,
         std::vector<uint32_t>* out_old_to_new_indices, uint32_t* out_count,
         EmitTransferResult* out) noexcept
     {
@@ -26180,7 +26657,7 @@ namespace {
                     "failed to parse ipco property box");
             }
 
-            if (bmff_ipco_property_is_icc_colr(bytes, child)) {
+            if (replace_icc && bmff_ipco_property_is_icc_colr(bytes, child)) {
                 out_old_to_new_indices->push_back(0U);
             } else {
                 if (*out_count == std::numeric_limits<uint32_t>::max()) {
@@ -26407,14 +26884,74 @@ namespace {
         return true;
     }
 
+    static void bmff_append_ipma_association(BmffForeignIpmaEntry* entry,
+                                             uint16_t association) noexcept
+    {
+        if (!entry) {
+            return;
+        }
+        const uint16_t property_index = static_cast<uint16_t>(association
+                                                              & 0x7FFFU);
+        for (size_t i = 0; i < entry->associations.size(); ++i) {
+            if ((entry->associations[i] & 0x7FFFU) == property_index) {
+                if ((association & 0x8000U) != 0U) {
+                    entry->associations[i] = static_cast<uint16_t>(
+                        entry->associations[i] | 0x8000U);
+                }
+                return;
+            }
+        }
+        entry->associations.push_back(association);
+    }
+
+    static void bmff_remap_ipma_entries(
+        const std::vector<uint32_t>& removed_item_ids,
+        const std::vector<BmffForeignManagedItemReplacement>& replacements,
+        std::vector<BmffForeignIpmaEntry>* entries) noexcept
+    {
+        if (!entries) {
+            return;
+        }
+        std::vector<BmffForeignIpmaEntry> remapped;
+        remapped.reserve(entries->size());
+        for (size_t i = 0; i < entries->size(); ++i) {
+            const uint32_t item_id
+                = bmff_remap_managed_item_id(removed_item_ids, replacements,
+                                             (*entries)[i].item_id);
+            if (item_id == 0U) {
+                continue;
+            }
+
+            size_t target_index = remapped.size();
+            for (size_t j = 0; j < remapped.size(); ++j) {
+                if (remapped[j].item_id == item_id) {
+                    target_index = j;
+                    break;
+                }
+            }
+            if (target_index == remapped.size()) {
+                BmffForeignIpmaEntry entry;
+                entry.item_id = item_id;
+                remapped.push_back(std::move(entry));
+            }
+            for (size_t j = 0; j < (*entries)[i].associations.size(); ++j) {
+                bmff_append_ipma_association(&remapped[target_index],
+                                             (*entries)[i].associations[j]);
+            }
+        }
+        *entries = std::move(remapped);
+    }
+
     static bool build_bmff_foreign_merged_ipma_box(
         std::span<const std::byte> bytes, const TransferBmffBox& ipma,
         uint32_t primary_item_id,
         const std::vector<uint32_t>& existing_property_index_map,
         const std::vector<uint32_t>& property_indices,
+        const std::vector<uint32_t>& removed_item_ids,
+        const std::vector<BmffForeignManagedItemReplacement>& replacements,
         std::vector<std::byte>* out_box, EmitTransferResult* out) noexcept
     {
-        if (!out_box || primary_item_id == 0U || property_indices.empty()) {
+        if (!out_box || primary_item_id == 0U) {
             return false;
         }
 
@@ -26425,6 +26962,7 @@ namespace {
                                      out)) {
             return false;
         }
+        bmff_remap_ipma_entries(removed_item_ids, replacements, &entries);
         if (primary_item_id > 0xFFFFU) {
             version = 1U;
         }
@@ -26436,10 +26974,11 @@ namespace {
                 break;
             }
         }
-        if (primary_index == entries.size()) {
+        if (primary_index == entries.size() && !property_indices.empty()) {
             BmffForeignIpmaEntry entry;
             entry.item_id = primary_item_id;
             entries.push_back(std::move(entry));
+            primary_index = entries.size() - 1U;
         }
 
         std::vector<uint8_t> needs_replacement_property;
@@ -26613,13 +27152,15 @@ namespace {
         std::span<const std::byte> bytes, const BmffForeignMetaContext& ctx,
         const PreparedTransferBundle& bundle,
         const std::vector<BmffRewritePropertySource>& props,
+        const std::vector<uint32_t>& removed_item_ids,
+        const std::vector<BmffForeignManagedItemReplacement>& replacements,
         std::vector<std::byte>* out_box, EmitTransferResult* out) noexcept
     {
         if (!out_box) {
             return false;
         }
         out_box->clear();
-        if (props.empty()) {
+        if (props.empty() && removed_item_ids.empty()) {
             return true;
         }
         if (props.size() > 0xFFU) {
@@ -26665,7 +27206,7 @@ namespace {
                     }
                     has_ipco = true;
                     if (!bmff_rebuild_ipco_payload_replacing_icc(
-                            bytes, child, &ipco_payload,
+                            bytes, child, !props.empty(), &ipco_payload,
                             &existing_property_index_map,
                             &existing_property_count, out)) {
                         return false;
@@ -26691,6 +27232,19 @@ namespace {
                     EmitTransferCode::InvalidPayload,
                     "iprp child table has trailing bytes");
             }
+        }
+
+        if (props.empty() && !ctx.has_iprp) {
+            return true;
+        }
+        if (props.empty() && !has_ipma) {
+            out_box->insert(out_box->end(),
+                            bytes.begin()
+                                + static_cast<std::ptrdiff_t>(ctx.iprp.offset),
+                            bytes.begin()
+                                + static_cast<std::ptrdiff_t>(ctx.iprp.offset
+                                                              + ctx.iprp.size));
+            return true;
         }
 
         std::vector<uint32_t> property_indices;
@@ -26726,7 +27280,8 @@ namespace {
         }
 
         std::vector<std::byte> ipco_box;
-        if (!append_bmff_box_bytes_checked(
+        if ((has_ipco || !props.empty())
+            && !append_bmff_box_bytes_checked(
                 &ipco_box, fourcc('i', 'p', 'c', 'o'),
                 std::span<const std::byte>(ipco_payload.data(),
                                            ipco_payload.size()))) {
@@ -26738,14 +27293,13 @@ namespace {
 
         std::vector<std::byte> ipma_box;
         if (has_ipma) {
-            if (!build_bmff_foreign_merged_ipma_box(bytes, ipma,
-                                                    ctx.primary_item_id,
-                                                    existing_property_index_map,
-                                                    property_indices, &ipma_box,
-                                                    out)) {
+            if (!build_bmff_foreign_merged_ipma_box(
+                    bytes, ipma, ctx.primary_item_id,
+                    existing_property_index_map, property_indices,
+                    removed_item_ids, replacements, &ipma_box, out)) {
                 return false;
             }
-        } else {
+        } else if (!property_indices.empty()) {
             if (!build_bmff_foreign_new_ipma_box(ctx.primary_item_id,
                                                  property_indices, &ipma_box,
                                                  out)) {
@@ -26772,13 +27326,17 @@ namespace {
                 }
 
                 if (child.type == fourcc('i', 'p', 'c', 'o')) {
-                    iprp_payload.insert(iprp_payload.end(), ipco_box.begin(),
-                                        ipco_box.end());
+                    if (!ipco_box.empty()) {
+                        iprp_payload.insert(iprp_payload.end(),
+                                            ipco_box.begin(), ipco_box.end());
+                    }
                     wrote_ipco = true;
                 } else if (child.type == fourcc('i', 'p', 'm', 'a')
                            && has_ipma) {
-                    iprp_payload.insert(iprp_payload.end(), ipma_box.begin(),
-                                        ipma_box.end());
+                    if (!ipma_box.empty()) {
+                        iprp_payload.insert(iprp_payload.end(),
+                                            ipma_box.begin(), ipma_box.end());
+                    }
                     wrote_ipma = true;
                 } else {
                     iprp_payload.insert(iprp_payload.end(),
@@ -26795,19 +27353,23 @@ namespace {
                 }
                 off += child.size;
             }
-            if (!wrote_ipco) {
+            if (!wrote_ipco && !ipco_box.empty()) {
                 iprp_payload.insert(iprp_payload.end(), ipco_box.begin(),
                                     ipco_box.end());
             }
-            if (!wrote_ipma) {
+            if (!wrote_ipma && !ipma_box.empty()) {
                 iprp_payload.insert(iprp_payload.end(), ipma_box.begin(),
                                     ipma_box.end());
             }
         } else {
-            iprp_payload.insert(iprp_payload.end(), ipco_box.begin(),
-                                ipco_box.end());
-            iprp_payload.insert(iprp_payload.end(), ipma_box.begin(),
-                                ipma_box.end());
+            if (!ipco_box.empty()) {
+                iprp_payload.insert(iprp_payload.end(), ipco_box.begin(),
+                                    ipco_box.end());
+            }
+            if (!ipma_box.empty()) {
+                iprp_payload.insert(iprp_payload.end(), ipma_box.begin(),
+                                    ipma_box.end());
+            }
         }
 
         if (!append_bmff_box_bytes_checked(
@@ -26872,6 +27434,10 @@ namespace {
             }
         }
 
+        std::vector<BmffForeignManagedItemReplacement> replacements;
+        bmff_build_managed_item_replacements(entries, removed_item_ids, items,
+                                             &replacements);
+
         if (!bmff_validate_foreign_iloc_records_for_merge(bytes, ctx, records,
                                                           removed_item_ids,
                                                           out)) {
@@ -26887,7 +27453,9 @@ namespace {
 
         const bool write_idat_box = ctx.has_idat || !items.empty();
         const bool write_iref_box = ctx.has_iref || !items.empty();
-        const bool write_iprp_box = !props.empty();
+        const bool write_grpl_box = ctx.has_grpl && !removed_item_ids.empty();
+        const bool write_iprp_box
+            = !props.empty() || (ctx.has_iprp && !removed_item_ids.empty());
 
         std::vector<uint64_t> item_offsets;
         std::vector<std::byte> idat_box;
@@ -26902,7 +27470,17 @@ namespace {
         std::vector<std::byte> iref_box;
         if (write_iref_box) {
             if (!build_bmff_foreign_merge_iref_box(bytes, ctx, removed_item_ids,
-                                                   items, &iref_box, out)) {
+                                                   replacements, items,
+                                                   &iref_box, out)) {
+                return false;
+            }
+        }
+
+        std::vector<std::byte> grpl_box;
+        if (write_grpl_box) {
+            if (!build_bmff_foreign_merge_grpl_box(bytes, ctx, removed_item_ids,
+                                                   replacements, &grpl_box,
+                                                   out)) {
                 return false;
             }
         }
@@ -26910,7 +27488,9 @@ namespace {
         std::vector<std::byte> iprp_box;
         if (write_iprp_box) {
             if (!build_bmff_foreign_merge_iprp_box(bytes, ctx, bundle, props,
-                                                   &iprp_box, out)) {
+                                                   removed_item_ids,
+                                                   replacements, &iprp_box,
+                                                   out)) {
                 return false;
             }
         }
@@ -26968,6 +27548,9 @@ namespace {
                        && write_iref_box) {
                 child_size   = iref_box.size();
                 counted_iref = true;
+            } else if (child.type == fourcc('g', 'r', 'p', 'l')
+                       && write_grpl_box) {
+                child_size = grpl_box.size();
             } else if (child.type == fourcc('i', 'p', 'r', 'p')
                        && write_iprp_box) {
                 child_size   = iprp_box.size();
@@ -27074,6 +27657,9 @@ namespace {
                        && write_iref_box) {
                 payload.insert(payload.end(), iref_box.begin(), iref_box.end());
                 wrote_iref = true;
+            } else if (child.type == fourcc('g', 'r', 'p', 'l')
+                       && write_grpl_box) {
+                payload.insert(payload.end(), grpl_box.begin(), grpl_box.end());
             } else if (child.type == fourcc('i', 'p', 'r', 'p')
                        && write_iprp_box) {
                 payload.insert(payload.end(), iprp_box.begin(), iprp_box.end());
@@ -32031,7 +32617,7 @@ persist_prepared_transfer_file_result(
                 = atomic_write_file_bytes(out.xmp_sidecar_path, sidecar_bytes,
                                           options.overwrite_xmp_sidecar);
             if (write_status != AtomicWriteStatus::Ok) {
-                out.xmp_sidecar_status  = TransferStatus::Unsupported;
+                out.xmp_sidecar_status = TransferStatus::Unsupported;
                 out.xmp_sidecar_message
                     = write_status == AtomicWriteStatus::Exists
                           ? "xmp sidecar path exists"

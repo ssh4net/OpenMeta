@@ -1,5 +1,32 @@
 # OpenMeta Changes
 
+## 0.4.96 - 2026-08-14
+
+Changes compared with `0.4.95`.
+
+### Added
+
+- Added bounded writer support for retained HEIF/AVIF/CR3 `iloc` records that
+  use an explicitly self-contained version-0 `dinf`/`dref` `url ` or `urn `
+  data entry. Non-self-contained and unresolved data references still fail
+  closed.
+- Added HEIF, AVIF, and CR3 regressions for self-contained data references,
+  managed metadata relation/property remapping, strip cleanup, malformed item
+  groups, and unsupported item-group versions.
+- Made the metadata-transfer and EXR-adapter test sources self-contained and
+  portable to MSVC, including the required large-object and UTF-8 source
+  compile modes, so the same writer regressions can run on Windows.
+
+### Changed
+
+- Replacing a single unambiguous managed BMFF Exif, XMP, JUMBF, or C2PA item
+  now remaps its item ID in retained `iref` relations, version-0 `grpl` item
+  groups, and `ipma` associations. Strip operations and ambiguous replacements
+  remove stale references instead of preserving dangling item IDs.
+- Existing non-ICC `ipco` properties and their `ipma` associations are now
+  preserved while managed metadata item IDs are remapped independently of ICC
+  replacement.
+
 ## 0.4.95 - 2026-08-12
 
 Changes compared with `0.4.94`.

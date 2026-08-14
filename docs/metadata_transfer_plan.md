@@ -68,7 +68,7 @@ XMP-capable targets.
 | WebP | Bounded but real | Prepared bundle, compiled emit, bounded chunk rewrite/edit, file-helper roundtrip | Not a general WebP chunk editor |
 | JP2 | Bounded but real | Prepared bundle, compiled emit, bounded box rewrite/edit, file-helper roundtrip | `jp2h` synthesis is still out of scope |
 | JXL | Bounded but real | Prepared bundle, compiled emit, bounded box rewrite/edit, file-helper roundtrip | Still narrower than JPEG/TIFF |
-| HEIF / AVIF / CR3 | Bounded but real | Prepared bundle, compiled emit, direct prepared item/property payload byte-writer handoff, OpenMeta-managed BMFF item/property edit, constrained foreign-`meta` item merge/replacement/strip plus bounded ICC property merge, file-helper roundtrip | Direct payload output is a host handoff rather than a standalone BMFF file; arbitrary foreign `meta` scene/property-graph rewrite is still unsupported |
+| HEIF / AVIF / CR3 | Bounded but real | Prepared bundle, compiled emit, direct prepared item/property payload byte-writer handoff, OpenMeta-managed BMFF item/property edit, constrained foreign-`meta` item merge/replacement/strip, managed item-ID remapping across `iref`/version-0 `grpl`/`ipma`, plus bounded ICC property merge, file-helper roundtrip | Direct payload output is a host handoff rather than a standalone BMFF file; arbitrary foreign `meta` scene/property-graph rewrite is still unsupported |
 | EXR | Bounded but real | Prepared bundle, compiled emit, direct backend attribute emit, prepared-bundle to `ExrAdapterBatch` bridge, CLI/Python transfer surface | No file rewrite/edit path yet; current transfer payload is safe string attributes only |
 
 ## What Is Already Implemented
@@ -359,12 +359,18 @@ Implemented as a bounded BMFF target family:
 - inserted metadata item records keep `iloc` construction method 0 and use
   absolute file-offset extents for broad reader compatibility
 - retained foreign item locations support construction method 0 file offsets
-  and construction method 1 `idat` extents with data reference index 0
+  and construction method 1 `idat` extents with data reference index 0 or an
+  explicitly self-contained version-0 `dinf`/`dref` `url ` or `urn ` entry
 - retained construction method 2 item-reference extents are supported when
   `iref` `iloc` references are parseable by explicit extent index or reference
   order and referenced items are also retained with supported local locations;
-  missing references, removed referenced items, external data references, and
-  other construction methods fail safely
+  its referenced target records remain limited to data reference index 0;
+  missing references, removed referenced items, non-self-contained data
+  references, and other construction methods fail safely
+- unambiguous one-old-to-one-new managed Exif, XMP, JUMBF, and C2PA item
+  replacement remaps retained `iref` endpoints, version-0 `grpl` item-group
+  members, and `ipma` item associations; strip and ambiguous replacement paths
+  remove references to deleted managed item IDs instead of leaving them stale
 - rebuilt foreign `iloc` graphs compact foldable self-contained base offsets to
   a zero-width base-offset field when safe
 - bounded foreign top-level `meta` ICC property merge by replacing prior ICC

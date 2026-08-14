@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -1447,11 +1448,19 @@ static std::vector<std::byte>
 make_test_bmff_exif_item_payload();
 
 static std::vector<std::byte>
-make_bmff_foreign_meta_iloc_method_target(uint16_t construction_method,
-                                          uint16_t data_reference_index,
-                                          bool include_idat)
+make_bmff_foreign_meta_iloc_method_target(
+    uint16_t construction_method, uint16_t data_reference_index,
+    bool include_idat, bool include_dref = false,
+    bool dref_self_contained = false,
+    uint32_t major_brand     = openmeta::fourcc('h', 'e', 'i', 'c'))
 {
-    std::vector<std::byte> out = make_minimal_bmff_file();
+    const std::array<uint32_t, 2> compatible_brands = {
+        openmeta::fourcc('m', 'i', 'f', '1'),
+        major_brand,
+    };
+    std::vector<std::byte> out = make_minimal_bmff_file(
+        major_brand, std::span<const uint32_t>(compatible_brands.data(),
+                                               compatible_brands.size()));
 
     std::vector<std::byte> pitm_payload;
     append_bmff_fullbox_header(&pitm_payload, 0U);
@@ -1507,11 +1516,43 @@ make_bmff_foreign_meta_iloc_method_target(uint16_t construction_method,
                                                    image_payload.size()));
     }
 
+    std::vector<std::byte> dinf_box;
+    if (include_dref) {
+        std::vector<std::byte> url_payload;
+        append_bmff_fullbox_header(&url_payload, 0U);
+        if (dref_self_contained) {
+            url_payload[3] = std::byte { 0x01 };
+        } else {
+            append_bytes(&url_payload, "metadata.bin");
+            url_payload.push_back(std::byte { 0x00 });
+        }
+        std::vector<std::byte> url_box;
+        append_bmff_box(&url_box, openmeta::fourcc('u', 'r', 'l', ' '),
+                        std::span<const std::byte>(url_payload.data(),
+                                                   url_payload.size()));
+
+        std::vector<std::byte> dref_payload;
+        append_bmff_fullbox_header(&dref_payload, 0U);
+        append_u32be(&dref_payload, 1U);
+        dref_payload.insert(dref_payload.end(), url_box.begin(), url_box.end());
+        std::vector<std::byte> dref_box;
+        append_bmff_box(&dref_box, openmeta::fourcc('d', 'r', 'e', 'f'),
+                        std::span<const std::byte>(dref_payload.data(),
+                                                   dref_payload.size()));
+        append_bmff_box(&dinf_box, openmeta::fourcc('d', 'i', 'n', 'f'),
+                        std::span<const std::byte>(dref_box.data(),
+                                                   dref_box.size()));
+    }
+
     std::vector<std::byte> meta_payload;
     append_bmff_fullbox_header(&meta_payload, 0U);
     meta_payload.insert(meta_payload.end(), pitm_box.begin(), pitm_box.end());
     meta_payload.insert(meta_payload.end(), iinf_box.begin(), iinf_box.end());
     meta_payload.insert(meta_payload.end(), iloc_box.begin(), iloc_box.end());
+    if (include_dref) {
+        meta_payload.insert(meta_payload.end(), dinf_box.begin(),
+                            dinf_box.end());
+    }
     if (include_idat) {
         meta_payload.insert(meta_payload.end(), idat_box.begin(),
                             idat_box.end());
@@ -1797,7 +1838,9 @@ make_bmff_foreign_meta_iloc_method2_reference_target(
 }
 
 static std::vector<std::byte>
-make_bmff_foreign_meta_existing_exif_xmp_target()
+make_bmff_foreign_meta_existing_exif_xmp_target(bool include_graph_extensions
+                                                = false,
+                                                uint8_t grpl_version = 0U)
 {
     std::vector<std::byte> out = make_minimal_bmff_file();
 
@@ -1917,6 +1960,18 @@ make_bmff_foreign_meta_existing_exif_xmp_target()
     std::vector<std::byte> iref_payload;
     append_bmff_fullbox_header(&iref_payload, 0U);
     iref_payload.insert(iref_payload.end(), cdsc_box.begin(), cdsc_box.end());
+    if (include_graph_extensions) {
+        std::vector<std::byte> auxl_payload;
+        append_u16be(&auxl_payload, 1U);
+        append_u16be(&auxl_payload, 1U);
+        append_u16be(&auxl_payload, 3U);
+        std::vector<std::byte> auxl_box;
+        append_bmff_box(&auxl_box, openmeta::fourcc('a', 'u', 'x', 'l'),
+                        std::span<const std::byte>(auxl_payload.data(),
+                                                   auxl_payload.size()));
+        iref_payload.insert(iref_payload.end(), auxl_box.begin(),
+                            auxl_box.end());
+    }
     std::vector<std::byte> iref_box;
     append_bmff_box(&iref_box, openmeta::fourcc('i', 'r', 'e', 'f'),
                     std::span<const std::byte>(iref_payload.data(),
@@ -1927,12 +1982,69 @@ make_bmff_foreign_meta_existing_exif_xmp_target()
                     std::span<const std::byte>(idat_payload.data(),
                                                idat_payload.size()));
 
+    std::vector<std::byte> grpl_box;
+    std::vector<std::byte> iprp_box;
+    if (include_graph_extensions) {
+        std::vector<std::byte> group_payload;
+        append_bmff_fullbox_header(&group_payload, grpl_version);
+        append_u32be(&group_payload, 10U);
+        append_u32be(&group_payload, 2U);
+        append_u32be(&group_payload, 1U);
+        append_u32be(&group_payload, 3U);
+        std::vector<std::byte> group_box;
+        append_bmff_box(&group_box, openmeta::fourcc('a', 'l', 't', 'r'),
+                        std::span<const std::byte>(group_payload.data(),
+                                                   group_payload.size()));
+        append_bmff_box(&grpl_box, openmeta::fourcc('g', 'r', 'p', 'l'),
+                        std::span<const std::byte>(group_box.data(),
+                                                   group_box.size()));
+
+        std::vector<std::byte> ispe_payload;
+        append_bmff_fullbox_header(&ispe_payload, 0U);
+        append_u32be(&ispe_payload, 64U);
+        append_u32be(&ispe_payload, 32U);
+        std::vector<std::byte> ispe_box;
+        append_bmff_box(&ispe_box, openmeta::fourcc('i', 's', 'p', 'e'),
+                        std::span<const std::byte>(ispe_payload.data(),
+                                                   ispe_payload.size()));
+        std::vector<std::byte> ipco_box;
+        append_bmff_box(&ipco_box, openmeta::fourcc('i', 'p', 'c', 'o'),
+                        std::span<const std::byte>(ispe_box.data(),
+                                                   ispe_box.size()));
+
+        std::vector<std::byte> ipma_payload;
+        append_bmff_fullbox_header(&ipma_payload, 0U);
+        append_u32be(&ipma_payload, 1U);
+        append_u16be(&ipma_payload, 3U);
+        ipma_payload.push_back(std::byte { 0x01 });
+        ipma_payload.push_back(std::byte { 0x01 });
+        std::vector<std::byte> ipma_box;
+        append_bmff_box(&ipma_box, openmeta::fourcc('i', 'p', 'm', 'a'),
+                        std::span<const std::byte>(ipma_payload.data(),
+                                                   ipma_payload.size()));
+
+        std::vector<std::byte> iprp_payload;
+        iprp_payload.insert(iprp_payload.end(), ipco_box.begin(),
+                            ipco_box.end());
+        iprp_payload.insert(iprp_payload.end(), ipma_box.begin(),
+                            ipma_box.end());
+        append_bmff_box(&iprp_box, openmeta::fourcc('i', 'p', 'r', 'p'),
+                        std::span<const std::byte>(iprp_payload.data(),
+                                                   iprp_payload.size()));
+    }
+
     std::vector<std::byte> meta_payload;
     append_bmff_fullbox_header(&meta_payload, 0U);
     meta_payload.insert(meta_payload.end(), pitm_box.begin(), pitm_box.end());
     meta_payload.insert(meta_payload.end(), iinf_box.begin(), iinf_box.end());
     meta_payload.insert(meta_payload.end(), iloc_box.begin(), iloc_box.end());
     meta_payload.insert(meta_payload.end(), iref_box.begin(), iref_box.end());
+    if (include_graph_extensions) {
+        meta_payload.insert(meta_payload.end(), grpl_box.begin(),
+                            grpl_box.end());
+        meta_payload.insert(meta_payload.end(), iprp_box.begin(),
+                            iprp_box.end());
+    }
     meta_payload.insert(meta_payload.end(), idat_box.begin(), idat_box.end());
 
     std::vector<std::byte> meta_box;
@@ -2608,11 +2720,12 @@ read_test_bmff_primary_iloc_extent_offset(std::span<const std::byte> bytes,
 }
 
 struct TestBmffIlocRecordInfo final {
-    uint32_t item_id             = 0U;
-    uint16_t construction_method = 0U;
-    uint64_t base_offset         = 0U;
-    uint64_t extent_offset       = 0U;
-    uint64_t extent_length       = 0U;
+    uint32_t item_id              = 0U;
+    uint16_t construction_method  = 0U;
+    uint16_t data_reference_index = 0U;
+    uint64_t base_offset          = 0U;
+    uint64_t extent_offset        = 0U;
+    uint64_t extent_length        = 0U;
 };
 
 static bool
@@ -2716,9 +2829,11 @@ read_test_bmff_iloc_record(std::span<const std::byte> bytes,
                 return false;
             }
 
-            uint64_t base_offset  = 0U;
-            uint64_t extent_count = 0U;
-            if (!skip_test_bmff_iloc_u_nbe(&cursor, end, 2U)
+            uint64_t raw_data_reference_index = 0U;
+            uint64_t base_offset              = 0U;
+            uint64_t extent_count             = 0U;
+            if (!read_test_bmff_iloc_u_nbe(bytes, &cursor, end, 2U,
+                                           &raw_data_reference_index)
                 || !read_test_bmff_iloc_u_nbe(bytes, &cursor, end, base_size,
                                               &base_offset)
                 || !read_test_bmff_iloc_u_nbe(bytes, &cursor, end, 2U,
@@ -2756,6 +2871,8 @@ read_test_bmff_iloc_record(std::span<const std::byte> bytes,
                 out->item_id             = static_cast<uint32_t>(raw_item_id);
                 out->construction_method = static_cast<uint16_t>(
                     raw_construction_method & 0x000FULL);
+                out->data_reference_index = static_cast<uint16_t>(
+                    raw_data_reference_index);
                 out->base_offset   = base_offset;
                 out->extent_offset = first_extent_offset;
                 out->extent_length = first_extent_length;
@@ -3060,6 +3177,60 @@ count_test_bmff_iref_relations(std::span<const std::byte> bytes,
                     *out_count += 1U;
                 }
             }
+        }
+        off += box_size;
+    }
+    return off == end;
+}
+
+static bool
+count_test_bmff_grpl_entities(std::span<const std::byte> bytes,
+                              uint32_t group_type, uint32_t entity_id,
+                              uint32_t* out_count) noexcept
+{
+    if (!out_count) {
+        return false;
+    }
+    *out_count = 0U;
+
+    size_t grpl_off  = 0U;
+    size_t grpl_size = 0U;
+    if (!find_top_level_bmff_meta_child_box(
+            bytes, openmeta::fourcc('g', 'r', 'p', 'l'), &grpl_off, &grpl_size)
+        || grpl_size < 8U || grpl_off > bytes.size()
+        || grpl_size > bytes.size() - grpl_off) {
+        return false;
+    }
+
+    const size_t end = grpl_off + grpl_size;
+    size_t off       = grpl_off + 8U;
+    while (off + 8U <= end) {
+        uint32_t box_size = 0U;
+        uint32_t box_type = 0U;
+        if (!read_test_u32be(bytes, off, &box_size)
+            || !read_test_u32be(bytes, off + 4U, &box_type) || box_size < 20U
+            || box_size > end - off) {
+            return false;
+        }
+        const size_t payload = off + 8U;
+        if (bytes[payload] != std::byte { 0U }) {
+            return false;
+        }
+        uint32_t entity_count = 0U;
+        if (!read_test_u32be(bytes, payload + 8U, &entity_count)
+            || entity_count > (box_size - 20U) / 4U) {
+            return false;
+        }
+        size_t cursor = payload + 12U;
+        for (uint32_t i = 0U; i < entity_count; ++i) {
+            uint32_t value = 0U;
+            if (!read_test_u32be(bytes, cursor, &value)) {
+                return false;
+            }
+            if (box_type == group_type && value == entity_id) {
+                *out_count += 1U;
+            }
+            cursor += 4U;
         }
         off += box_size;
     }
@@ -43172,7 +43343,8 @@ TEST(MetadataTransferApi,
     bundle.blocks.push_back(exif);
 
     const std::vector<std::byte> input
-        = make_bmff_foreign_meta_iloc_method_target(0x0001U, 1U, true);
+        = make_bmff_foreign_meta_iloc_method_target(0x0001U, 1U, true, true,
+                                                    false);
 
     openmeta::ExecutePreparedTransferOptions options;
     options.edit_requested = true;
@@ -43185,10 +43357,82 @@ TEST(MetadataTransferApi,
 
     EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::Unsupported);
     EXPECT_NE(result.edit_plan_message.find(
-                  "iloc external data references are not supported"),
+                  "iloc data reference is not self-contained"),
               std::string::npos);
     EXPECT_EQ(result.edit_apply.status, openmeta::TransferStatus::Unsupported);
     EXPECT_TRUE(result.edited_output.empty());
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditAcceptsSelfContainedDataReference)
+{
+    struct Case final {
+        openmeta::TransferTargetFormat format
+            = openmeta::TransferTargetFormat::Heif;
+        uint32_t major_brand = 0U;
+    };
+    const std::array<Case, 3> cases = {
+        Case { openmeta::TransferTargetFormat::Heif,
+               openmeta::fourcc('h', 'e', 'i', 'c') },
+        Case { openmeta::TransferTargetFormat::Avif,
+               openmeta::fourcc('a', 'v', 'i', 'f') },
+        Case { openmeta::TransferTargetFormat::Cr3,
+               openmeta::fourcc('c', 'r', 'x', ' ') },
+    };
+
+    for (const Case& one : cases) {
+        for (uint16_t method = 0U; method <= 1U; ++method) {
+            openmeta::PreparedTransferBundle bundle;
+            bundle.target_format = one.format;
+
+            openmeta::PreparedTransferBlock exif;
+            exif.route   = "bmff:item-exif";
+            exif.payload = make_test_bmff_exif_item_payload();
+            bundle.blocks.push_back(exif);
+
+            const std::vector<std::byte> input
+                = make_bmff_foreign_meta_iloc_method_target(method, 1U,
+                                                            method == 1U, true,
+                                                            true,
+                                                            one.major_brand);
+
+            openmeta::ExecutePreparedTransferOptions options;
+            options.edit_requested = true;
+            options.edit_apply     = true;
+
+            const openmeta::ExecutePreparedTransferResult result
+                = openmeta::execute_prepared_transfer(
+                    &bundle,
+                    std::span<const std::byte>(input.data(), input.size()),
+                    options);
+
+            ASSERT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok);
+            ASSERT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+            ASSERT_FALSE(result.edited_output.empty());
+            const std::span<const std::byte> edited(result.edited_output.data(),
+                                                    result.edited_output.size());
+            EXPECT_TRUE(payload_contains_ascii(edited, "dinf"));
+            EXPECT_TRUE(payload_contains_ascii(edited, "dref"));
+
+            TestBmffIlocRecordInfo primary;
+            ASSERT_TRUE(read_test_bmff_iloc_record(edited, 1U, &primary));
+            EXPECT_EQ(primary.construction_method, method);
+            EXPECT_EQ(primary.data_reference_index, 1U);
+
+            TestBmffIlocRecordInfo inserted;
+            ASSERT_TRUE(read_test_bmff_iloc_record(edited, 2U, &inserted));
+            EXPECT_EQ(inserted.construction_method, 0U);
+            EXPECT_EQ(inserted.data_reference_index, 0U);
+
+            std::array<openmeta::ContainerBlockRef, 16> blocks {};
+            const openmeta::ScanResult scan = openmeta::scan_bmff(
+                edited, std::span<openmeta::ContainerBlockRef>(blocks.data(),
+                                                               blocks.size()));
+            ASSERT_EQ(scan.status, openmeta::ScanStatus::Ok);
+            ASSERT_EQ(scan.written, 1U);
+            EXPECT_EQ(blocks[0].kind, openmeta::ContainerBlockKind::Exif);
+        }
+    }
 }
 
 TEST(MetadataTransferApi,
@@ -43831,6 +44075,187 @@ TEST(MetadataTransferApi,
     ASSERT_TRUE(count_test_bmff_iref_relations(
         edited, openmeta::fourcc('c', 'd', 's', 'c'), false, 0U, 1U, &count));
     EXPECT_EQ(count, 2U);
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditPreservesManagedItemGraphReferences)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+    openmeta::PreparedTransferBlock xmp;
+    xmp.route   = "bmff:item-xmp";
+    xmp.payload = { std::byte { '<' }, std::byte { 'n' }, std::byte { 'e' },
+                    std::byte { 'w' }, std::byte { '/' }, std::byte { '>' } };
+    bundle.blocks.push_back(xmp);
+
+    const std::vector<std::byte> input
+        = make_bmff_foreign_meta_existing_exif_xmp_target(true);
+
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested = true;
+    options.edit_apply     = true;
+
+    const openmeta::ExecutePreparedTransferResult result
+        = openmeta::execute_prepared_transfer(
+            &bundle, std::span<const std::byte>(input.data(), input.size()),
+            options);
+
+    ASSERT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok);
+    ASSERT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+    ASSERT_FALSE(result.edited_output.empty());
+    const std::span<const std::byte> edited(result.edited_output.data(),
+                                            result.edited_output.size());
+
+    uint32_t count = 0U;
+    ASSERT_TRUE(count_test_bmff_iref_relations(
+        edited, openmeta::fourcc('a', 'u', 'x', 'l'), true, 1U, 4U, &count));
+    EXPECT_EQ(count, 1U);
+    ASSERT_TRUE(count_test_bmff_iref_relations(
+        edited, openmeta::fourcc('a', 'u', 'x', 'l'), true, 1U, 3U, &count));
+    EXPECT_EQ(count, 0U);
+    ASSERT_TRUE(count_test_bmff_iref_relations(
+        edited, openmeta::fourcc('c', 'd', 's', 'c'), true, 4U, 1U, &count));
+    EXPECT_EQ(count, 1U);
+
+    ASSERT_TRUE(count_test_bmff_grpl_entities(
+        edited, openmeta::fourcc('a', 'l', 't', 'r'), 4U, &count));
+    EXPECT_EQ(count, 1U);
+    ASSERT_TRUE(count_test_bmff_grpl_entities(
+        edited, openmeta::fourcc('a', 'l', 't', 'r'), 3U, &count));
+    EXPECT_EQ(count, 0U);
+
+    uint32_t association_count = 0U;
+    uint32_t property_count    = 0U;
+    ASSERT_TRUE(read_test_bmff_ipma_item_property_count(edited, 4U, 1U,
+                                                        &association_count,
+                                                        &property_count));
+    EXPECT_EQ(association_count, 1U);
+    EXPECT_EQ(property_count, 1U);
+    EXPECT_FALSE(read_test_bmff_ipma_item_property_count(edited, 3U, 1U,
+                                                         &association_count,
+                                                         &property_count));
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditStripsManagedItemGraphReferences)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+    const std::vector<std::byte> input
+        = make_bmff_foreign_meta_existing_exif_xmp_target(true);
+
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested     = true;
+    options.edit_apply         = true;
+    options.strip_existing_xmp = true;
+
+    const openmeta::ExecutePreparedTransferResult result
+        = openmeta::execute_prepared_transfer(
+            &bundle, std::span<const std::byte>(input.data(), input.size()),
+            options);
+
+    ASSERT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok);
+    ASSERT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+    ASSERT_FALSE(result.edited_output.empty());
+    const std::span<const std::byte> edited(result.edited_output.data(),
+                                            result.edited_output.size());
+
+    uint32_t count = 0U;
+    ASSERT_TRUE(count_test_bmff_iref_relations(
+        edited, openmeta::fourcc('a', 'u', 'x', 'l'), true, 1U, 3U, &count));
+    EXPECT_EQ(count, 0U);
+    ASSERT_TRUE(count_test_bmff_iref_relations(
+        edited, openmeta::fourcc('c', 'd', 's', 'c'), true, 3U, 1U, &count));
+    EXPECT_EQ(count, 0U);
+    ASSERT_TRUE(count_test_bmff_grpl_entities(
+        edited, openmeta::fourcc('a', 'l', 't', 'r'), 1U, &count));
+    EXPECT_EQ(count, 1U);
+    ASSERT_TRUE(count_test_bmff_grpl_entities(
+        edited, openmeta::fourcc('a', 'l', 't', 'r'), 3U, &count));
+    EXPECT_EQ(count, 0U);
+
+    uint32_t association_count = 0U;
+    uint32_t property_count    = 0U;
+    EXPECT_FALSE(read_test_bmff_ipma_item_property_count(edited, 3U, 1U,
+                                                         &association_count,
+                                                         &property_count));
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditRejectsUnsupportedManagedItemGroup)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+    openmeta::PreparedTransferBlock xmp;
+    xmp.route   = "bmff:item-xmp";
+    xmp.payload = { std::byte { '<' }, std::byte { 'x' }, std::byte { '/' },
+                    std::byte { '>' } };
+    bundle.blocks.push_back(xmp);
+
+    const std::vector<std::byte> input
+        = make_bmff_foreign_meta_existing_exif_xmp_target(true, 1U);
+
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested = true;
+    options.edit_apply     = true;
+
+    const openmeta::ExecutePreparedTransferResult result
+        = openmeta::execute_prepared_transfer(
+            &bundle, std::span<const std::byte>(input.data(), input.size()),
+            options);
+
+    EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::Unsupported);
+    EXPECT_NE(result.edit_plan_message.find(
+                  "grpl entity group version is not supported"),
+              std::string::npos);
+    EXPECT_EQ(result.edit_apply.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(result.edited_output.empty());
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditRejectsTruncatedManagedItemGroup)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+    openmeta::PreparedTransferBlock xmp;
+    xmp.route   = "bmff:item-xmp";
+    xmp.payload = { std::byte { '<' }, std::byte { 'x' }, std::byte { '/' },
+                    std::byte { '>' } };
+    bundle.blocks.push_back(xmp);
+
+    std::vector<std::byte> input
+        = make_bmff_foreign_meta_existing_exif_xmp_target(true);
+    size_t grpl_off  = 0U;
+    size_t grpl_size = 0U;
+    ASSERT_TRUE(find_top_level_bmff_meta_child_box(
+        std::span<const std::byte>(input.data(), input.size()),
+        openmeta::fourcc('g', 'r', 'p', 'l'), &grpl_off, &grpl_size));
+    size_t group_off  = 0U;
+    size_t group_size = 0U;
+    ASSERT_TRUE(find_test_bmff_child_box(
+        std::span<const std::byte>(input.data(), input.size()), grpl_off + 8U,
+        grpl_off + grpl_size, openmeta::fourcc('a', 'l', 't', 'r'), &group_off,
+        &group_size));
+    ASSERT_GE(group_size, 28U);
+    ASSERT_TRUE(write_test_u32be(&input, group_off + 16U, 3U));
+
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested = true;
+    options.edit_apply     = true;
+
+    const openmeta::ExecutePreparedTransferResult result
+        = openmeta::execute_prepared_transfer(
+            &bundle, std::span<const std::byte>(input.data(), input.size()),
+            options);
+
+    EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::Malformed);
+    EXPECT_NE(result.edit_plan_message.find("grpl entity table is truncated"),
+              std::string::npos);
+    EXPECT_NE(result.edit_apply.status, openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(result.edited_output.empty());
 }
 
 TEST(MetadataTransferApi,

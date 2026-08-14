@@ -1018,6 +1018,9 @@ if(OPENMETA_BUILD_TESTS)
       src/openmeta/interop_value_format_internal.cc)
   endif()
   target_link_libraries(openmeta_tests PRIVATE ${OPENMETA_LIB_TARGET} gtest_main)
+  if(MSVC)
+    target_compile_options(openmeta_tests PRIVATE /bigobj /utf-8)
+  endif()
   # Tests need to select expectations matching the library configuration, but
   # those implementation flags must not become installed consumer usage
   # requirements of the shared library.

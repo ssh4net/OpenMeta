@@ -133,7 +133,7 @@ when the active plane is unknown.
 | `WebP` | `EXIF`, XMP RIFF chunk, `ICCP`, bounded `C2PA` | Replace matching managed RIFF chunks; preserve unrelated chunks; patch `VP8X` feature bits | EXIF/XMP/ICC edits require an existing `VP8X` chunk |
 | `JP2` | top-level `Exif`, top-level XMP `xml` box, `jp2h/colr` ICC | Replace matching top-level metadata boxes; rewrite `jp2h` only to replace/insert `colr`; preserve unrelated boxes and unrelated `jp2h` children | Does not synthesize `jp2h`; requires one existing `jp2h` for ICC |
 | `JXL` | top-level `Exif`, XMP `xml` box, `jumb`, `c2pa` | Replace matching top-level boxes; preserve signature and non-managed boxes; classify `jumb` as generic JUMBF or C2PA | ICC is encoder handoff only; file edit emits uncompressed prepared metadata boxes |
-| `HEIF` / `AVIF` / `CR3` | BMFF metadata items (`Exif`, XMP `mime`, JUMBF/C2PA), bounded `colr/prof` ICC properties, plus OpenMeta-authored metadata-only `meta` boxes | Preserve non-`meta` top-level boxes; replace prior OpenMeta-authored metadata `meta`; merge/replace/strip item metadata in parseable foreign top-level `meta` graphs by extending `iinf`/`iloc`/`idat`/`iref`; replace prior ICC `colr` properties and remap `iprp`/`ipco`/`ipma` for bounded ICC | Does not rewrite arbitrary BMFF scene/property graphs |
+| `HEIF` / `AVIF` / `CR3` | BMFF metadata items (`Exif`, XMP `mime`, JUMBF/C2PA), bounded `colr/prof` ICC properties, plus OpenMeta-authored metadata-only `meta` boxes | Preserve non-`meta` top-level boxes; replace prior OpenMeta-authored metadata `meta`; merge/replace/strip item metadata in parseable foreign top-level `meta` graphs by extending `iinf`/`iloc`/`idat`/`iref`; remap unambiguous managed item replacements across `iref`/version-0 `grpl`/`ipma`; replace prior ICC `colr` properties and remap `iprp`/`ipco`/`ipma` for bounded ICC | Does not rewrite arbitrary BMFF scene/property graphs |
 | `EXR` | safe string header attributes through the EXR transfer emitter or adapter batch | No file rewrite contract today; host applies prepared attributes through its own EXR writer | Attribute-emitter target, not a file edit path |
 
 ## JPEG
@@ -290,12 +290,22 @@ width to zero for simpler reader compatibility.
 
 Retained foreign item locations are supported when they use construction method
 0 with file offsets, or construction method 1 with offsets into an existing
-`idat`, with data reference index 0. Construction method 2 is supported only
-when the retained item has parseable `iref` `iloc` references, using explicit
-extent indexes or reference order, and every referenced item is also retained
-with a supported local location. External data references, missing method-2
-references, removed referenced items, and other construction methods fail as
-unsupported instead of being rewritten by guesswork.
+`idat`, with data reference index 0 or an explicitly parsed self-contained
+version-0 `dinf`/`dref` `url ` or `urn ` entry. Construction method 2 is
+supported only when the retained item has parseable `iref` `iloc` references,
+using explicit extent indexes or reference order, and every referenced item is
+also retained with a supported local location and data reference index 0.
+Non-self-contained data references, missing method-2 references, removed
+referenced items, and other construction methods fail as unsupported instead
+of being rewritten by guesswork.
+
+When exactly one removed managed item and one inserted item belong to the same
+Exif, XMP, JUMBF, or C2PA family, OpenMeta remaps that item ID in retained
+`iref` relation endpoints, version-0 `grpl` item-group members, and `ipma`
+associations. A strip operation has no replacement, and multiple old or new
+items make the mapping ambiguous; in both cases references to removed item IDs
+are deleted rather than redirected by guesswork. Unrelated relations, groups,
+properties, and associations remain unchanged.
 
 For bounded ICC transfer, OpenMeta removes prior ICC `colr/prof` and
 `colr/rICC` properties from `iprp/ipco`, compacts/remaps existing `ipma`

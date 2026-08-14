@@ -3,22 +3,32 @@
 #include "openmeta/exr_adapter.h"
 
 #include "openmeta/meta_key.h"
-#include "openmeta/metadata_transfer.h"
 #include "openmeta/meta_value.h"
+#include "openmeta/metadata_transfer.h"
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <bit>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include <unistd.h>
+#if defined(_WIN32)
+#    if !defined(WIN32_LEAN_AND_MEAN)
+#        define WIN32_LEAN_AND_MEAN
+#    endif
+#    if !defined(NOMINMAX)
+#        define NOMINMAX
+#    endif
+#    include <windows.h>
+#else
+#    include <unistd.h>
+#endif
 
 namespace openmeta {
 namespace {
@@ -92,7 +102,7 @@ namespace {
         }
         tiff.push_back(std::byte { 0x00 });
 
-        const size_t app1_size   = 6U + tiff.size();
+        const size_t app1_size  = 6U + tiff.size();
         const uint16_t app1_len = static_cast<uint16_t>(app1_size + 2U);
         out.push_back(std::byte { 0xFF });
         out.push_back(std::byte { 0xE1 });
@@ -111,9 +121,36 @@ namespace {
         return out;
     }
 
-    static std::string write_temp_bytes(
-        std::span<const std::byte> bytes)
+    static std::string write_temp_bytes(std::span<const std::byte> bytes)
     {
+#if defined(_WIN32)
+        std::array<char, MAX_PATH + 1U> temp_dir {};
+        const DWORD temp_dir_length
+            = GetTempPathA(static_cast<DWORD>(temp_dir.size()),
+                           temp_dir.data());
+        EXPECT_GT(temp_dir_length, 0U);
+        EXPECT_LT(temp_dir_length, temp_dir.size());
+        if (temp_dir_length == 0U || temp_dir_length >= temp_dir.size()) {
+            return std::string();
+        }
+
+        std::array<char, MAX_PATH + 1U> path {};
+        const UINT created = GetTempFileNameA(temp_dir.data(), "oma", 0U,
+                                              path.data());
+        EXPECT_NE(created, 0U);
+        if (created == 0U) {
+            return std::string();
+        }
+
+        FILE* f                  = nullptr;
+        const errno_t open_error = ::fopen_s(&f, path.data(), "wb");
+        EXPECT_EQ(open_error, 0);
+        EXPECT_NE(f, nullptr);
+        if (open_error != 0 || !f) {
+            (void)DeleteFileA(path.data());
+            return std::string();
+        }
+#else
         char path_template[] = "/tmp/openmeta_exr_adapter_XXXXXX";
         const int fd         = ::mkstemp(path_template);
         EXPECT_NE(fd, -1);
@@ -126,10 +163,15 @@ namespace {
             ::close(fd);
             return std::string();
         }
+#endif
         const size_t written = std::fwrite(bytes.data(), 1U, bytes.size(), f);
         EXPECT_EQ(written, bytes.size());
         std::fclose(f);
+#if defined(_WIN32)
+        return std::string(path.data());
+#else
         return std::string(path_template);
+#endif
     }
 
     struct ReplayState final {
@@ -577,10 +619,9 @@ TEST(ExrAdapter, BuildsBatchFromPreparedTransferBundle)
     ASSERT_NE(block, kInvalidBlockId);
 
     Entry make;
-    make.key = make_exif_tag_key(store.arena(), "ifd0", 0x010FU);
-    make.value
-        = make_text(store.arena(), "Vendor", TextEncoding::Ascii);
-    make.origin.block          = block;
+    make.key          = make_exif_tag_key(store.arena(), "ifd0", 0x010FU);
+    make.value        = make_text(store.arena(), "Vendor", TextEncoding::Ascii);
+    make.origin.block = block;
     make.origin.order_in_block = 0U;
     ASSERT_NE(store.add_entry(make), kInvalidEntryId);
     store.finalize();
@@ -597,8 +638,8 @@ TEST(ExrAdapter, BuildsBatchFromPreparedTransferBundle)
     ASSERT_EQ(prepared.status, TransferStatus::Ok);
 
     ExrAdapterBatch batch;
-    const ExrAdapterResult result
-        = build_prepared_exr_attribute_batch(bundle, &batch);
+    const ExrAdapterResult result = build_prepared_exr_attribute_batch(bundle,
+                                                                       &batch);
     ASSERT_EQ(result.status, ExrAdapterStatus::Ok);
     EXPECT_EQ(result.exported, 1U);
     ASSERT_EQ(batch.attributes.size(), 1U);
@@ -622,8 +663,8 @@ TEST(ExrAdapter, RejectsMalformedPreparedTransferPayload)
     bundle.blocks.push_back(std::move(block));
 
     ExrAdapterBatch batch;
-    const ExrAdapterResult result
-        = build_prepared_exr_attribute_batch(bundle, &batch);
+    const ExrAdapterResult result = build_prepared_exr_attribute_batch(bundle,
+                                                                       &batch);
     EXPECT_EQ(result.status, ExrAdapterStatus::Unsupported);
     EXPECT_EQ(result.errors, 1U);
     EXPECT_EQ(result.message, "prepared exr attribute payload is malformed");
@@ -631,9 +672,8 @@ TEST(ExrAdapter, RejectsMalformedPreparedTransferPayload)
 
 TEST(ExrAdapter, BuildsBatchFromFileHelper)
 {
-    const std::vector<std::byte> jpeg
-        = make_test_jpeg_with_exif_make("Vendor");
-    const std::string path = write_temp_bytes(
+    const std::vector<std::byte> jpeg = make_test_jpeg_with_exif_make("Vendor");
+    const std::string path            = write_temp_bytes(
         std::span<const std::byte>(jpeg.data(), jpeg.size()));
     ASSERT_FALSE(path.empty());
 
@@ -657,7 +697,7 @@ TEST(ExrAdapter, BuildsBatchFromFileHelper)
     ASSERT_EQ(batch.attributes[0].value.size(), 6U);
     EXPECT_EQ(std::memcmp(batch.attributes[0].value.data(), "Vendor", 6U), 0);
 
-    (void)::unlink(path.c_str());
+    (void)std::remove(path.c_str());
 }
 
 TEST(ExrAdapter, FileHelperRejectsEmptyPath)

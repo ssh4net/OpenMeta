@@ -142,7 +142,7 @@ not complete arbitrary container or image writers:
 | WebP | Bounded managed-metadata edit path |
 | JP2 | Bounded managed-metadata edit path |
 | JXL | Bounded managed-metadata edit path |
-| HEIF / AVIF / CR3 | Bounded ISO-BMFF metadata-graph edit path |
+| HEIF / AVIF / CR3 | Bounded ISO-BMFF metadata-graph edit path with managed item relation/property remapping |
 | EXR | Bounded host attribute emission; no full EXR file rewrite |
 
 In practice:
