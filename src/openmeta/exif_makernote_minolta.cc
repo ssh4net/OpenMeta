@@ -177,39 +177,44 @@ static void decode_minolta_binary_subdirs(std::string_view mk_ifd0,
     }
 
     const std::string_view mk_prefix = options.tokens.ifd_prefix;
-    const ByteArena& arena               = store.arena();
-    const std::span<const Entry> entries = store.entries();
+    const size_t source_entry_count  = store.entries().size();
 
     uint32_t idx_settings   = 0;
     uint32_t idx_settings7d = 0;
     uint32_t idx_settings5d = 0;
 
-    for (size_t i = 0; i < entries.size(); ++i) {
-        const Entry& e = entries[i];
-        if (e.key.kind != MetaKeyKind::ExifTag) {
-            continue;
+    for (size_t i = 0; i < source_entry_count; ++i) {
+        uint16_t tag = 0;
+        MetaValue value;
+        {
+            // Derived-table emission can reallocate both the entry vector and
+            // arena. Copy descriptors before mutating the store.
+            const Entry& e = store.entries()[i];
+            if (e.key.kind != MetaKeyKind::ExifTag
+                || arena_string(store.arena(), e.key.data.exif_tag.ifd)
+                       != mk_ifd0) {
+                continue;
+            }
+            tag   = e.key.data.exif_tag.tag;
+            value = e.value;
         }
-        if (arena_string(arena, e.key.data.exif_tag.ifd) != mk_ifd0) {
-            continue;
-        }
-
-        const uint16_t tag = e.key.data.exif_tag.tag;
 
         // 0x0001/0x0003: CameraSettings (big-endian int32u array in ExifTool).
         if (tag == 0x0001 || tag == 0x0003) {
-            if (e.value.kind != MetaValueKind::Bytes
-                && !(e.value.kind == MetaValueKind::Array
-                     && e.value.elem_type == MetaElementType::U32)) {
+            if (value.kind != MetaValueKind::Bytes
+                && !(value.kind == MetaValueKind::Array
+                     && value.elem_type == MetaElementType::U32)) {
                 continue;
             }
-            const std::span<const std::byte> raw = arena.span(e.value.data.span);
+            const std::span<const std::byte> raw
+                = store.arena().span(value.data.span);
 
             char scratch[64];
             const std::string_view ifd_name = make_mk_subtable_ifd_token(
                 mk_prefix, "camerasettings", idx_settings++,
                 std::span<char>(scratch));
             if (!ifd_name.empty()) {
-                const bool be = (e.value.kind == MetaValueKind::Bytes);
+                const bool be = (value.kind == MetaValueKind::Bytes);
                 decode_minolta_u32_table(ifd_name, raw, be, store, options,
                                          status_out);
             }
@@ -218,19 +223,20 @@ static void decode_minolta_binary_subdirs(std::string_view mk_ifd0,
 
         // 0x0004: CameraSettings7D (big-endian int16u array in ExifTool).
         if (tag == 0x0004) {
-            if (e.value.kind != MetaValueKind::Bytes
-                && !(e.value.kind == MetaValueKind::Array
-                     && e.value.elem_type == MetaElementType::U16)) {
+            if (value.kind != MetaValueKind::Bytes
+                && !(value.kind == MetaValueKind::Array
+                     && value.elem_type == MetaElementType::U16)) {
                 continue;
             }
-            const std::span<const std::byte> raw = arena.span(e.value.data.span);
+            const std::span<const std::byte> raw
+                = store.arena().span(value.data.span);
 
             char scratch[64];
             const std::string_view ifd_name = make_mk_subtable_ifd_token(
                 mk_prefix, "camerasettings7d", idx_settings7d++,
                 std::span<char>(scratch));
             if (!ifd_name.empty()) {
-                const bool be = (e.value.kind == MetaValueKind::Bytes);
+                const bool be = (value.kind == MetaValueKind::Bytes);
                 decode_minolta_u16_table(ifd_name, raw, be, store, options,
                                          status_out);
             }
@@ -239,12 +245,13 @@ static void decode_minolta_binary_subdirs(std::string_view mk_ifd0,
 
         // 0x0114: CameraSettings5D/A100 (big-endian int16u binary table in ExifTool).
         if (tag == 0x0114) {
-            if (e.value.kind != MetaValueKind::Bytes
-                && !(e.value.kind == MetaValueKind::Array
-                     && e.value.elem_type == MetaElementType::U16)) {
+            if (value.kind != MetaValueKind::Bytes
+                && !(value.kind == MetaValueKind::Array
+                     && value.elem_type == MetaElementType::U16)) {
                 continue;
             }
-            const std::span<const std::byte> raw = arena.span(e.value.data.span);
+            const std::span<const std::byte> raw
+                = store.arena().span(value.data.span);
 
             char scratch[64];
             const std::string_view ifd_name = make_mk_subtable_ifd_token(

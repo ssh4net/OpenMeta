@@ -237,14 +237,19 @@ when the active plane is unknown.
        unless the host intentionally writes a sidecar/workflow record.
    * - Opaque MakerNote payloads
      - vendor MakerNote blobs and private nested IFDs
-     - Keep the original raw ``ExifIFD:MakerNote`` payload by default, or
-       follow explicit MakerNote policy
+     - ``Keep`` carries the original raw ``ExifIFD:MakerNote`` payload as
+       unverified opaque bytes; ``Drop`` omits it; unavailable ``Invalidate``
+       and ``Rewrite`` fail closed to ``Drop``
      - Drop
      - Decoded safe facts can still be carried through standard EXIF/XMP
-       fields; the opaque vendor blob is not copied for rendered outputs.
-       Decoded-only vendor MakerNote sub-IFDs are not reconstructed into a new
-       blob; prepare reports them as non-serializable when no raw MakerNote
-       payload is available.
+       fields; decoded-only vendor sub-IFDs are not reconstructed. Opaque
+       preservation does not relocate nested vendor offsets, repair checksums,
+       or prove semantic readability after EXIF repacking. Use
+       ``makernote_transfer_audit_from_store(...)`` before relying on it.
+       Preserving an existing destination MakerNote during an unrelated target
+       edit is safer than transferring a source note into a new EXIF layout
+       because the destination's established offset relationships can remain
+       intact.
    * - C2PA and JUMBF
      - APP11/JUMBF boxes, C2PA manifests, assertions, signatures
      - Follow explicit JUMBF/C2PA policy

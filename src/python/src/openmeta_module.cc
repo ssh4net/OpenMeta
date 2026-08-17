@@ -1410,6 +1410,43 @@ namespace {
     static const char* transfer_raw_carrier_passthrough_reason_name(
         TransferRawCarrierPassthroughReason reason) noexcept;
 
+    static const char*
+    transfer_makernote_trust_name(TransferMakerNoteTrust trust) noexcept
+    {
+        switch (trust) {
+        case TransferMakerNoteTrust::NotPresent: return "not_present";
+        case TransferMakerNoteTrust::DecodedOnlyNotSerializable:
+            return "decoded_only_not_serializable";
+        case TransferMakerNoteTrust::OpaquePreservationUnverified:
+            return "opaque_preservation_unverified";
+        }
+        return "unknown";
+    }
+
+    static nb::dict
+    makernote_transfer_audit_to_python(const TransferMakerNoteAudit& audit)
+    {
+        nb::dict out;
+        out["trust"]      = audit.trust;
+        out["trust_name"] = nb::str(transfer_makernote_trust_name(audit.trust));
+        out["raw_payload_count"] = nb::int_(audit.raw_payload_count);
+        out["decoded_only_entry_count"] = nb::int_(
+            audit.decoded_only_entry_count);
+        out["opaque_payload_available"] = nb::bool_(
+            audit.opaque_payload_available);
+        out["decoded_rewrite_available"] = nb::bool_(
+            audit.decoded_rewrite_available);
+        out["internal_offset_relocation_available"] = nb::bool_(
+            audit.internal_offset_relocation_available);
+        out["vendor_checksum_recalculation_available"] = nb::bool_(
+            audit.vendor_checksum_recalculation_available);
+        out["semantic_validation_available"] = nb::bool_(
+            audit.semantic_validation_available);
+        out["raw_carrier_passthrough_available"] = nb::bool_(
+            audit.raw_carrier_passthrough_available);
+        return out;
+    }
+
     static nb::dict
     transfer_safety_audit_to_python(const TransferSafetyAudit& audit)
     {
@@ -1940,6 +1977,10 @@ namespace {
             return "safety_mode_filtered";
         case TransferPolicyReason::RawDataDescriptorFiltered:
             return "raw_data_descriptor_filtered";
+        case TransferPolicyReason::OpaquePayloadPreservedUnverified:
+            return "opaque_payload_preserved_unverified";
+        case TransferPolicyReason::RewriteUnavailableDropped:
+            return "rewrite_unavailable_dropped";
         }
         return "unknown";
     }
@@ -6026,6 +6067,13 @@ snapshot_transfer_safety_audit(const TransferSourceSnapshot& snapshot,
 }
 
 static nb::dict
+snapshot_makernote_transfer_audit(const TransferSourceSnapshot& snapshot)
+{
+    return makernote_transfer_audit_to_python(
+        makernote_transfer_audit_from_store(snapshot.store));
+}
+
+static nb::dict
 snapshot_transfer_concept_diagnostics(const TransferSourceSnapshot& snapshot,
                                       TransferSafetyMode safety)
 {
@@ -6191,6 +6239,13 @@ document_transfer_safety_audit(std::shared_ptr<PyDocument> d,
     const TransferSafetyAudit audit = transfer_safety_audit_from_store(d->store,
                                                                        safety);
     return transfer_safety_audit_to_python(audit);
+}
+
+static nb::dict
+document_makernote_transfer_audit(std::shared_ptr<PyDocument> d)
+{
+    return makernote_transfer_audit_to_python(
+        makernote_transfer_audit_from_store(d->store));
 }
 
 static nb::dict
@@ -7723,7 +7778,18 @@ NB_MODULE(_openmeta, m)
                TransferPolicyReason::TargetImageProperties)
         .value("SafetyModeFiltered", TransferPolicyReason::SafetyModeFiltered)
         .value("RawDataDescriptorFiltered",
-               TransferPolicyReason::RawDataDescriptorFiltered);
+               TransferPolicyReason::RawDataDescriptorFiltered)
+        .value("OpaquePayloadPreservedUnverified",
+               TransferPolicyReason::OpaquePayloadPreservedUnverified)
+        .value("RewriteUnavailableDropped",
+               TransferPolicyReason::RewriteUnavailableDropped);
+
+    nb::enum_<TransferMakerNoteTrust>(m, "TransferMakerNoteTrust")
+        .value("NotPresent", TransferMakerNoteTrust::NotPresent)
+        .value("DecodedOnlyNotSerializable",
+               TransferMakerNoteTrust::DecodedOnlyNotSerializable)
+        .value("OpaquePreservationUnverified",
+               TransferMakerNoteTrust::OpaquePreservationUnverified);
 
     nb::enum_<TransferRawCarrierPassthroughReason>(
         m, "TransferRawCarrierPassthroughReason")
@@ -8070,6 +8136,8 @@ NB_MODULE(_openmeta, m)
              "raw_descriptor"_a)
         .def("transfer_safety_audit", &snapshot_transfer_safety_audit,
              "safety"_a = TransferSafetyMode::RenderedImage)
+        .def("makernote_transfer_audit",
+             &snapshot_makernote_transfer_audit)
         .def("transfer_concept_diagnostics",
              &snapshot_transfer_concept_diagnostics,
              "safety"_a = TransferSafetyMode::RenderedImage)
@@ -8248,6 +8316,8 @@ NB_MODULE(_openmeta, m)
              "raw_descriptor"_a)
         .def("transfer_safety_audit", &document_transfer_safety_audit,
              "safety"_a = TransferSafetyMode::RenderedImage)
+        .def("makernote_transfer_audit",
+             &document_makernote_transfer_audit)
         .def("transfer_concept_diagnostics",
              &document_transfer_concept_diagnostics,
              "safety"_a = TransferSafetyMode::RenderedImage)

@@ -256,7 +256,12 @@ container call mapping.
 - MakerNote and C2PA/JUMBF transfer policy is explicit and deterministic.
 - Current JPEG/TIFF prepare behavior:
   - MakerNote: `Keep` default, `Drop` supported, `Invalidate` currently
-    resolves to `Drop`, `Rewrite` currently resolves to raw-preserve.
+    resolves to `Drop`, and unavailable `Rewrite` resolves to `Drop` rather
+    than silently preserving raw bytes. `Keep` carries the original opaque
+    payload, but does not relocate vendor-private offsets, repair checksums, or
+    prove semantic readability after the surrounding EXIF layout changes. Use
+    `makernote_transfer_audit_from_store(...)` for the machine-readable trust
+    boundary.
   - JUMBF: file-based JPEG prepare can preserve source payloads by repacking
     them into APP11 segments; store-only JPEG prepare can project decoded
     non-C2PA `JumbfCborKey` roots into generic APP11 JUMBF payloads; explicit

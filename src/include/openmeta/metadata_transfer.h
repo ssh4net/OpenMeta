@@ -178,6 +178,12 @@ enum class TransferPolicyReason : uint8_t {
     TargetImageProperties,
     SafetyModeFiltered,
     RawDataDescriptorFiltered,
+    /// Opaque bytes are retained, but nested offsets, vendor checksums, and
+    /// semantic readability after relocation are not verified.
+    OpaquePayloadPreservedUnverified,
+    /// Rewrite was requested, but no safe serializer is available; payloads
+    /// are dropped rather than silently treated as preserved rewrites.
+    RewriteUnavailableDropped,
 };
 
 /// Explicit current C2PA transfer mode resolved during prepare.
@@ -431,6 +437,26 @@ struct TransferSafetyAudit final {
     VendorRawProcessingSummary motorola_raw_processing;
     VendorRawProcessingSummary nintendo_raw_processing;
     VendorRawProcessingSummary microsoft_raw_processing;
+};
+
+/// Trust state for vendor MakerNote data observed in a decoded store.
+enum class TransferMakerNoteTrust : uint8_t {
+    NotPresent,
+    DecodedOnlyNotSerializable,
+    OpaquePreservationUnverified,
+};
+
+/// Source evidence and current writer capabilities for MakerNote transfer.
+struct TransferMakerNoteAudit final {
+    TransferMakerNoteTrust trust = TransferMakerNoteTrust::NotPresent;
+    uint32_t raw_payload_count        = 0U;
+    uint32_t decoded_only_entry_count = 0U;
+    bool opaque_payload_available                = false;
+    bool decoded_rewrite_available               = false;
+    bool internal_offset_relocation_available    = false;
+    bool vendor_checksum_recalculation_available = false;
+    bool semantic_validation_available           = false;
+    bool raw_carrier_passthrough_available        = false;
 };
 
 enum class TransferConceptDiagnosticAction : uint8_t {
@@ -1978,6 +2004,21 @@ build_transfer_source_snapshot(const MetaStore& store) noexcept;
 TransferSafetyAudit
 transfer_safety_audit_from_store(const MetaStore& store,
                                  TransferSafetyMode safety) noexcept;
+
+/**
+ * \brief Report MakerNote source evidence and the current writer trust bound.
+ *
+ * A raw `ExifIFD:MakerNote` value can be carried forward as opaque bytes, but
+ * OpenMeta does not currently relocate vendor-private offsets, rebuild a note
+ * from decoded sub-IFDs, recalculate vendor checksums, or verify that a moved
+ * note remains semantically readable. Generic raw-carrier passthrough is also
+ * intentionally unavailable for MakerNotes.
+ *
+ * \par API Stability
+ * Experimental host-facing API for diagnostics, UI, and preflight decisions.
+ */
+TransferMakerNoteAudit
+makernote_transfer_audit_from_store(const MetaStore& store) noexcept;
 
 TransferConceptDiagnostics
 transfer_concept_diagnostics_from_store(const MetaStore& store,

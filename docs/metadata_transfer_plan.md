@@ -613,7 +613,19 @@ Missing pieces include:
 ### 3. MakerNote-safe rewrite expectations
 
 Read parity is strong, but broad rewrite guarantees for vendor metadata are not
-yet at the level of mature editing tools.
+yet at the level of mature editing tools. The generic trust boundary is now
+explicit: decoded-only fields are not serialized, `Keep` means unverified
+opaque byte carry-forward, and unavailable `Rewrite` fails closed to `Drop`.
+The public audit reports that generic nested-offset relocation, vendor checksum
+repair, semantic validation, and raw-carrier passthrough are unavailable.
+
+Preserving a destination MakerNote while editing unrelated target metadata is a
+different operation from moving a source MakerNote into newly serialized EXIF.
+The former can retain the target's established layout; the latter may invalidate
+outer-TIFF-relative offsets even when the `0x927C` payload bytes are unchanged.
+Remaining work is vendor/version-specific offset-base and integrity inventory,
+followed by roundtrip-readable rewrite lanes only where relocation rules are
+fully understood.
 
 ### 4. EXR depth
 
@@ -777,7 +789,7 @@ Status legend:
 | Public writer contract for primary targets | Competitors feel predictable on preserve/replace behavior; OpenMeta still needs that same trust level across all first-class targets | `Partial` | `1` | `TIFF`, `DNG`, `PNG`, `WebP`, `JP2`, `JXL`, `HEIF/AVIF/CR3` |
 | General EXIF / IPTC / XMP sync engine | One of the biggest remaining gaps for general editing adoption | `Partial` | `1-2` | Cross-cutting |
 | Compare-backed release validation | Needed to defend parity claims with repeatable read-back and compare gates | `Partial` | `1` | Cross-cutting |
-| MakerNote rewrite trust | Read parity is strong, but rewrite guarantees still trail mature tools | `Partial` | `1` | `JPEG`, `TIFF`, `DNG`, RAW-derived lanes |
+| MakerNote rewrite trust | Generic preserve/rewrite/drop trust is explicit; vendor-specific relocation, checksum repair, and semantic roundtrip guarantees still trail mature tools | `Partial` | `1` | `JPEG`, `TIFF`, `DNG`, RAW-derived lanes |
 | TIFF / DNG deeper rewrite guarantees | Important for serious export/edit trust on camera-originated files | `Partial` | `1` | `TIFF`, `DNG` |
 | BMFF writer depth beyond current bounded contract | Needed for stronger `HEIF/AVIF/CR3` parity beyond the current metadata-only `meta` model | `Partial` | `1` | `HEIF`, `AVIF`, `CR3` |
 | Modern container read-depth follow-through | Remaining visible read gaps are mostly here | `Partial` | `1` | `HEIF/AVIF`, `JXL` |
@@ -845,7 +857,7 @@ Priority legend:
 | Compare-backed release validation | `Now` | Parity claims remain weaker until compare-backed gates are release-facing instead of mostly API-facing |
 | TIFF / DNG deeper rewrite guarantees | `Now` | This is the highest-risk writer lane for serious still-image export confidence |
 | BMFF writer depth beyond current bounded contract | `Next` | `HEIF/AVIF/CR3` are already real targets, but the bounded writer model still needs more depth for stronger parity |
-| MakerNote rewrite trust | `Next` | Important for trust, but it benefits from the writer-contract and validation work landing first |
+| MakerNote rewrite trust | `In progress` | Generic behavior now fails closed and is auditable; vendor/version-specific relocation and integrity lanes remain |
 | Modern container read-depth follow-through | `Next` | Visible gap, but less urgent than finishing the current writer baseline |
 | EXR target decision | `Next` | Needs an explicit product choice, but should follow the main writer-contract stabilization work |
 | RAW curve/data applicability model | `In progress` | Coarse descriptor-backed rendered-source filtering is now available in prepare; precise RAW interpretation still needs curve/LUT metadata tied to the actual raw data storage path before it is called active |
@@ -857,7 +869,8 @@ Suggested delivery sequence:
 1. Finish the stable writer contract for the first-class target family.
 2. Finish the broader sync-policy layer and compare-backed release validation.
 3. Harden the two highest-risk writer lanes: `TIFF/DNG` and bounded `BMFF`.
-4. Revisit MakerNote rewrite trust after the first-class writer contract is stable.
+4. Continue MakerNote rewrite trust with vendor/version-specific offset and
+   integrity inventories, enabling rewrite only for roundtrip-verified lanes.
 5. Spend follow-up time on modern-container depth, `EXR`, and long-tail native semantics only after the main writer baseline is defendable.
 
 ### Now Slice Implementation Board

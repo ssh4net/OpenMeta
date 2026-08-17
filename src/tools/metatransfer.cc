@@ -795,6 +795,10 @@ namespace {
             return "safety_mode_filtered";
         case TransferPolicyReason::RawDataDescriptorFiltered:
             return "raw_data_descriptor_filtered";
+        case TransferPolicyReason::OpaquePayloadPreservedUnverified:
+            return "opaque_payload_preserved_unverified";
+        case TransferPolicyReason::RewriteUnavailableDropped:
+            return "rewrite_unavailable_dropped";
         }
         return "unknown";
     }

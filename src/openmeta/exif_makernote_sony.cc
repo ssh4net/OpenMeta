@@ -3,6 +3,9 @@
 #include "exif_tiff_decode_internal.h"
 
 #include <array>
+#include <cstring>
+#include <memory>
+#include <new>
 
 namespace openmeta::exif_internal {
 
@@ -2833,12 +2836,28 @@ decode_sony_cipher_subdirs(std::string_view mk_ifd0, MetaStore& store,
     const bool is_stellar    = (model == "Stellar");
 
     for (uint32_t i = 0; i < cand_count; ++i) {
-        const uint16_t tag                   = cands[i].tag;
-        const ByteSpan raw_span              = cands[i].value.data.span;
-        const std::span<const std::byte> raw = store.arena().span(raw_span);
-        if (raw.empty()) {
+        const uint16_t tag      = cands[i].tag;
+        const ByteSpan raw_span = cands[i].value.data.span;
+        const std::span<const std::byte> arena_raw
+            = store.arena().span(raw_span);
+        if (arena_raw.empty()) {
             continue;
         }
+
+        // Sony subdecoders emit arena-backed arrays before all source fields
+        // have necessarily been read. Keep the selected cipher payload
+        // independent from arena reallocations for the entire decode.
+        std::unique_ptr<std::byte[]> stable_storage(
+            new (std::nothrow) std::byte[arena_raw.size()]);
+        if (!stable_storage) {
+            if (status_out) {
+                update_status(status_out, ExifDecodeStatus::LimitExceeded);
+            }
+            continue;
+        }
+        std::memcpy(stable_storage.get(), arena_raw.data(), arena_raw.size());
+        const std::span<const std::byte> raw(stable_storage.get(),
+                                             arena_raw.size());
 
         if (tag == 0x3000) {
             decode_sony_shotinfo_from_tag3000(raw, mk_prefix, store, options,
@@ -2849,16 +2868,15 @@ decode_sony_cipher_subdirs(std::string_view mk_ifd0, MetaStore& store,
             const uint32_t rounds = 1;
             switch (select_sony_tag2010_variant(model)) {
             case SonyTag2010Variant::A:
-                sony_decode_cipher_fields(raw, mk_prefix, "tag2010a", rounds,
-                                          std::span<const SonyCipherField>(
-                                              kSonyTag2010aFields,
-                                              sizeof(kSonyTag2010aFields)
-                                                  / sizeof(
-                                                      kSonyTag2010aFields[0])),
-                                          store, options, status_out);
-                decode_sony_meterinfo_from_tag2010(raw, rounds, 0x04B0,
-                                                   mk_prefix, store, options,
-                                                   status_out);
+                sony_decode_cipher_fields(
+                    raw, mk_prefix, "tag2010a", rounds,
+                    std::span<const SonyCipherField>(
+                        kSonyTag2010aFields,
+                        sizeof(kSonyTag2010aFields)
+                            / sizeof(kSonyTag2010aFields[0])),
+                    store, options, status_out);
+                decode_sony_meterinfo_from_tag2010(
+                    raw, rounds, 0x04B0, mk_prefix, store, options, status_out);
                 break;
             case SonyTag2010Variant::B:
                 sony_decode_cipher_fields(raw, mk_prefix, "tag2010b", rounds,

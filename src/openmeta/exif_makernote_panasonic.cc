@@ -132,6 +132,14 @@ namespace {
             return;
         }
 
+        // Values emitted below append to the same arena that commonly owns
+        // raw. Keep every byte this table can inspect on the stack.
+        std::array<std::byte, 42> stable_storage {};
+        raw = panasonic_copy_subspan(&stable_storage, raw, 0,
+                                     (raw.size() < stable_storage.size())
+                                         ? raw.size()
+                                         : stable_storage.size());
+
         uint16_t faces = 0;
         if (!read_u16_endian(le, raw, 0, &faces)) {
             return;
@@ -191,6 +199,12 @@ namespace {
         if (ifd_name.empty() || raw.size() < 2U) {
             return;
         }
+
+        std::array<std::byte, 148> stable_storage {};
+        raw = panasonic_copy_subspan(&stable_storage, raw, 0,
+                                     (raw.size() < stable_storage.size())
+                                         ? raw.size()
+                                         : stable_storage.size());
 
         uint16_t faces = 0;
         if (!read_u16_endian(le, raw, 0, &faces)) {
@@ -273,6 +287,12 @@ namespace {
             return;
         }
 
+        std::array<std::byte, 20> stable_storage {};
+        raw = panasonic_copy_subspan(&stable_storage, raw, 0,
+                                     (raw.size() < stable_storage.size())
+                                         ? raw.size()
+                                         : stable_storage.size());
+
         uint16_t tags_out[4];
         MetaValue vals_out[4];
         uint32_t out_count = 0;
@@ -312,6 +332,12 @@ namespace {
         if (mn_decl.size() < 4U) {
             return false;
         }
+
+        std::array<std::byte, 8> stable_storage {};
+        mn_decl = panasonic_copy_subspan(&stable_storage, mn_decl, 0,
+                                         (mn_decl.size() < stable_storage.size())
+                                             ? mn_decl.size()
+                                             : stable_storage.size());
 
         // Type2 is a small fixed-layout blob. Be conservative: require the
         // 4-byte type string to be printable ASCII.
@@ -360,8 +386,7 @@ namespace {
             return;
         }
 
-        const ByteArena& arena               = store.arena();
-        const std::span<const Entry> entries = store.entries();
+        const size_t source_entry_count = store.entries().size();
 
         uint32_t idx_facedet = 0;
         uint32_t idx_facerec = 0;
@@ -370,26 +395,28 @@ namespace {
         char sub_ifd_buf[96];
         const std::string_view mk_prefix = "mk_panasonic";
 
-        for (size_t i = 0; i < entries.size(); ++i) {
-            const Entry& e = entries[i];
-            if (e.key.kind != MetaKeyKind::ExifTag) {
-                continue;
-            }
-            if (arena_string(arena, e.key.data.exif_tag.ifd) != mk_ifd0) {
-                continue;
-            }
-            if (e.value.kind != MetaValueKind::Bytes
-                && e.value.kind != MetaValueKind::Array) {
-                continue;
+        for (size_t i = 0; i < source_entry_count; ++i) {
+            uint16_t tag = 0;
+            ByteSpan raw_span;
+            {
+                const Entry& e = store.entries()[i];
+                if (e.key.kind != MetaKeyKind::ExifTag
+                    || arena_string(store.arena(), e.key.data.exif_tag.ifd)
+                           != mk_ifd0
+                    || (e.value.kind != MetaValueKind::Bytes
+                        && e.value.kind != MetaValueKind::Array)) {
+                    continue;
+                }
+                tag      = e.key.data.exif_tag.tag;
+                raw_span = e.value.data.span;
             }
 
-            const std::span<const std::byte> raw = arena.span(
-                e.value.data.span);
+            const std::span<const std::byte> raw = store.arena().span(raw_span);
             if (raw.empty()) {
                 continue;
             }
 
-            if (e.key.data.exif_tag.tag == 0x004e) {  // FaceDetInfo
+            if (tag == 0x004e) {  // FaceDetInfo
                 const std::string_view ifd_name
                     = make_mk_subtable_ifd_token(mk_prefix, "facedetinfo",
                                                  idx_facedet++,
@@ -399,7 +426,7 @@ namespace {
                 continue;
             }
 
-            if (e.key.data.exif_tag.tag == 0x0061) {  // FaceRecInfo
+            if (tag == 0x0061) {  // FaceRecInfo
                 const std::string_view ifd_name
                     = make_mk_subtable_ifd_token(mk_prefix, "facerecinfo",
                                                  idx_facerec++,
@@ -409,7 +436,7 @@ namespace {
                 continue;
             }
 
-            if (e.key.data.exif_tag.tag == 0x2003) {  // TimeInfo
+            if (tag == 0x2003) {  // TimeInfo
                 const std::string_view ifd_name
                     = make_mk_subtable_ifd_token(mk_prefix, "timeinfo",
                                                  idx_time++,

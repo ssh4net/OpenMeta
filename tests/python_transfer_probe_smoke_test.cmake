@@ -160,6 +160,16 @@ assert snapshot_file['file_status'] == openmeta.TransferFileStatus.Ok, snapshot_
 assert snapshot_file['code_name'] == 'none', snapshot_file
 assert snapshot_file['entry_count'] == r['entry_count'], snapshot_file
 assert snapshot_file['snapshot'].entry_count == r['entry_count'], snapshot_file
+maker_note_audit = snapshot_file['snapshot'].makernote_transfer_audit()
+assert maker_note_audit['trust'] == openmeta.TransferMakerNoteTrust.NotPresent, maker_note_audit
+assert maker_note_audit['trust_name'] == 'not_present', maker_note_audit
+assert maker_note_audit['raw_payload_count'] == 0, maker_note_audit
+assert maker_note_audit['decoded_only_entry_count'] == 0, maker_note_audit
+assert maker_note_audit['decoded_rewrite_available'] is False, maker_note_audit
+assert maker_note_audit['internal_offset_relocation_available'] is False, maker_note_audit
+assert maker_note_audit['vendor_checksum_recalculation_available'] is False, maker_note_audit
+assert maker_note_audit['semantic_validation_available'] is False, maker_note_audit
+assert maker_note_audit['raw_carrier_passthrough_available'] is False, maker_note_audit
 
 snapshot_bytes = openmeta.read_transfer_source_snapshot_bytes(p.read_bytes())
 assert snapshot_bytes['overall_status'] == openmeta.TransferStatus.Ok, snapshot_bytes
@@ -198,6 +208,8 @@ assert r_snapshot_raw_mode['prepare_status'] == openmeta.TransferStatus.Ok, r_sn
 
 doc_snapshot = openmeta.read(str(p)).build_transfer_source_snapshot()
 assert doc_snapshot.entry_count == r['entry_count'], doc_snapshot
+doc_maker_note_audit = openmeta.read(str(p)).makernote_transfer_audit()
+assert doc_maker_note_audit == maker_note_audit, doc_maker_note_audit
 snapshot_dump = doc_snapshot.compatibility_dump()
 assert snapshot_dump.startswith('openmeta.compat.metadata version=1'), snapshot_dump
 module_snapshot = openmeta.build_transfer_source_snapshot(openmeta.read(str(p)))

@@ -1,5 +1,40 @@
 # OpenMeta Changes
 
+## 0.4.97 - 2026-08-17
+
+Changes compared with `0.4.96`.
+
+### Added
+
+- Added `makernote_transfer_audit_from_store(...)` and matching thin Python
+  `Document` / `TransferSourceSnapshot` methods. The audit distinguishes raw
+  opaque payloads from decoded-only fields and reports that generic offset
+  relocation, vendor checksum repair, semantic validation, and raw-carrier
+  passthrough are unavailable.
+- Added deterministic MakerNote policy reasons for unverified opaque-byte
+  preservation and unavailable rewrites that are dropped.
+
+### Changed
+
+- Explicit MakerNote `Rewrite` requests now fail closed by dropping the raw
+  payload instead of silently preserving it and describing that preservation
+  as a rewrite fallback.
+- MakerNote `Keep` remains the compatible-file default, but policy diagnostics
+  now state that it preserves opaque bytes without relocating nested offsets,
+  repairing vendor checksums, or proving semantic readability after repacking.
+- Fixed Minolta, Panasonic, and Sony binary-subdirectory decoding so
+  derived-entry emission cannot invalidate source entry or arena views during
+  the same decode pass.
+
+### Tests And Validation
+
+- Added C++ regressions for raw and decoded-only MakerNote audits, unverified
+  `Keep` behavior, and fail-closed `Rewrite` behavior.
+- Verified the MakerNote lifetime fixes with the previously failing
+  cross-vendor and Sony full-suite test orders on both libc++ and MSVC.
+- Extended the Python transfer-probe smoke test with the thin MakerNote audit
+  surface and capability flags.
+
 ## 0.4.96 - 2026-08-14
 
 Changes compared with `0.4.95`.

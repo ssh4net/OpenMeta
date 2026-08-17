@@ -22577,6 +22577,19 @@ TEST(MetadataTransferApi,
     ASSERT_NE(store.add_entry(decoded_makernote), openmeta::kInvalidEntryId);
     store.finalize();
 
+    const openmeta::TransferMakerNoteAudit audit
+        = openmeta::makernote_transfer_audit_from_store(store);
+    EXPECT_EQ(audit.trust,
+              openmeta::TransferMakerNoteTrust::DecodedOnlyNotSerializable);
+    EXPECT_EQ(audit.raw_payload_count, 0U);
+    EXPECT_EQ(audit.decoded_only_entry_count, 1U);
+    EXPECT_FALSE(audit.opaque_payload_available);
+    EXPECT_FALSE(audit.decoded_rewrite_available);
+    EXPECT_FALSE(audit.internal_offset_relocation_available);
+    EXPECT_FALSE(audit.vendor_checksum_recalculation_available);
+    EXPECT_FALSE(audit.semantic_validation_available);
+    EXPECT_FALSE(audit.raw_carrier_passthrough_available);
+
     openmeta::PrepareTransferRequest request;
     request.include_iptc_app13 = false;
     request.include_icc_app2   = false;
@@ -23195,6 +23208,19 @@ TEST(MetadataTransferApi, PrepareDropsMakerNoteWhenProfileRequestsDrop)
     ASSERT_NE(store.add_entry(maker), openmeta::kInvalidEntryId);
     store.finalize();
 
+    const openmeta::TransferMakerNoteAudit audit
+        = openmeta::makernote_transfer_audit_from_store(store);
+    EXPECT_EQ(audit.trust,
+              openmeta::TransferMakerNoteTrust::OpaquePreservationUnverified);
+    EXPECT_EQ(audit.raw_payload_count, 1U);
+    EXPECT_EQ(audit.decoded_only_entry_count, 0U);
+    EXPECT_TRUE(audit.opaque_payload_available);
+    EXPECT_FALSE(audit.decoded_rewrite_available);
+    EXPECT_FALSE(audit.internal_offset_relocation_available);
+    EXPECT_FALSE(audit.vendor_checksum_recalculation_available);
+    EXPECT_FALSE(audit.semantic_validation_available);
+    EXPECT_FALSE(audit.raw_carrier_passthrough_available);
+
     openmeta::PrepareTransferRequest request;
     request.include_xmp_app1   = false;
     request.include_icc_app2   = false;
@@ -23221,6 +23247,108 @@ TEST(MetadataTransferApi, PrepareDropsMakerNoteWhenProfileRequestsDrop)
     EXPECT_EQ(decision->effective, openmeta::TransferPolicyAction::Drop);
     EXPECT_EQ(decision->reason, openmeta::TransferPolicyReason::ExplicitDrop);
     EXPECT_EQ(decision->matched_entries, 1U);
+}
+
+TEST(MetadataTransferApi, PrepareKeepsOpaqueMakerNoteAsUnverifiedBytes)
+{
+    openmeta::MetaStore store;
+    const openmeta::BlockId block = store.add_block(openmeta::BlockInfo {});
+    ASSERT_NE(block, openmeta::kInvalidBlockId);
+
+    openmeta::Entry maker;
+    maker.key = openmeta::make_exif_tag_key(store.arena(), "exififd", 0x927CU);
+    const std::array<std::byte, 18> maker_bytes = {
+        std::byte { 'O' }, std::byte { 'L' }, std::byte { 'Y' },
+        std::byte { 'M' }, std::byte { 'P' }, std::byte { 'U' },
+        std::byte { 'S' }, std::byte { 0x00 }, std::byte { 0x01 },
+        std::byte { 0x00 }, std::byte { 0x01 }, std::byte { 0x00 },
+        std::byte { 0x00 }, std::byte { 0x00 }, std::byte { 0x20 },
+        std::byte { 0x00 }, std::byte { 0x00 }, std::byte { 0x00 },
+    };
+    maker.value = openmeta::make_bytes(
+        store.arena(), std::span<const std::byte>(maker_bytes.data(),
+                                                  maker_bytes.size()));
+    maker.origin.block = block;
+    ASSERT_NE(store.add_entry(maker), openmeta::kInvalidEntryId);
+    store.finalize();
+
+    openmeta::PrepareTransferRequest request;
+    request.include_xmp_app1   = false;
+    request.include_icc_app2   = false;
+    request.include_iptc_app13 = false;
+
+    openmeta::PreparedTransferBundle bundle;
+    const openmeta::PrepareTransferResult result
+        = openmeta::prepare_metadata_for_target(store, request, &bundle);
+
+    EXPECT_EQ(result.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(result.errors, 0U);
+    ASSERT_EQ(bundle.blocks.size(), 1U);
+    EXPECT_TRUE(exif_app1_contains_exififd_tag(
+        std::span<const std::byte>(bundle.blocks[0].payload.data(),
+                                   bundle.blocks[0].payload.size()),
+        0x927CU));
+
+    const openmeta::PreparedTransferPolicyDecision* decision
+        = find_policy_decision(bundle,
+                               openmeta::TransferPolicySubject::MakerNote);
+    ASSERT_NE(decision, nullptr);
+    EXPECT_EQ(decision->requested, openmeta::TransferPolicyAction::Keep);
+    EXPECT_EQ(decision->effective, openmeta::TransferPolicyAction::Keep);
+    EXPECT_EQ(
+        decision->reason,
+        openmeta::TransferPolicyReason::OpaquePayloadPreservedUnverified);
+    EXPECT_TRUE(text_contains(decision->message, "without offset relocation"));
+    EXPECT_TRUE(text_contains(decision->message, "checksum repair"));
+    EXPECT_TRUE(text_contains(decision->message, "semantic validation"));
+}
+
+TEST(MetadataTransferApi, PrepareDropsMakerNoteWhenRewriteIsUnavailable)
+{
+    openmeta::MetaStore store;
+    const openmeta::BlockId block = store.add_block(openmeta::BlockInfo {});
+    ASSERT_NE(block, openmeta::kInvalidBlockId);
+
+    openmeta::Entry maker;
+    maker.key = openmeta::make_exif_tag_key(store.arena(), "exififd", 0x927CU);
+    const std::array<std::byte, 6> maker_bytes = {
+        std::byte { 'A' }, std::byte { 'B' }, std::byte { 'C' },
+        std::byte { 'D' }, std::byte { 'E' }, std::byte { 'F' },
+    };
+    maker.value = openmeta::make_bytes(
+        store.arena(), std::span<const std::byte>(maker_bytes.data(),
+                                                  maker_bytes.size()));
+    maker.origin.block = block;
+    ASSERT_NE(store.add_entry(maker), openmeta::kInvalidEntryId);
+    store.finalize();
+
+    openmeta::PrepareTransferRequest request;
+    request.include_xmp_app1   = false;
+    request.include_icc_app2   = false;
+    request.include_iptc_app13 = false;
+    request.profile.makernote  = openmeta::TransferPolicyAction::Rewrite;
+
+    openmeta::PreparedTransferBundle bundle;
+    const openmeta::PrepareTransferResult result
+        = openmeta::prepare_metadata_for_target(store, request, &bundle);
+
+    EXPECT_EQ(result.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(result.code,
+              openmeta::PrepareTransferCode::RequestedMetadataNotSerializable);
+    EXPECT_EQ(result.errors, 0U);
+    EXPECT_GE(result.warnings, 1U);
+    EXPECT_TRUE(bundle.blocks.empty());
+
+    const openmeta::PreparedTransferPolicyDecision* decision
+        = find_policy_decision(bundle,
+                               openmeta::TransferPolicySubject::MakerNote);
+    ASSERT_NE(decision, nullptr);
+    EXPECT_EQ(decision->requested, openmeta::TransferPolicyAction::Rewrite);
+    EXPECT_EQ(decision->effective, openmeta::TransferPolicyAction::Drop);
+    EXPECT_EQ(decision->reason,
+              openmeta::TransferPolicyReason::RewriteUnavailableDropped);
+    EXPECT_TRUE(text_contains(result.message, "dropping maker notes"));
+    EXPECT_TRUE(text_contains(decision->message, "silently preserving"));
 }
 
 TEST(MetadataTransferApi, PrepareRecordsUnserializedJumbfAndC2paPolicies)

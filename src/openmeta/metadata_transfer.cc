@@ -4010,7 +4010,8 @@ namespace {
         }
         switch (requested) {
         case TransferPolicyAction::Keep:
-            *out_reason = TransferPolicyReason::Default;
+            *out_reason
+                = TransferPolicyReason::OpaquePayloadPreservedUnverified;
             return TransferPolicyAction::Keep;
         case TransferPolicyAction::Drop:
             *out_reason = TransferPolicyReason::ExplicitDrop;
@@ -4019,8 +4020,8 @@ namespace {
             *out_reason = TransferPolicyReason::PortableInvalidationUnavailable;
             return TransferPolicyAction::Drop;
         case TransferPolicyAction::Rewrite:
-            *out_reason = TransferPolicyReason::RewriteUnavailablePreservedRaw;
-            return TransferPolicyAction::Keep;
+            *out_reason = TransferPolicyReason::RewriteUnavailableDropped;
+            return TransferPolicyAction::Drop;
         }
         *out_reason = TransferPolicyReason::Default;
         return TransferPolicyAction::Keep;
@@ -11932,6 +11933,9 @@ prepare_metadata_for_target_impl(const MetaStore& store,
             makernote_reason = TransferPolicyReason::ExplicitDrop;
         } else if (transfer_safety_mode_is_rendered(effective_profile.safety)) {
             makernote_reason = TransferPolicyReason::SafetyModeFiltered;
+        } else if (requested_profile.makernote
+                   == TransferPolicyAction::Rewrite) {
+            makernote_reason = TransferPolicyReason::RewriteUnavailableDropped;
         } else {
             makernote_reason
                 = TransferPolicyReason::TargetSerializationUnavailable;
@@ -11964,11 +11968,11 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                 "maker note invalidation is not portable; dropping maker "
                 "notes");
         } else if (makernote_reason
-                   == TransferPolicyReason::RewriteUnavailablePreservedRaw) {
+                   == TransferPolicyReason::RewriteUnavailableDropped) {
             add_prepare_warning(
                 &r, PrepareTransferCode::RequestedMetadataNotSerializable,
-                "maker note rewrite is not implemented; preserving raw maker "
-                "notes");
+                "maker note rewrite is not implemented; dropping maker notes "
+                "instead of preserving opaque bytes as a rewrite");
         }
         append_policy_decision(
             &bundle, TransferPolicySubject::MakerNote,
@@ -11985,11 +11989,12 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                                 "dropping from prepared EXIF"
                               : (makernote_reason
                                          == TransferPolicyReason::
-                                             RewriteUnavailablePreservedRaw
-                                     ? "maker note rewrite is unavailable; preserving "
-                                       "raw maker note payload"
-                                     : "maker notes will be preserved in prepared "
-                                       "EXIF"))));
+                                             RewriteUnavailableDropped
+                                     ? "maker note rewrite is unavailable; dropping "
+                                       "raw payload instead of silently preserving it"
+                                     : "opaque maker note bytes will be preserved in "
+                                       "prepared EXIF without offset relocation, "
+                                       "checksum repair, or semantic validation"))));
     }
 
     const bool can_pack_source_jumbf
@@ -13583,6 +13588,22 @@ transfer_safety_audit_from_store(const MetaStore& store,
                                            VendorRawProcessingFamily::Nintendo);
     out.microsoft_raw_processing = vendor_raw_processing_from_store(
         store, VendorRawProcessingFamily::Microsoft);
+    return out;
+}
+
+TransferMakerNoteAudit
+makernote_transfer_audit_from_store(const MetaStore& store) noexcept
+{
+    TransferMakerNoteAudit out;
+    out.raw_payload_count = count_makernote_entries(store);
+    out.decoded_only_entry_count
+        = count_decoded_only_makernote_entries(store);
+    out.opaque_payload_available = out.raw_payload_count > 0U;
+    if (out.opaque_payload_available) {
+        out.trust = TransferMakerNoteTrust::OpaquePreservationUnverified;
+    } else if (out.decoded_only_entry_count > 0U) {
+        out.trust = TransferMakerNoteTrust::DecodedOnlyNotSerializable;
+    }
     return out;
 }
 

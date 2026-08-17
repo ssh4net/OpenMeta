@@ -46,8 +46,12 @@ Current tracked-gate status:
   Current public naming includes Fujifilm flash white-balance and native RAF
   firmware fields, plus selected model-specific Sony correction-offset routes.
 - Decoded vendor MakerNote sub-IFDs are interpreted/query metadata. Writers do
-  not reconstruct MakerNote blobs from those decoded fields; they preserve the
-  original raw MakerNote payload when it is present.
+  not reconstruct MakerNote blobs from those decoded fields. Compatible-file
+  `Keep` preserves the original raw payload as unverified opaque bytes; it does
+  not relocate nested offsets, repair vendor checksums, or prove semantic
+  readability after repacking. Explicit `Rewrite` drops when those operations
+  are unavailable. Hosts can inspect this boundary with
+  `makernote_transfer_audit_from_store(...)`.
 - Metadata-family presence gates for XMP, ICC, IPTC-IIM, Photoshop IRB, and
   JUMBF/C2PA are clean on the tracked still-image corpus. Current read coverage
   includes EXIF/TIFF-carried ICC/IPTC payloads, bare JPEG APP1 XMP packets, and
