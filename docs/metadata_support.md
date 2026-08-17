@@ -51,7 +51,10 @@ Current tracked-gate status:
   not relocate nested offsets, repair vendor checksums, or prove semantic
   readability after repacking. Explicit `Rewrite` drops when those operations
   are unavailable. Hosts can inspect this boundary with
-  `makernote_transfer_audit_from_store(...)`.
+  `makernote_transfer_audit_from_store(...)`. The separate
+  `makernote_layout_transfer_audit_from_store(...)` recognizes canonical Nikon
+  type 1/type 3 offset layouts and validates standard embedded-TIFF structure
+  for type 3 without claiming vendor-private offset or checksum validation.
 - Metadata-family presence gates for XMP, ICC, IPTC-IIM, Photoshop IRB, and
   JUMBF/C2PA are clean on the tracked still-image corpus. Current read coverage
   includes EXIF/TIFF-carried ICC/IPTC payloads, bare JPEG APP1 XMP packets, and

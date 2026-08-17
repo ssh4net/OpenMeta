@@ -448,15 +448,56 @@ enum class TransferMakerNoteTrust : uint8_t {
 
 /// Source evidence and current writer capabilities for MakerNote transfer.
 struct TransferMakerNoteAudit final {
-    TransferMakerNoteTrust trust = TransferMakerNoteTrust::NotPresent;
+    TransferMakerNoteTrust trust      = TransferMakerNoteTrust::NotPresent;
     uint32_t raw_payload_count        = 0U;
     uint32_t decoded_only_entry_count = 0U;
-    bool opaque_payload_available                = false;
-    bool decoded_rewrite_available               = false;
+    bool opaque_payload_available     = false;
+    bool decoded_rewrite_available    = false;
     bool internal_offset_relocation_available    = false;
     bool vendor_checksum_recalculation_available = false;
     bool semantic_validation_available           = false;
-    bool raw_carrier_passthrough_available        = false;
+    bool raw_carrier_passthrough_available       = false;
+};
+
+/// Vendor identified from a raw MakerNote payload layout.
+enum class TransferMakerNoteVendor : uint8_t {
+    Unknown,
+    Nikon,
+};
+
+/// Raw MakerNote layout relevant to offset-safe transfer.
+enum class TransferMakerNoteLayout : uint8_t {
+    UnknownOrMixed,
+    NikonType1OuterTiff,
+    NikonType3EmbeddedTiff,
+};
+
+/// Structural trust established for a raw MakerNote layout.
+enum class TransferMakerNoteLayoutTrust : uint8_t {
+    NotPresent,
+    UnrecognizedOrMixed,
+    OuterTiffOffsetsUnsafe,
+    EmbeddedTiffStructureUnverified,
+    EmbeddedTiffStructureVerified,
+};
+
+/// Vendor-layout evidence that can be established without rewriting a note.
+struct TransferMakerNoteLayoutAudit final {
+    TransferMakerNoteLayoutTrust trust
+        = TransferMakerNoteLayoutTrust::NotPresent;
+    TransferMakerNoteVendor vendor    = TransferMakerNoteVendor::Unknown;
+    TransferMakerNoteLayout layout    = TransferMakerNoteLayout::UnknownOrMixed;
+    uint32_t raw_payload_count        = 0U;
+    uint32_t recognized_payload_count = 0U;
+    uint32_t structurally_valid_payload_count    = 0U;
+    bool offset_basis_known                      = false;
+    bool embedded_tiff_validation_available      = false;
+    bool embedded_tiff_validation_passed         = false;
+    bool embedded_tiff_offsets_self_contained    = false;
+    bool outer_tiff_offset_relocation_required   = false;
+    bool vendor_private_offsets_verified         = false;
+    bool vendor_checksum_validation_available    = false;
+    bool semantic_roundtrip_validation_available = false;
 };
 
 enum class TransferConceptDiagnosticAction : uint8_t {
@@ -1551,7 +1592,7 @@ struct ExecutePreparedTransferOptions final {
     bool time_patch_auto_nul = true;
 
     EmitTransferOptions emit;
-    uint32_t emit_repeat                   = 1;
+    uint32_t emit_repeat = 1;
     /// Optional metadata-only sink. BMFF targets write an ordered
     /// item/property payload handoff, not a standalone BMFF container.
     TransferByteWriter* emit_output_writer = nullptr;
@@ -2019,6 +2060,21 @@ transfer_safety_audit_from_store(const MetaStore& store,
  */
 TransferMakerNoteAudit
 makernote_transfer_audit_from_store(const MetaStore& store) noexcept;
+
+/**
+ * \brief Classify raw MakerNote layouts that affect offset-safe transfer.
+ *
+ * The first bounded implementation recognizes canonical Nikon type 1 notes,
+ * whose offsets depend on the outer TIFF, and Nikon type 3 notes containing an
+ * embedded TIFF at byte 10. A valid embedded TIFF proves only that standard
+ * TIFF directory/value offsets remain inside that payload. Vendor-private
+ * binary offsets, checksums, and semantic readability are not validated.
+ *
+ * \par API Stability
+ * Experimental host-facing API for diagnostics, UI, and preflight decisions.
+ */
+TransferMakerNoteLayoutAudit
+makernote_layout_transfer_audit_from_store(const MetaStore& store) noexcept;
 
 TransferConceptDiagnostics
 transfer_concept_diagnostics_from_store(const MetaStore& store,

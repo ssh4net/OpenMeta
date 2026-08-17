@@ -80,8 +80,9 @@ Docs (optional):
 
 - ``OPENMETA_BUILD_DOCS``: generate Doxygen HTML on ``install``.
 - ``OPENMETA_BUILD_SPHINX_DOCS``: generate a Sphinx site (Doxygen XML + Breathe).
-- ``OPENMETA_PYTHON_EXECUTABLE``: override the Python interpreter used for Sphinx
-  (useful for uv/venv/conda when CMake would otherwise pick system Python).
+- ``OPENMETA_PYTHON_EXECUTABLE``: override the Python interpreter used for
+  Sphinx, bindings, wheels, and Python-backed test fixtures (useful for
+  uv/venv/conda or native Windows builds).
 
 Python (optional):
 

@@ -1429,7 +1429,7 @@ namespace {
         nb::dict out;
         out["trust"]      = audit.trust;
         out["trust_name"] = nb::str(transfer_makernote_trust_name(audit.trust));
-        out["raw_payload_count"] = nb::int_(audit.raw_payload_count);
+        out["raw_payload_count"]        = nb::int_(audit.raw_payload_count);
         out["decoded_only_entry_count"] = nb::int_(
             audit.decoded_only_entry_count);
         out["opaque_payload_available"] = nb::bool_(
@@ -1444,6 +1444,82 @@ namespace {
             audit.semantic_validation_available);
         out["raw_carrier_passthrough_available"] = nb::bool_(
             audit.raw_carrier_passthrough_available);
+        return out;
+    }
+
+    static const char*
+    transfer_makernote_vendor_name(TransferMakerNoteVendor vendor) noexcept
+    {
+        switch (vendor) {
+        case TransferMakerNoteVendor::Unknown: return "unknown";
+        case TransferMakerNoteVendor::Nikon: return "nikon";
+        }
+        return "unknown";
+    }
+
+    static const char*
+    transfer_makernote_layout_name(TransferMakerNoteLayout layout) noexcept
+    {
+        switch (layout) {
+        case TransferMakerNoteLayout::UnknownOrMixed: return "unknown_or_mixed";
+        case TransferMakerNoteLayout::NikonType1OuterTiff:
+            return "nikon_type1_outer_tiff";
+        case TransferMakerNoteLayout::NikonType3EmbeddedTiff:
+            return "nikon_type3_embedded_tiff";
+        }
+        return "unknown";
+    }
+
+    static const char* transfer_makernote_layout_trust_name(
+        TransferMakerNoteLayoutTrust trust) noexcept
+    {
+        switch (trust) {
+        case TransferMakerNoteLayoutTrust::NotPresent: return "not_present";
+        case TransferMakerNoteLayoutTrust::UnrecognizedOrMixed:
+            return "unrecognized_or_mixed";
+        case TransferMakerNoteLayoutTrust::OuterTiffOffsetsUnsafe:
+            return "outer_tiff_offsets_unsafe";
+        case TransferMakerNoteLayoutTrust::EmbeddedTiffStructureUnverified:
+            return "embedded_tiff_structure_unverified";
+        case TransferMakerNoteLayoutTrust::EmbeddedTiffStructureVerified:
+            return "embedded_tiff_structure_verified";
+        }
+        return "unknown";
+    }
+
+    static nb::dict makernote_layout_transfer_audit_to_python(
+        const TransferMakerNoteLayoutAudit& audit)
+    {
+        nb::dict out;
+        out["trust"]      = audit.trust;
+        out["trust_name"] = nb::str(
+            transfer_makernote_layout_trust_name(audit.trust));
+        out["vendor"]      = audit.vendor;
+        out["vendor_name"] = nb::str(
+            transfer_makernote_vendor_name(audit.vendor));
+        out["layout"]      = audit.layout;
+        out["layout_name"] = nb::str(
+            transfer_makernote_layout_name(audit.layout));
+        out["raw_payload_count"]        = nb::int_(audit.raw_payload_count);
+        out["recognized_payload_count"] = nb::int_(
+            audit.recognized_payload_count);
+        out["structurally_valid_payload_count"] = nb::int_(
+            audit.structurally_valid_payload_count);
+        out["offset_basis_known"] = nb::bool_(audit.offset_basis_known);
+        out["embedded_tiff_validation_available"] = nb::bool_(
+            audit.embedded_tiff_validation_available);
+        out["embedded_tiff_validation_passed"] = nb::bool_(
+            audit.embedded_tiff_validation_passed);
+        out["embedded_tiff_offsets_self_contained"] = nb::bool_(
+            audit.embedded_tiff_offsets_self_contained);
+        out["outer_tiff_offset_relocation_required"] = nb::bool_(
+            audit.outer_tiff_offset_relocation_required);
+        out["vendor_private_offsets_verified"] = nb::bool_(
+            audit.vendor_private_offsets_verified);
+        out["vendor_checksum_validation_available"] = nb::bool_(
+            audit.vendor_checksum_validation_available);
+        out["semantic_roundtrip_validation_available"] = nb::bool_(
+            audit.semantic_roundtrip_validation_available);
         return out;
     }
 
@@ -6074,6 +6150,13 @@ snapshot_makernote_transfer_audit(const TransferSourceSnapshot& snapshot)
 }
 
 static nb::dict
+snapshot_makernote_layout_transfer_audit(const TransferSourceSnapshot& snapshot)
+{
+    return makernote_layout_transfer_audit_to_python(
+        makernote_layout_transfer_audit_from_store(snapshot.store));
+}
+
+static nb::dict
 snapshot_transfer_concept_diagnostics(const TransferSourceSnapshot& snapshot,
                                       TransferSafetyMode safety)
 {
@@ -6246,6 +6329,13 @@ document_makernote_transfer_audit(std::shared_ptr<PyDocument> d)
 {
     return makernote_transfer_audit_to_python(
         makernote_transfer_audit_from_store(d->store));
+}
+
+static nb::dict
+document_makernote_layout_transfer_audit(std::shared_ptr<PyDocument> d)
+{
+    return makernote_layout_transfer_audit_to_python(
+        makernote_layout_transfer_audit_from_store(d->store));
 }
 
 static nb::dict
@@ -7791,6 +7881,28 @@ NB_MODULE(_openmeta, m)
         .value("OpaquePreservationUnverified",
                TransferMakerNoteTrust::OpaquePreservationUnverified);
 
+    nb::enum_<TransferMakerNoteVendor>(m, "TransferMakerNoteVendor")
+        .value("Unknown", TransferMakerNoteVendor::Unknown)
+        .value("Nikon", TransferMakerNoteVendor::Nikon);
+
+    nb::enum_<TransferMakerNoteLayout>(m, "TransferMakerNoteLayout")
+        .value("UnknownOrMixed", TransferMakerNoteLayout::UnknownOrMixed)
+        .value("NikonType1OuterTiff",
+               TransferMakerNoteLayout::NikonType1OuterTiff)
+        .value("NikonType3EmbeddedTiff",
+               TransferMakerNoteLayout::NikonType3EmbeddedTiff);
+
+    nb::enum_<TransferMakerNoteLayoutTrust>(m, "TransferMakerNoteLayoutTrust")
+        .value("NotPresent", TransferMakerNoteLayoutTrust::NotPresent)
+        .value("UnrecognizedOrMixed",
+               TransferMakerNoteLayoutTrust::UnrecognizedOrMixed)
+        .value("OuterTiffOffsetsUnsafe",
+               TransferMakerNoteLayoutTrust::OuterTiffOffsetsUnsafe)
+        .value("EmbeddedTiffStructureUnverified",
+               TransferMakerNoteLayoutTrust::EmbeddedTiffStructureUnverified)
+        .value("EmbeddedTiffStructureVerified",
+               TransferMakerNoteLayoutTrust::EmbeddedTiffStructureVerified);
+
     nb::enum_<TransferRawCarrierPassthroughReason>(
         m, "TransferRawCarrierPassthroughReason")
         .value("Candidate", TransferRawCarrierPassthroughReason::Candidate)
@@ -8136,8 +8248,9 @@ NB_MODULE(_openmeta, m)
              "raw_descriptor"_a)
         .def("transfer_safety_audit", &snapshot_transfer_safety_audit,
              "safety"_a = TransferSafetyMode::RenderedImage)
-        .def("makernote_transfer_audit",
-             &snapshot_makernote_transfer_audit)
+        .def("makernote_transfer_audit", &snapshot_makernote_transfer_audit)
+        .def("makernote_layout_transfer_audit",
+             &snapshot_makernote_layout_transfer_audit)
         .def("transfer_concept_diagnostics",
              &snapshot_transfer_concept_diagnostics,
              "safety"_a = TransferSafetyMode::RenderedImage)
@@ -8316,8 +8429,9 @@ NB_MODULE(_openmeta, m)
              "raw_descriptor"_a)
         .def("transfer_safety_audit", &document_transfer_safety_audit,
              "safety"_a = TransferSafetyMode::RenderedImage)
-        .def("makernote_transfer_audit",
-             &document_makernote_transfer_audit)
+        .def("makernote_transfer_audit", &document_makernote_transfer_audit)
+        .def("makernote_layout_transfer_audit",
+             &document_makernote_layout_transfer_audit)
         .def("transfer_concept_diagnostics",
              &document_transfer_concept_diagnostics,
              "safety"_a = TransferSafetyMode::RenderedImage)

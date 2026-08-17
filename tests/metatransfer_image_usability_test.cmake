@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
+include("${CMAKE_CURRENT_LIST_DIR}/test_python_interpreter.cmake")
 
 if(NOT DEFINED METATRANSFER_BIN OR METATRANSFER_BIN STREQUAL "")
   message(FATAL_ERROR "METATRANSFER_BIN is required")
@@ -27,7 +28,7 @@ set(_makernote_hex "4f70656e4d6574614d616b65724e6f746500")
 set(_makernote_xmp_title "OpenMeta MakerNote XMP Gate")
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; t=bytearray(); t+=b'II*\\x00'; t+=(8).to_bytes(4,'little'); t+=(1).to_bytes(2,'little'); t+=(0x0132).to_bytes(2,'little'); t+=(2).to_bytes(2,'little'); t+=(20).to_bytes(4,'little'); t+=(26).to_bytes(4,'little'); t+=(0).to_bytes(4,'little'); t+=b'2000:01:02 03:04:05\\x00'; app1=b'Exif\\x00\\x00'+bytes(t); ln=(len(app1)+2).to_bytes(2,'big'); Path(r'''${_source_jpg}''').write_bytes(b'\\xff\\xd8\\xff\\xe1'+ln+app1+b'\\xff\\xd9')"
   RESULT_VARIABLE _rv_source
   OUTPUT_VARIABLE _out_source
@@ -39,7 +40,7 @@ if(NOT _rv_source EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; p=bytearray(156); p[0:4]=(156).to_bytes(4,'big'); p[36:40]=b'acsp'; p[128:132]=(1).to_bytes(4,'big'); p[132:136]=b'desc'; p[136:140]=(144).to_bytes(4,'big'); p[140:144]=(12).to_bytes(4,'big'); p[144:156]=bytes([0x11])*12; app2=b'ICC_PROFILE\\x00\\x01\\x01'+bytes(p); ln=(len(app2)+2).to_bytes(2,'big'); Path(r'''${_source_icc_jpg}''').write_bytes(b'\\xff\\xd8\\xff\\xe2'+ln+app2+b'\\xff\\xd9')"
   RESULT_VARIABLE _rv_source_icc
   OUTPUT_VARIABLE _out_source_icc
@@ -51,7 +52,7 @@ if(NOT _rv_source_icc EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     [=[
 from pathlib import Path
 import sys
@@ -81,7 +82,7 @@ if(NOT _rv_source_xmp EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     [=[
 from pathlib import Path
 import sys
@@ -185,7 +186,7 @@ function(_om_create_target format extension)
   endif()
   if("${format}" STREQUAL "webp")
     _om_run("webp vp8x wrapper ${format}"
-      python3 -c
+      "${_openmeta_test_python}" -c
         [=[
 from pathlib import Path
 import sys
@@ -309,7 +310,7 @@ function(_om_probe_target_image_spec format path prefix out_var)
     set(_exiftool_arg "${EXIFTOOL_BIN}")
   endif()
   execute_process(
-    COMMAND python3 -c
+    COMMAND "${_openmeta_test_python}" -c
       [=[
 import re
 import subprocess
@@ -532,7 +533,7 @@ function(_om_check_exiftool_makernote_exact label path expected_hex)
     return()
   endif()
   execute_process(
-    COMMAND python3 -c
+    COMMAND "${_openmeta_test_python}" -c
       [=[
 import subprocess
 import sys
@@ -573,7 +574,7 @@ function(_om_exiftool_makernote_hex label path out_var)
     return()
   endif()
   execute_process(
-    COMMAND python3 -c
+    COMMAND "${_openmeta_test_python}" -c
       [=[
 import subprocess
 import sys

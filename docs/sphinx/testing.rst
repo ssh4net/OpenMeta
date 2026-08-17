@@ -17,6 +17,10 @@ Unit tests (GoogleTest)
 If your test dependencies were built against ``libc++`` (common with Clang),
 configure OpenMeta with ``-DOPENMETA_USE_LIBCXX=ON``.
 
+The CLI smoke and release gates use Python to create deterministic fixtures.
+Set ``OPENMETA_PYTHON_EXECUTABLE`` when the intended interpreter is not
+named ``python3`` or is outside ``PATH``.
+
 If CTest-launched external tools need a custom runtime lookup path for that
 standard library, configure
 ``-DOPENMETA_TEST_RUNTIME_LIBRARY_PATH=/path/to/runtime-libs``. OpenMeta
@@ -127,6 +131,12 @@ exposes the generic BMFF XMP item. ExifTool is also used for BMFF EXIF/ICC
 reader checks when available. If the local ``oiiotool`` build cannot decode a
 configured BMFF target after rewrite, ``OPENMETA_FFMPEG_EXECUTABLE`` can
 provide the decode fallback.
+
+Focused synthetic regressions also transfer a canonical Nikon type 3
+MakerNote through JPEG and TIFF writers, require byte-identical raw ``0x927C``
+payloads, and decode selected Nikon fields from the emitted files. This proves
+the tested embedded-TIFF path, not general vendor-private offset or checksum
+correctness.
 
 ExifTool is an optional external validation tool in these tests, not an
 OpenMeta runtime dependency. Keep it patched when running validation against

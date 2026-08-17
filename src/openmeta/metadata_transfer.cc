@@ -6,6 +6,7 @@
 #include "openmeta/container_payload.h"
 #include "openmeta/container_scan.h"
 #include "openmeta/exif_tag_names.h"
+#include "openmeta/exif_tiff_decode.h"
 #include "openmeta/interop_export.h"
 #include "openmeta/jumbf_decode.h"
 #include "openmeta/mapped_file.h"
@@ -3403,6 +3404,83 @@ namespace {
         return count;
     }
 
+    enum class NikonMakerNoteLayout : uint8_t {
+        Unknown,
+        Type1OuterTiff,
+        Type3EmbeddedTiff,
+    };
+
+    static std::span<const std::byte>
+    makernote_payload(const MetaStore& store, const Entry& entry) noexcept
+    {
+        if (entry.value.kind == MetaValueKind::Bytes
+            || (entry.value.kind == MetaValueKind::Array
+                && entry.value.elem_type == MetaElementType::U8)) {
+            return store.arena().span(entry.value.data.span);
+        }
+        return {};
+    }
+
+    static bool has_nikon_signature(std::span<const std::byte> payload) noexcept
+    {
+        static constexpr std::array<std::byte, 6> kSignature = {
+            std::byte { 'N' }, std::byte { 'i' }, std::byte { 'k' },
+            std::byte { 'o' }, std::byte { 'n' }, std::byte { 0 },
+        };
+        return payload.size() >= kSignature.size()
+               && std::equal(kSignature.begin(), kSignature.end(),
+                             payload.begin());
+    }
+
+    static NikonMakerNoteLayout
+    classify_nikon_makernote_layout(std::span<const std::byte> payload) noexcept
+    {
+        if (!has_nikon_signature(payload) || payload.size() < 8U
+            || payload[7] != std::byte { 0 }) {
+            return NikonMakerNoteLayout::Unknown;
+        }
+        if (payload[6] == std::byte { 1 }) {
+            return NikonMakerNoteLayout::Type1OuterTiff;
+        }
+        if (payload[6] != std::byte { 2 } || payload.size() < 18U
+            || payload[8] != std::byte { 0 } || payload[9] != std::byte { 0 }) {
+            return NikonMakerNoteLayout::Unknown;
+        }
+
+        const bool little_endian = payload[10] == std::byte { 'I' }
+                                   && payload[11] == std::byte { 'I' };
+        const bool big_endian = payload[10] == std::byte { 'M' }
+                                && payload[11] == std::byte { 'M' };
+        const bool valid_magic
+            = (little_endian && payload[12] == std::byte { 42 }
+               && payload[13] == std::byte { 0 })
+              || (big_endian && payload[12] == std::byte { 0 }
+                  && payload[13] == std::byte { 42 });
+        return valid_magic ? NikonMakerNoteLayout::Type3EmbeddedTiff
+                           : NikonMakerNoteLayout::Unknown;
+    }
+
+    static bool validate_nikon_type3_embedded_tiff(
+        std::span<const std::byte> payload) noexcept
+    {
+        if (payload.size() <= 10U) {
+            return false;
+        }
+        ExifDecodeOptions options;
+        options.decode_printim             = false;
+        options.decode_geotiff             = false;
+        options.decode_makernote           = false;
+        options.decode_embedded_containers = false;
+        options.limits.max_ifds            = 64U;
+        options.limits.max_entries_per_ifd = 4096U;
+        options.limits.max_total_entries   = 32768U;
+        options.limits.max_value_bytes     = 16ULL * 1024ULL * 1024ULL;
+        options.limits.max_arena_bytes     = 32ULL * 1024ULL * 1024ULL;
+        const ExifDecodeResult result = measure_exif_tiff(payload.subspan(10U),
+                                                          options);
+        return result.status == ExifDecodeStatus::Ok && result.ifds_needed > 0U;
+    }
+
     static bool is_decoded_makernote_ifd_name(std::string_view ifd) noexcept
     {
         return starts_with(ifd, "mk_") || starts_with(ifd, "mkifd")
@@ -4010,8 +4088,7 @@ namespace {
         }
         switch (requested) {
         case TransferPolicyAction::Keep:
-            *out_reason
-                = TransferPolicyReason::OpaquePayloadPreservedUnverified;
+            *out_reason = TransferPolicyReason::OpaquePayloadPreservedUnverified;
             return TransferPolicyAction::Keep;
         case TransferPolicyAction::Drop:
             *out_reason = TransferPolicyReason::ExplicitDrop;
@@ -13595,14 +13672,78 @@ TransferMakerNoteAudit
 makernote_transfer_audit_from_store(const MetaStore& store) noexcept
 {
     TransferMakerNoteAudit out;
-    out.raw_payload_count = count_makernote_entries(store);
-    out.decoded_only_entry_count
-        = count_decoded_only_makernote_entries(store);
+    out.raw_payload_count        = count_makernote_entries(store);
+    out.decoded_only_entry_count = count_decoded_only_makernote_entries(store);
     out.opaque_payload_available = out.raw_payload_count > 0U;
     if (out.opaque_payload_available) {
         out.trust = TransferMakerNoteTrust::OpaquePreservationUnverified;
     } else if (out.decoded_only_entry_count > 0U) {
         out.trust = TransferMakerNoteTrust::DecodedOnlyNotSerializable;
+    }
+    return out;
+}
+
+TransferMakerNoteLayoutAudit
+makernote_layout_transfer_audit_from_store(const MetaStore& store) noexcept
+{
+    TransferMakerNoteLayoutAudit out;
+    NikonMakerNoteLayout common_layout = NikonMakerNoteLayout::Unknown;
+    bool mixed_layout                  = false;
+
+    for (const Entry& entry : store.entries()) {
+        if (any(entry.flags, EntryFlags::Deleted)
+            || entry.key.kind != MetaKeyKind::ExifTag
+            || entry.key.data.exif_tag.tag != 0x927CU) {
+            continue;
+        }
+
+        out.raw_payload_count += 1U;
+        const std::span<const std::byte> payload = makernote_payload(store,
+                                                                     entry);
+        const NikonMakerNoteLayout layout = classify_nikon_makernote_layout(
+            payload);
+        if (layout == NikonMakerNoteLayout::Unknown) {
+            continue;
+        }
+
+        out.recognized_payload_count += 1U;
+        if (common_layout == NikonMakerNoteLayout::Unknown) {
+            common_layout = layout;
+        } else if (common_layout != layout) {
+            mixed_layout = true;
+        }
+        if (layout == NikonMakerNoteLayout::Type3EmbeddedTiff
+            && validate_nikon_type3_embedded_tiff(payload)) {
+            out.structurally_valid_payload_count += 1U;
+        }
+    }
+
+    if (out.raw_payload_count == 0U) {
+        return out;
+    }
+    if (mixed_layout || out.recognized_payload_count != out.raw_payload_count) {
+        out.trust = TransferMakerNoteLayoutTrust::UnrecognizedOrMixed;
+        return out;
+    }
+
+    out.vendor             = TransferMakerNoteVendor::Nikon;
+    out.offset_basis_known = true;
+    if (common_layout == NikonMakerNoteLayout::Type1OuterTiff) {
+        out.layout = TransferMakerNoteLayout::NikonType1OuterTiff;
+        out.trust  = TransferMakerNoteLayoutTrust::OuterTiffOffsetsUnsafe;
+        out.outer_tiff_offset_relocation_required = true;
+        return out;
+    }
+
+    out.layout = TransferMakerNoteLayout::NikonType3EmbeddedTiff;
+    out.embedded_tiff_validation_available = true;
+    if (out.structurally_valid_payload_count == out.raw_payload_count) {
+        out.trust = TransferMakerNoteLayoutTrust::EmbeddedTiffStructureVerified;
+        out.embedded_tiff_validation_passed      = true;
+        out.embedded_tiff_offsets_self_contained = true;
+    } else {
+        out.trust
+            = TransferMakerNoteLayoutTrust::EmbeddedTiffStructureUnverified;
     }
     return out;
 }

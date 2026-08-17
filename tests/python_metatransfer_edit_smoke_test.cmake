@@ -1940,7 +1940,7 @@ endif()
 
 set(_avif_target "${WORK_DIR}/avif_target.bin")
 execute_process(
-  COMMAND python3 -c "from pathlib import Path; Path(r'${_avif_target}').write_bytes(bytes.fromhex('000000186674797068656963000000006d696631686569630000000c6d64617411223344'))"
+  COMMAND "${OPENMETA_PYTHON_EXECUTABLE}" -c "from pathlib import Path; Path(r'${_avif_target}').write_bytes(bytes.fromhex('000000186674797068656963000000006d696631686569630000000c6d64617411223344'))"
   RESULT_VARIABLE _rv_avif_target
   OUTPUT_VARIABLE _out_avif_target
   ERROR_VARIABLE _err_avif_target

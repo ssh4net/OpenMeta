@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
+include("${CMAKE_CURRENT_LIST_DIR}/test_python_interpreter.cmake")
 
 if(NOT DEFINED METATRANSFER_BIN OR METATRANSFER_BIN STREQUAL "")
   message(FATAL_ERROR "METATRANSFER_BIN is required")
@@ -84,7 +85,7 @@ file(MAKE_DIRECTORY "${_dump_dir}")
 #Minimal JPEG with APP1 Exif payload:
 #SOI + APP1(Exif + tiny TIFF IFD0 with DateTime ASCII tag) + EOI.
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; t=bytearray(); t+=b'II*\\x00'; t+=(8).to_bytes(4,'little'); t+=(1).to_bytes(2,'little'); t+=(0x0132).to_bytes(2,'little'); t+=(2).to_bytes(2,'little'); t+=(20).to_bytes(4,'little'); t+=(26).to_bytes(4,'little'); t+=(0).to_bytes(4,'little'); t+=b'2000:01:02 03:04:05\\x00'; app1=b'Exif\\x00\\x00'+bytes(t); ln=(len(app1)+2).to_bytes(2,'big'); jpg=b'\\xFF\\xD8\\xFF\\xE1'+ln+app1+b'\\xFF\\xD9'; Path(r'''${_jpg}''').write_bytes(jpg)"
   RESULT_VARIABLE _rv_write
   OUTPUT_VARIABLE _out_write
@@ -96,7 +97,7 @@ if(NOT _rv_write EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; t=bytearray(); t+=b'II*\\x00'; t+=(8).to_bytes(4,'little'); t+=(1).to_bytes(2,'little'); t+=(0x0132).to_bytes(2,'little'); t+=(2).to_bytes(2,'little'); t+=(20).to_bytes(4,'little'); t+=(26).to_bytes(4,'little'); t+=(0).to_bytes(4,'little'); t+=b'2000:01:02 03:04:05\\x00'; app1=b'Exif\\x00\\x00'+bytes(t); xml=b\"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><rdf:Description xmlns:xmp='http://ns.adobe.com/xap/1.0/'><xmp:CreatorTool>OpenMeta Transfer Source</xmp:CreatorTool></rdf:Description></rdf:RDF></x:xmpmeta>\"; xmp=b'http://ns.adobe.com/xap/1.0/\\x00'+xml; ln1=(len(app1)+2).to_bytes(2,'big'); ln2=(len(xmp)+2).to_bytes(2,'big'); jpg=b'\\xFF\\xD8\\xFF\\xE1'+ln1+app1+b'\\xFF\\xE1'+ln2+xmp+b'\\xFF\\xD9'; Path(r'''${_jpg_xmp}''').write_bytes(jpg)"
   RESULT_VARIABLE _rv_write_xmp
   OUTPUT_VARIABLE _out_write_xmp
@@ -108,7 +109,7 @@ if(NOT _rv_write_xmp EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; t=bytearray(); t+=b'II*\\x00'; t+=(8).to_bytes(4,'little'); t+=(1).to_bytes(2,'little'); t+=(0x010F).to_bytes(2,'little'); t+=(2).to_bytes(2,'little'); t+=(7).to_bytes(4,'little'); t+=(26).to_bytes(4,'little'); t+=(0).to_bytes(4,'little'); t+=b'Vendor\\x00'; app1=b'Exif\\x00\\x00'+bytes(t); ln=(len(app1)+2).to_bytes(2,'big'); jpg=b'\\xFF\\xD8\\xFF\\xE1'+ln+app1+b'\\xFF\\xD9'; Path(r'''${_jpg_exr}''').write_bytes(jpg)"
   RESULT_VARIABLE _rv_write_exr
   OUTPUT_VARIABLE _out_write_exr
@@ -120,7 +121,7 @@ if(NOT _rv_write_exr EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; p=bytearray(156); p[0:4]=(156).to_bytes(4,'big'); p[36:40]=b'acsp'; p[128:132]=(1).to_bytes(4,'big'); p[132:136]=b'desc'; p[136:140]=(144).to_bytes(4,'big'); p[140:144]=(12).to_bytes(4,'big'); p[144:156]=bytes([0x11])*12; app2=b'ICC_PROFILE\\x00\\x01\\x01'+bytes(p); ln=(len(app2)+2).to_bytes(2,'big'); jpg=b'\\xFF\\xD8\\xFF\\xE2'+ln+app2+b'\\xFF\\xD9'; Path(r'''${_icc_jpg}''').write_bytes(jpg)"
   RESULT_VARIABLE _rv_write_icc
   OUTPUT_VARIABLE _out_write_icc
@@ -133,7 +134,7 @@ endif()
 
 #Minimal metadata - free JPEG target(SOI + EOI)
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; Path(r'''${_target_jpg}''').write_bytes(bytes([255,216,255,217]))"
   RESULT_VARIABLE _rv_write_target
   OUTPUT_VARIABLE _out_write_target
@@ -145,7 +146,7 @@ if(NOT _rv_write_target EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; xml=b\"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><rdf:Description xmlns:xmp='http://ns.adobe.com/xap/1.0/'><xmp:CreatorTool>Target Embedded Existing</xmp:CreatorTool></rdf:Description></rdf:RDF></x:xmpmeta>\"; app1=b'http://ns.adobe.com/xap/1.0/\\x00'+xml; ln=(len(app1)+2).to_bytes(2,'big'); Path(r'''${_target_jpg_xmp}''').write_bytes(b'\\xFF\\xD8\\xFF\\xE1'+ln+app1+b'\\xFF\\xD9')"
   RESULT_VARIABLE _rv_write_target_xmp
   OUTPUT_VARIABLE _out_write_target_xmp
@@ -158,7 +159,7 @@ endif()
 
 # Minimal JXL container target: signature + jxlc codestream box.
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; u32=lambda v:(v).to_bytes(4,'big'); box=lambda t,p:u32(8+len(p))+t+p; Path(r'''${_target_jxl}''').write_bytes(u32(12)+b'JXL '+u32(0x0D0A870A)+box(b'jxlc', bytes([0x11,0x22,0x33,0x44])))"
   RESULT_VARIABLE _rv_write_jxl
   OUTPUT_VARIABLE _out_write_jxl
@@ -171,7 +172,7 @@ endif()
 
 # Minimal JP2 target: signature + ftyp + free box.
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; u32=lambda v:(v).to_bytes(4,'big'); box=lambda t,p:u32(8+len(p))+t+p; ftyp=b'jp2 '+u32(0)+b'jp2 '; sig=u32(12)+b'jP  '+u32(0x0D0A870A); Path(r'''${_target_jp2}''').write_bytes(sig+box(b'ftyp', ftyp)+box(b'free', bytes([0x11,0x22,0x33])))"
   RESULT_VARIABLE _rv_write_jp2
   OUTPUT_VARIABLE _out_write_jp2
@@ -183,7 +184,7 @@ if(NOT _rv_write_jp2 EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; xml=b\"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><rdf:Description xmlns:xmp='http://ns.adobe.com/xap/1.0/'><xmp:CreatorTool>Target Embedded Existing</xmp:CreatorTool></rdf:Description></rdf:RDF></x:xmpmeta>\"; xoff=38; ifd=bytearray(); ifd+=(1).to_bytes(2,'little'); ifd+=(700).to_bytes(2,'little'); ifd+=(1).to_bytes(2,'little'); ifd+=len(xml).to_bytes(4,'little'); ifd+=xoff.to_bytes(4,'little'); ifd+=(0).to_bytes(4,'little'); b=bytearray(); b+=b'II'; b+=(42).to_bytes(2,'little'); b+=(8).to_bytes(4,'little'); b+=ifd; b+=xml; Path(r'''${_target_tif_xmp}''').write_bytes(bytes(b))"
   RESULT_VARIABLE _rv_write_target_tif_xmp
   OUTPUT_VARIABLE _out_write_target_tif_xmp
@@ -196,7 +197,7 @@ endif()
 
 #Minimal classic TIFF target(II + 42 + IFD0 at offset 8 with 0 entries)
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; b=bytearray(); b+=b'II'; b+=(42).to_bytes(2,'little'); b+=(8).to_bytes(4,'little'); b+=(0).to_bytes(2,'little'); b+=(0).to_bytes(4,'little'); Path(r'''${_target_tif}''').write_bytes(bytes(b))"
   RESULT_VARIABLE _rv_write_tiff
   OUTPUT_VARIABLE _out_write_tiff
@@ -208,7 +209,7 @@ if(NOT _rv_write_tiff EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; b=bytearray(); b+=b'II'; b+=(42).to_bytes(2,'little'); b+=(8).to_bytes(4,'little'); b+=(0).to_bytes(2,'little'); b+=(0).to_bytes(4,'little'); Path(r'''${_target_dng}''').write_bytes(bytes(b))"
   RESULT_VARIABLE _rv_write_dng
   OUTPUT_VARIABLE _out_write_dng
@@ -223,7 +224,7 @@ file(COPY_FILE "${_target_dng}" "${_sdk_target_dng_before}")
 
 # Minimal classic big-endian TIFF target (MM + 42 + IFD0 at offset 8 with 0 entries)
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; b=bytearray(); b+=b'MM'; b+=(42).to_bytes(2,'big'); b+=(8).to_bytes(4,'big'); b+=(0).to_bytes(2,'big'); b+=(0).to_bytes(4,'big'); Path(r'''${_target_tif_be}''').write_bytes(bytes(b))"
   RESULT_VARIABLE _rv_write_tiff_be
   OUTPUT_VARIABLE _out_write_tiff_be
@@ -235,7 +236,7 @@ if(NOT _rv_write_tiff_be EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; cbor=bytes([0xA1,0x61,0x61,0x01]); jumd=b'acme\\x00'; box=lambda t,p: (8+len(p)).to_bytes(4,'big')+t+p; payload=box(b'jumd', jumd)+box(b'cbor', cbor); Path(r'''${_jumbf_box}''').write_bytes(box(b'jumb', payload))"
   RESULT_VARIABLE _rv_write_jumbf
   OUTPUT_VARIABLE _out_write_jumbf
@@ -247,7 +248,7 @@ if(NOT _rv_write_jumbf EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; cbor=bytes([0xA1,0x61,0x61,0x01]); jumd=b'c2pa\\x00'; box=lambda t,p: (8+len(p)).to_bytes(4,'big')+t+p; jumb=box(b'jumb', box(b'jumd', jumd)+box(b'cbor', cbor)); seg=b'JP\\x00\\x00'+(1).to_bytes(4,'big')+jumb; jpg=b'\\xFF\\xD8\\xFF\\xEB'+(len(seg)+2).to_bytes(2,'big')+seg+b'\\xFF\\xD9'; Path(r'''${_c2pa_jpg}''').write_bytes(jpg)"
   RESULT_VARIABLE _rv_write_c2pa
   OUTPUT_VARIABLE _out_write_c2pa
@@ -259,7 +260,7 @@ if(NOT _rv_write_c2pa EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; u32=lambda v:(v).to_bytes(4,'big'); box=lambda t,p:u32(8+len(p))+t+p; cbor=bytes([0xA1,0x61,0x61,0x01]); jumd=b'c2pa\\x00'; logical=box(b'jumb', box(b'jumd', jumd)+box(b'cbor', cbor)); Path(r'''${_c2pa_jxl}''').write_bytes(u32(12)+b'JXL '+u32(0x0D0A870A)+box(b'jxlc', bytes([0x11,0x22,0x33,0x44]))+box(b'jumb', logical[8:]))"
   RESULT_VARIABLE _rv_write_c2pa_jxl
   OUTPUT_VARIABLE _out_write_c2pa_jxl
@@ -271,7 +272,7 @@ if(NOT _rv_write_c2pa_jxl EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; jumd=b'c2pa\\x00'; box=lambda t,p: (8+len(p)).to_bytes(4,'big')+t+p; cbor=bytearray(); cbor+=bytes([0xA1,0x68])+b'manifest'; cbor+=bytes([0x81,0xA2,0x6F])+b'claim_generator'; cbor+=bytes([0x64])+b'test'; cbor+=bytes([0x66])+b'claims'; cbor+=bytes([0x81,0xA2,0x6A])+b'assertions'; cbor+=bytes([0x81,0xA1,0x65])+b'label'; cbor+=bytes([0x6E])+b'c2pa.hash.data'; cbor+=bytes([0x6A])+b'signatures'; cbor+=bytes([0x81,0xA2,0x63])+b'alg'; cbor+=bytes([0x65])+b'ES256'; cbor+=bytes([0x69])+b'signature'; cbor+=bytes([0x44,0x01,0x02,0x03,0x04]); Path(r'''${_signed_c2pa_box}''').write_bytes(box(b'jumb', box(b'jumd', jumd)+box(b'cbor', bytes(cbor)))); Path(r'''${_signed_c2pa_manifest}''').write_bytes(bytes(cbor)); Path(r'''${_signed_c2pa_chain}''').write_bytes(bytes([0x30,0x82,0x01,0x00]))"
   RESULT_VARIABLE _rv_write_signed_c2pa
   OUTPUT_VARIABLE _out_write_signed_c2pa
@@ -283,7 +284,7 @@ if(NOT _rv_write_signed_c2pa EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; u32=lambda v:(v).to_bytes(4,'big'); box=lambda t,p:u32(8+len(p))+t+p; uuidbox=lambda u,p:u32(24+len(p))+b'uuid'+u+p; logical=Path(r'''${_signed_c2pa_box}''').read_bytes(); marker=b'openmeta:bmff_transfer_meta:v1'; uuid=b'OpenMetaBmffMeta'; infe=b'\\x02\\x00\\x00\\x00'+(1).to_bytes(2,'big')+(0).to_bytes(2,'big')+b'c2pa'+b'C2PA\\x00'; iinf=box(b'iinf', b'\\x00\\x00\\x00\\x00'+(1).to_bytes(2,'big')+box(b'infe', infe)); idat=box(b'idat', logical); iloc=box(b'iloc', b'\\x01\\x00\\x00\\x00'+bytes([0x44,0x40])+(1).to_bytes(2,'big')+(1).to_bytes(2,'big')+(1).to_bytes(2,'big')+(0).to_bytes(2,'big')+(0).to_bytes(4,'big')+(1).to_bytes(2,'big')+(0).to_bytes(4,'big')+len(logical).to_bytes(4,'big')); meta=box(b'meta', b'\\x00\\x00\\x00\\x00'+uuidbox(uuid, marker)+iinf+idat+iloc); ftyp=box(b'ftyp', b'heic'+u32(0)+b'mif1heic'); mdat=box(b'mdat', bytes([0x11,0x22,0x33,0x44])); Path(r'''${_c2pa_heif}''').write_bytes(ftyp+mdat+meta)"
   RESULT_VARIABLE _rv_write_c2pa_heif
   OUTPUT_VARIABLE _out_write_c2pa_heif
@@ -452,7 +453,7 @@ Path(sys.argv[1]).write_bytes(jpg)
 ]=])
 
 execute_process(
-  COMMAND python3 "${_rendered_safety_builder_py}" "${_rendered_safety_jpg}"
+  COMMAND "${_openmeta_test_python}" "${_rendered_safety_builder_py}" "${_rendered_safety_jpg}"
   RESULT_VARIABLE _rv_write_rendered_safety
   OUTPUT_VARIABLE _out_write_rendered_safety
   ERROR_VARIABLE _err_write_rendered_safety
@@ -594,7 +595,7 @@ out.write_bytes(jpg)
 ]=])
 
 execute_process(
-  COMMAND python3 "${_rich_builder_py}" "${_jpg_rich}"
+  COMMAND "${_openmeta_test_python}" "${_rich_builder_py}" "${_jpg_rich}"
   RESULT_VARIABLE _rv_write_rich
   OUTPUT_VARIABLE _out_write_rich
   ERROR_VARIABLE _err_write_rich
@@ -943,7 +944,7 @@ if(_out_dng_sdk_update MATCHES "dng_sdk_file_update: status=ok")
       "metatransfer dng sdk update missing updated_stream=true summary\nstdout:\n${_out_dng_sdk_update}\nstderr:\n${_err_dng_sdk_update}")
   endif()
   execute_process(
-    COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
       "from pathlib import Path; import sys; a=Path(r'''${_sdk_target_dng_before}''').read_bytes(); b=Path(r'''${_sdk_target_dng}''').read_bytes(); sys.exit(0 if a!=b else 1)"
     RESULT_VARIABLE _rv_dng_sdk_update_check
     OUTPUT_VARIABLE _out_dng_sdk_update_check
@@ -1662,7 +1663,7 @@ if(NOT EXISTS "${_target_spec_jpg}")
     "metatransfer target-spec jpeg did not write output\nstdout:\n${_out_target_spec}\nstderr:\n${_err_target_spec}")
 endif()
 execute_process(
-  COMMAND python3 "${_target_spec_checker_py}" "${_target_spec_jpg}"
+  COMMAND "${_openmeta_test_python}" "${_target_spec_checker_py}" "${_target_spec_jpg}"
   RESULT_VARIABLE _rv_target_spec_check
   OUTPUT_VARIABLE _out_target_spec_check
   ERROR_VARIABLE _err_target_spec_check
@@ -1699,7 +1700,7 @@ if(NOT EXISTS "${_target_spec_tif}")
     "metatransfer target-spec tiff did not write output\nstdout:\n${_out_target_spec_tif}\nstderr:\n${_err_target_spec_tif}")
 endif()
 execute_process(
-  COMMAND python3 "${_target_spec_checker_py}" "${_target_spec_tif}"
+  COMMAND "${_openmeta_test_python}" "${_target_spec_checker_py}" "${_target_spec_tif}"
   RESULT_VARIABLE _rv_target_spec_tif_check
   OUTPUT_VARIABLE _out_target_spec_tif_check
   ERROR_VARIABLE _err_target_spec_tif_check
@@ -1736,7 +1737,7 @@ if(NOT EXISTS "${_target_spec_dng}")
     "metatransfer target-spec dng did not write output\nstdout:\n${_out_target_spec_dng}\nstderr:\n${_err_target_spec_dng}")
 endif()
 execute_process(
-  COMMAND python3 "${_target_spec_checker_py}" "${_target_spec_dng}"
+  COMMAND "${_openmeta_test_python}" "${_target_spec_checker_py}" "${_target_spec_dng}"
   RESULT_VARIABLE _rv_target_spec_dng_check
   OUTPUT_VARIABLE _out_target_spec_dng_check
   ERROR_VARIABLE _err_target_spec_dng_check
@@ -1773,7 +1774,7 @@ if(NOT _out_dual MATCHES "xmp_sidecar_output=.*dual_write\\.xmp")
     "metatransfer dual-write missing xmp sidecar summary\nstdout:\n${_out_dual}\nstderr:\n${_err_dual}")
 endif()
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; b=Path(r'''${_dual_jpg_sidecar}''').read_bytes(); import sys; sys.exit(0 if (b.find(b'<x:xmpmeta')!=-1 or b.find(b'<rdf:RDF')!=-1) else 1)"
   RESULT_VARIABLE _rv_dual_check
   OUTPUT_VARIABLE _out_dual_check
@@ -1840,7 +1841,7 @@ if(NOT _out_sidecar_strip MATCHES "xmp_sidecar_output=.*sidecar_only_strip\\.xmp
     "metatransfer sidecar-only embedded-strip missing generated sidecar summary\nstdout:\n${_out_sidecar_strip}\nstderr:\n${_err_sidecar_strip}")
 endif()
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; b=Path(r'''${_sidecar_only_strip_jpg}''').read_bytes(); import sys; sys.exit(0 if (b.find(b'Target Embedded Existing')==-1 and b.find(b'http://ns.adobe.com/xap/1.0/')==-1) else 1)"
   RESULT_VARIABLE _rv_sidecar_strip_check
   OUTPUT_VARIABLE _out_sidecar_strip_check
@@ -1879,7 +1880,7 @@ if(NOT _out_sidecar_strip_tif MATCHES "xmp_sidecar_output=.*sidecar_only_strip_t
     "metatransfer tiff sidecar-only embedded-strip missing generated sidecar summary\nstdout:\n${_out_sidecar_strip_tif}\nstderr:\n${_err_sidecar_strip_tif}")
 endif()
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; import sys; b=Path(r'''${_sidecar_only_strip_tif}''').read_bytes(); ok=(len(b)>=8 and b[0:2]==b'II' and int.from_bytes(b[2:4],'little')==42); off=int.from_bytes(b[4:8],'little') if ok else 0; ok=ok and (off+2<=len(b)); n=int.from_bytes(b[off:off+2],'little') if ok else 0; p=off+2; ok=ok and (p+n*12+4<=len(b)); tags=[int.from_bytes(b[p+i*12:p+i*12+2],'little') for i in range(n)] if ok else []; sys.exit(0 if (ok and 700 not in tags and 0x0132 in tags) else 1)"
   RESULT_VARIABLE _rv_sidecar_strip_tif_check
   OUTPUT_VARIABLE _out_sidecar_strip_tif_check
@@ -1916,7 +1917,7 @@ if(NOT _out_destination_merge MATCHES "xmp_existing_destination_embedded: status
     "metatransfer destination embedded merge missing status summary\nstdout:\n${_out_destination_merge}\nstderr:\n${_err_destination_merge}")
 endif()
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; b=Path(r'''${_destination_merge_jpg}''').read_bytes(); import sys; sys.exit(0 if (b.find(b'Target Embedded Existing')!=-1 and b.find(b'OpenMeta Transfer Source')==-1) else 1)"
   RESULT_VARIABLE _rv_destination_merge_check
   OUTPUT_VARIABLE _out_destination_merge_check
@@ -1946,7 +1947,7 @@ if(NOT EXISTS "${_split_jpg}")
     "metatransfer split mode did not write output\nstdout:\n${_out_split}\nstderr:\n${_err_split}")
 endif()
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; b=Path(r'''${_split_jpg}''').read_bytes(); import sys; sys.exit(0 if (len(b)>=8 and b[0]==0xFF and b[1]==0xD8 and b[2]==0xFF and b[3]==0xE1) else 1)"
   RESULT_VARIABLE _rv_split_check
   OUTPUT_VARIABLE _out_split_check
@@ -1976,7 +1977,7 @@ if(NOT EXISTS "${_split_tif}")
     "metatransfer split tiff mode did not write output\nstdout:\n${_out_split_tif}\nstderr:\n${_err_split_tif}")
 endif()
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; import sys; b=Path(r'''${_split_tif}''').read_bytes(); ok=(len(b)>=8 and b[0:2]==b'II' and int.from_bytes(b[2:4],'little')==42); off=int.from_bytes(b[4:8],'little') if ok else 0; ok=ok and (off+2<=len(b)); n=int.from_bytes(b[off:off+2],'little') if ok else 0; p=off+2; ok=ok and (p+n*12+4<=len(b)); tags=[int.from_bytes(b[p+i*12:p+i*12+2],'little') for i in range(n)] if ok else []; sys.exit(0 if (ok and 700 in tags and 0x0132 in tags) else 1)"
   RESULT_VARIABLE _rv_split_tif_check
   OUTPUT_VARIABLE _out_split_tif_check
@@ -1987,7 +1988,7 @@ if(NOT _rv_split_tif_check EQUAL 0)
     "metatransfer split tiff output missing expected TIFF tags (700 and 0x0132)\nstdout:\n${_out_split_tif}\nstderr:\n${_err_split_tif}\ncheck_stderr:\n${_err_split_tif_check}")
 endif()
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; import sys; b=Path(r'''${_split_tif}''').read_bytes(); ok=(len(b)>=8 and b[0:2]==b'II' and int.from_bytes(b[2:4],'little')==42); off=int.from_bytes(b[4:8],'little') if ok else 0; ok=ok and (off+2<=len(b)); n=int.from_bytes(b[off:off+2],'little') if ok else 0; p=off+2; ok=ok and (p+n*12+4<=len(b)); dt=None; \nfor i in range(n):\n e=p+i*12; tag=int.from_bytes(b[e:e+2],'little'); typ=int.from_bytes(b[e+2:e+4],'little'); cnt=int.from_bytes(b[e+4:e+8],'little'); vo=int.from_bytes(b[e+8:e+12],'little');\n if tag==0x0132 and typ==2 and cnt>0:\n  if cnt<=4: raw=b[e+8:e+8+cnt]\n  else: raw=b[vo:vo+cnt] if vo+cnt<=len(b) else b''\n  dt=raw.split(b'\\x00',1)[0].decode('ascii','ignore')\n  break\nsys.exit(0 if (ok and dt=='2024:12:31 23:59:59') else 1)"
   RESULT_VARIABLE _rv_split_tif_dt_check
   OUTPUT_VARIABLE _out_split_tif_dt_check
@@ -2017,7 +2018,7 @@ if(NOT EXISTS "${_split_dng}")
     "metatransfer split dng mode did not write output\nstdout:\n${_out_split_dng}\nstderr:\n${_err_split_dng}")
 endif()
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; import sys; b=Path(r'''${_split_dng}''').read_bytes(); ok=(len(b)>=8 and b[0:2]==b'II' and int.from_bytes(b[2:4],'little')==42); off=int.from_bytes(b[4:8],'little') if ok else 0; ok=ok and (off+2<=len(b)); n=int.from_bytes(b[off:off+2],'little') if ok else 0; p=off+2; ok=ok and (p+n*12+4<=len(b)); tags=[int.from_bytes(b[p+i*12:p+i*12+2],'little') for i in range(n)] if ok else []; dt=None; \nfor i in range(n):\n e=p+i*12; tag=int.from_bytes(b[e:e+2],'little'); typ=int.from_bytes(b[e+2:e+4],'little'); cnt=int.from_bytes(b[e+4:e+8],'little'); vo=int.from_bytes(b[e+8:e+12],'little');\n if tag==0x0132 and typ==2 and cnt>0:\n  if cnt<=4: raw=b[e+8:e+8+cnt]\n  else: raw=b[vo:vo+cnt] if vo+cnt<=len(b) else b''\n  dt=raw.split(b'\\x00',1)[0].decode('ascii','ignore')\n  break\nsys.exit(0 if (ok and 700 in tags and 0x0132 in tags and dt=='2024:12:31 23:59:59') else 1)"
   RESULT_VARIABLE _rv_split_dng_check
   OUTPUT_VARIABLE _out_split_dng_check
@@ -2047,7 +2048,7 @@ if(NOT EXISTS "${_split_tif_be}")
     "metatransfer split big-endian tiff mode did not write output\nstdout:\n${_out_split_tif_be}\nstderr:\n${_err_split_tif_be}")
 endif()
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; import sys; b=Path(r'''${_split_tif_be}''').read_bytes(); ok=(len(b)>=8 and b[0:2]==b'MM' and int.from_bytes(b[2:4],'big')==42); off=int.from_bytes(b[4:8],'big') if ok else 0; ok=ok and (off+2<=len(b)); n=int.from_bytes(b[off:off+2],'big') if ok else 0; p=off+2; ok=ok and (p+n*12+4<=len(b)); entries=[(int.from_bytes(b[p+i*12:p+i*12+2],'big'), int.from_bytes(b[p+i*12+2:p+i*12+4],'big'), int.from_bytes(b[p+i*12+4:p+i*12+8],'big'), int.from_bytes(b[p+i*12+8:p+i*12+12],'big')) for i in range(n)] if ok else []; tags=[e[0] for e in entries]; dt=next(((b[p+i*12+8:p+i*12+8+cnt] if cnt<=4 else (b[vo:vo+cnt] if vo+cnt<=len(b) else b'')).split(b'\\x00',1)[0].decode('ascii','ignore') for i,(tag,typ,cnt,vo) in enumerate(entries) if tag==0x0132 and typ==2 and cnt>0), None); sys.exit(0 if (ok and 700 in tags and 0x0132 in tags and dt=='2024:12:31 23:59:59') else 1)"
   RESULT_VARIABLE _rv_split_tif_be_check
   OUTPUT_VARIABLE _out_split_tif_be_check
@@ -2191,7 +2192,7 @@ if(NOT EXISTS "${_edited_jxl}")
     "metatransfer jxl edit did not write output\nstdout:\n${_out_jxl_edit}\nstderr:\n${_err_jxl_edit}")
 endif()
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; import sys; b=Path(r'''${_edited_jxl}''').read_bytes(); sys.exit(0 if (len(b)>=12 and b[4:8]==b'JXL ' and b.find(b'Exif')!=-1) else 1)"
   RESULT_VARIABLE _rv_jxl_edit_check
   OUTPUT_VARIABLE _out_jxl_edit_check
@@ -2338,7 +2339,7 @@ endif()
 
 set(_heif_target "${WORK_DIR}/heif_target.bin")
 execute_process(
-  COMMAND python3 -c "from pathlib import Path; Path(r'${_heif_target}').write_bytes(bytes.fromhex('000000186674797068656963000000006d696631686569630000000c6d64617411223344'))"
+  COMMAND "${_openmeta_test_python}" -c "from pathlib import Path; Path(r'${_heif_target}').write_bytes(bytes.fromhex('000000186674797068656963000000006d696631686569630000000c6d64617411223344'))"
   RESULT_VARIABLE _rv_heif_target
   OUTPUT_VARIABLE _out_heif_target
   ERROR_VARIABLE _err_heif_target
@@ -2436,7 +2437,7 @@ if(NOT _rv_split_tif_rich EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 "${_rich_checker_py}" "${_split_tif_rich}" "2024:12:31 23:59:59" "2024:12:31 23:59:59"
+  COMMAND "${_openmeta_test_python}" "${_rich_checker_py}" "${_split_tif_rich}" "2024:12:31 23:59:59" "2024:12:31 23:59:59"
   RESULT_VARIABLE _rv_split_tif_rich_check
   OUTPUT_VARIABLE _out_split_tif_rich_check
   ERROR_VARIABLE _err_split_tif_rich_check
@@ -2463,7 +2464,7 @@ if(NOT _rv_split_tif_be_rich EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND python3 "${_rich_checker_py}" "${_split_tif_be_rich}" "2024:12:31 23:59:59" "2024:12:31 23:59:59"
+  COMMAND "${_openmeta_test_python}" "${_rich_checker_py}" "${_split_tif_be_rich}" "2024:12:31 23:59:59" "2024:12:31 23:59:59"
   RESULT_VARIABLE _rv_split_tif_be_rich_check
   OUTPUT_VARIABLE _out_split_tif_be_rich_check
   ERROR_VARIABLE _err_split_tif_be_rich_check

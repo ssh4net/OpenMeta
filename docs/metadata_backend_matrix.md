@@ -260,8 +260,11 @@ container call mapping.
     than silently preserving raw bytes. `Keep` carries the original opaque
     payload, but does not relocate vendor-private offsets, repair checksums, or
     prove semantic readability after the surrounding EXIF layout changes. Use
-    `makernote_transfer_audit_from_store(...)` for the machine-readable trust
-    boundary.
+    `makernote_transfer_audit_from_store(...)` for the generic machine-readable
+    trust boundary and `makernote_layout_transfer_audit_from_store(...)` for
+    bounded Nikon type 1/type 3 offset-layout evidence. Type 3 structural
+    validation covers standard embedded-TIFF offsets, not vendor-private
+    binary offsets or checksums.
   - JUMBF: file-based JPEG prepare can preserve source payloads by repacking
     them into APP11 segments; store-only JPEG prepare can project decoded
     non-C2PA `JumbfCborKey` roots into generic APP11 JUMBF payloads; explicit

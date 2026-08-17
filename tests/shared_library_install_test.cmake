@@ -48,6 +48,11 @@ if(DEFINED OPENMETA_CXX_COMPILER AND NOT OPENMETA_CXX_COMPILER STREQUAL "")
   list(APPEND _openmeta_consumer_configure
     "-DCMAKE_CXX_COMPILER=${OPENMETA_CXX_COMPILER}")
 endif()
+if(DEFINED OPENMETA_DEPENDENCY_PREFIX_PATH
+   AND NOT OPENMETA_DEPENDENCY_PREFIX_PATH STREQUAL "")
+  list(APPEND _openmeta_consumer_configure
+    "-DCMAKE_PREFIX_PATH=${OPENMETA_DEPENDENCY_PREFIX_PATH}")
+endif()
 execute_process(
   COMMAND ${_openmeta_consumer_configure}
   RESULT_VARIABLE _openmeta_consumer_configure_result

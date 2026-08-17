@@ -394,17 +394,20 @@ Host-facing API map
        Reconyx/HP/JVC/GE/Motorola/Nintendo/Microsoft RAW/source-processing
        buckets. Intended for diagnostics and host UI before preparing
        rendered-image transfers.
-   * - MakerNote transfer audit:
-       ``makernote_transfer_audit_from_store(...)``
+   * - MakerNote transfer audits:
+       ``makernote_transfer_audit_from_store(...)``,
+       ``makernote_layout_transfer_audit_from_store(...)``
      - ``openmeta/metadata_transfer.h``
      - Experimental
-     - Reports raw opaque payload and decoded-only entry counts plus current
-       rewrite trust capabilities. The current generic writer can carry opaque
-       bytes but cannot reconstruct decoded fields, relocate vendor-private
-       offsets, repair checksums, validate semantic readability after
-       relocation, or pass MakerNotes through as raw carriers. Python
-       ``Document`` and ``TransferSourceSnapshot`` expose matching thin
-       dictionary wrappers.
+     - The generic audit reports raw opaque payload and decoded-only entry
+       counts plus current rewrite trust capabilities. The layout audit
+       recognizes canonical Nikon type 1 outer-TIFF-relative notes and type 3
+       notes with an embedded TIFF at byte 10; bounded embedded-TIFF validation
+       covers standard directory/value offsets only. The writer still cannot
+       reconstruct decoded fields, relocate vendor-private offsets, repair
+       checksums, prove semantic readability, or pass MakerNotes through as raw
+       carriers. Python ``Document`` and ``TransferSourceSnapshot`` expose
+       matching thin dictionary wrappers.
    * - Raw-carrier passthrough audit:
        ``raw_carrier_passthrough_audit_from_snapshot(...)``
      - ``openmeta/metadata_transfer.h``

@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
+include("${CMAKE_CURRENT_LIST_DIR}/test_python_interpreter.cmake")
 
 if(NOT DEFINED METAREAD_BIN OR METAREAD_BIN STREQUAL "")
   message(FATAL_ERROR "METAREAD_BIN is required")
@@ -16,7 +17,7 @@ file(MAKE_DIRECTORY "${WORK_DIR}")
 set(_jpg "${WORK_DIR}/photoshop_irb.jpg")
 
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; u16=lambda v: bytes([(v>>8)&255,v&255]); u32=lambda v: bytes([(v>>24)&255,(v>>16)&255,(v>>8)&255,v&255]); data=u16(3)+u16(200)+u16(300)+u16(8)+u16(3); app=b'Photoshop 3.0'+bytes([0])+b'8BIM'+u16(0x03E8)+bytes([0,0])+u32(len(data))+data; Path(r'''${_jpg}''').write_bytes(bytes([255,216,255,237])+u16(len(app)+2)+app+bytes([255,217]))"
   RESULT_VARIABLE _rv_write
   OUTPUT_VARIABLE _out_write

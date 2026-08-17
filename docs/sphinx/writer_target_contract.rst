@@ -245,7 +245,12 @@ when the active plane is unknown.
        fields; decoded-only vendor sub-IFDs are not reconstructed. Opaque
        preservation does not relocate nested vendor offsets, repair checksums,
        or prove semantic readability after EXIF repacking. Use
-       ``makernote_transfer_audit_from_store(...)`` before relying on it.
+       ``makernote_transfer_audit_from_store(...)`` for generic trust and
+       ``makernote_layout_transfer_audit_from_store(...)`` for bounded layout
+       evidence. The layout audit identifies Nikon type 1 notes as
+       outer-TIFF-dependent and can validate standard embedded-TIFF offsets in
+       canonical Nikon type 3 notes, but it does not validate vendor-private
+       binary offsets or checksums.
        Preserving an existing destination MakerNote during an unrelated target
        edit is safer than transferring a source note into a new EXIF layout
        because the destination's established offset relationships can remain

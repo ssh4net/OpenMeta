@@ -5723,6 +5723,25 @@ store_has_text_entry(const openmeta::MetaStore& store,
 }
 
 static bool
+store_has_bytes_entry(const openmeta::MetaStore& store,
+                      const openmeta::MetaKeyView& key,
+                      std::span<const std::byte> expected) noexcept
+{
+    const std::span<const openmeta::EntryId> ids = store.find_all(key);
+    if (ids.size() != 1U) {
+        return false;
+    }
+    const openmeta::Entry& entry = store.entry(ids[0]);
+    if (entry.value.kind != openmeta::MetaValueKind::Bytes) {
+        return false;
+    }
+    const std::span<const std::byte> actual = store.arena().span(
+        entry.value.data.span);
+    return actual.size() == expected.size()
+           && std::equal(actual.begin(), actual.end(), expected.begin());
+}
+
+static bool
 store_has_u32_scalar_entry(const openmeta::MetaStore& store,
                            const openmeta::MetaKeyView& key,
                            uint64_t expected) noexcept
@@ -5749,6 +5768,21 @@ store_has_u16_scalar_entry(const openmeta::MetaStore& store,
     const openmeta::Entry& entry = store.entry(ids[0]);
     return entry.value.kind == openmeta::MetaValueKind::Scalar
            && entry.value.elem_type == openmeta::MetaElementType::U16
+           && entry.value.data.u64 == expected;
+}
+
+static bool
+store_has_u8_scalar_entry(const openmeta::MetaStore& store,
+                          const openmeta::MetaKeyView& key,
+                          uint8_t expected) noexcept
+{
+    const std::span<const openmeta::EntryId> ids = store.find_all(key);
+    if (ids.size() != 1U) {
+        return false;
+    }
+    const openmeta::Entry& entry = store.entry(ids[0]);
+    return entry.value.kind == openmeta::MetaValueKind::Scalar
+           && entry.value.elem_type == openmeta::MetaElementType::U8
            && entry.value.data.u64 == expected;
 }
 
@@ -5813,7 +5847,8 @@ store_has_u16_array_entry(const openmeta::MetaStore& store,
 
 static bool
 decode_transfer_roundtrip_store(std::span<const std::byte> bytes,
-                                openmeta::MetaStore* out) noexcept
+                                openmeta::MetaStore* out,
+                                bool decode_makernote = false) noexcept
 {
     if (!out) {
         return false;
@@ -5824,6 +5859,7 @@ decode_transfer_roundtrip_store(std::span<const std::byte> bytes,
     std::array<std::byte, 8192> payload {};
     std::array<uint32_t, 128> payload_parts {};
     openmeta::SimpleMetaDecodeOptions decode_options;
+    decode_options.exif.decode_makernote = decode_makernote;
 
     const openmeta::SimpleMetaResult read
         = openmeta::simple_meta_read(bytes, *out, blocks, ifds, payload,
@@ -23179,6 +23215,226 @@ TEST(MetadataTransferApi, PrepareRejectsInvalidTargetImageSpec)
     EXPECT_TRUE(text_contains(result.message, "dimensions"));
 }
 
+static std::vector<std::byte>
+make_nikon_type3_transfer_makernote()
+{
+    std::vector<std::byte> note;
+    append_bytes(&note, "Nikon");
+    note.push_back(std::byte { 0 });
+    note.push_back(std::byte { 2 });
+    note.push_back(std::byte { 0 });
+    note.push_back(std::byte { 0 });
+    note.push_back(std::byte { 0 });
+
+    append_bytes(&note, "II");
+    append_u16le(&note, 42U);
+    append_u32le(&note, 8U);
+    append_u16le(&note, 2U);
+
+    append_u16le(&note, 0x0001U);
+    append_u16le(&note, 4U);
+    append_u32le(&note, 1U);
+    append_u32le(&note, 0x01020304U);
+
+    append_u16le(&note, 0x001FU);
+    append_u16le(&note, 7U);
+    append_u32le(&note, 8U);
+    append_u32le(&note, 38U);
+    append_u32le(&note, 0U);
+
+    append_bytes(&note, "0101");
+    note.push_back(std::byte { 1 });
+    note.push_back(std::byte { 0 });
+    note.push_back(std::byte { 2 });
+    note.push_back(std::byte { 0 });
+    return note;
+}
+
+static std::vector<std::byte>
+make_nikon_type1_transfer_makernote()
+{
+    std::vector<std::byte> note;
+    append_bytes(&note, "Nikon");
+    note.push_back(std::byte { 0 });
+    note.push_back(std::byte { 1 });
+    note.push_back(std::byte { 0 });
+    append_u16le(&note, 1U);
+    append_u16le(&note, 0x0001U);
+    append_u16le(&note, 4U);
+    append_u32le(&note, 1U);
+    append_u32le(&note, 0x01020304U);
+    append_u32le(&note, 0U);
+    return note;
+}
+
+static bool
+build_nikon_makernote_transfer_store(std::span<const std::byte> note,
+                                     openmeta::MetaStore* out) noexcept
+{
+    if (!out) {
+        return false;
+    }
+    *out                          = openmeta::MetaStore {};
+    const openmeta::BlockId block = out->add_block(openmeta::BlockInfo {});
+    if (block == openmeta::kInvalidBlockId) {
+        return false;
+    }
+
+    openmeta::Entry make;
+    make.key   = openmeta::make_exif_tag_key(out->arena(), "ifd0", 0x010FU);
+    make.value = openmeta::make_text(out->arena(), "Nikon",
+                                     openmeta::TextEncoding::Ascii);
+    make.origin.block          = block;
+    make.origin.order_in_block = 0U;
+    if (out->add_entry(make) == openmeta::kInvalidEntryId) {
+        return false;
+    }
+
+    openmeta::Entry maker;
+    maker.key   = openmeta::make_exif_tag_key(out->arena(), "exififd", 0x927CU);
+    maker.value = openmeta::make_bytes(out->arena(), note);
+    maker.origin.block          = block;
+    maker.origin.order_in_block = 1U;
+    if (out->add_entry(maker) == openmeta::kInvalidEntryId) {
+        return false;
+    }
+    out->finalize();
+    return true;
+}
+
+TEST(MetadataTransferApi, AuditsNikonMakerNoteOffsetLayoutsConservatively)
+{
+    const std::vector<std::byte> type3 = make_nikon_type3_transfer_makernote();
+    openmeta::MetaStore type3_store;
+    ASSERT_TRUE(build_nikon_makernote_transfer_store(type3, &type3_store));
+
+    const openmeta::TransferMakerNoteLayoutAudit type3_audit
+        = openmeta::makernote_layout_transfer_audit_from_store(type3_store);
+    EXPECT_EQ(
+        type3_audit.trust,
+        openmeta::TransferMakerNoteLayoutTrust::EmbeddedTiffStructureVerified);
+    EXPECT_EQ(type3_audit.vendor, openmeta::TransferMakerNoteVendor::Nikon);
+    EXPECT_EQ(type3_audit.layout,
+              openmeta::TransferMakerNoteLayout::NikonType3EmbeddedTiff);
+    EXPECT_EQ(type3_audit.raw_payload_count, 1U);
+    EXPECT_EQ(type3_audit.recognized_payload_count, 1U);
+    EXPECT_EQ(type3_audit.structurally_valid_payload_count, 1U);
+    EXPECT_TRUE(type3_audit.offset_basis_known);
+    EXPECT_TRUE(type3_audit.embedded_tiff_validation_available);
+    EXPECT_TRUE(type3_audit.embedded_tiff_validation_passed);
+    EXPECT_TRUE(type3_audit.embedded_tiff_offsets_self_contained);
+    EXPECT_FALSE(type3_audit.outer_tiff_offset_relocation_required);
+    EXPECT_FALSE(type3_audit.vendor_private_offsets_verified);
+    EXPECT_FALSE(type3_audit.vendor_checksum_validation_available);
+    EXPECT_FALSE(type3_audit.semantic_roundtrip_validation_available);
+
+    const openmeta::TransferMakerNoteAudit generic_audit
+        = openmeta::makernote_transfer_audit_from_store(type3_store);
+    EXPECT_EQ(generic_audit.trust,
+              openmeta::TransferMakerNoteTrust::OpaquePreservationUnverified);
+
+    const std::vector<std::byte> type1 = make_nikon_type1_transfer_makernote();
+    openmeta::MetaStore type1_store;
+    ASSERT_TRUE(build_nikon_makernote_transfer_store(type1, &type1_store));
+    const openmeta::TransferMakerNoteLayoutAudit type1_audit
+        = openmeta::makernote_layout_transfer_audit_from_store(type1_store);
+    EXPECT_EQ(type1_audit.trust,
+              openmeta::TransferMakerNoteLayoutTrust::OuterTiffOffsetsUnsafe);
+    EXPECT_EQ(type1_audit.vendor, openmeta::TransferMakerNoteVendor::Nikon);
+    EXPECT_EQ(type1_audit.layout,
+              openmeta::TransferMakerNoteLayout::NikonType1OuterTiff);
+    EXPECT_TRUE(type1_audit.offset_basis_known);
+    EXPECT_TRUE(type1_audit.outer_tiff_offset_relocation_required);
+    EXPECT_FALSE(type1_audit.embedded_tiff_validation_available);
+    EXPECT_FALSE(type1_audit.embedded_tiff_offsets_self_contained);
+
+    std::vector<std::byte> truncated_type3 = type3;
+    ASSERT_FALSE(truncated_type3.empty());
+    truncated_type3.pop_back();
+    openmeta::MetaStore truncated_store;
+    ASSERT_TRUE(build_nikon_makernote_transfer_store(truncated_type3,
+                                                     &truncated_store));
+    const openmeta::TransferMakerNoteLayoutAudit truncated_audit
+        = openmeta::makernote_layout_transfer_audit_from_store(truncated_store);
+    EXPECT_EQ(
+        truncated_audit.trust,
+        openmeta::TransferMakerNoteLayoutTrust::EmbeddedTiffStructureUnverified);
+    EXPECT_EQ(truncated_audit.layout,
+              openmeta::TransferMakerNoteLayout::NikonType3EmbeddedTiff);
+    EXPECT_TRUE(truncated_audit.embedded_tiff_validation_available);
+    EXPECT_FALSE(truncated_audit.embedded_tiff_validation_passed);
+    EXPECT_FALSE(truncated_audit.embedded_tiff_offsets_self_contained);
+}
+
+TEST(MetadataTransferApi,
+     NikonType3MakerNoteSurvivesJpegAndTiffTransferRoundTrip)
+{
+    const std::vector<std::byte> note = make_nikon_type3_transfer_makernote();
+    openmeta::MetaStore store;
+    ASSERT_TRUE(build_nikon_makernote_transfer_store(note, &store));
+
+    struct Case final {
+        const char* label;
+        openmeta::TransferTargetFormat format;
+    };
+    static constexpr Case kCases[] = {
+        { "jpeg", openmeta::TransferTargetFormat::Jpeg },
+        { "tiff", openmeta::TransferTargetFormat::Tiff },
+    };
+
+    for (const Case& test_case : kCases) {
+        SCOPED_TRACE(test_case.label);
+        openmeta::PrepareTransferRequest request;
+        request.target_format      = test_case.format;
+        request.include_xmp_app1   = false;
+        request.include_icc_app2   = false;
+        request.include_iptc_app13 = false;
+        request.profile.safety = openmeta::TransferSafetyMode::CompatibleFile;
+        request.profile.makernote = openmeta::TransferPolicyAction::Keep;
+
+        openmeta::PreparedTransferBundle bundle;
+        const openmeta::PrepareTransferResult prepared
+            = openmeta::prepare_metadata_for_target(store, request, &bundle);
+        ASSERT_EQ(prepared.status, openmeta::TransferStatus::Ok);
+        const openmeta::PreparedTransferPolicyDecision* decision
+            = find_policy_decision(bundle,
+                                   openmeta::TransferPolicySubject::MakerNote);
+        ASSERT_NE(decision, nullptr);
+        EXPECT_EQ(
+            decision->reason,
+            openmeta::TransferPolicyReason::OpaquePayloadPreservedUnverified);
+
+        const std::vector<std::byte> input
+            = test_case.format == openmeta::TransferTargetFormat::Jpeg
+                  ? make_jpeg_with_segments({})
+                  : make_minimal_tiff_little_endian();
+        openmeta::ExecutePreparedTransferOptions options;
+        options.edit_requested = true;
+        options.edit_apply     = true;
+        const openmeta::ExecutePreparedTransferResult applied
+            = openmeta::execute_prepared_transfer(
+                &bundle, std::span<const std::byte>(input.data(), input.size()),
+                options);
+        ASSERT_EQ(applied.edit_plan_status, openmeta::TransferStatus::Ok);
+        ASSERT_EQ(applied.edit_apply.status, openmeta::TransferStatus::Ok);
+        ASSERT_FALSE(applied.edited_output.empty());
+
+        openmeta::MetaStore decoded;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(
+            std::span<const std::byte>(applied.edited_output.data(),
+                                       applied.edited_output.size()),
+            &decoded, true));
+        EXPECT_TRUE(
+            store_has_bytes_entry(decoded, exif_key_view("exififd", 0x927CU),
+                                  std::span<const std::byte>(note.data(),
+                                                             note.size())));
+        EXPECT_TRUE(store_has_u32_scalar_entry(
+            decoded, exif_key_view("mk_nikon0", 0x0001U), 0x01020304U));
+        EXPECT_TRUE(store_has_u8_scalar_entry(
+            decoded, exif_key_view("mk_nikon_vrinfo_0", 0x0006U), 2U));
+    }
+}
+
 TEST(MetadataTransferApi, PrepareDropsMakerNoteWhenProfileRequestsDrop)
 {
     openmeta::MetaStore store;
@@ -23258,16 +23514,17 @@ TEST(MetadataTransferApi, PrepareKeepsOpaqueMakerNoteAsUnverifiedBytes)
     openmeta::Entry maker;
     maker.key = openmeta::make_exif_tag_key(store.arena(), "exififd", 0x927CU);
     const std::array<std::byte, 18> maker_bytes = {
-        std::byte { 'O' }, std::byte { 'L' }, std::byte { 'Y' },
-        std::byte { 'M' }, std::byte { 'P' }, std::byte { 'U' },
-        std::byte { 'S' }, std::byte { 0x00 }, std::byte { 0x01 },
+        std::byte { 'O' },  std::byte { 'L' },  std::byte { 'Y' },
+        std::byte { 'M' },  std::byte { 'P' },  std::byte { 'U' },
+        std::byte { 'S' },  std::byte { 0x00 }, std::byte { 0x01 },
         std::byte { 0x00 }, std::byte { 0x01 }, std::byte { 0x00 },
         std::byte { 0x00 }, std::byte { 0x00 }, std::byte { 0x20 },
         std::byte { 0x00 }, std::byte { 0x00 }, std::byte { 0x00 },
     };
-    maker.value = openmeta::make_bytes(
-        store.arena(), std::span<const std::byte>(maker_bytes.data(),
-                                                  maker_bytes.size()));
+    maker.value
+        = openmeta::make_bytes(store.arena(),
+                               std::span<const std::byte>(maker_bytes.data(),
+                                                          maker_bytes.size()));
     maker.origin.block = block;
     ASSERT_NE(store.add_entry(maker), openmeta::kInvalidEntryId);
     store.finalize();
@@ -23295,9 +23552,8 @@ TEST(MetadataTransferApi, PrepareKeepsOpaqueMakerNoteAsUnverifiedBytes)
     ASSERT_NE(decision, nullptr);
     EXPECT_EQ(decision->requested, openmeta::TransferPolicyAction::Keep);
     EXPECT_EQ(decision->effective, openmeta::TransferPolicyAction::Keep);
-    EXPECT_EQ(
-        decision->reason,
-        openmeta::TransferPolicyReason::OpaquePayloadPreservedUnverified);
+    EXPECT_EQ(decision->reason,
+              openmeta::TransferPolicyReason::OpaquePayloadPreservedUnverified);
     EXPECT_TRUE(text_contains(decision->message, "without offset relocation"));
     EXPECT_TRUE(text_contains(decision->message, "checksum repair"));
     EXPECT_TRUE(text_contains(decision->message, "semantic validation"));
@@ -23315,9 +23571,10 @@ TEST(MetadataTransferApi, PrepareDropsMakerNoteWhenRewriteIsUnavailable)
         std::byte { 'A' }, std::byte { 'B' }, std::byte { 'C' },
         std::byte { 'D' }, std::byte { 'E' }, std::byte { 'F' },
     };
-    maker.value = openmeta::make_bytes(
-        store.arena(), std::span<const std::byte>(maker_bytes.data(),
-                                                  maker_bytes.size()));
+    maker.value
+        = openmeta::make_bytes(store.arena(),
+                               std::span<const std::byte>(maker_bytes.data(),
+                                                          maker_bytes.size()));
     maker.origin.block = block;
     ASSERT_NE(store.add_entry(maker), openmeta::kInvalidEntryId);
     store.finalize();

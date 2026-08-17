@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
+include("${CMAKE_CURRENT_LIST_DIR}/test_python_interpreter.cmake")
 
 foreach(_var IN ITEMS METAREAD_BIN METADUMP_BIN METATRANSFER_BIN
                       METAVALIDATE_BIN)
@@ -21,7 +22,7 @@ set(_jpg "${WORK_DIR}/unsafe_text.jpg")
 # JPEG with APP1 Exif containing IFD0:Make (0x010F, ASCII) = "A\\x01\\0".
 # This should be rendered as a safe corrupted-text placeholder in metaread.
 execute_process(
-  COMMAND python3 -c
+  COMMAND "${_openmeta_test_python}" -c
     "from pathlib import Path; Path(r'''${_jpg}''').write_bytes(bytes([255,216,255,225,0,34,69,120,105,102,0,0,73,73,42,0,8,0,0,0,1,0,15,1,2,0,3,0,0,0,65,1,0,0,0,0,0,0,255,217]))"
   RESULT_VARIABLE _rv_write
   OUTPUT_VARIABLE _out_write
@@ -51,7 +52,7 @@ endif()
 
 if(NOT WIN32)
   execute_process(
-    COMMAND python3 -c
+    COMMAND "${_openmeta_test_python}" -c
       "import pathlib,subprocess,sys; d=pathlib.Path(r'''${WORK_DIR}'''); suffix=chr(27)+']52;c;Zm9v'+chr(7); p=d/('unsafe_'+suffix+'.jpg'); out=d/('unsafe_out_'+suffix+'.xmp'); p.write_bytes(bytes([255,216,255,217])); specs=[([r'''${METAREAD_BIN}''','--no-build-info',str(p)],0),([r'''${METADUMP_BIN}''','--no-build-info','--force','--out',str(out),str(p)],0),([r'''${METATRANSFER_BIN}''','--no-build-info','--output',str(p),str(p)],1),([r'''${METATRANSFER_BIN}''','--no-build-info','--load-transfer-artifact',str(p)],1),([r'''${METAVALIDATE_BIN}''','--no-build-info',str(p)],0)]; results=[(subprocess.run(cmd,capture_output=True),expected) for cmd,expected in specs]; sys.exit(0 if all(r.returncode==expected and bytes([27]) not in r.stdout+r.stderr and bytes([92,120,49,66]) in r.stdout+r.stderr for r,expected in results) else 1)"
     RESULT_VARIABLE _rv_path
     OUTPUT_VARIABLE _out_path

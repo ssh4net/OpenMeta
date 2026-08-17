@@ -628,9 +628,10 @@ Current v1 behavior is:
       `c2pa_stage_validate` and the stage result as `c2pa_stage` for both
       JPEG and bounded BMFF signer-input paths.
   - Current policy resolution for JPEG/TIFF prepare is:
-  - MakerNote: `Keep` by default, `Drop` when requested, `Invalidate`
-    resolves to `Drop`, and `Rewrite` currently resolves to raw-preserve
-    (`Keep`) with a warning.
+  - MakerNote: `Keep` by default, `Drop` when requested, and unavailable
+    `Invalidate` / `Rewrite` fail closed to `Drop`. `Keep` remains opaque-byte
+    preservation; use the generic and layout transfer audits before relying on
+    a moved note.
   - JUMBF:
     - `prepare_metadata_for_target(...)` can now project decoded non-C2PA
       `JumbfCborKey` roots into generic JPEG APP11 JUMBF payloads.
@@ -1094,6 +1095,10 @@ cmake -S . -B build-tests -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build-tests
 ctest --test-dir build-tests --output-on-failure
 ```
+
+The CLI smoke and release gates use Python to create deterministic fixtures.
+Set `OPENMETA_PYTHON_EXECUTABLE` when the intended interpreter is not named
+`python3` or is outside `PATH`.
 
 Optional CLI integration test for preview index suffixing:
 ```bash

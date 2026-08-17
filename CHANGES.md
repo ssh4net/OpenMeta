@@ -1,5 +1,36 @@
 # OpenMeta Changes
 
+## 0.4.98 - 2026-08-17
+
+Changes compared with `0.4.97`.
+
+### Added
+
+- Added `makernote_layout_transfer_audit_from_store(...)` and matching thin
+  Python `Document` / `TransferSourceSnapshot` methods. The bounded audit
+  distinguishes canonical Nikon type 1 outer-TIFF-relative notes from type 3
+  notes containing an embedded TIFF at byte 10.
+- Added conservative embedded-TIFF structure validation for canonical Nikon
+  type 3 payloads. The result explicitly leaves vendor-private offsets,
+  checksums, and semantic roundtrip validation unverified.
+
+### Fixed
+
+- The installed shared-library consumer gate now forwards the configured CMake
+  dependency prefix to its nested configure, so optional public dependencies
+  such as `dng_sdk` remain discoverable in custom SDK prefixes.
+- Public CMake smoke and release gates now honor
+  `OPENMETA_PYTHON_EXECUTABLE` instead of assuming a `python3` executable
+  name, including native Windows test runs.
+
+### Tests And Validation
+
+- Added C++ regressions for Nikon type 1/type 3 layout classification,
+  truncated type 3 rejection, and byte-identical type 3 MakerNote preservation
+  with selected Nikon field read-back after JPEG and TIFF transfer.
+- Extended the Python transfer-probe smoke test with the thin MakerNote layout
+  audit surface and conservative capability flags.
+
 ## 0.4.97 - 2026-08-17
 
 Changes compared with `0.4.96`.

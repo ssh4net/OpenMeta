@@ -66,7 +66,7 @@ set(OPENMETA_BUILD_TIMESTAMP "" CACHE STRING "Build timestamp in UTC (ISO-8601).
 # CMake caches the discovered interpreter in the build directory, and CMake GUI
 # often runs outside of an activated environment (uv/venv/conda). To ensure docs
 # and wheel builds use the intended Python, provide an explicit interpreter here.
-set(OPENMETA_PYTHON_EXECUTABLE "" CACHE FILEPATH "Override Python interpreter used by OpenMeta (docs/wheel/bindings)")
+set(OPENMETA_PYTHON_EXECUTABLE "" CACHE FILEPATH "Override Python interpreter used by OpenMeta (docs/wheel/bindings/tests)")
 if(OPENMETA_PYTHON_EXECUTABLE)
   if(NOT EXISTS "${OPENMETA_PYTHON_EXECUTABLE}")
     message(FATAL_ERROR "OPENMETA_PYTHON_EXECUTABLE does not exist: ${OPENMETA_PYTHON_EXECUTABLE}")
@@ -599,6 +599,7 @@ if(TARGET openmeta_shared)
       "-DOPENMETA_CONFIG=$<CONFIG>"
       "-DOPENMETA_GENERATOR=${CMAKE_GENERATOR}"
       "-DOPENMETA_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+      "-DOPENMETA_DEPENDENCY_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/shared_library_install_test.cmake"
     COMMENT "Running installed shared-library consumer gate"
     VERBATIM
@@ -658,6 +659,7 @@ if(OPENMETA_BUILD_TOOLS)
         "-DMETADUMP_BIN=$<TARGET_FILE:metadump>"
         "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
         "-DMETAVALIDATE_BIN=$<TARGET_FILE:metavalidate>"
+        "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_cli_metaread_safe_text_smoke"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_metaread_safe_text_smoke_test.cmake"
       COMMENT "Running CLI safe-text smoke gate"
@@ -668,6 +670,7 @@ if(OPENMETA_BUILD_TOOLS)
       DEPENDS metaread
       COMMAND ${CMAKE_COMMAND}
         "-DMETAREAD_BIN=$<TARGET_FILE:metaread>"
+        "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_cli_metaread_photoshop_irb_smoke"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_metaread_photoshop_irb_smoke_test.cmake"
       COMMENT "Running metaread Photoshop IRB smoke gate"
@@ -680,6 +683,7 @@ if(OPENMETA_BUILD_TOOLS)
       DEPENDS metatransfer
       COMMAND ${CMAKE_COMMAND}
         "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
+        "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_cli_metatransfer_smoke"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_metatransfer_smoke_test.cmake"
       COMMENT "Running metatransfer smoke gate"
@@ -691,6 +695,7 @@ if(OPENMETA_BUILD_TOOLS)
         DEPENDS metatransfer
         COMMAND ${CMAKE_COMMAND}
           "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
+          "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
           "-DOIIOTOOL_BIN=${OPENMETA_OIIOTOOL_EXECUTABLE}"
           "-DEXIFTOOL_BIN=${OPENMETA_EXIFTOOL_EXECUTABLE}"
           "-DFFMPEG_BIN=${OPENMETA_FFMPEG_EXECUTABLE}"
@@ -955,6 +960,7 @@ if(OPENMETA_BUILD_TESTS)
         "-DOPENMETA_CONFIG=$<CONFIG>"
         "-DOPENMETA_GENERATOR=${CMAKE_GENERATOR}"
         "-DOPENMETA_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DOPENMETA_DEPENDENCY_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/shared_library_install_test.cmake"
     )
   endif()
@@ -1133,6 +1139,7 @@ if(OPENMETA_BUILD_TESTS)
       COMMAND ${CMAKE_COMMAND}
         "-DOPENMETA_TESTS_BIN=$<TARGET_FILE:openmeta_tests>"
         "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
+        "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_transfer_release_gate"
         "-DOIIOTOOL_BIN=${OPENMETA_OIIOTOOL_EXECUTABLE}"
         "-DEXIFTOOL_BIN=${OPENMETA_EXIFTOOL_EXECUTABLE}"
@@ -1147,6 +1154,7 @@ if(OPENMETA_BUILD_TESTS)
       COMMAND ${CMAKE_COMMAND}
         "-DOPENMETA_TESTS_BIN=$<TARGET_FILE:openmeta_tests>"
         "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
+        "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_transfer_release_gate"
         "-DOIIOTOOL_BIN=${OPENMETA_OIIOTOOL_EXECUTABLE}"
         "-DEXIFTOOL_BIN=${OPENMETA_EXIFTOOL_EXECUTABLE}"
@@ -1188,6 +1196,7 @@ if(OPENMETA_BUILD_TESTS)
         "-DMETADUMP_BIN=$<TARGET_FILE:metadump>"
         "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
         "-DMETAVALIDATE_BIN=$<TARGET_FILE:metavalidate>"
+        "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_cli_metaread_safe_text_smoke"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_metaread_safe_text_smoke_test.cmake"
     )
@@ -1196,6 +1205,7 @@ if(OPENMETA_BUILD_TESTS)
       NAME openmeta_cli_metaread_photoshop_irb_smoke
       COMMAND ${CMAKE_COMMAND}
         "-DMETAREAD_BIN=$<TARGET_FILE:metaread>"
+        "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_cli_metaread_photoshop_irb_smoke"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_metaread_photoshop_irb_smoke_test.cmake"
     )
@@ -1206,6 +1216,7 @@ if(OPENMETA_BUILD_TESTS)
       NAME openmeta_cli_metatransfer_smoke
       COMMAND ${CMAKE_COMMAND}
         "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
+        "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_cli_metatransfer_smoke"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_metatransfer_smoke_test.cmake"
     )
@@ -1215,6 +1226,7 @@ if(OPENMETA_BUILD_TESTS)
         NAME openmeta_cli_metatransfer_image_usability
         COMMAND ${CMAKE_COMMAND}
           "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
+          "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
           "-DOIIOTOOL_BIN=${OPENMETA_OIIOTOOL_EXECUTABLE}"
           "-DEXIFTOOL_BIN=${OPENMETA_EXIFTOOL_EXECUTABLE}"
           "-DFFMPEG_BIN=${OPENMETA_FFMPEG_EXECUTABLE}"
@@ -1235,6 +1247,7 @@ if(OPENMETA_BUILD_TESTS)
         "-DTHUMDUMP_BIN=$<TARGET_FILE:thumdump>"
         "-DMETAVALIDATE_BIN=$<TARGET_FILE:metavalidate>"
         "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
+        "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_cli_release_gate"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_release_gate.cmake"
       COMMENT "Running CLI release gate"
@@ -1248,6 +1261,7 @@ if(OPENMETA_BUILD_TESTS)
         "-DTHUMDUMP_BIN=$<TARGET_FILE:thumdump>"
         "-DMETAVALIDATE_BIN=$<TARGET_FILE:metavalidate>"
         "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
+        "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_cli_release_gate"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_release_gate.cmake"
     )
