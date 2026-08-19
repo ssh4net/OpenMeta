@@ -18,6 +18,8 @@ struct CallbackState final {
     uint64_t max_bytes      = UINT64_MAX;
     uint64_t reported_extra = 0U;
     uint32_t calls          = 0U;
+    uint64_t last_offset    = 0U;
+    uint64_t last_size      = 0U;
 };
 
 static RandomAccessIoResult
@@ -26,6 +28,8 @@ test_read_at(void* context, uint64_t offset,
 {
     CallbackState* state = static_cast<CallbackState*>(context);
     state->calls += 1U;
+    state->last_offset = offset;
+    state->last_size   = static_cast<uint64_t>(destination.size());
 
     uint64_t available = 0U;
     if (offset <= state->bytes.size()) {
@@ -275,6 +279,112 @@ TEST(RandomAccessSource, KeepsAccountingIndependentAcrossOperations)
     EXPECT_EQ(first_state.bytes_requested, 2U);
     EXPECT_EQ(second_state.bytes_requested, 3U);
     EXPECT_EQ(callback.calls, 2U);
+}
+
+TEST(RandomAccessSource, RangeTranslatesOffsetsAndRejectsInvalidBounds)
+{
+    std::array<std::byte, 16> bytes {};
+    for (uint8_t i = 0U; i < bytes.size(); ++i) {
+        bytes[i] = static_cast<std::byte>(i);
+    }
+    CallbackState callback { bytes };
+    const RandomAccessSource source
+        = make_callback_random_access_source(bytes.size(), &callback,
+                                             test_read_at);
+    const RandomAccessSourceRange range
+        = make_random_access_source_range(source, 4U, 8U);
+    ASSERT_TRUE(random_access_source_range_valid(range));
+
+    std::array<std::byte, 3> output {};
+    RandomAccessReadState state;
+    EXPECT_EQ(random_access_read_exact(range, 2U, output, &state),
+              RandomAccessReadCode::Ok);
+    EXPECT_EQ(callback.last_offset, 6U);
+    EXPECT_EQ(callback.last_size, 3U);
+    EXPECT_EQ(output[0], std::byte { 6U });
+    EXPECT_EQ(output[2], std::byte { 8U });
+
+    const RandomAccessSourceRange invalid
+        = make_random_access_source_range(source, 12U, 8U);
+    EXPECT_FALSE(random_access_source_range_valid(invalid));
+}
+
+TEST(RandomAccessSource, WindowReadsAheadAndReturnsCacheHits)
+{
+    std::array<std::byte, 32> bytes {};
+    for (uint8_t i = 0U; i < bytes.size(); ++i) {
+        bytes[i] = static_cast<std::byte>(i);
+    }
+    CallbackState callback { bytes };
+    const RandomAccessSource source
+        = make_callback_random_access_source(bytes.size(), &callback,
+                                             test_read_at);
+    const RandomAccessSourceRange range
+        = make_random_access_source_range(source, 4U, 20U);
+    std::array<std::byte, 8> storage {};
+    RandomAccessReadWindow window;
+    window.storage = storage;
+    RandomAccessReadWindowOptions options;
+    options.minimum_read_bytes = storage.size();
+    RandomAccessReadState state;
+
+    const RandomAccessViewResult first
+        = random_access_read_view(range, 2U, 2U, &window, &state,
+                                  RandomAccessReadLimits {}, options);
+    ASSERT_TRUE(first.ok());
+    EXPECT_FALSE(first.cache_hit);
+    ASSERT_EQ(first.bytes.size(), 2U);
+    EXPECT_EQ(first.bytes[0], std::byte { 6U });
+    EXPECT_EQ(callback.calls, 1U);
+    EXPECT_EQ(callback.last_offset, 6U);
+    EXPECT_EQ(callback.last_size, storage.size());
+
+    const RandomAccessViewResult cached
+        = random_access_read_view(range, 6U, 2U, &window, &state,
+                                  RandomAccessReadLimits {}, options);
+    ASSERT_TRUE(cached.ok());
+    EXPECT_TRUE(cached.cache_hit);
+    EXPECT_EQ(cached.bytes[0], std::byte { 10U });
+    EXPECT_EQ(callback.calls, 1U);
+
+    const RandomAccessViewResult refill
+        = random_access_read_view(range, 12U, 2U, &window, &state,
+                                  RandomAccessReadLimits {}, options);
+    ASSERT_TRUE(refill.ok());
+    EXPECT_FALSE(refill.cache_hit);
+    EXPECT_EQ(callback.calls, 2U);
+    EXPECT_EQ(callback.last_offset, 16U);
+    EXPECT_EQ(callback.last_size, 8U);
+}
+
+TEST(RandomAccessSource, MemoryViewsAreDirectAndWindowFailuresAreBounded)
+{
+    std::array<std::byte, 12> bytes {};
+    const RandomAccessSource source = make_memory_random_access_source(bytes);
+    const RandomAccessSourceRange range
+        = make_random_access_source_range(source, 2U, 8U);
+    RandomAccessReadState memory_state;
+    const RandomAccessViewResult direct
+        = random_access_read_view(range, 3U, 2U, nullptr, &memory_state);
+    ASSERT_TRUE(direct.ok());
+    EXPECT_EQ(direct.bytes.data(), bytes.data() + 5U);
+    EXPECT_EQ(memory_state.requests_issued, 0U);
+
+    CallbackState callback { bytes };
+    const RandomAccessSource callback_source
+        = make_callback_random_access_source(bytes.size(), &callback,
+                                             test_read_at);
+    const RandomAccessSourceRange callback_range
+        = make_random_access_source_range(callback_source);
+    std::array<std::byte, 2> storage {};
+    RandomAccessReadWindow window;
+    window.storage = storage;
+    RandomAccessReadState scratch_state;
+    const RandomAccessViewResult too_small
+        = random_access_read_view(callback_range, 0U, 3U, &window,
+                                  &scratch_state);
+    EXPECT_EQ(too_small.code, RandomAccessReadCode::ScratchTooSmall);
+    EXPECT_EQ(callback.calls, 0U);
 }
 
 }  // namespace

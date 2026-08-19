@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <string_view>
 #include <vector>
 
@@ -50,6 +51,28 @@ namespace {
         const std::span<const std::byte> bytes = arena.span(v.data.span);
         return std::string_view(reinterpret_cast<const char*>(bytes.data()),
                                 bytes.size());
+    }
+
+
+    struct CallbackState final {
+        std::span<const std::byte> bytes;
+    };
+
+
+    static RandomAccessIoResult
+    read_at(void* context, uint64_t offset,
+            std::span<std::byte> destination) noexcept
+    {
+        const CallbackState* state = static_cast<const CallbackState*>(context);
+        if (offset > state->bytes.size()
+            || destination.size() > state->bytes.size() - offset) {
+            return RandomAccessIoResult { RandomAccessIoCode::Ok, 0U };
+        }
+        std::memcpy(destination.data(),
+                    state->bytes.data() + static_cast<size_t>(offset),
+                    destination.size());
+        return RandomAccessIoResult { RandomAccessIoCode::Ok,
+                                      destination.size() };
     }
 
 }  // namespace
@@ -116,6 +139,28 @@ TEST(PrintImDecode, DecodesPrintImTagIntoFields)
     EXPECT_EQ(e1.value.kind, MetaValueKind::Scalar);
     EXPECT_EQ(e1.value.elem_type, MetaElementType::U32);
     EXPECT_EQ(e1.value.data.u64, 0x00160016U);
+
+    CallbackState callback { tiff };
+    const RandomAccessSource source
+        = make_callback_random_access_source(tiff.size(), &callback, read_at);
+    std::array<std::byte, 20> read_window {};
+    std::array<std::byte, 64> value_scratch {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window                       = read_window;
+    scratch.value                             = value_scratch;
+    scratch.window_options.minimum_read_bytes = read_window.size();
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_exif_tiff_random_access(make_random_access_source_range(source),
+                                         callback_store, {}, scratch, options);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, ExifDecodeStatus::Ok);
+    callback_store.finalize();
+    const std::span<const EntryId> callback_ids = callback_store.find_all(
+        printim_key("0x0001"));
+    ASSERT_EQ(callback_ids.size(), 1U);
+    EXPECT_EQ(callback_store.entry(callback_ids[0]).value.data.u64,
+              0x00160016U);
 }
 
 

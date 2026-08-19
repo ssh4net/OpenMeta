@@ -1,5 +1,39 @@
 # OpenMeta Changes
 
+## 0.4.101 - 2026-08-19
+
+Changes compared with `0.4.100`.
+
+### Added
+
+- Added allocation-free source ranges and caller-owned read windows for bounded
+  positional decoding. Callback reads reuse structural cache storage, honor the
+  existing request/byte ceilings, and report undersized scratch explicitly.
+- Added `decode_exif_tiff_random_access(...)` for classic TIFF, BigTIFF, DNG,
+  Panasonic RW2, and Olympus ORF header/IFD traversal without materializing the
+  complete source. Large values use caller-owned scratch after type, count,
+  range, and metadata-size validation.
+- Added callback-backed nested decoding for PrintIM, GeoTIFF, Pentax
+  `DNGPrivateData`, and bounded self-contained MakerNotes. The combined result
+  reports required value scratch and unsupported outer-TIFF-relative nested
+  payloads instead of silently claiming complete parity.
+
+### Changed
+
+- Routed the existing span-based `decode_exif_tiff(...)` API through the same
+  random-access entry point. Contiguous ranges retain direct zero-copy views and
+  the complete existing nested-decoder behavior.
+- Ordered callback IFD traversal and out-of-line value reads to preserve the
+  structural read window, reducing avoidable rereads in realtime and
+  range-backed pipelines.
+
+### Tests And Validation
+
+- Added source-range translation, read-ahead/cache-hit, classic/BigTIFF
+  span-versus-callback parity, RW2/ORF, malformed offset, short-read,
+  request/byte budget, structural/value scratch, PrintIM, GeoTIFF, Pentax DNG
+  private data, and residual MakerNote reporting regressions.
+
 ## 0.4.100 - 2026-08-19
 
 Changes compared with `0.4.99`.

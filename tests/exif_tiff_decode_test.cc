@@ -123,6 +123,43 @@ namespace {
     }
 
 
+    struct TiffCallbackState final {
+        std::span<const std::byte> bytes;
+        uint64_t max_bytes   = UINT64_MAX;
+        uint64_t max_request = 0U;
+        uint32_t calls       = 0U;
+    };
+
+
+    static RandomAccessIoResult
+    tiff_read_at(void* context, uint64_t offset,
+                 std::span<std::byte> destination) noexcept
+    {
+        TiffCallbackState* state = static_cast<TiffCallbackState*>(context);
+        state->calls += 1U;
+        if (destination.size() > state->max_request) {
+            state->max_request = destination.size();
+        }
+        uint64_t available = 0U;
+        if (offset <= state->bytes.size()) {
+            available = static_cast<uint64_t>(state->bytes.size()) - offset;
+        }
+        uint64_t count = static_cast<uint64_t>(destination.size());
+        if (count > available) {
+            count = available;
+        }
+        if (count > state->max_bytes) {
+            count = state->max_bytes;
+        }
+        if (count != 0U) {
+            std::memcpy(destination.data(),
+                        state->bytes.data() + static_cast<size_t>(offset),
+                        static_cast<size_t>(count));
+        }
+        return RandomAccessIoResult { RandomAccessIoCode::Ok, count };
+    }
+
+
     static MetaKeyView exif_key(std::string_view ifd, uint16_t tag)
     {
         MetaKeyView key;
@@ -838,6 +875,268 @@ TEST(ExifTiffDecode, DecodesIfd0AndExifIfd_LittleEndian)
     EXPECT_EQ(dt.origin.wire_count, 20U);
     EXPECT_EQ(dt.value.kind, MetaValueKind::Text);
     EXPECT_EQ(arena_string(store.arena(), dt.value), "2024:01:01 00:00:00");
+}
+
+
+TEST(ExifTiffDecode, RandomAccessCallbackMatchesSpanThroughSourceSubrange)
+{
+    const std::vector<std::byte> tiff = make_test_tiff_le();
+    std::vector<std::byte> backing(11U, std::byte { 0xA5 });
+    backing.insert(backing.end(), tiff.begin(), tiff.end());
+
+    MetaStore span_store;
+    std::array<ExifIfdRef, 8> span_ifds {};
+    ExifDecodeOptions options;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store,
+                                                          span_ifds, options);
+
+    TiffCallbackState callback { backing };
+    const RandomAccessSource source
+        = make_callback_random_access_source(backing.size(), &callback,
+                                             tiff_read_at);
+    const RandomAccessSourceRange range
+        = make_random_access_source_range(source, 11U,
+                                          static_cast<uint64_t>(tiff.size()));
+    std::array<std::byte, 24> read_window {};
+    std::array<std::byte, 64> value_scratch {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window                       = read_window;
+    scratch.value                             = value_scratch;
+    scratch.window_options.minimum_read_bytes = read_window.size();
+
+    MetaStore callback_store;
+    std::array<ExifIfdRef, 8> callback_ifds {};
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_exif_tiff_random_access(range, callback_store, callback_ifds,
+                                         scratch, options);
+
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.ifds_written, span_result.ifds_written);
+    EXPECT_EQ(callback_result.decode.ifds_needed, span_result.ifds_needed);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+    ASSERT_EQ(callback_result.decode.ifds_written, 2U);
+    for (uint32_t i = 0U; i < callback_result.decode.ifds_written; ++i) {
+        EXPECT_EQ(callback_ifds[i].kind, span_ifds[i].kind);
+        EXPECT_EQ(callback_ifds[i].index, span_ifds[i].index);
+        EXPECT_EQ(callback_ifds[i].offset, span_ifds[i].offset);
+    }
+    EXPECT_GT(callback.calls, 0U);
+    EXPECT_LE(callback.max_request, read_window.size());
+    EXPECT_LT(callback_result.input.bytes_requested, tiff.size() * 2U);
+
+    callback_store.finalize();
+    const std::span<const EntryId> make_ids = callback_store.find_all(
+        exif_key("ifd0", 0x010F));
+    ASSERT_EQ(make_ids.size(), 1U);
+    EXPECT_EQ(arena_string(callback_store.arena(),
+                           callback_store.entry(make_ids[0]).value),
+              "Canon");
+    const std::span<const EntryId> date_ids = callback_store.find_all(
+        exif_key("exififd", 0x9003));
+    ASSERT_EQ(date_ids.size(), 1U);
+    EXPECT_EQ(arena_string(callback_store.arena(),
+                           callback_store.entry(date_ids[0]).value),
+              "2024:01:01 00:00:00");
+}
+
+
+TEST(ExifTiffDecode, RandomAccessCallbackDecodesBigTiffAndRawHeaders)
+{
+    std::vector<std::byte> bigtiff;
+    append_bytes(&bigtiff, "II");
+    append_u16le(&bigtiff, 43U);
+    append_u16le(&bigtiff, 8U);
+    append_u16le(&bigtiff, 0U);
+    append_u64le(&bigtiff, 16U);
+    append_u64le(&bigtiff, 1U);
+    append_u16le(&bigtiff, 0x0100U);
+    append_u16le(&bigtiff, 4U);
+    append_u64le(&bigtiff, 1U);
+    append_u64le(&bigtiff, 123U);
+    append_u64le(&bigtiff, 0U);
+
+    auto decode_callback = [&](std::span<const std::byte> bytes) {
+        TiffCallbackState callback { bytes };
+        const RandomAccessSource source
+            = make_callback_random_access_source(bytes.size(), &callback,
+                                                 tiff_read_at);
+        std::array<std::byte, 20> read_window {};
+        std::array<std::byte, 64> value_scratch {};
+        ExifRandomAccessScratch scratch;
+        scratch.read_window                       = read_window;
+        scratch.value                             = value_scratch;
+        scratch.window_options.minimum_read_bytes = read_window.size();
+        MetaStore store;
+        std::array<ExifIfdRef, 8> ifds {};
+        const ExifRandomAccessDecodeResult result
+            = decode_exif_tiff_random_access(make_random_access_source_range(
+                                                 source),
+                                             store, ifds, scratch,
+                                             ExifDecodeOptions {});
+        EXPECT_TRUE(result.complete());
+        EXPECT_EQ(result.decode.status, ExifDecodeStatus::Ok);
+        return result.decode.entries_decoded;
+    };
+
+    EXPECT_EQ(decode_callback(bigtiff), 1U);
+
+    for (const uint16_t version :
+         { uint16_t { 0x0055U }, uint16_t { 0x4F52U } }) {
+        std::vector<std::byte> raw;
+        append_bytes(&raw, "II");
+        append_u16le(&raw, version);
+        append_u32le(&raw, 8U);
+        append_u16le(&raw, 1U);
+        append_u16le(&raw, 0x0100U);
+        append_u16le(&raw, 4U);
+        append_u32le(&raw, 1U);
+        append_u32le(&raw, 321U);
+        append_u32le(&raw, 0U);
+        EXPECT_EQ(decode_callback(raw), 1U);
+    }
+}
+
+
+TEST(ExifTiffDecode, RandomAccessCallbackReportsScratchAndSourceFailures)
+{
+    const std::vector<std::byte> tiff = make_test_tiff_le();
+
+    auto make_source = [](TiffCallbackState* callback) {
+        return make_callback_random_access_source(callback->bytes.size(),
+                                                  callback, tiff_read_at);
+    };
+
+    TiffCallbackState short_callback { tiff };
+    short_callback.max_bytes = 4U;
+    std::array<std::byte, 24> window {};
+    std::array<std::byte, 64> value {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window = window;
+    scratch.value       = value;
+    MetaStore short_store;
+    const ExifRandomAccessDecodeResult short_result
+        = decode_exif_tiff_random_access(make_random_access_source_range(
+                                             make_source(&short_callback)),
+                                         short_store, {}, scratch,
+                                         ExifDecodeOptions {});
+    EXPECT_EQ(short_result.input.code, RandomAccessReadCode::ShortRead);
+    EXPECT_EQ(short_result.decode.status, ExifDecodeStatus::OutputTruncated);
+    EXPECT_FALSE(short_result.complete());
+
+    TiffCallbackState budget_callback { tiff };
+    RandomAccessReadLimits limits;
+    limits.max_requests                       = 16U;
+    limits.max_total_bytes                    = 8U;
+    limits.max_single_read_bytes              = window.size();
+    scratch.window_options.minimum_read_bytes = 8U;
+    MetaStore budget_store;
+    const ExifRandomAccessDecodeResult budget_result
+        = decode_exif_tiff_random_access(make_random_access_source_range(
+                                             make_source(&budget_callback)),
+                                         budget_store, {}, scratch,
+                                         ExifDecodeOptions {}, limits);
+    EXPECT_EQ(budget_result.input.code,
+              RandomAccessReadCode::ByteLimitExceeded);
+    EXPECT_EQ(budget_result.decode.status, ExifDecodeStatus::LimitExceeded);
+    EXPECT_FALSE(budget_result.complete());
+
+    std::vector<std::byte> malformed;
+    append_bytes(&malformed, "II");
+    append_u16le(&malformed, 42U);
+    append_u32le(&malformed, 8U);
+    append_u16le(&malformed, 1U);
+    append_u16le(&malformed, 0x010FU);
+    append_u16le(&malformed, 2U);
+    append_u32le(&malformed, 16U);
+    append_u32le(&malformed, UINT32_MAX - 7U);
+    append_u32le(&malformed, 0U);
+    TiffCallbackState malformed_callback { malformed };
+    scratch.window_options.minimum_read_bytes = window.size();
+    MetaStore malformed_store;
+    const ExifRandomAccessDecodeResult malformed_result
+        = decode_exif_tiff_random_access(make_random_access_source_range(
+                                             make_source(&malformed_callback)),
+                                         malformed_store, {}, scratch,
+                                         ExifDecodeOptions {});
+    EXPECT_TRUE(malformed_result.input.ok());
+    EXPECT_TRUE(malformed_result.complete());
+    EXPECT_EQ(malformed_result.decode.status, ExifDecodeStatus::Malformed);
+
+    std::vector<std::byte> bigtiff;
+    append_bytes(&bigtiff, "II");
+    append_u16le(&bigtiff, 43U);
+    append_u16le(&bigtiff, 8U);
+    append_u16le(&bigtiff, 0U);
+    append_u64le(&bigtiff, 16U);
+    append_u64le(&bigtiff, 1U);
+    append_u16le(&bigtiff, 0x0100U);
+    append_u16le(&bigtiff, 4U);
+    append_u64le(&bigtiff, 1U);
+    append_u64le(&bigtiff, 123U);
+    append_u64le(&bigtiff, 0U);
+    TiffCallbackState scratch_callback { bigtiff };
+    std::array<std::byte, 19> small_window {};
+    scratch.read_window                       = small_window;
+    scratch.window_options.minimum_read_bytes = small_window.size();
+    MetaStore scratch_store;
+    const ExifRandomAccessDecodeResult scratch_result
+        = decode_exif_tiff_random_access(make_random_access_source_range(
+                                             make_source(&scratch_callback)),
+                                         scratch_store, {}, scratch,
+                                         ExifDecodeOptions {});
+    EXPECT_EQ(scratch_result.input.code, RandomAccessReadCode::ScratchTooSmall);
+    EXPECT_EQ(scratch_result.decode.status, ExifDecodeStatus::LimitExceeded);
+}
+
+
+TEST(ExifTiffDecode, RandomAccessCallbackReportsValueScratchAndNestedResiduals)
+{
+    const std::vector<std::byte> pentax = make_test_pentax_dng_tiff_le();
+    auto decode                         = [](std::span<const std::byte> bytes,
+                     std::span<std::byte> value_scratch) {
+        TiffCallbackState callback { bytes };
+        const RandomAccessSource source
+            = make_callback_random_access_source(bytes.size(), &callback,
+                                                                         tiff_read_at);
+        std::array<std::byte, 20> read_window {};
+        ExifRandomAccessScratch scratch;
+        scratch.read_window                       = read_window;
+        scratch.value                             = value_scratch;
+        scratch.window_options.minimum_read_bytes = read_window.size();
+        ExifDecodeOptions options;
+        options.decode_makernote = true;
+        MetaStore store;
+        const ExifRandomAccessDecodeResult result
+            = decode_exif_tiff_random_access(make_random_access_source_range(
+                                                 source),
+                                                                     store, {}, scratch, options);
+        return result;
+    };
+
+    std::array<std::byte, 8> too_small {};
+    const ExifRandomAccessDecodeResult small_result = decode(pentax, too_small);
+    EXPECT_TRUE(small_result.input.ok());
+    EXPECT_GT(small_result.value_scratch_needed, too_small.size());
+    EXPECT_FALSE(small_result.complete());
+
+    std::array<std::byte, 128> enough {};
+    const ExifRandomAccessDecodeResult complete_result = decode(pentax, enough);
+    EXPECT_EQ(complete_result.decode.status, ExifDecodeStatus::Ok);
+    EXPECT_TRUE(complete_result.complete());
+
+    const std::vector<std::byte> sigma              = make_test_sigma_tiff_le();
+    const ExifRandomAccessDecodeResult sigma_result = decode(sigma, enough);
+    EXPECT_EQ(sigma_result.decode.status, ExifDecodeStatus::Ok);
+    EXPECT_TRUE(sigma_result.complete());
+
+    const std::vector<std::byte> panasonic = make_test_panasonic_tiff_le();
+    const ExifRandomAccessDecodeResult residual_result = decode(panasonic,
+                                                                enough);
+    EXPECT_TRUE(residual_result.input.ok());
+    EXPECT_EQ(residual_result.nested_payloads_skipped, 1U);
+    EXPECT_FALSE(residual_result.complete());
 }
 
 

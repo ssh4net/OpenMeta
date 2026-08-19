@@ -1034,9 +1034,12 @@ proxies without an OpenMeta dependency on any one host library.
    exact-read, short-read, overflow, request-count, byte-budget, and source-size
    consistency failures. Concurrent calls against an immutable source must not
    share mutable decoder state.
-2. Refactor TIFF/DNG and TIFF-based camera RAW header/IFD traversal first. Value
-   payloads are fetched only after type/count/range validation, within the
-   existing EXIF and arena budgets.
+2. [partial in 0.4.101] Refactor TIFF/DNG and TIFF-based camera RAW header/IFD
+   traversal first. Classic TIFF, BigTIFF, DNG, RW2, and ORF structural/value
+   decoding now uses caller-owned windows after type/count/range validation.
+   PrintIM, GeoTIFF, Pentax DNG private data, and selected self-contained
+   MakerNotes are converted; outer-TIFF-relative vendor payloads remain
+   explicit residuals and prevent a complete callback result.
 3. Refactor shallow sequential container scanners and payload extraction for
    JPEG, PNG, WebP, GIF, and EXR, then bounded box traversal for BMFF, JP2, and
    JXL. Decoders receive owned bounded metadata payloads rather than a borrowed

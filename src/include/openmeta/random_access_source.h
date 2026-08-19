@@ -76,6 +76,7 @@ enum class RandomAccessReadCode : uint8_t {
     SourceChanged,
     Cancelled,
     ContractViolation,
+    ScratchTooSmall,
 };
 
 /// Per-operation source-I/O ceilings. A zero ceiling means unlimited.
@@ -105,6 +106,48 @@ struct RandomAccessReadState final {
     bool ok() const noexcept { return code == RandomAccessReadCode::Ok; }
 };
 
+/// Borrowed subrange of one random-access source.
+struct RandomAccessSourceRange final {
+    RandomAccessSource source;
+    uint64_t source_offset = 0U;
+    uint64_t size          = 0U;
+};
+
+/**
+ * \brief Caller-owned cache storage for bounded source views.
+ *
+ * `storage` is configured by the caller. The remaining fields are managed by
+ * \ref random_access_read_view and may be reset between operations.
+ */
+struct RandomAccessReadWindow final {
+    std::span<std::byte> storage;
+    uint64_t range_offset = 0U;
+    uint64_t valid_bytes  = 0U;
+    bool valid            = false;
+
+    void reset() noexcept
+    {
+        range_offset = 0U;
+        valid_bytes  = 0U;
+        valid        = false;
+    }
+};
+
+/// Read-ahead policy for \ref random_access_read_view.
+struct RandomAccessReadWindowOptions final {
+    /// Minimum callback refill size. Zero reads only the requested bytes.
+    uint64_t minimum_read_bytes = 4096U;
+};
+
+/// Borrowed view returned by \ref random_access_read_view.
+struct RandomAccessViewResult final {
+    RandomAccessReadCode code = RandomAccessReadCode::Ok;
+    std::span<const std::byte> bytes;
+    bool cache_hit = false;
+
+    bool ok() const noexcept { return code == RandomAccessReadCode::Ok; }
+};
+
 /// Creates a non-owning source descriptor for caller-owned contiguous bytes.
 RandomAccessSource
 make_memory_random_access_source(std::span<const std::byte> bytes) noexcept;
@@ -118,6 +161,19 @@ make_callback_random_access_source(uint64_t size, void* context,
 /// Validates backing-selection and representability invariants.
 bool
 random_access_source_valid(const RandomAccessSource& source) noexcept;
+
+/// Creates a range covering one complete source descriptor.
+RandomAccessSourceRange
+make_random_access_source_range(const RandomAccessSource& source) noexcept;
+
+/// Creates a source-relative range without touching the backing storage.
+RandomAccessSourceRange
+make_random_access_source_range(const RandomAccessSource& source,
+                                uint64_t source_offset, uint64_t size) noexcept;
+
+/// Validates the source and range bounds.
+bool
+random_access_source_range_valid(const RandomAccessSourceRange& range) noexcept;
 
 /**
  * \brief Performs one exact, synchronous, range-checked source read.
@@ -136,6 +192,31 @@ random_access_read_exact(const RandomAccessSource& source, uint64_t offset,
                          RandomAccessReadState* state,
                          const RandomAccessReadLimits& limits
                          = RandomAccessReadLimits {}) noexcept;
+
+/// Exact-read overload using an offset relative to a validated source range.
+RandomAccessReadCode
+random_access_read_exact(const RandomAccessSourceRange& range, uint64_t offset,
+                         std::span<std::byte> destination,
+                         RandomAccessReadState* state,
+                         const RandomAccessReadLimits& limits
+                         = RandomAccessReadLimits {}) noexcept;
+
+/**
+ * \brief Returns a bounded source view using direct memory or a caller window.
+ *
+ * Contiguous sources return a direct borrowed span and do not consume callback
+ * I/O counters. Callback sources reuse or refill \p window. A callback-backed
+ * result remains valid only until the next window refill or caller mutation of
+ * the window storage.
+ */
+RandomAccessViewResult
+random_access_read_view(const RandomAccessSourceRange& range, uint64_t offset,
+                        uint64_t size, RandomAccessReadWindow* window,
+                        RandomAccessReadState* state,
+                        const RandomAccessReadLimits& limits
+                        = RandomAccessReadLimits {},
+                        const RandomAccessReadWindowOptions& options
+                        = RandomAccessReadWindowOptions {}) noexcept;
 
 }  // namespace openmeta
 OPENMETA_PUBLIC_END

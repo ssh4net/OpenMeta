@@ -4321,10 +4321,10 @@ namespace exif_internal {
 
 }  // namespace exif_internal
 
-ExifDecodeResult
-decode_exif_tiff(std::span<const std::byte> tiff_bytes, MetaStore& store,
-                 std::span<ExifIfdRef> out_ifds,
-                 const ExifDecodeOptions& options) noexcept
+static ExifDecodeResult
+decode_exif_tiff_contiguous(std::span<const std::byte> tiff_bytes,
+                            MetaStore& store, std::span<ExifIfdRef> out_ifds,
+                            const ExifDecodeOptions& options) noexcept
 {
     IfdSink sink;
     sink.out = out_ifds.data();
@@ -5132,6 +5132,745 @@ decode_exif_tiff(std::span<const std::byte> tiff_bytes, MetaStore& store,
     }
 
     return sink.result;
+}
+
+namespace {
+
+    struct ExifSourceContext final {
+        const RandomAccessSourceRange* range = nullptr;
+        RandomAccessReadWindow window;
+        std::span<std::byte> value_scratch;
+        RandomAccessReadLimits limits;
+        RandomAccessReadWindowOptions window_options;
+        ExifRandomAccessDecodeResult* result = nullptr;
+    };
+
+
+    static void map_source_failure(ExifSourceContext* source) noexcept
+    {
+        if (!source || !source->result || source->result->input.ok()) {
+            return;
+        }
+
+        switch (source->result->input.code) {
+        case RandomAccessReadCode::RequestTooLarge:
+        case RandomAccessReadCode::RequestLimitExceeded:
+        case RandomAccessReadCode::ByteLimitExceeded:
+        case RandomAccessReadCode::ScratchTooSmall:
+            update_status(&source->result->decode,
+                          ExifDecodeStatus::LimitExceeded);
+            return;
+        case RandomAccessReadCode::IoError:
+        case RandomAccessReadCode::SourceChanged:
+        case RandomAccessReadCode::Cancelled:
+        case RandomAccessReadCode::ShortRead:
+            update_status(&source->result->decode,
+                          ExifDecodeStatus::OutputTruncated);
+            return;
+        case RandomAccessReadCode::InvalidArgument:
+        case RandomAccessReadCode::OutOfRange:
+        case RandomAccessReadCode::ContractViolation:
+            update_status(&source->result->decode, ExifDecodeStatus::Malformed);
+            return;
+        case RandomAccessReadCode::Ok: return;
+        }
+    }
+
+
+    static bool source_view(ExifSourceContext* source, uint64_t offset,
+                            uint64_t size,
+                            std::span<const std::byte>* out) noexcept
+    {
+        if (!source || !source->range || !source->result || !out) {
+            return false;
+        }
+        const RandomAccessViewResult view
+            = random_access_read_view(*source->range, offset, size,
+                                      &source->window, &source->result->input,
+                                      source->limits, source->window_options);
+        if (!view.ok()) {
+            map_source_failure(source);
+            return false;
+        }
+        *out = view.bytes;
+        return true;
+    }
+
+
+    static bool source_value(ExifSourceContext* source, uint64_t offset,
+                             uint64_t size,
+                             std::span<const std::byte>* out) noexcept
+    {
+        if (!source || !source->range || !source->result || !out) {
+            return false;
+        }
+        if (size > static_cast<uint64_t>(source->value_scratch.size())) {
+            if (size <= static_cast<uint64_t>(source->window.storage.size())) {
+                return source_view(source, offset, size, out);
+            }
+            if (size > source->result->value_scratch_needed) {
+                source->result->value_scratch_needed = size;
+            }
+            update_status(&source->result->decode,
+                          ExifDecodeStatus::OutputTruncated);
+            return false;
+        }
+
+        const std::span<std::byte> destination = source->value_scratch.first(
+            static_cast<size_t>(size));
+        const RandomAccessReadCode code
+            = random_access_read_exact(*source->range, offset, destination,
+                                       &source->result->input, source->limits);
+        if (code != RandomAccessReadCode::Ok) {
+            map_source_failure(source);
+            return false;
+        }
+        *out = std::span<const std::byte>(destination.data(),
+                                          destination.size());
+        return true;
+    }
+
+
+    static bool range_contains_bytes(const RandomAccessSourceRange& range,
+                                     uint64_t offset, uint64_t size) noexcept
+    {
+        return offset <= range.size && size <= range.size - offset;
+    }
+
+
+    static void follow_source_ifd_pointers(
+        const TiffConfig& cfg, std::span<const std::byte> raw, uint16_t tag,
+        uint16_t type, uint64_t count, std::span<IfdTask> stack,
+        uint32_t* stack_size, uint32_t* next_subifd_index,
+        const ExifDecodeLimits& limits, ExifDecodeResult* result) noexcept
+    {
+        (void)follow_ifd_pointers(cfg, raw, tag, type, count, 0U, stack,
+                                  stack_size, next_subifd_index, limits,
+                                  result);
+    }
+
+
+    static void
+    decode_source_makernote(const TiffConfig& cfg,
+                            std::span<const std::byte> maker_note,
+                            MetaStore& store, const ExifDecodeOptions& options,
+                            ExifRandomAccessDecodeResult* result) noexcept
+    {
+        const MakerNoteVendor vendor = detect_makernote_vendor(maker_note,
+                                                               store);
+        ExifDecodeOptions mn_options = options;
+        mn_options.decode_printim    = false;
+        mn_options.decode_makernote  = false;
+        set_makernote_tokens(&mn_options, vendor);
+
+        char token_scratch[64];
+        const std::string_view maker_ifd
+            = ifd_token(mn_options.tokens, ExifIfdKind::Ifd, 0,
+                        std::span<char>(token_scratch));
+
+        if (vendor == MakerNoteVendor::Pentax
+            && exif_internal::decode_pentax_makernote(maker_note, maker_ifd,
+                                                      store, mn_options,
+                                                      &result->decode)) {
+            return;
+        }
+        if (vendor == MakerNoteVendor::Hp
+            && exif_internal::decode_hp_makernote(maker_note, maker_ifd, store,
+                                                  mn_options,
+                                                  &result->decode)) {
+            return;
+        }
+        if (vendor == MakerNoteVendor::Reconyx
+            && exif_internal::decode_reconyx_makernote(maker_note, maker_ifd,
+                                                       store, mn_options,
+                                                       &result->decode)) {
+            return;
+        }
+        if (vendor == MakerNoteVendor::PhaseOne
+            && decode_phaseone_makernote(maker_note, maker_ifd, store,
+                                         mn_options, &result->decode)) {
+            return;
+        }
+
+        if (vendor == MakerNoteVendor::Jvc && maker_note.size() >= 6U
+            && match_bytes(maker_note, 0U, "JVC ", 4U)) {
+            static constexpr uint64_t kJvcIfdOffset = 4U;
+            TiffConfig maker_cfg                    = cfg;
+            if (!looks_like_classic_ifd(maker_cfg, maker_note, kJvcIfdOffset,
+                                        options.limits)) {
+                maker_cfg.le = !maker_cfg.le;
+            }
+            decode_classic_ifd_no_header(maker_cfg, maker_note, kJvcIfdOffset,
+                                         maker_ifd, store, mn_options,
+                                         &result->decode, EntryFlags::None);
+            return;
+        }
+
+        if (vendor == MakerNoteVendor::Unknown
+            || vendor == MakerNoteVendor::Sigma
+            || vendor == MakerNoteVendor::Apple) {
+            ClassicIfdCandidate best;
+            if (find_best_classic_ifd_candidate(maker_note, 256U,
+                                                options.limits, &best)) {
+                TiffConfig maker_cfg;
+                maker_cfg.le      = best.le;
+                maker_cfg.bigtiff = false;
+                decode_classic_ifd_no_header(maker_cfg, maker_note, best.offset,
+                                             maker_ifd, store, mn_options,
+                                             &result->decode, EntryFlags::None);
+                if (vendor == MakerNoteVendor::Sigma) {
+                    decode_sigma_binary_subdirs(maker_ifd, store,
+                                                mn_options.limits,
+                                                &result->decode);
+                }
+                return;
+            }
+        }
+
+        result->nested_payloads_skipped += 1U;
+    }
+
+
+    static void
+    decode_source_geotiff(const TiffConfig& cfg, ExifSourceContext* source,
+                          exif_internal::GeoTiffTagRef key_directory,
+                          exif_internal::GeoTiffTagRef double_params,
+                          exif_internal::GeoTiffTagRef ascii_params,
+                          MetaStore& store,
+                          const ExifDecodeLimits& limits) noexcept
+    {
+        if (!key_directory.present || !source || !source->result) {
+            return;
+        }
+
+        uint64_t total = 0U;
+        const exif_internal::GeoTiffTagRef refs[3]
+            = { key_directory, double_params, ascii_params };
+        for (const exif_internal::GeoTiffTagRef& ref : refs) {
+            if (ref.present
+                && (!checked_add_u64(total, ref.value_bytes, &total))) {
+                update_status(&source->result->decode,
+                              ExifDecodeStatus::Malformed);
+                return;
+            }
+        }
+        if (total > static_cast<uint64_t>(source->value_scratch.size())) {
+            if (total > source->result->value_scratch_needed) {
+                source->result->value_scratch_needed = total;
+            }
+            update_status(&source->result->decode,
+                          ExifDecodeStatus::OutputTruncated);
+            return;
+        }
+
+        exif_internal::GeoTiffTagRef compact[3]
+            = { key_directory, double_params, ascii_params };
+        uint64_t destination_offset = 0U;
+        for (uint32_t i = 0U; i < 3U; ++i) {
+            if (!compact[i].present) {
+                continue;
+            }
+            const std::span<std::byte> destination
+                = source->value_scratch.subspan(
+                    static_cast<size_t>(destination_offset),
+                    static_cast<size_t>(compact[i].value_bytes));
+            const RandomAccessReadCode code
+                = random_access_read_exact(*source->range, compact[i].value_off,
+                                           destination, &source->result->input,
+                                           source->limits);
+            if (code != RandomAccessReadCode::Ok) {
+                map_source_failure(source);
+                return;
+            }
+            compact[i].value_off = destination_offset;
+            destination_offset += compact[i].value_bytes;
+        }
+
+        const std::span<const std::byte> compact_bytes(
+            source->value_scratch.data(), static_cast<size_t>(total));
+        exif_internal::decode_geotiff_keys(cfg, compact_bytes, compact[0],
+                                           compact[1], compact[2], store,
+                                           limits);
+    }
+
+}  // namespace
+
+
+ExifRandomAccessDecodeResult
+decode_exif_tiff_random_access(
+    const RandomAccessSourceRange& tiff, MetaStore& store,
+    std::span<ExifIfdRef> out_ifds, const ExifRandomAccessScratch& scratch,
+    const ExifDecodeOptions& options,
+    const RandomAccessReadLimits& read_limits) noexcept
+{
+    ExifRandomAccessDecodeResult result;
+    if (!random_access_source_range_valid(tiff)) {
+        result.input.code    = RandomAccessReadCode::InvalidArgument;
+        result.decode.status = ExifDecodeStatus::Malformed;
+        return result;
+    }
+
+    if (tiff.source.contiguous_data != nullptr) {
+        const std::span<const std::byte> bytes(tiff.source.contiguous_data
+                                                   + static_cast<size_t>(
+                                                       tiff.source_offset),
+                                               static_cast<size_t>(tiff.size));
+        result.decode = decode_exif_tiff_contiguous(bytes, store, out_ifds,
+                                                    options);
+        return result;
+    }
+
+    IfdSink sink;
+    sink.out = out_ifds.data();
+    sink.cap = static_cast<uint32_t>(out_ifds.size());
+
+    store.constrain_resources(options.limits.max_total_entries,
+                              options.limits.max_arena_bytes);
+    if (store.resource_limit_exceeded()) {
+        mark_limit_exceeded(&sink.result, ExifLimitReason::MaxArenaBytes, 0U,
+                            0U);
+        result.decode = sink.result;
+        return result;
+    }
+    if (tiff.size < 8U) {
+        result.decode.status = ExifDecodeStatus::Malformed;
+        return result;
+    }
+
+    ExifSourceContext source;
+    source.range          = &tiff;
+    source.window.storage = scratch.read_window;
+    source.value_scratch  = scratch.value;
+    source.limits         = read_limits;
+    source.window_options = scratch.window_options;
+    source.result         = &result;
+
+    std::span<const std::byte> header;
+    if (!source_view(&source, 0U, 8U, &header)) {
+        return result;
+    }
+
+    TiffConfig cfg;
+    const uint8_t byte0 = u8(header[0]);
+    const uint8_t byte1 = u8(header[1]);
+    if (byte0 == 0x49U && byte1 == 0x49U) {
+        cfg.le = true;
+    } else if (byte0 == 0x4DU && byte1 == 0x4DU) {
+        cfg.le = false;
+    } else {
+        result.decode.status = ExifDecodeStatus::Unsupported;
+        return result;
+    }
+
+    uint16_t version = 0U;
+    if (!read_tiff_u16(cfg, header, 2U, &version)) {
+        result.decode.status = ExifDecodeStatus::Malformed;
+        return result;
+    }
+    if (version == 42U || version == 0x0055U || version == 0x4F52U) {
+        cfg.bigtiff = false;
+    } else if (version == 43U) {
+        cfg.bigtiff = true;
+    } else {
+        result.decode.status = ExifDecodeStatus::Unsupported;
+        return result;
+    }
+
+    uint64_t first_ifd = 0U;
+    if (!cfg.bigtiff) {
+        uint32_t offset = 0U;
+        if (!read_tiff_u32(cfg, header, 4U, &offset)) {
+            result.decode.status = ExifDecodeStatus::Malformed;
+            return result;
+        }
+        first_ifd = offset;
+    } else {
+        if (tiff.size < 16U || !source_view(&source, 0U, 16U, &header)) {
+            if (result.input.ok()) {
+                result.decode.status = ExifDecodeStatus::Malformed;
+            }
+            return result;
+        }
+        uint16_t offset_size = 0U;
+        uint16_t reserved    = 0U;
+        if (!read_tiff_u16(cfg, header, 4U, &offset_size)
+            || !read_tiff_u16(cfg, header, 6U, &reserved)
+            || !read_tiff_u64(cfg, header, 8U, &first_ifd) || offset_size != 8U
+            || reserved != 0U) {
+            result.decode.status = ExifDecodeStatus::Malformed;
+            return result;
+        }
+    }
+
+    std::array<IfdTask, 256> tasks {};
+    std::array<uint64_t, 256> visited_offsets {};
+    std::array<uint8_t, 256> visited_masks {};
+    uint32_t task_count    = 0U;
+    uint32_t visited_count = 0U;
+    uint32_t next_subifd   = 0U;
+    if (first_ifd != 0U) {
+        tasks[0]   = IfdTask { ExifIfdKind::Ifd, 0U, first_ifd };
+        task_count = 1U;
+    }
+
+    while (task_count > 0U && result.input.ok()) {
+        const uint32_t selected
+            = select_next_task_index(std::span<const IfdTask>(tasks),
+                                     task_count);
+        const IfdTask task = tasks[selected];
+        tasks[selected]    = tasks[task_count - 1U];
+        task_count -= 1U;
+
+        if (task.offset == 0U || task.offset >= tiff.size) {
+            continue;
+        }
+
+        const uint8_t kind_bit = ifd_kind_bit(task.kind);
+        const uint32_t visited
+            = find_visited(task.offset,
+                           std::span<const uint64_t>(visited_offsets),
+                           visited_count);
+        if (visited != UINT32_MAX) {
+            const uint8_t mask = visited_masks[visited];
+            if ((mask & kind_bit) != 0U
+                || !allow_revisit_kind(task.kind, mask)) {
+                continue;
+            }
+            visited_masks[visited] = static_cast<uint8_t>(mask | kind_bit);
+        } else if (visited_count < visited_offsets.size()) {
+            visited_offsets[visited_count] = task.offset;
+            visited_masks[visited_count]   = kind_bit;
+            visited_count += 1U;
+        } else {
+            mark_limit_exceeded(&result.decode, ExifLimitReason::MaxIfds,
+                                task.offset, 0U);
+            break;
+        }
+
+        if (sink.result.ifds_needed >= options.limits.max_ifds) {
+            mark_limit_exceeded(&result.decode, ExifLimitReason::MaxIfds,
+                                task.offset, 0U);
+            break;
+        }
+
+        const uint64_t count_bytes = cfg.bigtiff ? 8U : 2U;
+        std::span<const std::byte> count_raw;
+        if (!source_view(&source, task.offset, count_bytes, &count_raw)) {
+            break;
+        }
+        uint64_t entry_count = 0U;
+        if (cfg.bigtiff) {
+            if (!read_tiff_u64(cfg, count_raw, 0U, &entry_count)) {
+                update_status(&result.decode, ExifDecodeStatus::Malformed);
+                continue;
+            }
+        } else {
+            uint16_t count16 = 0U;
+            if (!read_tiff_u16(cfg, count_raw, 0U, &count16)) {
+                update_status(&result.decode, ExifDecodeStatus::Malformed);
+                continue;
+            }
+            entry_count = count16;
+        }
+        if (entry_count > options.limits.max_entries_per_ifd) {
+            mark_limit_exceeded(&result.decode,
+                                ExifLimitReason::MaxEntriesPerIfd, task.offset,
+                                0U);
+            continue;
+        }
+
+        uint64_t entries_offset    = 0U;
+        uint64_t table_bytes       = 0U;
+        uint64_t next_offset       = 0U;
+        const uint64_t entry_bytes = cfg.bigtiff ? 20U : 12U;
+        if (!checked_add_u64(task.offset, count_bytes, &entries_offset)
+            || !checked_mul_u64(entry_count, entry_bytes, &table_bytes)
+            || !checked_add_u64(entries_offset, table_bytes, &next_offset)
+            || !range_contains_bytes(tiff, entries_offset, table_bytes)) {
+            update_status(&result.decode, ExifDecodeStatus::Malformed);
+            continue;
+        }
+
+        if (result.decode.entries_decoded + entry_count
+            > options.limits.max_total_entries) {
+            mark_limit_exceeded(&result.decode,
+                                ExifLimitReason::MaxTotalEntries, task.offset,
+                                0U);
+            continue;
+        }
+
+        const BlockId block = store.add_block(BlockInfo {});
+        ExifIfdRef ifd_ref;
+        ifd_ref.kind   = task.kind;
+        ifd_ref.index  = task.index;
+        ifd_ref.offset = task.offset;
+        ifd_ref.block  = block;
+        sink.result    = result.decode;
+        sink_emit(&sink, ifd_ref);
+        result.decode = sink.result;
+
+        char token_scratch[64];
+        const std::string_view ifd_name
+            = ifd_token(options.tokens, task.kind, task.index,
+                        std::span<char>(token_scratch));
+        if (ifd_name.empty()) {
+            update_status(&result.decode, ExifDecodeStatus::Malformed);
+            continue;
+        }
+
+        exif_internal::GeoTiffTagRef geotiff_directory;
+        exif_internal::GeoTiffTagRef geotiff_double;
+        exif_internal::GeoTiffTagRef geotiff_ascii;
+
+        for (uint64_t index = 0U; index < entry_count && result.input.ok();
+             ++index) {
+            uint64_t entry_delta  = 0U;
+            uint64_t entry_offset = 0U;
+            if (!checked_mul_u64(index, entry_bytes, &entry_delta)
+                || !checked_add_u64(entries_offset, entry_delta,
+                                    &entry_offset)) {
+                update_status(&result.decode, ExifDecodeStatus::Malformed);
+                continue;
+            }
+
+            std::span<const std::byte> entry_raw;
+            if (!source_view(&source, entry_offset, entry_bytes, &entry_raw)) {
+                break;
+            }
+            uint16_t tag  = 0U;
+            uint16_t type = 0U;
+            if (!read_tiff_u16(cfg, entry_raw, 0U, &tag)
+                || !read_tiff_u16(cfg, entry_raw, 2U, &type)) {
+                update_status(&result.decode, ExifDecodeStatus::Malformed);
+                continue;
+            }
+
+            uint64_t count             = 0U;
+            uint64_t value_or_offset   = 0U;
+            uint64_t value_field_local = cfg.bigtiff ? 12U : 8U;
+            if (cfg.bigtiff) {
+                if (!read_tiff_u64(cfg, entry_raw, 4U, &count)
+                    || !read_tiff_u64(cfg, entry_raw, 12U, &value_or_offset)) {
+                    update_status(&result.decode, ExifDecodeStatus::Malformed);
+                    continue;
+                }
+            } else {
+                uint32_t count32 = 0U;
+                uint32_t value32 = 0U;
+                if (!read_tiff_u32(cfg, entry_raw, 4U, &count32)
+                    || !read_tiff_u32(cfg, entry_raw, 8U, &value32)) {
+                    update_status(&result.decode, ExifDecodeStatus::Malformed);
+                    continue;
+                }
+                count           = count32;
+                value_or_offset = value32;
+            }
+
+            const uint64_t unit  = tiff_type_size(type);
+            uint64_t value_bytes = 0U;
+            if (unit == 0U) {
+                continue;
+            }
+            if (!checked_mul_u64(count, unit, &value_bytes)) {
+                update_status(&result.decode, ExifDecodeStatus::Malformed);
+                continue;
+            }
+
+            const uint64_t inline_capacity = cfg.bigtiff ? 8U : 4U;
+            const bool inline_value        = value_bytes <= inline_capacity;
+            uint64_t value_offset          = value_or_offset;
+            std::span<const std::byte> value_raw;
+            bool have_value = false;
+            if (inline_value) {
+                value_offset = entry_offset + value_field_local;
+                value_raw
+                    = entry_raw.subspan(static_cast<size_t>(value_field_local),
+                                        static_cast<size_t>(value_bytes));
+                have_value = true;
+            } else if (!range_contains_bytes(tiff, value_offset, value_bytes)) {
+                update_status(&result.decode, ExifDecodeStatus::Malformed);
+                continue;
+            } else if (value_bytes <= options.limits.max_value_bytes) {
+                have_value = source_value(&source, value_offset, value_bytes,
+                                          &value_raw);
+            }
+
+            if (options.decode_geotiff && count <= UINT32_MAX) {
+                exif_internal::GeoTiffTagRef* geotiff = nullptr;
+                if (tag == 0x87AFU) {
+                    geotiff = &geotiff_directory;
+                } else if (tag == 0x87B0U) {
+                    geotiff = &geotiff_double;
+                } else if (tag == 0x87B1U) {
+                    geotiff = &geotiff_ascii;
+                }
+                if (geotiff) {
+                    geotiff->present     = true;
+                    geotiff->type        = type;
+                    geotiff->count32     = static_cast<uint32_t>(count);
+                    geotiff->value_off   = value_offset;
+                    geotiff->value_bytes = value_bytes;
+                }
+            }
+
+            if (have_value) {
+                follow_source_ifd_pointers(cfg, value_raw, tag, type, count,
+                                           std::span<IfdTask>(tasks),
+                                           &task_count, &next_subifd,
+                                           options.limits, &result.decode);
+            }
+
+            if (count > UINT32_MAX) {
+                mark_limit_exceeded(&result.decode,
+                                    ExifLimitReason::ValueCountTooLarge,
+                                    task.offset, tag);
+                continue;
+            }
+
+            Entry entry;
+            entry.key = make_exif_tag_key(store.arena(), ifd_name, tag);
+            entry.origin.block          = block;
+            entry.origin.order_in_block = static_cast<uint32_t>(index);
+            entry.origin.wire_type      = WireType { WireFamily::Tiff, type };
+            entry.origin.wire_count     = static_cast<uint32_t>(count);
+            if (value_bytes > options.limits.max_value_bytes || !have_value) {
+                entry.flags |= EntryFlags::Truncated;
+            } else {
+                entry.value = decode_tiff_value(cfg, value_raw, type, count, 0U,
+                                                value_bytes, store.arena(),
+                                                options.limits, &result.decode);
+            }
+
+            if (!options.include_pointer_tags
+                && (tag == 0x8769U || tag == 0x8825U || tag == 0xA005U
+                    || tag == 0x014AU)) {
+                continue;
+            }
+            maybe_mark_contextual_name(ifd_name, tag, store, &entry);
+            if (store.add_entry(entry) == kInvalidEntryId) {
+                mark_limit_exceeded(&result.decode,
+                                    store.arena().limit_exceeded()
+                                        ? ExifLimitReason::MaxArenaBytes
+                                        : ExifLimitReason::MaxTotalEntries,
+                                    task.offset, tag);
+                continue;
+            }
+            result.decode.entries_decoded += 1U;
+
+            if (have_value && options.decode_printim && tag == 0xC4A5U
+                && value_bytes != 0U) {
+                PrintImDecodeLimits print_limits;
+                print_limits.max_entries = options.limits.max_entries_per_ifd;
+                print_limits.max_bytes   = options.limits.max_value_bytes;
+                const PrintImDecodeResult print_result
+                    = decode_printim(value_raw, store, print_limits);
+                if (print_result.status == PrintImDecodeStatus::LimitExceeded) {
+                    mark_limit_exceeded(&result.decode,
+                                        ExifLimitReason::MaxTotalEntries,
+                                        task.offset, tag);
+                }
+            }
+
+            if (have_value && options.decode_makernote && tag == 0xC634U
+                && value_bytes != 0U) {
+                const MakerNoteVendor vendor
+                    = detect_makernote_vendor(value_raw, store);
+                if (vendor == MakerNoteVendor::Pentax) {
+                    ExifDecodeOptions maker_options = options;
+                    maker_options.decode_printim    = false;
+                    maker_options.decode_makernote  = false;
+                    set_makernote_tokens(&maker_options, vendor);
+                    char maker_token_scratch[64];
+                    const std::string_view maker_ifd
+                        = ifd_token(maker_options.tokens, ExifIfdKind::Ifd, 0U,
+                                    std::span<char>(maker_token_scratch));
+                    (void)exif_internal::decode_pentax_makernote(
+                        value_raw, maker_ifd, store, maker_options,
+                        &result.decode);
+                }
+            }
+
+            if (have_value && options.decode_makernote && tag == 0x927CU
+                && value_bytes != 0U) {
+                decode_source_makernote(cfg, value_raw, store, options,
+                                        &result);
+            } else if (!have_value && options.decode_makernote
+                       && (tag == 0x927CU || tag == 0xC634U)
+                       && value_bytes != 0U
+                       && result.value_scratch_needed == 0U) {
+                // A configured metadata-value ceiling may intentionally skip
+                // the bytes before vendor detection. Keep completion
+                // conservative when nested decoding was requested.
+                result.nested_payloads_skipped += 1U;
+            }
+        }
+
+        if (task.kind == ExifIfdKind::Ifd && result.input.ok()) {
+            const uint64_t pointer_bytes = cfg.bigtiff ? 8U : 4U;
+            if (range_contains_bytes(tiff, next_offset, pointer_bytes)) {
+                std::span<const std::byte> next_raw;
+                if (!source_view(&source, next_offset, pointer_bytes,
+                                 &next_raw)) {
+                    break;
+                }
+                uint64_t following = 0U;
+                if (cfg.bigtiff) {
+                    (void)read_tiff_u64(cfg, next_raw, 0U, &following);
+                } else {
+                    uint32_t following32 = 0U;
+                    (void)read_tiff_u32(cfg, next_raw, 0U, &following32);
+                    following = following32;
+                }
+                if (following != 0U) {
+                    if (task_count < tasks.size()
+                        && task_count < options.limits.max_ifds) {
+                        tasks[task_count] = IfdTask { ExifIfdKind::Ifd,
+                                                      task.index + 1U,
+                                                      following };
+                        task_count += 1U;
+                    } else {
+                        mark_limit_exceeded(&result.decode,
+                                            ExifLimitReason::MaxIfds,
+                                            task.offset, 0U);
+                    }
+                }
+            } else {
+                update_status(&result.decode, ExifDecodeStatus::Malformed);
+            }
+        }
+
+        if (options.decode_geotiff && result.input.ok()) {
+            decode_source_geotiff(cfg, &source, geotiff_directory,
+                                  geotiff_double, geotiff_ascii, store,
+                                  options.limits);
+        }
+    }
+
+    maybe_decode_nikon_nefinfo_blocks(store, options, &result.decode);
+    exif_internal::decode_nikon_preview_aliases(store, options, &result.decode);
+    if (store.resource_limit_exceeded()) {
+        mark_limit_exceeded(&result.decode,
+                            store.arena().limit_exceeded()
+                                ? ExifLimitReason::MaxArenaBytes
+                                : ExifLimitReason::MaxTotalEntries,
+                            0U, 0U);
+    }
+    return result;
+}
+
+
+ExifDecodeResult
+decode_exif_tiff(std::span<const std::byte> tiff_bytes, MetaStore& store,
+                 std::span<ExifIfdRef> out_ifds,
+                 const ExifDecodeOptions& options) noexcept
+{
+    const RandomAccessSource source = make_memory_random_access_source(
+        tiff_bytes);
+    const RandomAccessSourceRange range = make_random_access_source_range(
+        source);
+    return decode_exif_tiff_random_access(range, store, out_ifds,
+                                          ExifRandomAccessScratch {}, options)
+        .decode;
 }
 
 ExifDecodeResult

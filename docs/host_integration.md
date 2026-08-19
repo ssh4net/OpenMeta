@@ -279,11 +279,16 @@ or an exact synchronous `read_at(offset, destination)` callback. The primitive
 has no hidden allocation, lock, scheduler, or file-position state. Request
 count, total-byte, and single-read ceilings are tracked in caller-owned state.
 
-Version 0.4.100 establishes this input contract but does not yet route container
-decoders through it. Do not describe TIFF/DNG or another format as
-random-access capable until its scanner, payload extraction, and nested decode
-paths use the source directly. See [random_access_input.md](random_access_input.md)
-for lifetime, short-read, concurrency, and performance requirements.
+Version 0.4.101 routes classic TIFF, BigTIFF, DNG, RW2, and ORF header/IFD
+decoding through this contract with caller-owned structural and value scratch.
+The existing span API is a zero-copy memory-source adapter over the same public
+entry point. Callback-backed PrintIM, GeoTIFF, Pentax DNG private data, and
+selected self-contained MakerNotes are supported. Outer-TIFF-relative vendor
+payloads remain explicit residuals through
+`ExifRandomAccessDecodeResult::nested_payloads_skipped`; hosts must check
+`complete()` before claiming full nested parity. See
+[random_access_input.md](random_access_input.md) for buffer sizing, lifetime,
+short-read, concurrency, and performance requirements.
 
 ## 4. Build An EXR Attribute Batch
 

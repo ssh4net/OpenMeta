@@ -17,6 +17,27 @@
 namespace openmeta {
 namespace {
 
+    struct CallbackState final {
+        std::span<const std::byte> bytes;
+    };
+
+
+    static RandomAccessIoResult
+    read_at(void* context, uint64_t offset,
+            std::span<std::byte> destination) noexcept
+    {
+        const CallbackState* state = static_cast<const CallbackState*>(context);
+        if (offset > state->bytes.size()
+            || destination.size() > state->bytes.size() - offset) {
+            return RandomAccessIoResult { RandomAccessIoCode::Ok, 0U };
+        }
+        std::memcpy(destination.data(),
+                    state->bytes.data() + static_cast<size_t>(offset),
+                    destination.size());
+        return RandomAccessIoResult { RandomAccessIoCode::Ok,
+                                      destination.size() };
+    }
+
     static void append_u16le(std::vector<std::byte>* out, uint16_t v)
     {
         out->push_back(std::byte { static_cast<uint8_t>((v >> 0) & 0xFF) });
@@ -36,7 +57,8 @@ namespace {
     static void append_u64le(std::vector<std::byte>* out, uint64_t v)
     {
         for (uint32_t i = 0; i < 8; ++i) {
-            out->push_back(std::byte { static_cast<uint8_t>((v >> (i * 8U)) & 0xFF) });
+            out->push_back(
+                std::byte { static_cast<uint8_t>((v >> (i * 8U)) & 0xFF) });
         }
     }
 
@@ -147,15 +169,15 @@ namespace {
         std::array<ExifIfdRef, 8> ifds {};
         ExifDecodeOptions opts;
         opts.decode_geotiff = true;
-        (void)decode_exif_tiff(
-            std::span<const std::byte>(tiff.data(), tiff.size()), store, ifds,
-            opts);
+        (void)decode_exif_tiff(std::span<const std::byte>(tiff.data(),
+                                                          tiff.size()),
+                               store, ifds, opts);
         store.finalize();
 
         auto find_one = [&](uint16_t key_id) -> const Entry* {
             MetaKeyView k;
-            k.kind                     = MetaKeyKind::GeotiffKey;
-            k.data.geotiff_key.key_id  = key_id;
+            k.kind                             = MetaKeyKind::GeotiffKey;
+            k.data.geotiff_key.key_id          = key_id;
             const std::span<const EntryId> ids = store.find_all(k);
             if (ids.size() != 1) {
                 return nullptr;
@@ -172,9 +194,10 @@ namespace {
         const Entry* e_cit = find_one(1026);
         ASSERT_NE(e_cit, nullptr);
         EXPECT_EQ(e_cit->value.kind, MetaValueKind::Text);
-        const std::span<const std::byte> cit_bytes
-            = store.arena().span(e_cit->value.data.span);
-        const std::string_view cit(reinterpret_cast<const char*>(cit_bytes.data()),
+        const std::span<const std::byte> cit_bytes = store.arena().span(
+            e_cit->value.data.span);
+        const std::string_view cit(reinterpret_cast<const char*>(
+                                       cit_bytes.data()),
                                    cit_bytes.size());
         EXPECT_EQ(cit, "TestCitation");
 
@@ -184,6 +207,38 @@ namespace {
         EXPECT_EQ(e_axis->value.elem_type, MetaElementType::F64);
         const double got = std::bit_cast<double>(e_axis->value.data.f64_bits);
         EXPECT_NEAR(got, semi_major, 1e-6);
+
+        CallbackState callback { tiff };
+        const RandomAccessSource source
+            = make_callback_random_access_source(tiff.size(), &callback,
+                                                 read_at);
+        std::array<std::byte, 20> read_window {};
+        std::array<std::byte, 128> value_scratch {};
+        ExifRandomAccessScratch scratch;
+        scratch.read_window                       = read_window;
+        scratch.value                             = value_scratch;
+        scratch.window_options.minimum_read_bytes = read_window.size();
+        MetaStore callback_store;
+        const ExifRandomAccessDecodeResult callback_result
+            = decode_exif_tiff_random_access(make_random_access_source_range(
+                                                 source),
+                                             callback_store, {}, scratch, opts);
+        EXPECT_TRUE(callback_result.complete());
+        EXPECT_EQ(callback_result.decode.status, ExifDecodeStatus::Ok);
+        callback_store.finalize();
+        MetaKeyView callback_key;
+        callback_key.kind                           = MetaKeyKind::GeotiffKey;
+        callback_key.data.geotiff_key.key_id        = 1026U;
+        const std::span<const EntryId> callback_ids = callback_store.find_all(
+            callback_key);
+        ASSERT_EQ(callback_ids.size(), 1U);
+        const std::span<const std::byte> callback_text
+            = callback_store.arena().span(
+                callback_store.entry(callback_ids[0]).value.data.span);
+        EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                       callback_text.data()),
+                                   callback_text.size()),
+                  "TestCitation");
     }
 
 }  // namespace

@@ -6,8 +6,10 @@ not tied to a particular image library or file abstraction.
 
 ## Current Scope
 
-Version 0.4.100 adds the allocation-free source primitive in
-`openmeta/random_access_source.h`. It defines:
+Version 0.4.100 added the allocation-free source primitive in
+`openmeta/random_access_source.h`. Version 0.4.101 adds source-relative ranges,
+caller-owned read windows, and the first decoder conversion. The contract now
+defines:
 
 - a fixed source size and synchronous `read_at(offset, destination)` callback
 - a non-owning descriptor for caller-owned contiguous memory
@@ -15,12 +17,21 @@ Version 0.4.100 adds the allocation-free source primitive in
   source-change results
 - per-operation limits for request count, total requested bytes, and one read
 - independent sticky accounting state with first-failure diagnostics
+- borrowed source subranges without copying or changing callback offsets
+- caller-owned read-ahead windows with direct zero-copy views for memory sources
 
-This release establishes the I/O contract only. The existing container and
-metadata decoders still accept full byte spans or mapped files. TIFF/DNG is the
-first planned decoder conversion; a format is not random-access capable until
-its scanner, payload extraction, nested metadata, and parity tests use this
-contract without materializing the complete source.
+`decode_exif_tiff_random_access(...)` now traverses classic TIFF, BigTIFF, DNG,
+Panasonic RW2, and Olympus ORF headers, IFDs, pointer directories, and validated
+metadata values without materializing the complete source. It also decodes
+PrintIM, GeoTIFF, Pentax DNG private data, and selected self-contained
+MakerNotes from caller scratch.
+
+Callback decoding does not yet claim complete MakerNote parity. Several vendor
+formats use offsets relative to the outer TIFF or permit values beyond the
+declared MakerNote byte count. Those payloads are not decoded against an
+incorrect subspan: `ExifRandomAccessDecodeResult::nested_payloads_skipped`
+counts them and `complete()` returns false. A contiguous source keeps the full
+existing decoder behavior and reports no random-access residual.
 
 ## Callback Example
 
@@ -63,6 +74,36 @@ transport with partial-read semantics must complete its retry loop inside the
 callback or return the actual shorter count. OpenMeta performs range and budget
 checks before invoking the callback.
 
+## TIFF/DNG Decode Example
+
+```cpp
+#include "openmeta/exif_tiff_decode.h"
+
+std::array<std::byte, 16 * 1024> structural_window;
+std::array<std::byte, 1 * 1024 * 1024> value_scratch;
+
+openmeta::ExifRandomAccessScratch scratch;
+scratch.read_window = structural_window;
+scratch.value = value_scratch;
+scratch.window_options.minimum_read_bytes = structural_window.size();
+
+openmeta::RandomAccessSourceRange tiff =
+    openmeta::make_random_access_source_range(source, tiff_offset, tiff_size);
+openmeta::MetaStore store;
+std::array<openmeta::ExifIfdRef, 128> ifds;
+
+openmeta::ExifRandomAccessDecodeResult result =
+    openmeta::decode_exif_tiff_random_access(
+        tiff, store, ifds, scratch, openmeta::ExifDecodeOptions{}, limits);
+```
+
+`read_window` must hold 20 bytes for BigTIFF entries. Larger windows batch
+adjacent structural reads. `value` must hold the largest metadata value that
+the caller wants decoded and, when GeoTIFF is enabled, the combined GeoTIFF key,
+double, and ASCII parameter payloads. If it is too small,
+`value_scratch_needed` reports the required byte count; OpenMeta does not
+allocate a replacement.
+
 ## Real-Time And Concurrent Use
 
 The contract adds no global state, virtual dispatch, `std::function`, hidden
@@ -75,11 +116,11 @@ Separate operations may share an immutable source when `concurrent_reads` is
 true and the host context actually supports concurrent positional reads. Each
 operation must use separate decoder scratch and `RandomAccessReadState` objects.
 
-Decoder conversions will batch adjacent structural reads through caller-owned
-scratch windows instead of issuing one host callback for every TIFF scalar.
-Large metadata values will be fetched only after their type, count, range, and
-resource budget have been validated. Pixel payloads are outside this metadata
-input contract and must not be fetched as part of ordinary metadata decoding.
+The TIFF/DNG decoder batches adjacent structural reads through the caller-owned
+window instead of issuing one host callback for every scalar. Out-of-line
+metadata values use caller value scratch so they do not evict the structural
+cache. Pixel payloads are outside this metadata input contract and are not
+fetched as part of ordinary metadata decoding.
 
 ## Source Lifetime
 

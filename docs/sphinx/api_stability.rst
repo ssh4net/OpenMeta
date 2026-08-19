@@ -41,14 +41,18 @@ Host-facing API map
      - Stable
      - v1 query contract for read, structured decode, transfer preparation,
        target edit, and raw-preservation status by format/family.
-   * - Bounded positional input primitive: ``RandomAccessSource``,
-       ``random_access_read_exact(...)``
-     - ``openmeta/random_access_source.h``
+   * - Bounded positional input and TIFF-family decode:
+       ``RandomAccessSource``, source ranges/read windows,
+       ``random_access_read_exact(...)``,
+       ``decode_exif_tiff_random_access(...)``
+     - ``openmeta/random_access_source.h``,
+       ``openmeta/exif_tiff_decode.h``
      - Experimental
-     - Allocation-free fixed-size memory/callback source with exact reads,
-       explicit short-read/I/O/source-change results, and caller-owned
-       request/byte accounting. This is the input foundation only; format
-       decoders remain span/mapped-file based until separately documented. See
+     - Allocation-free memory/callback source with exact reads, explicit
+       short-read/I/O/source-change results, caller-owned accounting/scratch,
+       and bounded classic TIFF/BigTIFF/DNG/RW2/ORF IFD decoding. Contiguous
+       input retains full existing behavior; callback results report value
+       scratch requirements and outer-relative MakerNote residuals. See
        :doc:`random_access_input`.
    * - Compatibility dumps: ``dump_metadata_compatibility(...)``,
        ``dump_transfer_compatibility(...)``

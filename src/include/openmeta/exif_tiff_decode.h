@@ -5,6 +5,7 @@
 #include "openmeta/api.h"
 
 #include "openmeta/meta_store.h"
+#include "openmeta/random_access_source.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -110,6 +111,37 @@ struct ExifDecodeResult final {
     uint16_t limit_tag           = 0;
 };
 
+/// Caller-owned buffers for callback-backed TIFF/DNG decoding.
+struct ExifRandomAccessScratch final {
+    /// Structural read cache. At least 20 bytes are required for BigTIFF.
+    std::span<std::byte> read_window;
+    /// Reusable storage for one out-of-line value or the combined GeoTIFF
+    /// parameter payloads. Insufficient capacity is reported, never allocated.
+    std::span<std::byte> value;
+    RandomAccessReadWindowOptions window_options;
+};
+
+/// Combined decode, source-I/O, and residual nested-payload result.
+struct ExifRandomAccessDecodeResult final {
+    ExifDecodeResult decode;
+    RandomAccessReadState input;
+    /// Largest value-buffer requirement observed when caller scratch was too
+    /// small. Zero means no value was skipped for this reason.
+    uint64_t value_scratch_needed = 0U;
+    /// Nested vendor payloads skipped because callback decoding cannot yet
+    /// resolve their outer-TIFF-relative offset model safely.
+    uint32_t nested_payloads_skipped = 0U;
+
+    /// True when source I/O and supported nested paths had no scratch/residual
+    /// gap. The TIFF payload can still be malformed or unsupported; inspect
+    /// `decode.status` separately.
+    bool complete() const noexcept
+    {
+        return input.ok() && value_scratch_needed == 0U
+               && nested_payloads_skipped == 0U;
+    }
+};
+
 /**
  * \brief Decodes a TIFF header + IFD chain and appends tags into \p store.
  *
@@ -129,6 +161,25 @@ ExifDecodeResult
 decode_exif_tiff(std::span<const std::byte> tiff_bytes, MetaStore& store,
                  std::span<ExifIfdRef> out_ifds,
                  const ExifDecodeOptions& options) noexcept;
+
+/**
+ * \brief Decodes TIFF/DNG metadata through a bounded positional source.
+ *
+ * Contiguous source ranges retain the complete existing decoder behavior.
+ * Callback sources use caller-owned scratch, never materialize the complete
+ * source, and report nested payloads that still require outer-TIFF-relative
+ * vendor decoder conversion.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ExifRandomAccessDecodeResult
+decode_exif_tiff_random_access(const RandomAccessSourceRange& tiff,
+                               MetaStore& store, std::span<ExifIfdRef> out_ifds,
+                               const ExifRandomAccessScratch& scratch,
+                               const ExifDecodeOptions& options,
+                               const RandomAccessReadLimits& read_limits
+                               = RandomAccessReadLimits {}) noexcept;
 
 /**
  * \brief Estimates EXIF/TIFF decode counts using the same limits/options.

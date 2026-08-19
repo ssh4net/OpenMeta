@@ -208,11 +208,13 @@ either caller-owned contiguous memory or an exact synchronous
 allocation, lock, scheduler, or file-position state. Request-count, total-byte,
 and single-read ceilings use caller-owned accounting state.
 
-Version 0.4.100 establishes the input contract but does not yet route container
-decoders through it. Do not describe TIFF/DNG or another format as
-random-access capable until scanner, payload extraction, and nested decode paths
-use the source directly. See :doc:`random_access_input` for lifetime,
-short-read, concurrency, and performance requirements.
+Version 0.4.101 routes classic TIFF, BigTIFF, DNG, RW2, and ORF header/IFD
+decoding through this contract with caller-owned structural and value scratch.
+Contiguous input retains the full existing decoder behavior. Callback-backed
+outer-TIFF-relative MakerNotes remain explicit residuals, so hosts must check
+``ExifRandomAccessDecodeResult::complete()`` before claiming full nested parity.
+See :doc:`random_access_input` for buffer sizing, lifetime, short-read,
+concurrency, and performance requirements.
 
 Generic host metadata traversal
 -------------------------------
