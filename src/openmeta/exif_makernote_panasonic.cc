@@ -448,6 +448,126 @@ namespace {
         }
     }
 
+
+    static bool score_panasonic_source_candidate(
+        const SourceTiffReader& source, const TiffConfig& cfg,
+        std::span<const std::byte> maker_note, uint64_t ifd_off,
+        const ExifDecodeLimits& limits, ClassicIfdCandidate* out) noexcept
+    {
+        uint16_t entry_count = 0U;
+        if (!read_tiff_u16(cfg, maker_note, ifd_off, &entry_count)
+            || entry_count == 0U || entry_count > limits.max_entries_per_ifd
+            || entry_count > 512U || ifd_off > UINT64_MAX - 2ULL) {
+            return false;
+        }
+
+        const uint64_t entries_off = ifd_off + 2ULL;
+        const uint64_t table_bytes = uint64_t(entry_count) * 12ULL;
+        if (entries_off > maker_note.size()
+            || table_bytes > maker_note.size() - entries_off) {
+            return false;
+        }
+
+        uint32_t valid = 0U;
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            const uint64_t entry_off = entries_off + uint64_t(i) * 12ULL;
+            ClassicIfdEntry entry;
+            uint64_t value_bytes = 0U;
+            if (!read_classic_ifd_entry(cfg, maker_note, entry_off, &entry)
+                || !classic_ifd_entry_value_bytes(entry, &value_bytes)
+                || value_bytes > limits.max_value_bytes) {
+                continue;
+            }
+
+            if (value_bytes <= 4U) {
+                if (entry_off <= maker_note.size()
+                    && maker_note.size() - entry_off >= 8U
+                    && value_bytes <= maker_note.size() - entry_off - 8U) {
+                    valid += 1U;
+                }
+                continue;
+            }
+            if (source_tiff_contains(source, entry.value_or_off32,
+                                     value_bytes)) {
+                valid += 1U;
+            }
+        }
+
+        const uint32_t min_valid = (entry_count > 4U)
+                                       ? uint32_t(entry_count) / 2U
+                                       : uint32_t(entry_count);
+        if (valid < min_valid) {
+            return false;
+        }
+        if (out) {
+            out->offset        = ifd_off;
+            out->le            = cfg.le;
+            out->entry_count   = entry_count;
+            out->valid_entries = valid;
+        }
+        return true;
+    }
+
+
+    static bool find_panasonic_source_candidate(
+        const SourceTiffReader& source, std::span<const std::byte> maker_note,
+        const ExifDecodeLimits& limits, ClassicIfdCandidate* out) noexcept
+    {
+        if (!out) {
+            return false;
+        }
+        *out       = ClassicIfdCandidate {};
+        bool found = false;
+
+        uint64_t preferred_offset = 0U;
+        if (maker_note.size() >= 12U
+            && match_bytes(maker_note, 0U, "Panasonic", 9U)) {
+            preferred_offset = 12U;
+        }
+        for (uint32_t endian = 0U; endian < 2U; ++endian) {
+            TiffConfig cfg;
+            cfg.le      = endian == 0U;
+            cfg.bigtiff = false;
+            ClassicIfdCandidate candidate;
+            if (!score_panasonic_source_candidate(source, cfg, maker_note,
+                                                  preferred_offset, limits,
+                                                  &candidate)) {
+                continue;
+            }
+            if (!found || candidate.valid_entries > out->valid_entries) {
+                *out  = candidate;
+                found = true;
+            }
+        }
+        if (found) {
+            return true;
+        }
+
+        const uint64_t scan_bytes = (maker_note.size() < 512U)
+                                        ? maker_note.size()
+                                        : 512U;
+        for (uint64_t offset = 0U; offset + 2U <= scan_bytes; offset += 2U) {
+            for (uint32_t endian = 0U; endian < 2U; ++endian) {
+                TiffConfig cfg;
+                cfg.le      = endian == 0U;
+                cfg.bigtiff = false;
+                ClassicIfdCandidate candidate;
+                if (!score_panasonic_source_candidate(source, cfg, maker_note,
+                                                      offset, limits,
+                                                      &candidate)) {
+                    continue;
+                }
+                if (!found || candidate.valid_entries > out->valid_entries
+                    || (candidate.valid_entries == out->valid_entries
+                        && candidate.offset < out->offset)) {
+                    *out  = candidate;
+                    found = true;
+                }
+            }
+        }
+        return found;
+    }
+
 }  // namespace
 
 bool
@@ -525,6 +645,45 @@ decode_panasonic_makernote(const TiffConfig& parent_cfg,
 
     decode_classic_ifd_no_header(best_cfg, tiff_bytes, best.offset, mk_ifd0,
                                  store, options, status_out, EntryFlags::None);
+    decode_panasonic_binary_subdirs(mk_ifd0, best_cfg.le, store, options,
+                                    status_out);
+    return true;
+}
+
+
+bool
+decode_panasonic_makernote_from_source(
+    SourceTiffReader* source, const TiffConfig& parent_cfg,
+    uint64_t maker_note_off, std::span<const std::byte> maker_note,
+    std::string_view mk_ifd0, MetaStore& store,
+    const ExifDecodeOptions& options, ExifDecodeResult* status_out) noexcept
+{
+    if (!source || mk_ifd0.empty() || maker_note.empty()) {
+        return false;
+    }
+
+    ClassicIfdCandidate best;
+    if (!find_panasonic_source_candidate(*source, maker_note, options.limits,
+                                         &best)) {
+        return decode_panasonic_makernote(parent_cfg, maker_note, 0U,
+                                          maker_note.size(), mk_ifd0, store,
+                                          options, status_out);
+    }
+    if (maker_note_off > UINT64_MAX - best.offset) {
+        update_status(status_out, ExifDecodeStatus::Malformed);
+        return false;
+    }
+
+    TiffConfig best_cfg;
+    best_cfg.le      = best.le;
+    best_cfg.bigtiff = false;
+    const OffsetPolicy offsets;
+    if (!decode_classic_ifd_from_source(source, best_cfg,
+                                        maker_note_off + best.offset, offsets,
+                                        mk_ifd0, store, options, status_out,
+                                        EntryFlags::None, true)) {
+        return false;
+    }
     decode_panasonic_binary_subdirs(mk_ifd0, best_cfg.le, store, options,
                                     status_out);
     return true;

@@ -112,6 +112,158 @@ namespace {
         }
     }
 
+
+    static bool olympus_source_entry(SourceTiffReader* source,
+                                     const TiffConfig& cfg, uint64_t ifd_off,
+                                     uint32_t index,
+                                     ClassicIfdEntry* out) noexcept
+    {
+        if (!source || !out || ifd_off > UINT64_MAX - 2ULL) {
+            return false;
+        }
+        const uint64_t entry_delta = uint64_t(index) * 12ULL;
+        const uint64_t entries_off = ifd_off + 2ULL;
+        if (entries_off > UINT64_MAX - entry_delta) {
+            return false;
+        }
+        std::span<const std::byte> raw;
+        return source_tiff_view(source, entries_off + entry_delta, 12U, &raw)
+               && read_classic_ifd_entry(cfg, raw, 0U, out);
+    }
+
+
+    static bool olympus_source_entry_count(SourceTiffReader* source,
+                                           const TiffConfig& cfg,
+                                           uint64_t ifd_off,
+                                           const ExifDecodeLimits& limits,
+                                           uint16_t* out) noexcept
+    {
+        if (!out) {
+            return false;
+        }
+        std::span<const std::byte> raw;
+        uint16_t count = 0U;
+        if (!source_tiff_view(source, ifd_off, 2U, &raw)
+            || !read_tiff_u16(cfg, raw, 0U, &count) || count == 0U
+            || count > limits.max_entries_per_ifd) {
+            return false;
+        }
+        *out = count;
+        return true;
+    }
+
+
+    static void olympus_decode_source_camerasettings_nested(
+        SourceTiffReader* source, const TiffConfig& cfg, uint64_t ifd_off,
+        std::string_view vendor_prefix, MetaStore& store,
+        const ExifDecodeOptions& options, ExifDecodeResult* status_out) noexcept
+    {
+        uint16_t entry_count = 0U;
+        if (!olympus_source_entry_count(source, cfg, ifd_off, options.limits,
+                                        &entry_count)) {
+            return;
+        }
+
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            ClassicIfdEntry entry;
+            if (!olympus_source_entry(source, cfg, ifd_off, i, &entry)) {
+                return;
+            }
+            if (entry.count32 != 1U
+                || (entry.type != 4U && entry.type != 13U)) {
+                continue;
+            }
+
+            std::string_view subtable;
+            switch (entry.tag) {
+            case 0x030a: subtable = "aftargetinfo"; break;
+            case 0x030b: subtable = "subjectdetectinfo"; break;
+            default: break;
+            }
+            if (subtable.empty()) {
+                continue;
+            }
+
+            char ifd_buf[96];
+            const std::string_view ifd_token
+                = make_mk_subtable_ifd_token(vendor_prefix, subtable, 0U,
+                                             std::span<char>(ifd_buf));
+            if (ifd_token.empty()) {
+                continue;
+            }
+            const OffsetPolicy offsets;
+            (void)decode_classic_ifd_from_source(source, cfg,
+                                                 entry.value_or_off32, offsets,
+                                                 ifd_token, store, options,
+                                                 status_out, EntryFlags::None);
+        }
+    }
+
+
+    static void olympus_decode_source_subifds(
+        SourceTiffReader* source, const TiffConfig& cfg, uint64_t main_ifd_off,
+        std::string_view vendor_prefix, MetaStore& store,
+        const ExifDecodeOptions& options, ExifDecodeResult* status_out) noexcept
+    {
+        uint16_t entry_count = 0U;
+        if (!olympus_source_entry_count(source, cfg, main_ifd_off,
+                                        options.limits, &entry_count)) {
+            return;
+        }
+
+        uint32_t idx_fetags = 0U;
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            ClassicIfdEntry entry;
+            if (!olympus_source_entry(source, cfg, main_ifd_off, i, &entry)) {
+                return;
+            }
+
+            const std::string_view table = olympus_main_subifd_table(entry.tag);
+            if (table.empty()) {
+                continue;
+            }
+
+            uint64_t value_bytes = 0U;
+            if (!classic_ifd_entry_value_bytes(entry, &value_bytes)) {
+                continue;
+            }
+            const bool scalar_offset = (entry.type == 4U || entry.type == 13U)
+                                       && entry.count32 == 1U;
+            if (!scalar_offset && value_bytes <= 4U) {
+                continue;
+            }
+            if (value_bytes > options.limits.max_value_bytes) {
+                update_status(status_out, ExifDecodeStatus::LimitExceeded);
+                continue;
+            }
+
+            char ifd_buf[96];
+            const uint32_t sub_idx = (table == "fetags") ? idx_fetags++ : 0U;
+            const std::string_view ifd_token
+                = make_mk_subtable_ifd_token(vendor_prefix, table, sub_idx,
+                                             std::span<char>(ifd_buf));
+            if (ifd_token.empty()) {
+                continue;
+            }
+
+            const uint64_t sub_ifd_off = entry.value_or_off32;
+            const OffsetPolicy offsets;
+            if (!decode_classic_ifd_from_source(source, cfg, sub_ifd_off,
+                                                offsets, ifd_token, store,
+                                                options, status_out,
+                                                EntryFlags::None)) {
+                continue;
+            }
+            if (table == "camerasettings") {
+                olympus_decode_source_camerasettings_nested(source, cfg,
+                                                            sub_ifd_off,
+                                                            vendor_prefix,
+                                                            store, options,
+                                                            status_out);
+            }
+        }
+    }
+
 }  // namespace
 
 bool
@@ -411,8 +563,8 @@ decode_olympus_makernote(const TiffConfig& parent_cfg,
                 continue;
             }
 
-            olympus_decode_ifd(parent_cfg, tiff_bytes, sub_ifd_off, sub_ifd_token,
-                               store, options, status_out);
+            olympus_decode_ifd(parent_cfg, tiff_bytes, sub_ifd_off,
+                               sub_ifd_token, store, options, status_out);
             if (table == "camerasettings") {
                 olympus_decode_camerasettings_nested(parent_cfg, tiff_bytes,
                                                      sub_ifd_off, vendor_prefix,
@@ -522,6 +674,53 @@ decode_olympus_makernote(const TiffConfig& parent_cfg,
         }
     }
 
+    return true;
+}
+
+
+bool
+decode_olympus_makernote_from_source(SourceTiffReader* source,
+                                     const TiffConfig& parent_cfg,
+                                     uint64_t maker_note_off,
+                                     std::span<const std::byte> maker_note,
+                                     std::string_view mk_ifd0, MetaStore& store,
+                                     const ExifDecodeOptions& options,
+                                     ExifDecodeResult* status_out) noexcept
+{
+    if (!source || mk_ifd0.empty() || maker_note.size() < 10U) {
+        return false;
+    }
+
+    if ((maker_note.size() >= 16U
+         && match_bytes(maker_note, 0U, "OM SYSTEM", 9U))
+        || (maker_note.size() >= 16U
+            && match_bytes(maker_note, 0U, "OLYMPUS\0", 8U))) {
+        return decode_olympus_makernote(parent_cfg, maker_note, 0U,
+                                        maker_note.size(), mk_ifd0, store,
+                                        options, status_out);
+    }
+
+    if (!match_bytes(maker_note, 0U, "OLYMP\0", 6U)
+        && !match_bytes(maker_note, 0U, "EPSON\0", 6U)
+        && !match_bytes(maker_note, 0U, "MINOL\0", 6U)
+        && !match_bytes(maker_note, 0U, "CAMER\0", 6U)) {
+        return false;
+    }
+    if (maker_note_off > UINT64_MAX - 8ULL) {
+        update_status(status_out, ExifDecodeStatus::Malformed);
+        return false;
+    }
+
+    const uint64_t main_ifd_off = maker_note_off + 8ULL;
+    const OffsetPolicy offsets;
+    if (!decode_classic_ifd_from_source(source, parent_cfg, main_ifd_off,
+                                        offsets, mk_ifd0, store, options,
+                                        status_out, EntryFlags::None)) {
+        return false;
+    }
+    olympus_decode_source_subifds(source, parent_cfg, main_ifd_off,
+                                  options.tokens.ifd_prefix, store, options,
+                                  status_out);
     return true;
 }
 

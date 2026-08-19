@@ -1091,7 +1091,7 @@ TEST(ExifTiffDecode, RandomAccessCallbackReportsScratchAndSourceFailures)
 }
 
 
-TEST(ExifTiffDecode, RandomAccessCallbackReportsValueScratchAndNestedResiduals)
+TEST(ExifTiffDecode, RandomAccessCallbackReportsValueScratchAndCompletesVendors)
 {
     const std::vector<std::byte> pentax = make_test_pentax_dng_tiff_le();
     auto decode                         = [](std::span<const std::byte> bytes,
@@ -1132,11 +1132,10 @@ TEST(ExifTiffDecode, RandomAccessCallbackReportsValueScratchAndNestedResiduals)
     EXPECT_TRUE(sigma_result.complete());
 
     const std::vector<std::byte> panasonic = make_test_panasonic_tiff_le();
-    const ExifRandomAccessDecodeResult residual_result = decode(panasonic,
-                                                                enough);
-    EXPECT_TRUE(residual_result.input.ok());
-    EXPECT_EQ(residual_result.nested_payloads_skipped, 1U);
-    EXPECT_FALSE(residual_result.complete());
+    const ExifRandomAccessDecodeResult panasonic_result = decode(panasonic,
+                                                                 enough);
+    EXPECT_EQ(panasonic_result.decode.status, ExifDecodeStatus::Ok);
+    EXPECT_TRUE(panasonic_result.complete());
 }
 
 

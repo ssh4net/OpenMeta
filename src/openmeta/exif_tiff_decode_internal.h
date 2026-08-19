@@ -141,7 +141,8 @@ namespace exif_internal {
         SourceTiffReader* source, const TiffConfig& cfg, uint64_t ifd_off,
         const OffsetPolicy& offsets, std::string_view ifd_name,
         MetaStore& store, const ExifDecodeOptions& options,
-        ExifDecodeResult* status_out, EntryFlags extra_flags) noexcept;
+        ExifDecodeResult* status_out, EntryFlags extra_flags,
+        bool allow_missing_next_ifd_pointer = false) noexcept;
 
     // Low-level helpers (implemented in exif_tiff_decode.cc).
     bool match_bytes(std::span<const std::byte> bytes, uint64_t offset,
@@ -230,6 +231,13 @@ namespace exif_internal {
                                   const ExifDecodeOptions& options,
                                   ExifDecodeResult* status_out) noexcept;
 
+    bool decode_olympus_makernote_from_source(
+        SourceTiffReader* source, const TiffConfig& parent_cfg,
+        uint64_t maker_note_off, std::span<const std::byte> maker_note,
+        std::string_view mk_ifd0, MetaStore& store,
+        const ExifDecodeOptions& options,
+        ExifDecodeResult* status_out) noexcept;
+
     bool decode_pentax_makernote(std::span<const std::byte> maker_note_bytes,
                                  std::string_view mk_ifd0, MetaStore& store,
                                  const ExifDecodeOptions& options,
@@ -282,6 +290,13 @@ namespace exif_internal {
                                     std::string_view mk_ifd0, MetaStore& store,
                                     const ExifDecodeOptions& options,
                                     ExifDecodeResult* status_out) noexcept;
+
+    bool decode_panasonic_makernote_from_source(
+        SourceTiffReader* source, const TiffConfig& parent_cfg,
+        uint64_t maker_note_off, std::span<const std::byte> maker_note,
+        std::string_view mk_ifd0, MetaStore& store,
+        const ExifDecodeOptions& options,
+        ExifDecodeResult* status_out) noexcept;
 
     bool decode_kodak_makernote(const TiffConfig& parent_cfg,
                                 std::span<const std::byte> tiff_bytes,

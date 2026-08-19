@@ -5240,7 +5240,8 @@ namespace exif_internal {
         SourceTiffReader* source, const TiffConfig& cfg, uint64_t ifd_off,
         const OffsetPolicy& offsets, std::string_view ifd_name,
         MetaStore& store, const ExifDecodeOptions& options,
-        ExifDecodeResult* status_out, EntryFlags extra_flags) noexcept
+        ExifDecodeResult* status_out, EntryFlags extra_flags,
+        bool allow_missing_next_ifd_pointer) noexcept
     {
         if (!source || !source->range || !source->result || cfg.bigtiff
             || ifd_name.empty()) {
@@ -5264,7 +5265,8 @@ namespace exif_internal {
         if (!checked_add_u64(ifd_off, 2U, &entries_off)
             || !checked_mul_u64(entry_count, 12U, &table_bytes)
             || !checked_add_u64(entries_off, table_bytes, &table_end)
-            || !source_tiff_contains(*source, table_end, 4U)) {
+            || !source_tiff_contains(*source, table_end,
+                                     allow_missing_next_ifd_pointer ? 0U : 4U)) {
             update_status(status_out, ExifDecodeStatus::Malformed);
             return false;
         }
@@ -5902,6 +5904,27 @@ namespace {
                     return;
                 }
             }
+        }
+
+        if (vendor == MakerNoteVendor::Olympus && source
+            && exif_internal::decode_olympus_makernote_from_source(
+                source, cfg, maker_note_off, maker_note, maker_ifd, store,
+                mn_options, &result->decode)) {
+            return;
+        }
+
+        if (vendor == MakerNoteVendor::Panasonic && source
+            && exif_internal::decode_panasonic_makernote_from_source(
+                source, cfg, maker_note_off, maker_note, maker_ifd, store,
+                mn_options, &result->decode)) {
+            return;
+        }
+
+        if (vendor == MakerNoteVendor::Samsung
+            && exif_internal::decode_samsung_makernote(
+                cfg, maker_note, 0U, maker_note.size(), maker_ifd, store,
+                mn_options, &result->decode)) {
+            return;
         }
 
         if (vendor == MakerNoteVendor::Pentax

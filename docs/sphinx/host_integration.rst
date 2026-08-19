@@ -211,9 +211,11 @@ and single-read ceilings use caller-owned accounting state.
 Version 0.4.101 routes classic TIFF, BigTIFF, DNG, RW2, and ORF header/IFD
 decoding through this contract with caller-owned structural and value scratch.
 Version 0.4.102 adds source-backed Nikon embedded TIFF/type 1, Sony
-outer-TIFF-relative IFDs, and contained Canon adjusted-base payloads. Contiguous
-input retains the full existing decoder behavior. Unconverted vendor payloads
-and derived subtables remain explicit residuals, so hosts must check
+outer-TIFF-relative IFDs, and contained Canon adjusted-base payloads. Version
+0.4.103 adds Olympus nested IFDs, Panasonic binary tables, and Samsung
+STMN/Type2 derived tables. Contiguous input retains the full existing decoder
+behavior. Unconverted mixed-base vendor payloads and derived subtables remain
+explicit residuals, so hosts must check
 ``ExifRandomAccessDecodeResult::complete()`` before claiming full nested parity.
 See :doc:`random_access_input` for buffer sizing, lifetime, short-read,
 concurrency, and performance requirements.

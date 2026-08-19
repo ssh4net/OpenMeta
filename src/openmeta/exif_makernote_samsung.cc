@@ -192,8 +192,9 @@ namespace {
                     update_status(status_out, ExifDecodeStatus::LimitExceeded);
                 }
                 entry.flags |= EntryFlags::Truncated;
-            } else if (ref.value_off + ref.value_bytes
-                       > maker_note_bytes.size()) {
+            } else if (ref.value_off > maker_note_bytes.size()
+                       || ref.value_bytes
+                              > maker_note_bytes.size() - ref.value_off) {
                 if (status_out) {
                     update_status(status_out, ExifDecodeStatus::Malformed);
                 }

@@ -1,5 +1,37 @@
 # OpenMeta Changes
 
+## 0.4.103 - 2026-08-19
+
+Changes compared with `0.4.102`.
+
+### Added
+
+- Added callback-backed Olympus decoding for legacy outer-TIFF-relative values
+  and nested sub-IFDs while retaining complete MakerNote-relative `OLYMPUS` and
+  `OM SYSTEM` decoding through the existing bounded local path.
+- Added callback-backed Panasonic IFD values and FaceDetInfo, FaceRecInfo, and
+  TimeInfo binary tables, including MakerNotes with a truncated trailing
+  next-IFD pointer.
+- Added callback parity for self-contained Samsung STMN/SamsungIFD and Type2
+  PictureWizard MakerNotes.
+
+### Changed
+
+- Panasonic callback candidate selection now prefers the documented IFD origin
+  before the bounded fallback scan, preventing binary payload bytes from
+  outranking a complete root IFD.
+- Random-access decoding continues to report mixed-base Fuji, Kodak, Ricoh,
+  Nintendo, Casio, Minolta, and FLIR paths as explicit residuals until each
+  vendor resolver is converted and verified.
+- Replaced overflow-prone Samsung value-end arithmetic with subtraction-based
+  range validation.
+
+### Tests And Validation
+
+- Added callback regressions for Olympus outer-relative values, Olympus and OM
+  System nested sub-IFDs, Panasonic binary tables and truncated IFD tails, and
+  Samsung STMN and Type2 derived tables.
+
 ## 0.4.102 - 2026-08-19
 
 Changes compared with `0.4.101`.

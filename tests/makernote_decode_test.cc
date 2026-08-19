@@ -12396,6 +12396,34 @@ TEST(MakerNoteDecode, DecodesOlympusMakerNoteWithOuterTiffOffsets)
     EXPECT_EQ(e.value.count, 3U);
 }
 
+TEST(MakerNoteDecode, RandomAccessDecodesOlympusOuterTiffRelativeValues)
+{
+    std::vector<std::byte> mn       = make_olympus_makernote();
+    const std::string_view make     = "OLYMPUS";
+    const uint32_t maker_note_off   = 57U + static_cast<uint32_t>(make.size());
+    const uint32_t value_offset_abs = maker_note_off
+                                      + static_cast<uint32_t>(mn.size());
+    write_u32le_at(&mn, 18U, value_offset_abs);
+
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote(make, mn);
+    append_u32le(&tiff, 1U);
+    append_u32le(&tiff, 2U);
+    append_u32le(&tiff, 3U);
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, store);
+    EXPECT_TRUE(result.complete());
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::Ok);
+
+    store.finalize();
+    const std::span<const EntryId> ids = store.find_all(
+        exif_key("mk_olympus0", 0x0200));
+    ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(store.entry(ids[0]).value.kind, MetaValueKind::Array);
+    EXPECT_EQ(store.entry(ids[0]).value.count, 3U);
+}
+
 TEST(MakerNoteDecode, DecodesOlympusMakerNoteWithOlympusSignatureSubIfdOffsets)
 {
     const std::vector<std::byte> mn = make_olympus_makernote_olympus_signature();
@@ -12417,6 +12445,25 @@ TEST(MakerNoteDecode, DecodesOlympusMakerNoteWithOlympusSignatureSubIfdOffsets)
     EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
     EXPECT_EQ(e.value.elem_type, MetaElementType::U16);
     EXPECT_EQ(e.value.data.u64, 2U);
+}
+
+TEST(MakerNoteDecode, RandomAccessDecodesOlympusRelativeSubIfd)
+{
+    const std::vector<std::byte> mn = make_olympus_makernote_olympus_signature();
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("OLYMPUS",
+                                                                      mn);
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, store);
+    EXPECT_TRUE(result.complete());
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::Ok);
+
+    store.finalize();
+    const std::span<const EntryId> ids = store.find_all(
+        exif_key("mk_olympus_main_0", 0x0201));
+    ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(store.entry(ids[0]).value.data.u64, 2U);
 }
 
 TEST(MakerNoteDecode, IgnoresOlympusSignatureSubIfdOffsetWithoutEntryCountBytes)
@@ -12490,6 +12537,28 @@ TEST(MakerNoteDecode, DecodesOlympusOmSystemMakerNoteNestedSubIfds)
         EXPECT_EQ(e.value.elem_type, MetaElementType::U16);
         EXPECT_EQ(e.value.data.u64, 33U);
     }
+}
+
+TEST(MakerNoteDecode, RandomAccessDecodesOlympusOmSystemNestedSubIfds)
+{
+    const std::vector<std::byte> mn
+        = make_olympus_makernote_omsystem_nested_subifds();
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("OMDS",
+                                                                      mn);
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, store);
+    EXPECT_TRUE(result.complete());
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::Ok);
+
+    store.finalize();
+    EXPECT_EQ(
+        store.find_all(exif_key("mk_olympus_aftargetinfo_0", 0x0000)).size(),
+        1U);
+    EXPECT_EQ(store.find_all(exif_key("mk_olympus_subjectdetectinfo_0", 0x000A))
+                  .size(),
+              1U);
 }
 
 TEST(MakerNoteDecode, DecodesOlympusOldStyleMakerNoteNestedSubIfds)
@@ -12806,6 +12875,36 @@ TEST(MakerNoteDecode, DecodesPanasonicBinarySubDirs)
     }
 }
 
+TEST(MakerNoteDecode, RandomAccessDecodesPanasonicBinarySubDirs)
+{
+    std::vector<std::byte> mn     = make_panasonic_makernote_with_subdirs();
+    const std::string_view make   = "Panasonic";
+    const uint32_t maker_note_off = 57U + static_cast<uint32_t>(make.size());
+    const uint32_t facedet_off    = maker_note_off + 42U;
+    const uint32_t facerec_off    = facedet_off + 10U;
+    const uint32_t time_off       = facerec_off + 52U;
+    write_u32le_at(&mn, 10U, facedet_off);
+    write_u32le_at(&mn, 22U, facerec_off);
+    write_u32le_at(&mn, 34U, time_off);
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote(make, mn);
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, store);
+    EXPECT_TRUE(result.complete());
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::Ok);
+
+    store.finalize();
+    EXPECT_EQ(
+        store.find_all(exif_key("mk_panasonic_facedetinfo_0", 0x0001)).size(),
+        1U);
+    EXPECT_EQ(
+        store.find_all(exif_key("mk_panasonic_facerecinfo_0", 0x0004)).size(),
+        1U);
+    EXPECT_EQ(store.find_all(exif_key("mk_panasonic_timeinfo_0", 0x0010)).size(),
+              1U);
+}
+
 TEST(MakerNoteDecode, DecodesPanasonicType2MakerNote)
 {
     const std::vector<std::byte> mn = make_panasonic_type2_makernote();
@@ -13037,6 +13136,40 @@ TEST(MakerNoteDecode, DecodesPanasonicWithTruncatedNextIfdPointer)
         ASSERT_EQ(ids.size(), 1U);
         EXPECT_EQ(store.entry(ids[0]).value.data.u64, 321U);
     }
+}
+
+TEST(MakerNoteDecode, RandomAccessDecodesPanasonicWithTruncatedNextIfdPointer)
+{
+    std::vector<std::byte> mn = make_panasonic_makernote_with_extended_subdirs(
+        true);
+    const std::string_view make   = "Panasonic";
+    const uint32_t maker_note_off = 57U + static_cast<uint32_t>(make.size());
+    const uint32_t facedet_off    = maker_note_off + 38U;
+    const uint32_t facerec_off    = facedet_off + 42U;
+    const uint32_t time_off       = facerec_off + 148U;
+    write_u32le_at(&mn, 10U, facedet_off);
+    write_u32le_at(&mn, 22U, facerec_off);
+    write_u32le_at(&mn, 34U, time_off);
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote(make, mn);
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, store);
+    EXPECT_TRUE(result.complete());
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::Ok);
+
+    store.finalize();
+    EXPECT_EQ(store.find_all(exif_key("mk_panasonic0", 0x004E)).size(), 1U);
+    EXPECT_EQ(store.find_all(exif_key("mk_panasonic0", 0x0061)).size(), 1U);
+    EXPECT_EQ(store.find_all(exif_key("mk_panasonic0", 0x2003)).size(), 1U);
+    EXPECT_EQ(
+        store.find_all(exif_key("mk_panasonic_facedetinfo_0", 0x0011)).size(),
+        1U);
+    EXPECT_EQ(
+        store.find_all(exif_key("mk_panasonic_facerecinfo_0", 0x0080)).size(),
+        1U);
+    EXPECT_EQ(store.find_all(exif_key("mk_panasonic_timeinfo_0", 0x0010)).size(),
+              1U);
 }
 
 
@@ -13391,6 +13524,25 @@ TEST(MakerNoteDecode, DecodesSamsungStmnMakerNoteAndSamsungIfd)
     }
 }
 
+TEST(MakerNoteDecode, RandomAccessDecodesSamsungStmnAndSamsungIfd)
+{
+    const std::vector<std::byte> mn   = make_samsung_stmn_makernote();
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("SAMSUNG",
+                                                                      mn);
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, store);
+    EXPECT_TRUE(result.complete());
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::Ok);
+
+    store.finalize();
+    const std::span<const EntryId> ids = store.find_all(
+        exif_key("mk_samsung_ifd_0", 0x0004));
+    ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(arena_string(store.arena(), store.entry(ids[0]).value), "HELLO");
+}
+
 TEST(MakerNoteDecode, DecodesSamsungType2PictureWizard)
 {
     const std::vector<std::byte> mn   = make_samsung_type2_makernote();
@@ -13433,6 +13585,25 @@ TEST(MakerNoteDecode, DecodesSamsungType2PictureWizard)
         EXPECT_EQ(exif_entry_name(store, e, ExifTagNamePolicy::ExifToolCompat),
                   std::string_view("Samsung_Type2_0x0004"));
     }
+}
+
+TEST(MakerNoteDecode, RandomAccessDecodesSamsungType2PictureWizard)
+{
+    const std::vector<std::byte> mn   = make_samsung_type2_makernote();
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("SAMSUNG",
+                                                                      mn);
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, store);
+    EXPECT_TRUE(result.complete());
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::Ok);
+
+    store.finalize();
+    const std::span<const EntryId> ids = store.find_all(
+        exif_key("mk_samsung_picturewizard_0", 0x0004));
+    ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(store.entry(ids[0]).value.data.u64, 5U);
 }
 
 TEST(MakerNoteDecode, DecodesSamsungType2PictureWizardFromU16Array)

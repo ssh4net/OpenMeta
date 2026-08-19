@@ -285,7 +285,9 @@ The existing span API is a zero-copy memory-source adapter over the same public
 entry point. Callback-backed PrintIM, GeoTIFF, Pentax DNG private data, and
 selected self-contained MakerNotes are supported. Version 0.4.102 adds
 source-backed Nikon embedded TIFF/type 1, Sony outer-TIFF-relative IFDs, and
-contained Canon adjusted-base payloads. Unconverted vendor payloads or derived
+contained Canon adjusted-base payloads. Version 0.4.103 adds legacy and modern
+Olympus nested IFDs, Panasonic binary tables, and self-contained Samsung STMN
+and Type2 derived tables. Unconverted mixed-base vendor payloads or derived
 subtables remain explicit residuals through
 `ExifRandomAccessDecodeResult::nested_payloads_skipped`; hosts must check
 `complete()` before claiming full nested parity. See
