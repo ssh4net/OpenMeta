@@ -128,8 +128,8 @@ struct ExifRandomAccessDecodeResult final {
     /// Largest value-buffer requirement observed when caller scratch was too
     /// small. Zero means no value was skipped for this reason.
     uint64_t value_scratch_needed = 0U;
-    /// Nested vendor payloads skipped because callback decoding cannot yet
-    /// resolve their outer-TIFF-relative offset model safely.
+    /// Nested vendor payloads or derived subtables not fully decoded by the
+    /// callback-backed path. Zero is required before claiming nested parity.
     uint32_t nested_payloads_skipped = 0U;
 
     /// True when source I/O and supported nested paths had no scratch/residual
@@ -167,8 +167,8 @@ decode_exif_tiff(std::span<const std::byte> tiff_bytes, MetaStore& store,
  *
  * Contiguous source ranges retain the complete existing decoder behavior.
  * Callback sources use caller-owned scratch, never materialize the complete
- * source, and report nested payloads that still require outer-TIFF-relative
- * vendor decoder conversion.
+ * source, and report vendor payloads or derived subtables that still require
+ * callback-reader conversion.
  *
  * \par API Stability
  * Experimental host-facing API.

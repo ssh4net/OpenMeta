@@ -7,9 +7,9 @@ not tied to a particular image library or file abstraction.
 ## Current Scope
 
 Version 0.4.100 added the allocation-free source primitive in
-`openmeta/random_access_source.h`. Version 0.4.101 adds source-relative ranges,
-caller-owned read windows, and the first decoder conversion. The contract now
-defines:
+`openmeta/random_access_source.h`. Version 0.4.101 added source-relative ranges,
+caller-owned read windows, and the first decoder conversion. Version 0.4.102
+adds source-backed nested TIFF offset resolution. The contract now defines:
 
 - a fixed source size and synchronous `read_at(offset, destination)` callback
 - a non-owning descriptor for caller-owned contiguous memory
@@ -24,13 +24,17 @@ defines:
 Panasonic RW2, and Olympus ORF headers, IFDs, pointer directories, and validated
 metadata values without materializing the complete source. It also decodes
 PrintIM, GeoTIFF, Pentax DNG private data, and selected self-contained
-MakerNotes from caller scratch.
+MakerNotes from caller scratch. Nikon embedded TIFF and type 1 MakerNotes and
+Sony outer-TIFF-relative IFDs now read through the same bounded source. Canon
+uses checked absolute, MakerNote-relative, and signed adjusted-base candidates.
 
-Callback decoding does not yet claim complete MakerNote parity. Several vendor
-formats use offsets relative to the outer TIFF or permit values beyond the
-declared MakerNote byte count. Those payloads are not decoded against an
-incorrect subspan: `ExifRandomAccessDecodeResult::nested_payloads_skipped`
-counts them and `complete()` returns false. A contiguous source keeps the full
+Callback decoding does not yet claim complete MakerNote parity. Canon retains
+its complete existing derived-table decoder when required values are inside the
+declared MakerNote payload. If Canon values extend outside that payload, the
+main IFD is decoded from the source but the unconverted derived-table work is
+counted by `ExifRandomAccessDecodeResult::nested_payloads_skipped`. Other vendor
+paths that still depend on a complete outer span use the same residual instead
+of decoding against an incorrect subspan. A contiguous source keeps the full
 existing decoder behavior and reports no random-access residual.
 
 ## Callback Example

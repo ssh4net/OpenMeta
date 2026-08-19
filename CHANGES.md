@@ -1,5 +1,40 @@
 # OpenMeta Changes
 
+## 0.4.102 - 2026-08-19
+
+Changes compared with `0.4.101`.
+
+### Added
+
+- Added a reusable allocation-free nested TIFF offset resolver that separates
+  checked inline, absolute, MakerNote-relative, embedded-TIFF-relative, and
+  signed adjusted-base translation from callback-backed byte acquisition.
+- Added callback-backed Nikon embedded-TIFF recursion, including values beyond
+  the declared MakerNote length, Nikon type 1 outer-TIFF IFD decoding, Sony
+  outer-TIFF-relative IFD decoding, and Canon absolute/MakerNote/adjusted-base
+  selection.
+
+### Changed
+
+- Canon MakerNotes whose required values are contained in the declared payload
+  retain the complete existing main and derived BinaryData decoder behavior.
+  When Canon values extend outside that payload, the callback path decodes the
+  source-backed main IFD but reports the remaining derived-table work through
+  `nested_payloads_skipped` instead of claiming parity.
+- Nested callback reads now preserve aggregate request/byte ceilings and merge
+  source failures, scratch requirements, decode status, and residual counts
+  into the outer operation without global state or full-source materialization.
+- Removed undefined signed-underflow arithmetic from negative adjusted
+  MakerNote-base validation while preserving checked upper overflow and
+  negative resolved-offset rejection.
+
+### Tests And Validation
+
+- Added callback regressions for Canon adjusted bases and external derived-table
+  residuals, Sony outer-TIFF-relative values, Nikon type 1, Nikon embedded TIFF,
+  Nikon values beyond the declared MakerNote byte count, and aggregate nested
+  request/byte budgets.
+
 ## 0.4.101 - 2026-08-19
 
 Changes compared with `0.4.100`.

@@ -66,6 +66,17 @@ namespace exif_internal {
         bool inline_value    = false;
     };
 
+    // Allocation-free reader used by nested TIFF/MakerNote decoders. Offsets
+    // are always relative to range, not to the current cache window.
+    struct SourceTiffReader final {
+        const RandomAccessSourceRange* range = nullptr;
+        RandomAccessReadWindow window;
+        std::span<std::byte> value_scratch;
+        RandomAccessReadLimits limits;
+        RandomAccessReadWindowOptions window_options;
+        ExifRandomAccessDecodeResult* result = nullptr;
+    };
+
     struct ExifContext final {
         explicit ExifContext(const MetaStore& store) noexcept;
 
@@ -108,6 +119,29 @@ namespace exif_internal {
                                        const ClassicIfdEntry& e,
                                        ClassicIfdValueRef* out,
                                        ExifDecodeResult* status_out) noexcept;
+
+    bool resolve_classic_ifd_value_ref(const OffsetPolicy& offsets,
+                                       uint64_t entry_off,
+                                       const ClassicIfdEntry& e,
+                                       ClassicIfdValueRef* out,
+                                       ExifDecodeResult* status_out) noexcept;
+
+    bool source_tiff_view(SourceTiffReader* source, uint64_t offset,
+                          uint64_t size,
+                          std::span<const std::byte>* out) noexcept;
+
+    bool source_tiff_value(SourceTiffReader* source, uint64_t offset,
+                           uint64_t size,
+                           std::span<const std::byte>* out) noexcept;
+
+    bool source_tiff_contains(const SourceTiffReader& source, uint64_t offset,
+                              uint64_t size) noexcept;
+
+    bool decode_classic_ifd_from_source(
+        SourceTiffReader* source, const TiffConfig& cfg, uint64_t ifd_off,
+        const OffsetPolicy& offsets, std::string_view ifd_name,
+        MetaStore& store, const ExifDecodeOptions& options,
+        ExifDecodeResult* status_out, EntryFlags extra_flags) noexcept;
 
     // Low-level helpers (implemented in exif_tiff_decode.cc).
     bool match_bytes(std::span<const std::byte> bytes, uint64_t offset,

@@ -1347,10 +1347,7 @@ canon_add_base_and_off32(int64_t base, uint32_t off32,
     }
 
     const int64_t off = static_cast<int64_t>(off32);
-    if (base > 0 && base > (INT64_MAX - off)) {
-        return false;
-    }
-    if (base < 0 && base < (INT64_MIN - off)) {
+    if (base > (INT64_MAX - off)) {
         return false;
     }
 

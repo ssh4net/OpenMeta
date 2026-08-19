@@ -283,8 +283,10 @@ Version 0.4.101 routes classic TIFF, BigTIFF, DNG, RW2, and ORF header/IFD
 decoding through this contract with caller-owned structural and value scratch.
 The existing span API is a zero-copy memory-source adapter over the same public
 entry point. Callback-backed PrintIM, GeoTIFF, Pentax DNG private data, and
-selected self-contained MakerNotes are supported. Outer-TIFF-relative vendor
-payloads remain explicit residuals through
+selected self-contained MakerNotes are supported. Version 0.4.102 adds
+source-backed Nikon embedded TIFF/type 1, Sony outer-TIFF-relative IFDs, and
+contained Canon adjusted-base payloads. Unconverted vendor payloads or derived
+subtables remain explicit residuals through
 `ExifRandomAccessDecodeResult::nested_payloads_skipped`; hosts must check
 `complete()` before claiming full nested parity. See
 [random_access_input.md](random_access_input.md) for buffer sizing, lifetime,
