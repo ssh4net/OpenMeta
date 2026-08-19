@@ -1,5 +1,33 @@
 # OpenMeta Changes
 
+## 0.4.100 - 2026-08-19
+
+Changes compared with `0.4.99`.
+
+### Added
+
+- Added the allocation-free `RandomAccessSource` foundation for high-performance
+  image-processing and transcoding hosts. It supports caller-owned contiguous
+  memory or a synchronous positional callback without depending on a host I/O
+  library.
+- Added exact-read accounting and explicit short-read, I/O, cancellation,
+  source-change, range, callback-contract, request-count, total-byte, and
+  single-read failure results. Accounting and first-failure state remain local
+  to each operation for concurrent immutable-source use.
+
+### Changed
+
+- Split the random-access roadmap into a completed consumer-neutral source
+  contract and per-format scanner/decoder conversions. Existing TIFF/DNG and
+  other decode APIs remain span/mapped-file based until those paths can use
+  caller-owned scratch windows without full-source materialization.
+
+### Tests And Validation
+
+- Added memory/callback, exact-range, short-read, sticky-failure, independent
+  accounting, resource-budget, source-change, cancellation, I/O-error, and
+  callback-contract regressions for the new input primitive.
+
 ## 0.4.99 - 2026-08-19
 
 Changes compared with `0.4.98`.

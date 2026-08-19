@@ -41,6 +41,15 @@ Host-facing API map
      - Stable
      - v1 query contract for read, structured decode, transfer preparation,
        target edit, and raw-preservation status by format/family.
+   * - Bounded positional input primitive: ``RandomAccessSource``,
+       ``random_access_read_exact(...)``
+     - ``openmeta/random_access_source.h``
+     - Experimental
+     - Allocation-free fixed-size memory/callback source with exact reads,
+       explicit short-read/I/O/source-change results, and caller-owned
+       request/byte accounting. This is the input foundation only; format
+       decoders remain span/mapped-file based until separately documented. See
+       :doc:`random_access_input`.
    * - Compatibility dumps: ``dump_metadata_compatibility(...)``,
        ``dump_transfer_compatibility(...)``
      - ``openmeta/compatibility_dump.h``

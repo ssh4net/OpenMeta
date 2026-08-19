@@ -1016,9 +1016,10 @@ writer-confidence slice above; it should be sequenced around it.
   vendor large binary assets, third-party source drops, or scraped/spec text
 - [ ] add examples for `read bytes -> snapshot -> target bytes -> edited bytes`
   and `visit_metadata(...) -> flat host attribute list`
-- [ ] add a bounded random-access input contract after the per-format scanner
-  and decoder work below is complete; do not ship a callback that silently
-  materializes the complete source into memory
+- [x] add the allocation-free bounded random-access source foundation with
+  exact reads, short-read/I/O/source-change results, and caller-owned request
+  and byte accounting; format support still requires the scanner and decoder
+  work below and must not silently materialize the complete source
 - [ ] defer any C ABI or opaque-handle facade until the host-facing C++ API is
   stable enough to freeze a narrow bridge
 
@@ -1028,7 +1029,8 @@ The host contract is a source size plus exact positional reads. It must be
 implementable by file handles, network/range-backed storage, and host I/O
 proxies without an OpenMeta dependency on any one host library.
 
-1. Define a borrowed `size + read_at(offset, destination)` source contract with
+1. [complete in 0.4.100] Define a borrowed
+   `size + read_at(offset, destination)` source contract with
    exact-read, short-read, overflow, request-count, byte-budget, and source-size
    consistency failures. Concurrent calls against an immutable source must not
    share mutable decoder state.

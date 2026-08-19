@@ -424,6 +424,7 @@ set(OPENMETA_SOURCES
   src/openmeta/photoshop_irb_decode.cc
   src/openmeta/preview_extract.cc
   src/openmeta/printim_decode.cc
+  src/openmeta/random_access_source.cc
   src/openmeta/raf_decode.cc
   src/openmeta/simple_meta.cc
   src/openmeta/validate.cc
@@ -1010,6 +1011,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/phaseone_geometry_test.cc
     tests/preview_extract_test.cc
     tests/printim_decode_test.cc
+    tests/random_access_source_test.cc
     tests/read_lane_coverage_test.cc
     tests/resource_policy_test.cc
     tests/simple_meta_bmff_exif_test.cc

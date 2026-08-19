@@ -271,6 +271,20 @@ names are intentionally ambiguous. New custom XMP, EXIF, IPTC, or other entries
 must include an explicit `MetaKeyView`; OpenMeta does not guess a namespace or
 numeric tag from a lossy flat name.
 
+### Random-Access Source Foundation
+
+For realtime and large-asset pipelines, `openmeta/random_access_source.h`
+defines a borrowed fixed-size source with either caller-owned contiguous memory
+or an exact synchronous `read_at(offset, destination)` callback. The primitive
+has no hidden allocation, lock, scheduler, or file-position state. Request
+count, total-byte, and single-read ceilings are tracked in caller-owned state.
+
+Version 0.4.100 establishes this input contract but does not yet route container
+decoders through it. Do not describe TIFF/DNG or another format as
+random-access capable until its scanner, payload extraction, and nested decode
+paths use the source directly. See [random_access_input.md](random_access_input.md)
+for lifetime, short-read, concurrency, and performance requirements.
+
 ## 4. Build An EXR Attribute Batch
 
 This is the cleanest host-adapter path in OpenMeta today.

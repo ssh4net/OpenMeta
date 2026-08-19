@@ -198,6 +198,22 @@ concurrently against an immutable finalized store. The current bounded linear
 scan is intended for ordinary per-image stores; see :doc:`fuzzy_search` for
 benchmark results and the deferred immutable-index boundary.
 
+Random-access source foundation
+-------------------------------
+
+For realtime and large-asset pipelines,
+``openmeta/random_access_source.h`` defines a borrowed fixed-size source with
+either caller-owned contiguous memory or an exact synchronous
+``read_at(offset, destination)`` callback. The primitive has no hidden
+allocation, lock, scheduler, or file-position state. Request-count, total-byte,
+and single-read ceilings use caller-owned accounting state.
+
+Version 0.4.100 establishes the input contract but does not yet route container
+decoders through it. Do not describe TIFF/DNG or another format as
+random-access capable until scanner, payload extraction, and nested decode paths
+use the source directly. See :doc:`random_access_input` for lifetime,
+short-read, concurrency, and performance requirements.
+
 Generic host metadata traversal
 -------------------------------
 
