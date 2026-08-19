@@ -1,5 +1,42 @@
 # OpenMeta Changes
 
+## 0.4.99 - 2026-08-19
+
+Changes compared with `0.4.98`.
+
+### Added
+
+- Added versioned, bounded target-neutral serialization for
+  `TransferSourceSnapshot`. Round trips preserve decoded store blocks, duplicate
+  entry order, typed values, provenance, flags, optional raw carriers, and
+  decoded-entry links without treating preserved carrier bytes as safe rewrite
+  evidence.
+- Added transactional typed `FlatHost` import. Existing values can be updated by
+  exact source-entry identity or by a unique exported name, while new arbitrary
+  metadata requires an explicit `MetaKeyView`; ambiguous duplicate names are
+  rejected instead of guessed or collapsed.
+
+### Changed
+
+- Reordered the host-integration roadmap around real random-access decoding.
+  The planned callback must refactor scanners, payload extraction, and decoders
+  to bounded `read_at` access and may not silently buffer an entire multi-GB
+  source.
+- Documented `ExportNamePolicy::Spec` for hosts that require specification names
+  such as `Exif:ISOSpeedRatings` and `Exif:ExposureBiasValue`.
+
+### Fixed
+
+- Corrected shared-library documentation to report ABI major 2.
+- Corrected snapshot byte-read documentation to use the existing
+  `ReadTransferSourceSnapshotOptions` type.
+
+### Tests And Validation
+
+- Added C++ round-trip, malformed-input, resource-limit, atomic-failure,
+  duplicate-name, identity-update, explicit-key, and typed-value regressions for
+  the new snapshot and FlatHost import contracts.
+
 ## 0.4.98 - 2026-08-17
 
 Changes compared with `0.4.97`.

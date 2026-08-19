@@ -45605,4 +45605,240 @@ TEST(MetadataTransferApi, EmitCompiledRejectsPlanMismatch)
     EXPECT_EQ(result.errors, 1U);
 }
 
+TEST(MetadataTransferApi, TransferSourceSnapshotSerializationRoundTripsStore)
+{
+    openmeta::TransferSourceSnapshot source;
+    openmeta::BlockInfo block_info;
+    block_info.format             = 17U;
+    block_info.container          = 23U;
+    block_info.id                 = 42U;
+    const openmeta::BlockId block = source.store.add_block(block_info);
+    ASSERT_NE(block, openmeta::kInvalidBlockId);
+
+    uint32_t order = 0U;
+    const auto add_entry =
+        [&](openmeta::MetaKey key, openmeta::MetaValue value,
+            openmeta::EntryFlags flags = openmeta::EntryFlags::None) {
+            openmeta::Entry entry;
+            entry.key                     = key;
+            entry.value                   = value;
+            entry.origin.block            = block;
+            entry.origin.order_in_block   = order++;
+            entry.origin.wire_type.family = openmeta::WireFamily::Tiff;
+            entry.origin.wire_type.code   = 7U;
+            entry.origin.wire_count       = value.count;
+            entry.origin.wire_type_name   = source.store.arena().append_string(
+                "wire-type");
+            entry.origin.name_context_kind
+                = openmeta::EntryNameContextKind::NikonSettingsMain;
+            entry.origin.name_context_variant = 3U;
+            entry.flags                       = flags;
+            return source.store.add_entry(entry);
+        };
+
+    ASSERT_NE(add_entry(openmeta::make_exif_tag_key(source.store.arena(),
+                                                    "ifd0", 0x010FU),
+                        openmeta::make_u16(12U)),
+              openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_comment_key(),
+                        openmeta::make_text(source.store.arena(), "comment",
+                                            openmeta::TextEncoding::Utf8)),
+              openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_exr_attribute_key(source.store.arena(),
+                                                         2U, "custom"),
+                        openmeta::make_f64_bits(0x3FF0000000000000ULL)),
+              openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_iptc_dataset_key(2U, 5U),
+                        openmeta::make_i32(-7)),
+              openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_xmp_property_key(
+                            source.store.arena(),
+                            "http://ns.adobe.com/xap/1.0/", "Rating"),
+                        openmeta::make_text(source.store.arena(), "5",
+                                            openmeta::TextEncoding::Ascii)),
+              openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_icc_header_field_key(16U),
+                        openmeta::make_u32(0x12345678U)),
+              openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_icc_tag_key(0x64657363U),
+                        openmeta::make_u64(19U)),
+              openmeta::kInvalidEntryId);
+    const std::array<std::byte, 3> irb_bytes
+        = { std::byte { 1 }, std::byte { 2 }, std::byte { 3 } };
+    ASSERT_NE(add_entry(openmeta::make_photoshop_irb_key(0x0404U),
+                        openmeta::make_bytes(source.store.arena(), irb_bytes)),
+              openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_photoshop_irb_field_key(
+                            source.store.arena(), 0x0404U, "field"),
+                        openmeta::make_urational(1U, 3U)),
+              openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_geotiff_key(3072U),
+                        openmeta::make_srational(-2, 5)),
+              openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_printim_field_key(source.store.arena(),
+                                                         "PrintIM"),
+                        openmeta::make_i16(-3)),
+              openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_bmff_field_key(source.store.arena(),
+                                                      "primary_item"),
+                        openmeta::make_u8(1U)),
+              openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_jumbf_field_key(source.store.arena(),
+                                                       "label"),
+                        openmeta::make_i8(-1)),
+              openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_jumbf_cbor_key(source.store.arena(),
+                                                      "claim"),
+                        openmeta::make_f32_bits(0x3F800000U)),
+              openmeta::kInvalidEntryId);
+    const std::array<uint16_t, 3> png_values = { 4U, 5U, 6U };
+    ASSERT_NE(
+        add_entry(openmeta::make_png_text_key(source.store.arena(), "Author",
+                                              "text"),
+                  openmeta::make_u16_array(source.store.arena(), png_values),
+                  openmeta::EntryFlags::Dirty | openmeta::EntryFlags::Derived),
+        openmeta::kInvalidEntryId);
+    ASSERT_NE(add_entry(openmeta::make_xmp_property_key(
+                            source.store.arena(),
+                            "http://ns.adobe.com/xap/1.0/", "Rating"),
+                        openmeta::make_text(source.store.arena(), "deleted",
+                                            openmeta::TextEncoding::Utf8),
+                        openmeta::EntryFlags::Deleted),
+              openmeta::kInvalidEntryId);
+    source.store.finalize();
+
+    openmeta::TransferSourceRawCarrier carrier;
+    carrier.block.format       = openmeta::ContainerFormat::Jpeg;
+    carrier.block.kind         = openmeta::ContainerBlockKind::Xmp;
+    carrier.block.outer_offset = 20U;
+    carrier.block.outer_size   = 30U;
+    carrier.block.data_offset  = 24U;
+    carrier.block.data_size    = 3U;
+    carrier.semantic_kind      = openmeta::TransferBlockKind::Xmp;
+    carrier.order              = 2U;
+    carrier.route              = "jpeg:app1-xmp";
+    carrier.payload_preserved  = true;
+    carrier.payload            = { std::byte { 'x' }, std::byte { 'm' },
+                                   std::byte { 'p' } };
+    carrier.decoded_entry_ids  = { 4U, 15U };
+    source.raw_carriers.push_back(carrier);
+    source.raw_carrier_bytes           = carrier.payload.size();
+    source.raw_carrier_bytes_truncated = true;
+
+    std::vector<std::byte> encoded;
+    const openmeta::TransferSourceSnapshotIoResult serialized
+        = openmeta::serialize_transfer_source_snapshot(source, &encoded);
+    ASSERT_EQ(serialized.status, openmeta::TransferStatus::Ok);
+    ASSERT_FALSE(encoded.empty());
+
+    openmeta::TransferSourceSnapshot decoded;
+    const openmeta::TransferSourceSnapshotIoResult parsed
+        = openmeta::deserialize_transfer_source_snapshot(encoded, &decoded);
+    ASSERT_EQ(parsed.status, openmeta::TransferStatus::Ok);
+    ASSERT_TRUE(decoded.store.is_finalized());
+    ASSERT_EQ(decoded.store.block_count(), 1U);
+    EXPECT_EQ(decoded.store.block_info(0U).format, block_info.format);
+    ASSERT_EQ(decoded.store.entries().size(), source.store.entries().size());
+    ASSERT_EQ(decoded.store.arena().bytes().size(),
+              source.store.arena().bytes().size());
+    EXPECT_EQ(std::memcmp(decoded.store.arena().bytes().data(),
+                          source.store.arena().bytes().data(),
+                          source.store.arena().bytes().size()),
+              0);
+    for (size_t i = 0U; i < source.store.entries().size(); ++i) {
+        const openmeta::Entry& before = source.store.entries()[i];
+        const openmeta::Entry& after  = decoded.store.entries()[i];
+        EXPECT_EQ(after.key.kind, before.key.kind);
+        EXPECT_EQ(after.value.kind, before.value.kind);
+        EXPECT_EQ(after.value.elem_type, before.value.elem_type);
+        EXPECT_EQ(after.value.text_encoding, before.value.text_encoding);
+        EXPECT_EQ(after.value.count, before.value.count);
+        EXPECT_EQ(after.origin.block, before.origin.block);
+        EXPECT_EQ(after.origin.order_in_block, before.origin.order_in_block);
+        EXPECT_EQ(after.origin.wire_type.family,
+                  before.origin.wire_type.family);
+        EXPECT_EQ(after.origin.wire_type.code, before.origin.wire_type.code);
+        EXPECT_EQ(after.origin.wire_count, before.origin.wire_count);
+        EXPECT_EQ(after.origin.name_context_kind,
+                  before.origin.name_context_kind);
+        EXPECT_EQ(after.origin.name_context_variant,
+                  before.origin.name_context_variant);
+        EXPECT_EQ(after.flags, before.flags);
+    }
+    ASSERT_EQ(decoded.raw_carriers.size(), 1U);
+    EXPECT_EQ(decoded.raw_carriers[0].route, carrier.route);
+    EXPECT_EQ(decoded.raw_carriers[0].payload, carrier.payload);
+    EXPECT_EQ(decoded.raw_carriers[0].decoded_entry_ids,
+              carrier.decoded_entry_ids);
+    EXPECT_EQ(decoded.raw_carrier_bytes, carrier.payload.size());
+    EXPECT_TRUE(decoded.raw_carrier_bytes_truncated);
+
+    std::vector<std::byte> reencoded;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(decoded, &reencoded)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(reencoded, encoded);
+
+    openmeta::TransferSourceSnapshotIoOptions route_limit;
+    route_limit.max_route_bytes = 4U;
+    openmeta::TransferSourceSnapshot route_limited_output;
+    const openmeta::TransferSourceSnapshotIoResult route_limited
+        = openmeta::deserialize_transfer_source_snapshot(encoded,
+                                                         &route_limited_output,
+                                                         route_limit);
+    EXPECT_EQ(route_limited.status, openmeta::TransferStatus::LimitExceeded);
+    EXPECT_EQ(route_limited.code,
+              openmeta::TransferSourceSnapshotIoCode::LimitExceeded);
+}
+
+TEST(MetadataTransferApi,
+     TransferSourceSnapshotSerializationRejectsMalformedAndLimitsAtomically)
+{
+    openmeta::TransferSourceSnapshot source;
+    const openmeta::BlockId block = source.store.add_block(
+        openmeta::BlockInfo {});
+    openmeta::Entry entry;
+    entry.key   = openmeta::make_exif_tag_key(source.store.arena(), "ifd0",
+                                              0x0112U);
+    entry.value = openmeta::make_u16(1U);
+    entry.origin.block = block;
+    ASSERT_NE(source.store.add_entry(entry), openmeta::kInvalidEntryId);
+    source.store.finalize();
+
+    std::vector<std::byte> encoded;
+    ASSERT_EQ(
+        openmeta::serialize_transfer_source_snapshot(source, &encoded).status,
+        openmeta::TransferStatus::Ok);
+
+    openmeta::TransferSourceSnapshot output
+        = openmeta::build_transfer_source_snapshot(source.store);
+    ASSERT_EQ(output.store.entries().size(), 1U);
+
+    std::vector<std::byte> bad_magic = encoded;
+    bad_magic[0]                     = std::byte { 0U };
+    const openmeta::TransferSourceSnapshotIoResult bad_magic_result
+        = openmeta::deserialize_transfer_source_snapshot(bad_magic, &output);
+    EXPECT_EQ(bad_magic_result.status, openmeta::TransferStatus::Malformed);
+    EXPECT_EQ(bad_magic_result.code,
+              openmeta::TransferSourceSnapshotIoCode::InvalidMagic);
+    EXPECT_EQ(output.store.entries().size(), 1U);
+
+    std::vector<std::byte> truncated = encoded;
+    truncated.pop_back();
+    const openmeta::TransferSourceSnapshotIoResult truncated_result
+        = openmeta::deserialize_transfer_source_snapshot(truncated, &output);
+    EXPECT_EQ(truncated_result.status, openmeta::TransferStatus::Malformed);
+    EXPECT_EQ(output.store.entries().size(), 1U);
+
+    openmeta::TransferSourceSnapshotIoOptions limits;
+    limits.max_entries = 0U;
+    const openmeta::TransferSourceSnapshotIoResult limited_result
+        = openmeta::deserialize_transfer_source_snapshot(encoded, &output,
+                                                         limits);
+    EXPECT_EQ(limited_result.status, openmeta::TransferStatus::LimitExceeded);
+    EXPECT_EQ(limited_result.code,
+              openmeta::TransferSourceSnapshotIoCode::LimitExceeded);
+    EXPECT_EQ(output.store.entries().size(), 1U);
+}
+
 }  // namespace

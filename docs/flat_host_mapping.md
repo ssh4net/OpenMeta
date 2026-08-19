@@ -33,6 +33,10 @@ doc.export_names(style=openmeta.ExportNameStyle.FlatHost)
 The C++ traversal exposes `ExportItem::entry`, so C++ hosts can project values
 from the original `Entry::value`. Python `export_names(...)` is name-only.
 
+Typed writeback is available through `import_flat_host_metadata(...)`. It is
+transactional and returns a detached finalized store; it does not mutate the
+source store.
+
 ## Ordering And Duplicates
 
 - Entries are emitted in `MetaStore::entries()` order.
@@ -41,6 +45,8 @@ from the original `Entry::value`. Python `export_names(...)` is name-only.
 - OpenMeta does not merge, reconcile, or suffix duplicate `FlatHost` names.
 - If a host requires unique keys, it must apply its own deterministic collision
   policy after traversal.
+- Name-based import succeeds only for a unique exported name. A host that must
+  update one duplicate retains the source `EntryId` and imports by identity.
 
 ## Value Projection
 
@@ -87,6 +93,22 @@ with `/`, `[`, `]`, or other punctuation are skipped by `FlatHost`.
 
 The policy does not change ordering, duplicate preservation, or value
 projection.
+
+## Typed Import
+
+`FlatHost` names are lossy and are not parsed back into arbitrary keys.
+
+- `FlatHostImportTarget::SourceEntry` verifies the original `EntryId` and its
+  exported name before replacing the typed value.
+- `FlatHostImportTarget::UniqueName` resolves exactly one exported name and
+  rejects missing or duplicate matches.
+- `FlatHostImportTarget::ExplicitKey` appends a new entry from a caller-supplied
+  `MetaKeyView`. This is the path for custom XMP and metadata that did not exist
+  in the source store.
+- Values retain scalar/array/bytes/text kind, element type, count, and text
+  encoding. Byte arrays are never converted to text implicitly.
+- Import uses local state and is safe to call concurrently against an immutable
+  finalized source store.
 
 ## Filtering
 

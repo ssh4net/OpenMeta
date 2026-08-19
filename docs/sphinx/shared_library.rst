@@ -29,10 +29,10 @@ linkage should select the explicit target:
 ABI and Runtime
 ---------------
 
-The package publishes ``OpenMeta_ABI_VERSION``, currently ``1``. The ABI major
+The package publishes ``OpenMeta_ABI_VERSION``, currently ``2``. The ABI major
 changes only for an incompatible public C++ ABI change. On ELF platforms, the
 installed shared object has the matching SONAME major. A package patch or minor
-version can retain ABI ``1``.
+version can retain ABI ``2``.
 
 When OpenMeta is built with ``OPENMETA_USE_LIBCXX=ON``, the package requires a
 Clang consumer and propagates ``-stdlib=libc++`` for compilation and linking.

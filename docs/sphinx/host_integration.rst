@@ -218,13 +218,18 @@ needs deterministic exported names plus the original ``Entry``.
 
    openmeta::ExportOptions options;
    options.style              = openmeta::ExportNameStyle::FlatHost;
-   options.name_policy        = openmeta::ExportNamePolicy::ExifToolAlias;
-   options.include_makernotes = true;
+   options.name_policy        = openmeta::ExportNamePolicy::Spec;
+   options.include_makernotes = false;
 
    MyMetadataSink sink;
    openmeta::visit_metadata(store, options, sink);
 
 This keeps host-specific object ownership and write behavior outside OpenMeta.
+Use ``ExportNamePolicy::Spec`` for specification names such as
+``Exif:ISOSpeedRatings`` and ``Exif:ExposureBiasValue``. Typed writeback uses
+``import_flat_host_metadata(...)``. Existing values can use an exact source
+entry id or a unique flat name; new entries require an explicit ``MetaKeyView``.
+Ambiguous duplicate names are rejected.
 
 EXR attribute batches
 ---------------------
@@ -403,7 +408,7 @@ for the normal EXIF/XMP/ICC/IPTC transfer flow, where OpenMeta re-emits decoded
 metadata after applying the selected safety policy. If a host needs source
 carrier provenance for diagnostics or a later passthrough policy decision,
 enable ``ReadTransferSourceSnapshotFileOptions::preserve_raw_carriers`` or pass
-``ReadTransferSourceSnapshotBytesOptions`` with ``preserve_raw_carriers`` set.
+``ReadTransferSourceSnapshotOptions`` with ``preserve_raw_carriers`` set.
 Each raw carrier records its route, semantic kind, payload bytes, and
 snapshot-local decoded entry ids attributed to that carrier.
 Call ``raw_carrier_passthrough_audit_from_snapshot(...)`` before any host-owned
@@ -434,6 +439,19 @@ If it also owns the destination bytes in memory, call the overload
 ``execute_prepared_transfer_snapshot(snapshot, target_bytes, options)``.
 If it already holds a prepared bundle, use
 ``execute_prepared_transfer_bundle(bundle, target_bytes, options)`` instead.
+Snapshots can be persisted without retaining the original source or bundle:
+
+.. code-block:: cpp
+
+   std::vector<std::byte> persisted;
+   openmeta::serialize_transfer_source_snapshot(snapshot.snapshot, &persisted);
+
+   openmeta::TransferSourceSnapshot restored;
+   openmeta::deserialize_transfer_source_snapshot(persisted, &restored);
+
+Parsing is transactional and bounded by ``TransferSourceSnapshotIoOptions``.
+Preserved raw carriers remain provenance data and are not implicitly safe to
+relocate or rewrite.
 Snapshot execution supports the same existing-sidecar merge and destination
 carrier-precedence controls as the file helper; when loading an existing
 sidecar it defaults to ``edit_target_path`` unless

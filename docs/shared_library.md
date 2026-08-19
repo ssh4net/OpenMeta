@@ -29,10 +29,10 @@ explicit shared target for packaging and runtime-linkage tests.
 
 ## ABI And Toolchain
 
-The installed package publishes `OpenMeta_ABI_VERSION`, currently `1`. The ABI
+The installed package publishes `OpenMeta_ABI_VERSION`, currently `2`. The ABI
 major changes only for an incompatible public C++ ABI change. On ELF platforms,
 the installed shared object has the corresponding SONAME major. Package version
-and ABI major are different: a patch or minor release may retain ABI `1`.
+and ABI major are different: a patch or minor release may retain ABI `2`.
 
 When OpenMeta is built with `OPENMETA_USE_LIBCXX=ON`, the package requires a
 Clang consumer and propagates `-stdlib=libc++` for compile and link steps. This

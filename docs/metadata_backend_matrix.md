@@ -356,6 +356,17 @@ container call mapping.
       `deserialize_prepared_transfer_payload_batch(...)` persist that earlier
       semantic payload batch for cross-process or cross-layer handoff before
       final package materialization.
+    - Host metadata tables that use specification naming should export with
+      `ExportNameStyle::FlatHost` plus `ExportNamePolicy::Spec`. This preserves
+      names such as `Exif:ISOSpeedRatings` and `Exif:ExposureBiasValue` instead
+      of applying the default ExifTool-compatible aliases.
+    - `serialize_transfer_source_snapshot(...)` now persists the target-neutral
+      decoded source state for later editing and preparation when the output
+      format is not yet known. This is distinct from target-specific payload and
+      package batches.
+    - `import_flat_host_metadata(...)` provides bounded typed writeback by exact
+      source identity or unique exported name, with explicit keys required for
+      new custom metadata. Duplicate flat names are never collapsed implicitly.
     - `collect_prepared_transfer_package_views(...)` is the target-neutral
       semantic package surface above that persisted batch.
     - `replay_prepared_transfer_package_batch(...)` is the target-neutral

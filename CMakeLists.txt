@@ -398,6 +398,7 @@ set(OPENMETA_SOURCES
   src/openmeta/icc_decode.cc
   src/openmeta/icc_interpret.cc
   src/openmeta/interop_export.cc
+  src/openmeta/interop_import.cc
   src/openmeta/interop_safety_internal.cc
   src/openmeta/interop_value_format_internal.cc
   src/openmeta/iptc_iim_decode.cc
@@ -411,6 +412,7 @@ set(OPENMETA_SOURCES
   src/openmeta/metadata_fuzzy_search.cc
   src/openmeta/metadata_interpretation.cc
   src/openmeta/metadata_query.cc
+  src/openmeta/metadata_snapshot_io.cc
   src/openmeta/metadata_transfer.cc
   src/openmeta/metadata_logical_field_internal.cc
   src/openmeta/meta_store.cc
@@ -987,6 +989,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/geotiff_decode_test.cc
     tests/iptc_iim_decode_test.cc
     tests/interop_export_test.cc
+    tests/interop_import_test.cc
     tests/dji_app4_decode_test.cc
     tests/makernote_decode_test.cc
     tests/metadata_capabilities_test.cc

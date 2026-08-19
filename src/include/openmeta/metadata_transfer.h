@@ -34,6 +34,9 @@ namespace openmeta {
 /// Stable metadata transfer contract version.
 inline constexpr uint32_t kMetadataTransferContractVersion = 1U;
 
+/// Version of the persisted target-neutral source snapshot wire format.
+inline constexpr uint32_t kTransferSourceSnapshotSerializationVersion = 1U;
+
 /// Target container family for prepared transfer bundles.
 enum class TransferTargetFormat : uint8_t {
     Jpeg,
@@ -720,6 +723,39 @@ struct TransferSourceSnapshot final {
     std::vector<TransferSourceRawCarrier> raw_carriers;
     uint64_t raw_carrier_bytes       = 0U;
     bool raw_carrier_bytes_truncated = false;
+};
+
+/// Stable result code for source snapshot serialization and parsing.
+enum class TransferSourceSnapshotIoCode : uint16_t {
+    None = 0,
+    InvalidArgument,
+    SnapshotNotFinalized,
+    InvalidSnapshot,
+    InvalidMagic,
+    UnsupportedVersion,
+    LimitExceeded,
+    Malformed,
+};
+
+/// Resource limits for persisted source snapshot serialization and parsing.
+struct TransferSourceSnapshotIoOptions final {
+    uint64_t max_serialized_bytes    = 256ULL * 1024ULL * 1024ULL;
+    uint64_t max_arena_bytes         = 64ULL * 1024ULL * 1024ULL;
+    uint64_t max_raw_carrier_bytes   = 64ULL * 1024ULL * 1024ULL;
+    uint64_t max_decoded_entry_links = 1000000ULL;
+    uint32_t max_blocks              = 65536U;
+    uint32_t max_entries             = 200000U;
+    uint32_t max_raw_carriers        = 65536U;
+    uint32_t max_route_bytes         = 4096U;
+};
+
+/// Result for persisted target-neutral source snapshot I/O.
+struct TransferSourceSnapshotIoResult final {
+    TransferStatus status             = TransferStatus::Unsupported;
+    TransferSourceSnapshotIoCode code = TransferSourceSnapshotIoCode::None;
+    uint64_t bytes                    = 0U;
+    uint32_t errors                   = 0U;
+    std::string message;
 };
 
 /// Options for explicit raw JUMBF append into a prepared JPEG bundle.
@@ -2522,6 +2558,37 @@ read_transfer_source_snapshot_bytes(
     std::span<const std::byte> bytes,
     const ReadTransferSourceSnapshotOptions& options
     = ReadTransferSourceSnapshotOptions {}) noexcept;
+
+/**
+ * \brief Serialize a target-neutral source snapshot into owned bytes.
+ *
+ * The versioned representation preserves the decoded store, duplicate entry
+ * order, typed values, provenance, flags, and any opt-in raw carriers. It does
+ * not make a raw carrier safe to relocate or write into another container.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+TransferSourceSnapshotIoResult
+serialize_transfer_source_snapshot(
+    const TransferSourceSnapshot& snapshot, std::vector<std::byte>* out_bytes,
+    const TransferSourceSnapshotIoOptions& options
+    = TransferSourceSnapshotIoOptions {}) noexcept;
+
+/**
+ * \brief Parse a versioned target-neutral source snapshot.
+ *
+ * Parsing is bounded by \p options and replaces \p out_snapshot only after the
+ * complete representation and every arena reference have been validated.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+TransferSourceSnapshotIoResult
+deserialize_transfer_source_snapshot(
+    std::span<const std::byte> bytes, TransferSourceSnapshot* out_snapshot,
+    const TransferSourceSnapshotIoOptions& options
+    = TransferSourceSnapshotIoOptions {}) noexcept;
 
 /**
  * \brief High-level helper: read file, decode metadata, and prepare transfer bundle.

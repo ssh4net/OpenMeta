@@ -997,8 +997,12 @@ writer-confidence slice above; it should be sequenced around it.
   enabled
 - [x] add the first opt-in snapshot raw passthrough writer path for eligible
   non-C2PA JUMBF and draft unsigned C2PA invalidation carriers
-- [ ] provide versioned snapshot serialization only after the raw/provenance
-  model is settled
+- [x] provide versioned, bounded target-neutral snapshot serialization after
+  settling the first raw/provenance model; preserve store identity, duplicate
+  order, typed values, origins, flags, carriers, and decoded-entry links
+- [x] provide transactional typed `FlatHost` import by exact source identity,
+  unique exported name, or explicit `MetaKeyView`; reject ambiguous name-only
+  inverse mapping
 - [ ] provide full prepared-bundle serialization if hosts need to prepare once
   and apply later to encoded target bytes
 
@@ -1012,10 +1016,35 @@ writer-confidence slice above; it should be sequenced around it.
   vendor large binary assets, third-party source drops, or scraped/spec text
 - [ ] add examples for `read bytes -> snapshot -> target bytes -> edited bytes`
   and `visit_metadata(...) -> flat host attribute list`
-- [ ] consider a bounded random-access IO callback only after bytes/file APIs
-  and raw snapshot serialization are stable
+- [ ] add a bounded random-access input contract after the per-format scanner
+  and decoder work below is complete; do not ship a callback that silently
+  materializes the complete source into memory
 - [ ] defer any C ABI or opaque-handle facade until the host-facing C++ API is
   stable enough to freeze a narrow bridge
+
+#### Random-Access Read Work Packages
+
+The host contract is a source size plus exact positional reads. It must be
+implementable by file handles, network/range-backed storage, and host I/O
+proxies without an OpenMeta dependency on any one host library.
+
+1. Define a borrowed `size + read_at(offset, destination)` source contract with
+   exact-read, short-read, overflow, request-count, byte-budget, and source-size
+   consistency failures. Concurrent calls against an immutable source must not
+   share mutable decoder state.
+2. Refactor TIFF/DNG and TIFF-based camera RAW header/IFD traversal first. Value
+   payloads are fetched only after type/count/range validation, within the
+   existing EXIF and arena budgets.
+3. Refactor shallow sequential container scanners and payload extraction for
+   JPEG, PNG, WebP, GIF, and EXR, then bounded box traversal for BMFF, JP2, and
+   JXL. Decoders receive owned bounded metadata payloads rather than a borrowed
+   full-file span.
+4. Refactor native RAF, X3F, and CRW paths and any embedded-container recursion.
+   Preserve the current bytes/file behavior as adapters above the same reader,
+   not as a separate decoder implementation.
+5. Gate each format on byte-span versus random-reader compatibility dumps,
+   malformed/short-read tests, request/byte ceilings, and real-corpus parity
+   before advertising that format as random-access capable.
 
 #### Raw Snapshot Emission Policy
 

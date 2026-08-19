@@ -410,7 +410,7 @@ decoded metadata after applying the selected safety policy. If the host needs
 source carrier provenance for diagnostics or a later passthrough policy
 decision, enable
 ``ReadTransferSourceSnapshotFileOptions::preserve_raw_carriers`` or pass
-``ReadTransferSourceSnapshotBytesOptions`` with ``preserve_raw_carriers`` set.
+``ReadTransferSourceSnapshotOptions`` with ``preserve_raw_carriers`` set.
 Each raw carrier records its route, semantic kind, payload bytes, and
 snapshot-local decoded entry ids attributed to that carrier. Transfer still
 uses decoded re-emission by default.
@@ -444,6 +444,11 @@ If it also owns the destination bytes in memory, call the overload
 ``execute_prepared_transfer_snapshot(snapshot, target_bytes, options)``.
 If it already holds a prepared bundle, use
 ``execute_prepared_transfer_bundle(bundle, target_bytes, options)`` instead.
+For cross-process or deferred storage, use
+``serialize_transfer_source_snapshot(...)`` and
+``deserialize_transfer_source_snapshot(...)``. The parser is transactional and
+bounded by ``TransferSourceSnapshotIoOptions``; persisted raw carriers are not
+implicitly safe to relocate or rewrite.
 Snapshot execution supports the same existing-sidecar merge and destination
 carrier-precedence controls as the file helper; when loading an existing
 sidecar it defaults to ``edit_target_path`` unless
