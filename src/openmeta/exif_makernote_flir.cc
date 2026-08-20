@@ -9,10 +9,73 @@
 namespace openmeta::exif_internal {
 namespace {
 
+    static bool score_source_flir_ifd(SourceTiffReader* source,
+                                      const TiffConfig& cfg, uint64_t ifd_off,
+                                      const ExifDecodeLimits& limits,
+                                      ClassicIfdCandidate* out) noexcept
+    {
+        std::span<const std::byte> count_raw;
+        if (!source || cfg.bigtiff
+            || !source_tiff_view(source, ifd_off, 2U, &count_raw)) {
+            return false;
+        }
+        uint16_t entry_count = 0U;
+        if (!read_tiff_u16(cfg, count_raw, 0U, &entry_count)
+            || entry_count == 0U || entry_count > 512U
+            || entry_count > limits.max_entries_per_ifd) {
+            return false;
+        }
+        const uint64_t table_bytes = uint64_t(entry_count) * 12U;
+        if (ifd_off > UINT64_MAX - 2U || table_bytes > UINT64_MAX - 4U
+            || !source_tiff_contains(*source, ifd_off + 2U, table_bytes)) {
+            return false;
+        }
+
+        uint32_t valid = 0U;
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            std::span<const std::byte> raw;
+            if (!source_tiff_view(source, ifd_off + 2U + uint64_t(i) * 12U, 12U,
+                                  &raw)) {
+                return false;
+            }
+            ClassicIfdEntry entry;
+            if (!read_classic_ifd_entry(cfg, raw, 0U, &entry)) {
+                return false;
+            }
+            const uint64_t unit = tiff_type_size(entry.type);
+            if (unit == 0U || uint64_t(entry.count32) > UINT64_MAX / unit) {
+                continue;
+            }
+            const uint64_t value_bytes = uint64_t(entry.count32) * unit;
+            if (value_bytes > limits.max_value_bytes) {
+                continue;
+            }
+            if (value_bytes <= 4U
+                || source_tiff_contains(*source, entry.value_or_off32,
+                                        value_bytes)) {
+                valid += 1U;
+            }
+        }
+
+        const uint32_t minimum = entry_count > 4U ? uint32_t(entry_count) / 2U
+                                                  : uint32_t(entry_count);
+        if (valid < minimum) {
+            return false;
+        }
+        if (out) {
+            out->offset        = ifd_off;
+            out->le            = cfg.le;
+            out->entry_count   = entry_count;
+            out->valid_entries = valid;
+        }
+        return true;
+    }
+
     static bool read_u32_endian(bool le, std::span<const std::byte> bytes,
                                 uint64_t offset, uint32_t* out) noexcept
     {
-        return le ? read_u32le(bytes, offset, out) : read_u32be(bytes, offset, out);
+        return le ? read_u32le(bytes, offset, out)
+                  : read_u32be(bytes, offset, out);
     }
 
 
@@ -44,7 +107,8 @@ namespace {
     }
 
 
-    static bool choose_endian_by_magic_u16(bool le, std::span<const std::byte> bytes,
+    static bool choose_endian_by_magic_u16(bool le,
+                                           std::span<const std::byte> bytes,
                                            uint64_t offset, uint16_t magic,
                                            bool* out_le) noexcept
     {
@@ -62,8 +126,8 @@ namespace {
             return true;
         }
 
-        const uint16_t swapped
-            = static_cast<uint16_t>((magic >> 8) | (magic << 8));
+        const uint16_t swapped = static_cast<uint16_t>((magic >> 8)
+                                                       | (magic << 8));
         if (v == swapped) {
             *out_le = !le;
             return true;
@@ -144,7 +208,8 @@ namespace {
         if (!read_u32_endian(le, bytes, offset, &v)) {
             return;
         }
-        push_tag_value(tag, make_i32(static_cast<int32_t>(v)), tags, vals, count);
+        push_tag_value(tag, make_i32(static_cast<int32_t>(v)), tags, vals,
+                       count);
     }
 
 
@@ -176,9 +241,10 @@ namespace {
     }
 
 
-    static void push_ascii_if_present(MetaStore& store, std::span<const std::byte> bytes,
-                                      uint16_t tag, uint64_t offset, uint32_t nbytes,
-                                      std::span<uint16_t> tags,
+    static void push_ascii_if_present(MetaStore& store,
+                                      std::span<const std::byte> bytes,
+                                      uint16_t tag, uint64_t offset,
+                                      uint32_t nbytes, std::span<uint16_t> tags,
                                       std::span<MetaValue> vals,
                                       uint32_t* count) noexcept
     {
@@ -188,19 +254,20 @@ namespace {
         if (offset > bytes.size() || nbytes > (bytes.size() - offset)) {
             return;
         }
-        push_tag_value(tag,
-                       make_fixed_ascii_text(store.arena(),
-                                             bytes.subspan(static_cast<size_t>(offset),
-                                                           static_cast<size_t>(nbytes))),
-                       tags, vals, count);
+        push_tag_value(
+            tag,
+            make_fixed_ascii_text(store.arena(),
+                                  bytes.subspan(static_cast<size_t>(offset),
+                                                static_cast<size_t>(nbytes))),
+            tags, vals, count);
     }
 
 
     static void push_bytes_if_present(MetaStore& store,
                                       const ExifDecodeLimits& limits,
                                       std::span<const std::byte> bytes,
-                                      uint16_t tag, uint64_t offset, uint32_t nbytes,
-                                      std::span<uint16_t> tags,
+                                      uint16_t tag, uint64_t offset,
+                                      uint32_t nbytes, std::span<uint16_t> tags,
                                       std::span<MetaValue> vals,
                                       uint32_t* count) noexcept
     {
@@ -221,8 +288,9 @@ namespace {
     }
 
 
-    static bool decode_flir_header(std::span<const std::byte> fff, uint32_t index,
-                                   MetaStore& store, const ExifDecodeLimits& limits,
+    static bool decode_flir_header(std::span<const std::byte> fff,
+                                   uint32_t index, MetaStore& store,
+                                   const ExifDecodeLimits& limits,
                                    ExifDecodeResult* status_out) noexcept
     {
         if (fff.size() < 0x14U) {
@@ -237,14 +305,14 @@ namespace {
             return false;
         }
 
-        const std::array<uint16_t, 1> tags = { 0x0004u };
+        const std::array<uint16_t, 1> tags  = { 0x0004u };
         const std::array<MetaValue, 1> vals = {
-            make_fixed_ascii_text(store.arena(),
-                                  fff.subspan(0x04, 16)),
+            make_fixed_ascii_text(store.arena(), fff.subspan(0x04, 16)),
         };
         emit_bin_dir_entries(ifd_name, store,
                              std::span<const uint16_t>(tags.data(), tags.size()),
-                             std::span<const MetaValue>(vals.data(), vals.size()),
+                             std::span<const MetaValue>(vals.data(),
+                                                        vals.size()),
                              limits, status_out);
         return true;
     }
@@ -263,42 +331,54 @@ namespace {
 
         if (rec.size() >= 0x06 + 3) {
             const std::array<uint8_t, 3> above = {
-                u8(rec[0x06 + 0]), u8(rec[0x06 + 1]), u8(rec[0x06 + 2]),
+                u8(rec[0x06 + 0]),
+                u8(rec[0x06 + 1]),
+                u8(rec[0x06 + 2]),
             };
             push_tag_value(0x0006u, make_u8_array(store.arena(), above), tags,
                            vals, &n);
         }
         if (rec.size() >= 0x09 + 3) {
             const std::array<uint8_t, 3> below = {
-                u8(rec[0x09 + 0]), u8(rec[0x09 + 1]), u8(rec[0x09 + 2]),
+                u8(rec[0x09 + 0]),
+                u8(rec[0x09 + 1]),
+                u8(rec[0x09 + 2]),
             };
             push_tag_value(0x0009u, make_u8_array(store.arena(), below), tags,
                            vals, &n);
         }
         if (rec.size() >= 0x0c + 3) {
             const std::array<uint8_t, 3> over = {
-                u8(rec[0x0c + 0]), u8(rec[0x0c + 1]), u8(rec[0x0c + 2]),
+                u8(rec[0x0c + 0]),
+                u8(rec[0x0c + 1]),
+                u8(rec[0x0c + 2]),
             };
             push_tag_value(0x000Cu, make_u8_array(store.arena(), over), tags,
                            vals, &n);
         }
         if (rec.size() >= 0x0f + 3) {
             const std::array<uint8_t, 3> under = {
-                u8(rec[0x0f + 0]), u8(rec[0x0f + 1]), u8(rec[0x0f + 2]),
+                u8(rec[0x0f + 0]),
+                u8(rec[0x0f + 1]),
+                u8(rec[0x0f + 2]),
             };
             push_tag_value(0x000Fu, make_u8_array(store.arena(), under), tags,
                            vals, &n);
         }
         if (rec.size() >= 0x12 + 3) {
             const std::array<uint8_t, 3> iso1 = {
-                u8(rec[0x12 + 0]), u8(rec[0x12 + 1]), u8(rec[0x12 + 2]),
+                u8(rec[0x12 + 0]),
+                u8(rec[0x12 + 1]),
+                u8(rec[0x12 + 2]),
             };
             push_tag_value(0x0012u, make_u8_array(store.arena(), iso1), tags,
                            vals, &n);
         }
         if (rec.size() >= 0x15 + 3) {
             const std::array<uint8_t, 3> iso2 = {
-                u8(rec[0x15 + 0]), u8(rec[0x15 + 1]), u8(rec[0x15 + 2]),
+                u8(rec[0x15 + 0]),
+                u8(rec[0x15 + 1]),
+                u8(rec[0x15 + 2]),
             };
             push_tag_value(0x0015u, make_u8_array(store.arena(), iso2), tags,
                            vals, &n);
@@ -339,13 +419,14 @@ namespace {
 
         emit_bin_dir_entries(ifd_name, store,
                              std::span<const uint16_t>(tags.data(), n),
-                             std::span<const MetaValue>(vals.data(), n),
-                             limits, status_out);
+                             std::span<const MetaValue>(vals.data(), n), limits,
+                             status_out);
     }
 
 
-    static void decode_flir_rawdata(std::span<const std::byte> rec, bool file_le,
-                                    uint32_t index, MetaStore& store,
+    static void decode_flir_rawdata(std::span<const std::byte> rec,
+                                    bool file_le, uint32_t index,
+                                    MetaStore& store,
                                     const ExifDecodeLimits& limits,
                                     ExifDecodeResult* status_out) noexcept
     {
@@ -360,10 +441,9 @@ namespace {
         push_u16_if_present(le, rec, 0x0002u, 0x04, tags, vals, &n);
 
         if (rec.size() >= 0x20) {
-            std::string_view type = "DAT";
+            std::string_view type                    = "DAT";
             const std::span<const std::byte> payload = rec.subspan(0x20);
-            if (payload.size() >= 8
-                && payload[0] == std::byte { 0x89 }
+            if (payload.size() >= 8 && payload[0] == std::byte { 0x89 }
                 && payload[1] == std::byte { 'P' }
                 && payload[2] == std::byte { 'N' }
                 && payload[3] == std::byte { 'G' }
@@ -402,8 +482,8 @@ namespace {
 
         emit_bin_dir_entries(ifd_name, store,
                              std::span<const uint16_t>(tags.data(), n),
-                             std::span<const MetaValue>(vals.data(), n),
-                             limits, status_out);
+                             std::span<const MetaValue>(vals.data(), n), limits,
+                             status_out);
     }
 
 
@@ -424,15 +504,14 @@ namespace {
         push_u16_if_present(le, rec, 0x0002u, 0x04, tags, vals, &n);
 
         if (rec.size() >= 0x24) {
-            std::string_view type = "DAT";
+            std::string_view type                    = "DAT";
             const std::span<const std::byte> payload = rec.subspan(0x20);
             if (payload.size() >= 4 && payload[0] == std::byte { 0x89 }
                 && payload[1] == std::byte { 'P' }
                 && payload[2] == std::byte { 'N' }
                 && payload[3] == std::byte { 'G' }) {
                 type = "PNG";
-            } else if (payload.size() >= 3
-                       && payload[0] == std::byte { 0xFF }
+            } else if (payload.size() >= 3 && payload[0] == std::byte { 0xFF }
                        && payload[1] == std::byte { 0xD8 }
                        && payload[2] == std::byte { 0xFF }) {
                 type = "JPG";
@@ -456,13 +535,14 @@ namespace {
 
         emit_bin_dir_entries(ifd_name, store,
                              std::span<const uint16_t>(tags.data(), n),
-                             std::span<const MetaValue>(vals.data(), n),
-                             limits, status_out);
+                             std::span<const MetaValue>(vals.data(), n), limits,
+                             status_out);
     }
 
 
     static void decode_flir_pip(std::span<const std::byte> rec, uint32_t index,
-                                MetaStore& store, const ExifDecodeLimits& limits,
+                                MetaStore& store,
+                                const ExifDecodeLimits& limits,
                                 ExifDecodeResult* status_out) noexcept
     {
         constexpr bool le = true;
@@ -493,13 +573,14 @@ namespace {
 
         emit_bin_dir_entries(ifd_name, store,
                              std::span<const uint16_t>(tags.data(), n),
-                             std::span<const MetaValue>(vals.data(), n),
-                             limits, status_out);
+                             std::span<const MetaValue>(vals.data(), n), limits,
+                             status_out);
     }
 
 
-    static void decode_flir_gpsinfo(std::span<const std::byte> rec, uint32_t index,
-                                    MetaStore& store, const ExifDecodeLimits& limits,
+    static void decode_flir_gpsinfo(std::span<const std::byte> rec,
+                                    uint32_t index, MetaStore& store,
+                                    const ExifDecodeLimits& limits,
                                     ExifDecodeResult* status_out) noexcept
     {
         constexpr bool le = true;
@@ -539,8 +620,8 @@ namespace {
 
         emit_bin_dir_entries(ifd_name, store,
                              std::span<const uint16_t>(tags.data(), n),
-                             std::span<const MetaValue>(vals.data(), n),
-                             limits, status_out);
+                             std::span<const MetaValue>(vals.data(), n), limits,
+                             status_out);
     }
 
 
@@ -579,13 +660,14 @@ namespace {
 
         emit_bin_dir_entries(ifd_name, store,
                              std::span<const uint16_t>(tags.data(), n),
-                             std::span<const MetaValue>(vals.data(), n),
-                             limits, status_out);
+                             std::span<const MetaValue>(vals.data(), n), limits,
+                             status_out);
     }
 
 
-    static void decode_flir_camerainfo(std::span<const std::byte> rec, bool file_le,
-                                       uint32_t index, MetaStore& store,
+    static void decode_flir_camerainfo(std::span<const std::byte> rec,
+                                       bool file_le, uint32_t index,
+                                       MetaStore& store,
                                        const ExifDecodeLimits& limits,
                                        ExifDecodeResult* status_out) noexcept
     {
@@ -663,15 +745,16 @@ namespace {
 
         emit_bin_dir_entries(ifd_name, store,
                              std::span<const uint16_t>(tags.data(), n),
-                             std::span<const MetaValue>(vals.data(), n),
-                             limits, status_out);
+                             std::span<const MetaValue>(vals.data(), n), limits,
+                             status_out);
     }
 
 }  // namespace
 
-bool decode_flir_fff(std::span<const std::byte> fff_bytes, MetaStore& store,
-                     const ExifDecodeLimits& limits,
-                     ExifDecodeResult* status_out) noexcept
+bool
+decode_flir_fff(std::span<const std::byte> fff_bytes, MetaStore& store,
+                const ExifDecodeLimits& limits,
+                ExifDecodeResult* status_out) noexcept
 {
     if (fff_bytes.size() < 0x40U) {
         update_status(status_out, ExifDecodeStatus::Malformed);
@@ -758,15 +841,17 @@ bool decode_flir_fff(std::span<const std::byte> fff_bytes, MetaStore& store,
 
         const uint64_t rec_off = rec_off32;
         const uint64_t rec_len = rec_len32;
-        if (rec_off > fff_bytes.size() || rec_len > (fff_bytes.size() - rec_off)) {
+        if (rec_off > fff_bytes.size()
+            || rec_len > (fff_bytes.size() - rec_off)) {
             continue;
         }
         if (rec_len > limits.max_value_bytes) {
             continue;
         }
 
-        const std::span<const std::byte> rec = fff_bytes.subspan(
-            static_cast<size_t>(rec_off), static_cast<size_t>(rec_len));
+        const std::span<const std::byte> rec
+            = fff_bytes.subspan(static_cast<size_t>(rec_off),
+                                static_cast<size_t>(rec_len));
 
         switch (rec_type) {
         case 0x0001u:
@@ -801,12 +886,13 @@ bool decode_flir_fff(std::span<const std::byte> fff_bytes, MetaStore& store,
 }
 
 
-bool decode_flir_makernote(const TiffConfig& parent_cfg,
-                           std::span<const std::byte> tiff_bytes,
-                           uint64_t maker_note_off, uint64_t maker_note_bytes,
-                           std::string_view mk_ifd0, MetaStore& store,
-                           const ExifDecodeOptions& options,
-                           ExifDecodeResult* status_out) noexcept
+bool
+decode_flir_makernote(const TiffConfig& parent_cfg,
+                      std::span<const std::byte> tiff_bytes,
+                      uint64_t maker_note_off, uint64_t maker_note_bytes,
+                      std::string_view mk_ifd0, MetaStore& store,
+                      const ExifDecodeOptions& options,
+                      ExifDecodeResult* status_out) noexcept
 {
     if (mk_ifd0.empty()) {
         return false;
@@ -854,6 +940,63 @@ bool decode_flir_makernote(const TiffConfig& parent_cfg,
     decode_classic_ifd_no_header(best_cfg, tiff_bytes, maker_note_off, mk_ifd0,
                                  store, options, status_out, EntryFlags::None);
     return true;
+}
+
+
+bool
+decode_flir_makernote_from_source(SourceTiffReader* source,
+                                  const TiffConfig& parent_cfg,
+                                  uint64_t maker_note_off,
+                                  std::span<const std::byte> maker_note,
+                                  std::string_view mk_ifd0, MetaStore& store,
+                                  const ExifDecodeOptions& options,
+                                  ExifDecodeResult* status_out) noexcept
+{
+    if (!source || !source->result || mk_ifd0.empty() || maker_note.size() < 8U
+        || !source_tiff_contains(*source, maker_note_off, maker_note.size())) {
+        return false;
+    }
+
+    ClassicIfdCandidate best;
+    TiffConfig best_cfg;
+    bool found = false;
+    for (uint32_t endian = 0U; endian < 2U; ++endian) {
+        TiffConfig cfg = parent_cfg;
+        cfg.le         = endian == 0U ? parent_cfg.le : !parent_cfg.le;
+        cfg.bigtiff    = false;
+        ClassicIfdCandidate candidate;
+        if (!score_source_flir_ifd(source, cfg, maker_note_off, options.limits,
+                                   &candidate)) {
+            continue;
+        }
+        if (!found || candidate.valid_entries > best.valid_entries) {
+            best     = candidate;
+            best_cfg = cfg;
+            found    = true;
+        }
+    }
+    if (!found) {
+        // Some early FLIR files contain a structurally recognizable directory
+        // whose advertised value offsets are all outside the EXIF block. The
+        // contiguous decoder preserves that payload as opaque metadata too.
+        for (uint32_t endian = 0U; endian < 2U; ++endian) {
+            TiffConfig cfg = parent_cfg;
+            cfg.le         = endian == 0U ? parent_cfg.le : !parent_cfg.le;
+            cfg.bigtiff    = false;
+            uint16_t count = 0U;
+            if (read_tiff_u16(cfg, maker_note, 0U, &count) && count != 0U
+                && count <= options.limits.max_entries_per_ifd
+                && uint64_t(count) <= (maker_note.size() - 2U) / 12U) {
+                return true;
+            }
+        }
+        return true;
+    }
+
+    OffsetPolicy offsets;
+    return decode_classic_ifd_from_source(source, best_cfg, maker_note_off,
+                                          offsets, mk_ifd0, store, options,
+                                          status_out, EntryFlags::None, true);
 }
 
 }  // namespace openmeta::exif_internal

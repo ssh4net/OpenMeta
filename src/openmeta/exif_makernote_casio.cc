@@ -502,6 +502,86 @@ decode_casio_makernote(const TiffConfig& parent_cfg,
     return true;
 }
 
+
+bool
+decode_casio_makernote_from_source(SourceTiffReader* source,
+                                   const TiffConfig& parent_cfg,
+                                   uint64_t maker_note_off,
+                                   std::span<const std::byte> maker_note,
+                                   std::string_view mk_ifd0, MetaStore& store,
+                                   const ExifDecodeOptions& options,
+                                   ExifDecodeResult* status_out) noexcept
+{
+    if (!source || !source->result || mk_ifd0.empty()
+        || !source_tiff_contains(*source, maker_note_off, maker_note.size())) {
+        return false;
+    }
+
+    if (maker_note.size() < 8U
+        || (!match_bytes(maker_note, 0U, "QVC\0", 4U)
+            && !match_bytes(maker_note, 0U, "DCI\0", 4U))) {
+        // Some late Casio files carry a textual firmware diagnostic block in
+        // MakerNote. It has no TIFF entries and is intentionally kept opaque.
+        if (maker_note.size() >= 3U && match_bytes(maker_note, 0U, "RC:", 3U)) {
+            return true;
+        }
+        // Older Casio notes are ordinary MakerNote-relative IFDs, so their
+        // complete declared payload is already sufficient for decoding.
+        ClassicIfdCandidate best;
+        if (!find_best_classic_ifd_candidate(maker_note, 256U, options.limits,
+                                             &best)) {
+            return false;
+        }
+        TiffConfig cfg;
+        cfg.le      = best.le;
+        cfg.bigtiff = false;
+        decode_classic_ifd_no_header(cfg, maker_note, best.offset, mk_ifd0,
+                                     store, options, status_out,
+                                     EntryFlags::None);
+        decode_casio_binary_subdirs(mk_ifd0, store, options, status_out);
+        return true;
+    }
+
+    bool le              = false;
+    uint64_t entry_count = 0U;
+    uint32_t count_be    = 0U;
+    if (read_u32be(maker_note, 4U, &count_be) && count_be != 0U
+        && count_be <= options.limits.max_entries_per_ifd
+        && uint64_t(count_be) <= (maker_note.size() - 8U) / 12U) {
+        entry_count = count_be;
+    } else {
+        uint16_t version  = 0U;
+        uint16_t count_le = 0U;
+        if (!read_u16le(maker_note, 4U, &version)
+            || !read_u16le(maker_note, 6U, &count_le) || count_le == 0U
+            || count_le > options.limits.max_entries_per_ifd
+            || uint64_t(count_le) > (maker_note.size() - 8U) / 12U) {
+            update_status(status_out, ExifDecodeStatus::Malformed);
+            return true;
+        }
+        le          = true;
+        entry_count = count_le;
+    }
+
+    TiffConfig cfg = parent_cfg;
+    cfg.le         = le;
+    cfg.bigtiff    = false;
+    const bool legacy_main_compat
+        = casio_type2_uses_legacy_main_compat(cfg, maker_note, entry_count);
+    OffsetPolicy offsets;
+    if (!decode_classic_ifd_from_source(source, cfg, maker_note_off + 6U,
+                                        offsets, mk_ifd0, store, options,
+                                        status_out, EntryFlags::None, true,
+                                        static_cast<uint16_t>(entry_count),
+                                        &parent_cfg, legacy_main_compat,
+                                        true)) {
+        return false;
+    }
+    decode_casio_binary_subdirs(mk_ifd0, store, options, status_out);
+    return true;
+}
+
+
 static MetaValue
 casio_qvci_datetime(ByteArena& arena, std::span<const std::byte> raw) noexcept
 {

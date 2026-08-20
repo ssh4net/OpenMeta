@@ -14,7 +14,9 @@ caller-owned read windows, and the first decoder conversion. Version 0.4.102
 added source-backed nested TIFF offset resolution. Version 0.4.103 extends the
 conversion to Olympus, Panasonic, and Samsung MakerNotes. Version 0.4.104 adds
 bounded Fujifilm and General Imaging MakerNote source layouts. Version 0.4.105
-adds Kodak fixed-layout and outer-TIFF-relative MakerNotes. It provides:
+adds Kodak fixed-layout and outer-TIFF-relative MakerNotes. Version 0.4.106 adds
+Ricoh mixed-base and vendor subdirectory decoding plus Nintendo, Casio, Minolta,
+and FLIR callback parity. It provides:
 
 - a fixed source size and synchronous ``read_at(offset, destination)`` callback
 - a non-owning descriptor for caller-owned contiguous memory
@@ -32,13 +34,15 @@ also decoded from caller scratch. Nikon embedded TIFF/type 1, Sony outer-TIFF
 IFDs, contained Canon adjusted-base payloads, Olympus nested IFDs, Panasonic
 binary tables, Samsung STMN/Type2 derived tables, Fujifilm self-relative IFDs,
 General Imaging Type 2 source windows, and Kodak Type 8, Type 10, and Type 11
-IFDs with vendor subtables use the same bounded source.
+IFDs with vendor subtables use the same bounded source. Ricoh classic notes
+retain ImageInfo, CameraInfo, FaceInfo, SerialInfo, and Theta expansion, while
+Nintendo CameraInfo, Casio QVC/DCI, Minolta binary tables, and FLIR
+outer-TIFF-relative values retain their contiguous behavior.
 
-Callback decoding still reports unconverted mixed-base Ricoh, Nintendo, Casio,
-Minolta, and FLIR payloads and Canon derived subtables whose
-values extend outside the declared MakerNote through
-``nested_payloads_skipped`` and ``complete()`` rather than decoding against an
-incorrect subspan. Contiguous sources retain the complete existing
+Callback decoding still reports Canon derived subtables whose values extend
+outside the declared MakerNote, plus unknown or unsupported vendor layouts,
+through ``nested_payloads_skipped`` and ``complete()`` rather than decoding
+against an incorrect subspan. Contiguous sources retain the complete existing
 nested-decoder behavior.
 
 Callback example

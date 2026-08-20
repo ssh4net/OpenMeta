@@ -142,8 +142,11 @@ namespace exif_internal {
         const OffsetPolicy& offsets, std::string_view ifd_name,
         MetaStore& store, const ExifDecodeOptions& options,
         ExifDecodeResult* status_out, EntryFlags extra_flags,
-        bool allow_missing_next_ifd_pointer = false,
-        uint16_t forced_entry_count         = 0U) noexcept;
+        bool allow_missing_next_ifd_pointer     = false,
+        uint16_t forced_entry_count             = 0U,
+        const TiffConfig* out_of_line_value_cfg = nullptr,
+        bool mark_contextual_names              = true,
+        bool allow_zero_count_unknown_type      = false) noexcept;
 
     // Low-level helpers (implemented in exif_tiff_decode.cc).
     bool match_bytes(std::span<const std::byte> bytes, uint64_t offset,
@@ -252,6 +255,13 @@ namespace exif_internal {
                                 const ExifDecodeOptions& options,
                                 ExifDecodeResult* status_out) noexcept;
 
+    bool decode_casio_makernote_from_source(
+        SourceTiffReader* source, const TiffConfig& parent_cfg,
+        uint64_t maker_note_off, std::span<const std::byte> maker_note,
+        std::string_view mk_ifd0, MetaStore& store,
+        const ExifDecodeOptions& options,
+        ExifDecodeResult* status_out) noexcept;
+
     bool decode_casio_qvci(std::span<const std::byte> qvci_bytes,
                            std::string_view mk_ifd0, MetaStore& store,
                            const ExifDecodeLimits& limits,
@@ -328,6 +338,13 @@ namespace exif_internal {
                                const ExifDecodeOptions& options,
                                ExifDecodeResult* status_out) noexcept;
 
+    bool decode_flir_makernote_from_source(
+        SourceTiffReader* source, const TiffConfig& parent_cfg,
+        uint64_t maker_note_off, std::span<const std::byte> maker_note,
+        std::string_view mk_ifd0, MetaStore& store,
+        const ExifDecodeOptions& options,
+        ExifDecodeResult* status_out) noexcept;
+
     bool decode_ricoh_makernote(const TiffConfig& parent_cfg,
                                 std::span<const std::byte> tiff_bytes,
                                 uint64_t maker_note_off,
@@ -335,6 +352,13 @@ namespace exif_internal {
                                 std::string_view mk_ifd0, MetaStore& store,
                                 const ExifDecodeOptions& options,
                                 ExifDecodeResult* status_out) noexcept;
+
+    bool decode_ricoh_makernote_from_source(
+        SourceTiffReader* source, const TiffConfig& parent_cfg,
+        uint64_t maker_note_off, std::span<const std::byte> maker_note,
+        std::string_view mk_ifd0, MetaStore& store,
+        const ExifDecodeOptions& options,
+        ExifDecodeResult* status_out) noexcept;
 
     bool decode_minolta_makernote(const TiffConfig& parent_cfg,
                                   std::span<const std::byte> tiff_bytes,
@@ -364,6 +388,13 @@ namespace exif_internal {
                                    std::string_view mk_ifd0, MetaStore& store,
                                    const ExifDecodeOptions& options,
                                    ExifDecodeResult* status_out) noexcept;
+
+    bool decode_nintendo_makernote_from_source(
+        SourceTiffReader* source, const TiffConfig& parent_cfg,
+        uint64_t maker_note_off, std::span<const std::byte> maker_note,
+        std::string_view mk_ifd0, MetaStore& store,
+        const ExifDecodeOptions& options,
+        ExifDecodeResult* status_out) noexcept;
 
     bool decode_reconyx_makernote(std::span<const std::byte> maker_note_bytes,
                                   std::string_view mk_ifd0, MetaStore& store,

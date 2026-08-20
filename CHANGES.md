@@ -1,5 +1,37 @@
 # OpenMeta Changes
 
+## 0.4.106 - 2026-08-20
+
+Changes compared with `0.4.105`.
+
+### Added
+
+- Added callback-backed Nintendo CameraInfo, Casio QVC/DCI, FLIR, and Ricoh
+  MakerNote decoding with checked absolute, MakerNote-relative, and
+  vendor-specific offset bases.
+- Added callback parity for Minolta main IFDs and their existing derived binary
+  tables when the declared MakerNote payload is available in caller scratch.
+- Added source-backed Ricoh ImageInfo, CameraInfo subdirectory, FaceInfo,
+  SerialInfo, and Theta subdirectory expansion without materializing the outer
+  TIFF stream.
+
+### Changed
+
+- Ricoh callback IFD scoring now uses the same local-offset plausibility rule as
+  contiguous decoding before applying mixed-base value resolution. This avoids
+  selecting structurally plausible binary data or opposite-endian tables.
+- Source-backed Olympus traversal now validates nested IFD structure and value
+  ranges before decoding, matching the contiguous decoder's silent rejection
+  of invalid subdirectory pointers.
+- Random-access residual reporting no longer classifies supported Nintendo,
+  Casio, Minolta, FLIR, or Ricoh MakerNotes as unconverted.
+
+### Tests And Validation
+
+- Added callback regressions for Nintendo CameraInfo, Casio Type 2,
+  Casio zero-count vendor entries, Minolta-derived binary tables, FLIR classic
+  IFDs, and Ricoh classic `MakerNote + 8` value offsets.
+
 ## 0.4.105 - 2026-08-20
 
 Changes compared with `0.4.104`.

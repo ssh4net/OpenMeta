@@ -4140,6 +4140,27 @@ namespace {
         return mn;
     }
 
+    static std::vector<std::byte> make_ricoh_classic_makernote()
+    {
+        // Ricoh classic offsets use Start=$valuePtr+8. Keep the raw offset
+        // itself in range as required by the established IFD heuristic.
+        static constexpr uint32_t kStoredValueOff = 26U;
+        static constexpr uint32_t kPayloadOff     = kStoredValueOff + 8U;
+
+        std::vector<std::byte> mn(8U, std::byte { 0 });
+        append_u16le(&mn, 1U);
+        append_u16le(&mn, 0x1001U);  // ImageInfo
+        append_u16le(&mn, 7U);       // UNDEFINED
+        append_u32le(&mn, 6U);
+        append_u32le(&mn, kStoredValueOff);
+        append_u32le(&mn, 0U);
+        mn.resize(kPayloadOff, std::byte { 0 });
+        for (uint8_t value = 1U; value <= 6U; ++value) {
+            mn.push_back(std::byte { value });
+        }
+        return mn;
+    }
+
     static std::vector<std::byte> make_ricoh_type2_padded_ifd_makernote()
     {
         std::vector<std::byte> mn;
@@ -7430,6 +7451,34 @@ TEST(MakerNoteDecode, DecodesKonicaMinoltaMakerNoteByMakeString)
     EXPECT_EQ(e.value.data.u64, 13U);
 }
 
+TEST(MakerNoteDecode, RandomAccessMatchesMinoltaBinarySubdirectories)
+{
+    const std::vector<std::byte> mn
+        = make_minolta_makernote_with_binary_subdirs();
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote("KONICA MINOLTA", mn);
+
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote           = true;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {},
+                                                          options);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    callback_store.finalize();
+    const std::span<const EntryId> ids = callback_store.find_all(
+        exif_key("mk_minolta_camerasettings_0", 0x0002));
+    ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(callback_store.entry(ids[0]).value.data.u64, 0x12345678U);
+}
+
 TEST(MakerNoteDecode,
      MarksMinoltaImageSizeAsCompatPlaceholderForDiMAGEA200Model)
 {
@@ -9703,6 +9752,67 @@ TEST(MakerNoteDecode, DecodesCasioType2MakerNoteFr10VariantLeDirectory)
     EXPECT_EQ(e.value.kind, MetaValueKind::Array);
     EXPECT_EQ(e.value.elem_type, MetaElementType::U16);
     EXPECT_EQ(e.value.count, 2U);
+}
+
+TEST(MakerNoteDecode, RandomAccessMatchesCasioType2LeDirectory)
+{
+    const std::vector<std::byte> mn = make_casio_type2_makernote_fr10_variant();
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("CASIO",
+                                                                      mn);
+
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote           = true;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {},
+                                                          options);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    callback_store.finalize();
+    const std::span<const EntryId> ids = callback_store.find_all(
+        exif_key("mk_casio_type2_0", 0x0002));
+    ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(callback_store.entry(ids[0]).value.count, 2U);
+}
+
+TEST(MakerNoteDecode, RandomAccessPreservesCasioZeroCountVendorEntry)
+{
+    std::vector<std::byte> mn;
+    append_bytes(&mn, "QVC");
+    mn.push_back(std::byte { 0 });
+    append_u32be(&mn, 1U);
+    append_u16be(&mn, 0U);
+    append_u16be(&mn, 0U);  // Casio vendor type with an empty payload.
+    append_u32be(&mn, 0U);
+    append_u32be(&mn, 0U);
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("CASIO",
+                                                                      mn);
+
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote           = true;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {},
+                                                          options);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    callback_store.finalize();
+    const std::span<const EntryId> ids = callback_store.find_all(
+        exif_key("mk_casio_type2_0", 0x0000));
+    ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(callback_store.entry(ids[0]).value.kind, MetaValueKind::Empty);
 }
 
 TEST(MakerNoteDecode, MarksCasioLegacyType2CompatNames)
@@ -12446,6 +12556,33 @@ TEST(MakerNoteDecode, DecodesNintendoCameraInfoDerivedSubdirectory)
     }
 }
 
+TEST(MakerNoteDecode, RandomAccessMatchesNintendoCameraInfo)
+{
+    const std::vector<std::byte> mn = make_nintendo_makernote();
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote("Nintendo", mn);
+
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote           = true;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {},
+                                                          options);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    callback_store.finalize();
+    const std::span<const EntryId> ids = callback_store.find_all(
+        exif_key("mk_nintendo_camerainfo_0", 0x0008));
+    ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(callback_store.entry(ids[0]).value.data.u64, 0x12345678U);
+}
+
 TEST(MakerNoteDecode, DecodesHpType6MakerNote)
 {
     const std::vector<std::byte> mn   = make_hp_type6_makernote();
@@ -12644,6 +12781,33 @@ TEST(MakerNoteDecode, DecodesFlirMakerNoteClassicIfd)
     EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
     EXPECT_EQ(e.value.elem_type, MetaElementType::U32);
     EXPECT_EQ(e.value.data.u64, 99U);
+}
+
+TEST(MakerNoteDecode, RandomAccessMatchesFlirClassicIfd)
+{
+    const std::vector<std::byte> mn   = make_flir_makernote();
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("FLIR",
+                                                                      mn);
+
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote           = true;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {},
+                                                          options);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    callback_store.finalize();
+    const std::span<const EntryId> ids = callback_store.find_all(
+        exif_key("mk_flir0", 0x0001));
+    ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(callback_store.entry(ids[0]).value.data.u64, 99U);
 }
 
 
@@ -13715,6 +13879,36 @@ TEST(MakerNoteDecode, DecodesRicohType2MakerNote)
             store.arena().span(e.value.data.span).size());
         EXPECT_EQ(v, "RICOH");
     }
+}
+
+TEST(MakerNoteDecode, RandomAccessMatchesRicohClassicOffsetBase)
+{
+    const std::vector<std::byte> mn   = make_ricoh_classic_makernote();
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("RICOH",
+                                                                      mn);
+
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote           = true;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {},
+                                                          options);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    callback_store.finalize();
+    const std::span<const EntryId> main_ids = callback_store.find_all(
+        exif_key("mk_ricoh0", 0x1001));
+    ASSERT_EQ(main_ids.size(), 1U);
+    const std::span<const EntryId> derived_ids = callback_store.find_all(
+        exif_key("mk_ricoh_imageinfo_0", 0x0005));
+    ASSERT_EQ(derived_ids.size(), 1U);
+    EXPECT_EQ(callback_store.entry(derived_ids[0]).value.data.u64, 6U);
 }
 
 TEST(MakerNoteDecode, DecodesRicohPaddedType2MakerNoteUnderType2Ifd)

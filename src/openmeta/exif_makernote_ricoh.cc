@@ -1380,4 +1380,709 @@ decode_ricoh_makernote(const TiffConfig& parent_cfg,
     return true;
 }
 
+
+namespace {
+
+    static bool ricoh_checked_add(uint64_t a, uint64_t b,
+                                  uint64_t* out) noexcept
+    {
+        if (!out || a > UINT64_MAX - b) {
+            return false;
+        }
+        *out = a + b;
+        return true;
+    }
+
+
+    static bool ricoh_source_local_value(uint64_t maker_note_off,
+                                         uint64_t maker_note_bytes,
+                                         uint64_t base, uint32_t offset,
+                                         uint64_t value_bytes,
+                                         uint64_t* source_off,
+                                         uint64_t* local_off) noexcept
+    {
+        uint64_t rel = 0U;
+        if (!ricoh_checked_add(base, offset, &rel) || rel > maker_note_bytes
+            || value_bytes > maker_note_bytes - rel
+            || !ricoh_checked_add(maker_note_off, rel, source_off)) {
+            return false;
+        }
+        if (local_off) {
+            *local_off = rel;
+        }
+        return true;
+    }
+
+
+    static bool score_source_ricoh_main_ifd(SourceTiffReader* source,
+                                            const TiffConfig& cfg,
+                                            uint64_t maker_note_off,
+                                            uint64_t maker_note_bytes,
+                                            uint64_t local_ifd_off,
+                                            const ExifDecodeLimits& limits,
+                                            ClassicIfdCandidate* out) noexcept
+    {
+        uint64_t ifd_off = 0U;
+        if (!source || cfg.bigtiff
+            || !ricoh_checked_add(maker_note_off, local_ifd_off, &ifd_off)) {
+            return false;
+        }
+        std::span<const std::byte> count_raw;
+        if (!source_tiff_view(source, ifd_off, 2U, &count_raw)) {
+            return false;
+        }
+        uint16_t entry_count = 0U;
+        if (!read_tiff_u16(cfg, count_raw, 0U, &entry_count)
+            || entry_count == 0U || entry_count > 512U
+            || entry_count > limits.max_entries_per_ifd) {
+            return false;
+        }
+        const uint64_t table_bytes = uint64_t(entry_count) * 12U;
+        if (local_ifd_off > maker_note_bytes
+            || maker_note_bytes - local_ifd_off < 2U
+            || table_bytes > maker_note_bytes - local_ifd_off - 2U
+            || maker_note_bytes - local_ifd_off - 2U - table_bytes < 4U) {
+            return false;
+        }
+
+        uint32_t valid = 0U;
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            std::span<const std::byte> raw;
+            if (!source_tiff_view(source, ifd_off + 2U + uint64_t(i) * 12U, 12U,
+                                  &raw)) {
+                return false;
+            }
+            ClassicIfdEntry entry;
+            if (!read_classic_ifd_entry(cfg, raw, 0U, &entry)) {
+                return false;
+            }
+            const uint64_t unit = tiff_type_size(entry.type);
+            if (unit == 0U || uint64_t(entry.count32) > UINT64_MAX / unit) {
+                continue;
+            }
+            const uint64_t value_bytes = uint64_t(entry.count32) * unit;
+            if (value_bytes > limits.max_value_bytes) {
+                continue;
+            }
+            if (value_bytes <= 4U) {
+                valid += 1U;
+                continue;
+            }
+
+            uint64_t source_off = 0U;
+            const bool local
+                = ricoh_source_local_value(maker_note_off, maker_note_bytes, 0U,
+                                           entry.value_or_off32, value_bytes,
+                                           &source_off, nullptr);
+            if (local) {
+                valid += 1U;
+            }
+        }
+
+        const uint32_t minimum = entry_count > 4U ? uint32_t(entry_count) / 2U
+                                                  : uint32_t(entry_count);
+        if (valid < minimum) {
+            return false;
+        }
+        if (out) {
+            out->offset        = local_ifd_off;
+            out->le            = cfg.le;
+            out->entry_count   = entry_count;
+            out->valid_entries = valid;
+        }
+        return true;
+    }
+
+
+    static bool decode_source_ricoh_main_ifd(
+        SourceTiffReader* source, const TiffConfig& cfg,
+        uint64_t maker_note_off, std::span<const std::byte> maker_note,
+        uint64_t local_ifd_off, std::string_view ifd_name, MetaStore& store,
+        const ExifDecodeOptions& options, ExifDecodeResult* status_out) noexcept
+    {
+        if (!source || ifd_name.empty() || local_ifd_off > maker_note.size()
+            || maker_note.size() - local_ifd_off < 2U) {
+            return false;
+        }
+        uint64_t ifd_source_off = 0U;
+        std::span<const std::byte> count_raw;
+        uint16_t entry_count = 0U;
+        if (!ricoh_checked_add(maker_note_off, local_ifd_off, &ifd_source_off)
+            || !source_tiff_view(source, ifd_source_off, 2U, &count_raw)
+            || !read_tiff_u16(cfg, count_raw, 0U, &entry_count)
+            || entry_count == 0U
+            || entry_count > options.limits.max_entries_per_ifd) {
+            return false;
+        }
+        const uint64_t entries_off = local_ifd_off + 2U;
+        const uint64_t table_bytes = uint64_t(entry_count) * 12U;
+        if (entries_off > maker_note.size()
+            || table_bytes > maker_note.size() - entries_off
+            || maker_note.size() - entries_off - table_bytes < 4U) {
+            return false;
+        }
+
+        const BlockId block = store.add_block(BlockInfo {});
+        if (block == kInvalidBlockId) {
+            return true;
+        }
+
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            const uint64_t entry_local = entries_off + uint64_t(i) * 12U;
+            uint64_t entry_source      = 0U;
+            std::span<const std::byte> entry_raw;
+            ClassicIfdEntry ifd_entry;
+            if (!ricoh_checked_add(maker_note_off, entry_local, &entry_source)
+                || !source_tiff_view(source, entry_source, 12U, &entry_raw)
+                || !read_classic_ifd_entry(cfg, entry_raw, 0U, &ifd_entry)) {
+                return true;
+            }
+            uint64_t value_bytes = 0U;
+            const bool have_ref
+                = tiff_type_size(ifd_entry.type) != 0U
+                  && classic_ifd_entry_value_bytes(ifd_entry, &value_bytes);
+            if (!have_ref) {
+                continue;
+            }
+            if (status_out
+                && status_out->entries_decoded
+                       >= options.limits.max_total_entries) {
+                update_status(status_out, ExifDecodeStatus::LimitExceeded);
+                return true;
+            }
+
+            Entry entry;
+            entry.key          = make_exif_tag_key(store.arena(), ifd_name,
+                                                   ifd_entry.tag);
+            entry.origin.block = block;
+            entry.origin.order_in_block = i;
+            entry.origin.wire_type      = WireType { WireFamily::Tiff,
+                                                ifd_entry.type };
+            entry.origin.wire_count     = ifd_entry.count32;
+
+            if (value_bytes > options.limits.max_value_bytes) {
+                update_status(status_out, ExifDecodeStatus::LimitExceeded);
+                entry.flags |= EntryFlags::Truncated;
+            } else if (value_bytes <= 4U) {
+                entry.value = decode_tiff_value(cfg, entry_raw, ifd_entry.type,
+                                                ifd_entry.count32, 8U,
+                                                value_bytes, store.arena(),
+                                                options.limits, status_out);
+            } else {
+                uint64_t base_source = 0U;
+                const bool have_base = ricoh_source_local_value(
+                    maker_note_off, maker_note.size(), 8U,
+                    ifd_entry.value_or_off32, value_bytes, &base_source,
+                    nullptr);
+                uint64_t zero_source = 0U;
+                const bool have_zero = ricoh_source_local_value(
+                    maker_note_off, maker_note.size(), 0U,
+                    ifd_entry.value_or_off32, value_bytes, &zero_source,
+                    nullptr);
+                const uint64_t absolute_source = ifd_entry.value_or_off32;
+                const bool have_absolute       = source_tiff_contains(*source,
+                                                                      absolute_source,
+                                                                      value_bytes);
+
+                enum class Choice : uint8_t { None, Base, Zero, Absolute };
+                Choice choice = Choice::None;
+                if (ifd_entry.type == 2U || ifd_entry.type == 129U) {
+                    uint32_t score_base     = 0U;
+                    uint32_t score_zero     = 0U;
+                    uint32_t score_absolute = 0U;
+                    std::span<const std::byte> raw;
+                    if (have_base
+                        && source_tiff_value(source, base_source, value_bytes,
+                                             &raw)) {
+                        score_base = score_ascii_blob(raw);
+                    }
+                    if (have_zero
+                        && source_tiff_value(source, zero_source, value_bytes,
+                                             &raw)) {
+                        score_zero = score_ascii_blob(raw);
+                    }
+                    if (have_absolute) {
+                        if (source_tiff_value(source, absolute_source,
+                                              value_bytes, &raw)) {
+                            score_absolute = score_ascii_blob(raw);
+                        }
+                    }
+                    if (score_base || score_zero || score_absolute) {
+                        if (score_base >= score_zero
+                            && score_base >= score_absolute && have_base) {
+                            choice = Choice::Base;
+                        } else if (score_zero >= score_absolute && have_zero) {
+                            choice = Choice::Zero;
+                        } else if (have_absolute) {
+                            choice = Choice::Absolute;
+                        }
+                    }
+                }
+                if (choice == Choice::None && have_base) {
+                    choice = Choice::Base;
+                }
+                if (choice == Choice::None && have_zero) {
+                    choice = Choice::Zero;
+                }
+                if (choice == Choice::None && have_absolute) {
+                    choice = Choice::Absolute;
+                }
+
+                if (choice != Choice::None) {
+                    const uint64_t selected = choice == Choice::Base
+                                                  ? base_source
+                                                  : (choice == Choice::Zero
+                                                         ? zero_source
+                                                         : absolute_source);
+                    std::span<const std::byte> raw;
+                    if (source_tiff_value(source, selected, value_bytes, &raw)) {
+                        entry.value
+                            = decode_tiff_value(cfg, raw, ifd_entry.type,
+                                                ifd_entry.count32, 0U,
+                                                value_bytes, store.arena(),
+                                                options.limits, status_out);
+                    } else {
+                        entry.flags |= EntryFlags::Truncated;
+                    }
+                } else {
+                    update_status(status_out, ExifDecodeStatus::Malformed);
+                    entry.flags |= EntryFlags::Unreadable;
+                }
+            }
+
+            maybe_mark_ricoh_main_contextual_name(&entry);
+            (void)store.add_entry(entry);
+            if (status_out) {
+                status_out->entries_decoded += 1U;
+            }
+        }
+        return true;
+    }
+
+
+    static bool
+    decode_source_ricoh_subdir(SourceTiffReader* source, uint64_t subdir_off,
+                               std::string_view mk_prefix, MetaStore& store,
+                               const ExifDecodeOptions& options,
+                               ExifDecodeResult* status_out) noexcept
+    {
+        static constexpr char kMarker[]        = "[Ricoh Camera Info]";
+        static constexpr uint64_t kHeaderBytes = sizeof(kMarker);
+        std::span<const std::byte> header;
+        if (!source || mk_prefix.empty()
+            || !source_tiff_view(source, subdir_off, kHeaderBytes + 2U, &header)
+            || !match_bytes(header, 0U, kMarker,
+                            static_cast<uint32_t>(sizeof(kMarker) - 1U))) {
+            return false;
+        }
+
+        TiffConfig cfg;
+        cfg.le               = false;
+        cfg.bigtiff          = false;
+        uint16_t entry_count = 0U;
+        if (!read_tiff_u16(cfg, header, kHeaderBytes, &entry_count)
+            || entry_count == 0U
+            || entry_count > options.limits.max_entries_per_ifd) {
+            return false;
+        }
+        uint64_t entries_off = 0U;
+        if (!ricoh_checked_add(subdir_off, kHeaderBytes + 2U, &entries_off)
+            || !source_tiff_contains(*source, entries_off,
+                                     uint64_t(entry_count) * 12U + 4U)) {
+            return false;
+        }
+
+        char scratch[64];
+        const std::string_view ifd_name
+            = make_mk_subtable_ifd_token(mk_prefix, "subdir", 0U,
+                                         std::span<char>(scratch));
+        if (ifd_name.empty()) {
+            return false;
+        }
+        const BlockId block = store.add_block(BlockInfo {});
+        if (block == kInvalidBlockId) {
+            return true;
+        }
+
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            const uint64_t entry_off = entries_off + uint64_t(i) * 12U;
+            std::span<const std::byte> entry_raw;
+            if (!source_tiff_view(source, entry_off, 12U, &entry_raw)) {
+                return true;
+            }
+            ClassicIfdEntry ifd_entry;
+            if (!read_classic_ifd_entry(cfg, entry_raw, 0U, &ifd_entry)) {
+                return true;
+            }
+            uint64_t value_bytes = 0U;
+            const bool have_ref
+                = tiff_type_size(ifd_entry.type) != 0U
+                  && classic_ifd_entry_value_bytes(ifd_entry, &value_bytes);
+
+            Entry entry;
+            entry.key          = make_exif_tag_key(store.arena(), ifd_name,
+                                                   ifd_entry.tag);
+            entry.origin.block = block;
+            entry.origin.order_in_block = i;
+            entry.origin.wire_type      = WireType { WireFamily::Tiff,
+                                                ifd_entry.type };
+            entry.origin.wire_count     = ifd_entry.count32;
+
+            std::span<const std::byte> value_raw;
+            bool have_value = false;
+            if (!have_ref) {
+                entry.flags |= EntryFlags::Unreadable;
+            } else if (value_bytes > options.limits.max_value_bytes) {
+                update_status(status_out, ExifDecodeStatus::LimitExceeded);
+                entry.flags |= EntryFlags::Truncated;
+            } else if (value_bytes <= 4U) {
+                value_raw  = entry_raw.subspan(8U,
+                                               static_cast<size_t>(value_bytes));
+                have_value = true;
+            } else {
+                const uint64_t absolute = ifd_entry.value_or_off32;
+                if (source_tiff_contains(*source, absolute, value_bytes)) {
+                    have_value = source_tiff_value(source, absolute,
+                                                   value_bytes, &value_raw);
+                } else {
+                    uint64_t local0  = 0U;
+                    uint64_t local20 = 0U;
+                    const bool have0
+                        = ricoh_checked_add(subdir_off,
+                                            ifd_entry.value_or_off32, &local0)
+                          && source_tiff_contains(*source, local0, value_bytes);
+                    const bool have20
+                        = ricoh_checked_add(subdir_off, kHeaderBytes, &local20)
+                          && ricoh_checked_add(local20,
+                                               ifd_entry.value_or_off32,
+                                               &local20)
+                          && source_tiff_contains(*source, local20,
+                                                  value_bytes);
+                    uint64_t selected = have20 ? local20 : local0;
+                    if (have0 && have20
+                        && (ifd_entry.type == 2U || ifd_entry.type == 129U
+                            || (ifd_entry.tag == 0x001AU
+                                && ifd_entry.type == 1U))) {
+                        std::span<const std::byte> raw0;
+                        std::span<const std::byte> raw20;
+                        uint32_t score0  = 0U;
+                        uint32_t score20 = 0U;
+                        if (source_tiff_value(source, local0, value_bytes,
+                                              &raw0)) {
+                            score0 = ifd_entry.tag == 0x001AU
+                                         ? score_ricoh_faceinfo_blob(raw0)
+                                         : score_ascii_blob(raw0);
+                        }
+                        if (source_tiff_value(source, local20, value_bytes,
+                                              &raw20)) {
+                            score20 = ifd_entry.tag == 0x001AU
+                                          ? score_ricoh_faceinfo_blob(raw20)
+                                          : score_ascii_blob(raw20);
+                        }
+                        selected = score20 >= score0 ? local20 : local0;
+                    }
+                    if (have0 || have20) {
+                        have_value = source_tiff_value(source, selected,
+                                                       value_bytes, &value_raw);
+                    }
+                }
+            }
+
+            if (have_value) {
+                if (ifd_entry.tag == 0x001AU) {
+                    decode_ricoh_faceinfo(mk_prefix, value_raw, store, options,
+                                          status_out);
+                } else if (ifd_entry.tag == 0x002CU) {
+                    decode_ricoh_serialinfo(mk_prefix, value_raw, store,
+                                            options, status_out);
+                }
+                entry.value = decode_tiff_value(cfg, value_raw, ifd_entry.type,
+                                                ifd_entry.count32, 0U,
+                                                value_bytes, store.arena(),
+                                                options.limits, status_out);
+            } else if (!any(entry.flags, EntryFlags::Truncated)
+                       && !any(entry.flags, EntryFlags::Unreadable)) {
+                update_status(status_out, ExifDecodeStatus::Malformed);
+                entry.flags |= EntryFlags::Unreadable;
+            }
+
+            (void)store.add_entry(entry);
+            if (status_out) {
+                status_out->entries_decoded += 1U;
+            }
+        }
+        return true;
+    }
+
+
+    static bool find_source_ricoh_marker(SourceTiffReader* source,
+                                         uint64_t range_off,
+                                         uint64_t range_bytes,
+                                         uint64_t* marker_off) noexcept
+    {
+        if (!source || !marker_off) {
+            return false;
+        }
+        static constexpr char kMarker[]        = "[Ricoh Camera Info]";
+        static constexpr uint64_t kMarkerBytes = sizeof(kMarker) - 1U;
+        if (range_bytes < kMarkerBytes) {
+            return false;
+        }
+
+        uint64_t chunk_bytes   = source->value_scratch.size();
+        bool use_value_scratch = true;
+        if (chunk_bytes < kMarkerBytes) {
+            chunk_bytes       = source->window.storage.size();
+            use_value_scratch = false;
+        }
+        if (chunk_bytes < kMarkerBytes) {
+            return false;
+        }
+        if (chunk_bytes > 4096U) {
+            chunk_bytes = 4096U;
+        }
+        const uint64_t step = chunk_bytes - kMarkerBytes + 1U;
+
+        for (uint64_t local = 0U; local < range_bytes;) {
+            const uint64_t remaining = range_bytes - local;
+            const uint64_t request   = remaining < chunk_bytes ? remaining
+                                                               : chunk_bytes;
+            if (request < kMarkerBytes) {
+                break;
+            }
+            uint64_t source_off = 0U;
+            if (!ricoh_checked_add(range_off, local, &source_off)) {
+                return false;
+            }
+            std::span<const std::byte> raw;
+            const bool read_ok
+                = use_value_scratch
+                      ? source_tiff_value(source, source_off, request, &raw)
+                      : source_tiff_view(source, source_off, request, &raw);
+            if (!read_ok) {
+                return false;
+            }
+            for (uint64_t i = 0U; i + kMarkerBytes <= raw.size(); ++i) {
+                if (match_bytes(raw, i, kMarker,
+                                static_cast<uint32_t>(kMarkerBytes))) {
+                    *marker_off = source_off + i;
+                    return true;
+                }
+            }
+            if (remaining <= chunk_bytes) {
+                break;
+            }
+            local += step;
+        }
+        return false;
+    }
+
+
+    static bool find_source_ricoh_tag_value_marker(
+        SourceTiffReader* source, const TiffConfig& cfg,
+        uint64_t maker_note_off, uint64_t maker_note_bytes,
+        uint64_t local_ifd_off, uint16_t wanted_tag,
+        const ExifDecodeLimits& limits, uint64_t* marker_off) noexcept
+    {
+        uint64_t ifd_off = 0U;
+        std::span<const std::byte> count_raw;
+        uint16_t entry_count = 0U;
+        if (!ricoh_checked_add(maker_note_off, local_ifd_off, &ifd_off)
+            || !source_tiff_view(source, ifd_off, 2U, &count_raw)
+            || !read_tiff_u16(cfg, count_raw, 0U, &entry_count)
+            || entry_count == 0U || entry_count > limits.max_entries_per_ifd) {
+            return false;
+        }
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            std::span<const std::byte> raw;
+            if (!source_tiff_view(source, ifd_off + 2U + uint64_t(i) * 12U, 12U,
+                                  &raw)) {
+                return false;
+            }
+            ClassicIfdEntry entry;
+            uint64_t value_bytes = 0U;
+            if (!read_classic_ifd_entry(cfg, raw, 0U, &entry)
+                || entry.tag != wanted_tag
+                || !classic_ifd_entry_value_bytes(entry, &value_bytes)
+                || value_bytes <= 4U || value_bytes > limits.max_value_bytes) {
+                continue;
+            }
+
+            uint64_t selected = 0U;
+            if (!ricoh_source_local_value(maker_note_off, maker_note_bytes, 8U,
+                                          entry.value_or_off32, value_bytes,
+                                          &selected, nullptr)
+                && !ricoh_source_local_value(maker_note_off, maker_note_bytes,
+                                             0U, entry.value_or_off32,
+                                             value_bytes, &selected, nullptr)) {
+                selected = entry.value_or_off32;
+                if (!source_tiff_contains(*source, selected, value_bytes)) {
+                    continue;
+                }
+            }
+            return find_source_ricoh_marker(source, selected, value_bytes,
+                                            marker_off);
+        }
+        return false;
+    }
+
+}  // namespace
+
+
+bool
+decode_ricoh_makernote_from_source(SourceTiffReader* source,
+                                   const TiffConfig& parent_cfg,
+                                   uint64_t maker_note_off,
+                                   std::span<const std::byte> maker_note,
+                                   std::string_view mk_ifd0, MetaStore& store,
+                                   const ExifDecodeOptions& options,
+                                   ExifDecodeResult* status_out) noexcept
+{
+    if (!source || !source->result || mk_ifd0.empty()
+        || !source_tiff_contains(*source, maker_note_off, maker_note.size())) {
+        return false;
+    }
+
+    const std::string_view mk_prefix = options.tokens.ifd_prefix;
+    if (decode_ricoh_type2_ricoh_header_ifd(maker_note, mk_prefix, store,
+                                            options, status_out)
+        || decode_ricoh_type2_padded_ifd(maker_note, mk_prefix, store, options,
+                                         status_out)) {
+        return true;
+    }
+
+    ClassicIfdCandidate best;
+    bool found                 = false;
+    const uint64_t preferred[] = { 8U, 10U };
+    for (uint64_t local_ifd : preferred) {
+        for (uint32_t endian = 0U; endian < 2U; ++endian) {
+            TiffConfig cfg;
+            cfg.le      = endian == 0U;
+            cfg.bigtiff = false;
+            ClassicIfdCandidate candidate;
+            if (!score_source_ricoh_main_ifd(source, cfg, maker_note_off,
+                                             maker_note.size(), local_ifd,
+                                             options.limits, &candidate)) {
+                continue;
+            }
+            if (!found || candidate.valid_entries > best.valid_entries) {
+                best  = candidate;
+                found = true;
+            }
+        }
+    }
+
+    if (!found) {
+        const uint64_t scan_bytes = maker_note.size() < 256U ? maker_note.size()
+                                                             : 256U;
+        for (uint64_t local_ifd = 0U; local_ifd + 2U <= scan_bytes;
+             ++local_ifd) {
+            for (uint32_t endian = 0U; endian < 2U; ++endian) {
+                TiffConfig cfg;
+                cfg.le      = endian == 0U;
+                cfg.bigtiff = false;
+                ClassicIfdCandidate candidate;
+                if (!score_source_ricoh_main_ifd(source, cfg, maker_note_off,
+                                                 maker_note.size(), local_ifd,
+                                                 options.limits, &candidate)) {
+                    continue;
+                }
+                if (!found || candidate.valid_entries > best.valid_entries) {
+                    best  = candidate;
+                    found = true;
+                }
+            }
+        }
+    }
+    if (!found) {
+        return true;  // Same opaque fallback as the contiguous decoder.
+    }
+
+    TiffConfig cfg;
+    cfg.le      = best.le;
+    cfg.bigtiff = false;
+    if (!decode_source_ricoh_main_ifd(source, cfg, maker_note_off, maker_note,
+                                      best.offset, mk_ifd0, store, options,
+                                      status_out)) {
+        return false;
+    }
+
+    std::vector<std::vector<std::byte>> imageinfo_blobs;
+    std::vector<uint64_t> subdir_pointers;
+    std::vector<uint64_t> theta_pointers;
+    const ByteArena& arena               = store.arena();
+    const std::span<const Entry> entries = store.entries();
+    for (const Entry& entry : entries) {
+        if (entry.key.kind != MetaKeyKind::ExifTag
+            || arena_string(arena, entry.key.data.exif_tag.ifd) != mk_ifd0) {
+            continue;
+        }
+        const uint16_t tag = entry.key.data.exif_tag.tag;
+        if (tag == 0x1001U && entry.origin.wire_type.family == WireFamily::Tiff
+            && entry.origin.wire_type.code != 3U
+            && (entry.value.kind == MetaValueKind::Bytes
+                || entry.value.kind == MetaValueKind::Array)) {
+            const std::span<const std::byte> raw = arena.span(
+                entry.value.data.span);
+            imageinfo_blobs.emplace_back(raw.begin(), raw.end());
+        } else if (tag == 0x2001U && entry.value.kind == MetaValueKind::Scalar
+                   && entry.value.elem_type == MetaElementType::U32) {
+            subdir_pointers.emplace_back(
+                static_cast<uint32_t>(entry.value.data.u64));
+        } else if (tag == 0x4001U && entry.value.kind == MetaValueKind::Scalar
+                   && entry.value.elem_type == MetaElementType::U32) {
+            theta_pointers.emplace_back(
+                static_cast<uint32_t>(entry.value.data.u64));
+        }
+    }
+
+    bool have_subdir = false;
+    uint64_t marker  = UINT64_MAX;
+    if (find_source_ricoh_marker(source, maker_note_off, maker_note.size(),
+                                 &marker)) {
+        have_subdir = decode_source_ricoh_subdir(source, marker, mk_prefix,
+                                                 store, options, status_out);
+    }
+
+    for (const std::vector<std::byte>& blob : imageinfo_blobs) {
+        decode_ricoh_imageinfo_u8_table(mk_prefix,
+                                        std::span<const std::byte>(blob.data(),
+                                                                   blob.size()),
+                                        store, options, status_out);
+    }
+
+    uint64_t value_marker = UINT64_MAX;
+    if (find_source_ricoh_tag_value_marker(source, cfg, maker_note_off,
+                                           maker_note.size(), best.offset,
+                                           0x2001U, options.limits,
+                                           &value_marker)) {
+        have_subdir = decode_source_ricoh_subdir(source, value_marker,
+                                                 mk_prefix, store, options,
+                                                 status_out)
+                      || have_subdir;
+    }
+    for (uint64_t pointer : subdir_pointers) {
+        have_subdir = decode_source_ricoh_subdir(source, pointer, mk_prefix,
+                                                 store, options, status_out)
+                      || have_subdir;
+    }
+
+    uint32_t theta_index = 0U;
+    for (uint64_t pointer : theta_pointers) {
+        char scratch[64];
+        const std::string_view ifd_name = make_mk_subtable_ifd_token(
+            mk_prefix, "thetasubdir", theta_index++, std::span<char>(scratch));
+        OffsetPolicy offsets;
+        if (!ifd_name.empty()) {
+            (void)decode_classic_ifd_from_source(source, parent_cfg, pointer,
+                                                 offsets, ifd_name, store,
+                                                 options, status_out,
+                                                 EntryFlags::None);
+        }
+    }
+
+    (void)have_subdir;
+    return true;
+}
+
 }  // namespace openmeta::exif_internal

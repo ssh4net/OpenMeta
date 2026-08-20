@@ -153,6 +153,48 @@ namespace {
     }
 
 
+    static bool
+    olympus_source_ifd_plausible(SourceTiffReader* source,
+                                 const TiffConfig& cfg, uint64_t ifd_off,
+                                 const ExifDecodeLimits& limits) noexcept
+    {
+        uint16_t entry_count = 0U;
+        if (!olympus_source_entry_count(source, cfg, ifd_off, limits,
+                                        &entry_count)) {
+            return false;
+        }
+        const uint64_t table_bytes = uint64_t(entry_count) * 12U;
+        if (ifd_off > UINT64_MAX - 2U || table_bytes > UINT64_MAX - ifd_off - 2U
+            || !source_tiff_contains(*source, ifd_off + 2U + table_bytes, 4U)) {
+            return false;
+        }
+
+        uint32_t valid = 0U;
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            ClassicIfdEntry entry;
+            if (!olympus_source_entry(source, cfg, ifd_off, i, &entry)) {
+                return false;
+            }
+            const uint64_t unit = tiff_type_size(entry.type);
+            if (unit == 0U || uint64_t(entry.count32) > UINT64_MAX / unit) {
+                continue;
+            }
+            const uint64_t value_bytes = uint64_t(entry.count32) * unit;
+            if (value_bytes > limits.max_value_bytes) {
+                continue;
+            }
+            if (value_bytes <= 4U
+                || source_tiff_contains(*source, entry.value_or_off32,
+                                        value_bytes)) {
+                valid += 1U;
+            }
+        }
+        const uint32_t minimum = entry_count > 4U ? uint32_t(entry_count) / 2U
+                                                  : uint32_t(entry_count);
+        return valid >= minimum;
+    }
+
+
     static void olympus_decode_source_camerasettings_nested(
         SourceTiffReader* source, const TiffConfig& cfg, uint64_t ifd_off,
         std::string_view vendor_prefix, MetaStore& store,
@@ -189,6 +231,10 @@ namespace {
                 = make_mk_subtable_ifd_token(vendor_prefix, subtable, 0U,
                                              std::span<char>(ifd_buf));
             if (ifd_token.empty()) {
+                continue;
+            }
+            if (!olympus_source_ifd_plausible(source, cfg, entry.value_or_off32,
+                                              options.limits)) {
                 continue;
             }
             const OffsetPolicy offsets;
@@ -247,6 +293,10 @@ namespace {
             }
 
             const uint64_t sub_ifd_off = entry.value_or_off32;
+            if (!olympus_source_ifd_plausible(source, cfg, sub_ifd_off,
+                                              options.limits)) {
+                continue;
+            }
             const OffsetPolicy offsets;
             if (!decode_classic_ifd_from_source(source, cfg, sub_ifd_off,
                                                 offsets, ifd_token, store,

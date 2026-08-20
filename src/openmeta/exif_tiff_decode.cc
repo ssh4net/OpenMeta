@@ -3259,7 +3259,7 @@ namespace {
         if (unit == 0) {
             return false;
         }
-        if (count > (UINT64_MAX / unit)) {
+        if (count != 0 && count > (UINT64_MAX / unit)) {
             return false;
         }
         const uint64_t total_bytes = count * unit;
@@ -4141,7 +4141,7 @@ namespace exif_internal {
             return false;
         }
         const uint64_t count = e.count32;
-        if (count != 0 && count > (UINT64_MAX / unit)) {
+        if (count > (UINT64_MAX / unit)) {
             update_status(status_out, ExifDecodeStatus::Malformed);
             return false;
         }
@@ -5241,8 +5241,9 @@ namespace exif_internal {
         const OffsetPolicy& offsets, std::string_view ifd_name,
         MetaStore& store, const ExifDecodeOptions& options,
         ExifDecodeResult* status_out, EntryFlags extra_flags,
-        bool allow_missing_next_ifd_pointer,
-        uint16_t forced_entry_count) noexcept
+        bool allow_missing_next_ifd_pointer, uint16_t forced_entry_count,
+        const TiffConfig* out_of_line_value_cfg, bool mark_contextual_names,
+        bool allow_zero_count_unknown_type) noexcept
     {
         if (!source || !source->range || !source->result || cfg.bigtiff
             || ifd_name.empty()) {
@@ -5300,8 +5301,17 @@ namespace exif_internal {
             }
 
             ClassicIfdValueRef ref;
-            if (!resolve_classic_ifd_value_ref(offsets, entry_off, ifd_entry,
-                                               &ref, status_out)) {
+            if (allow_zero_count_unknown_type && ifd_entry.count32 == 0U
+                && tiff_type_size(ifd_entry.type) == 0U) {
+                if (entry_off > UINT64_MAX - 8U) {
+                    continue;
+                }
+                ref.value_off    = entry_off + 8U;
+                ref.value_bytes  = 0U;
+                ref.inline_value = true;
+            } else if (!resolve_classic_ifd_value_ref(offsets, entry_off,
+                                                      ifd_entry, &ref,
+                                                      status_out)) {
                 continue;
             }
 
@@ -5345,12 +5355,20 @@ namespace exif_internal {
                        || !have_value) {
                 entry.flags |= EntryFlags::Truncated;
             } else {
-                entry.value = decode_tiff_value(cfg, value_raw, ifd_entry.type,
+                const TiffConfig& value_cfg = (!ref.inline_value
+                                               && out_of_line_value_cfg)
+                                                  ? *out_of_line_value_cfg
+                                                  : cfg;
+                entry.value = decode_tiff_value(value_cfg, value_raw,
+                                                ifd_entry.type,
                                                 ifd_entry.count32, 0U,
                                                 ref.value_bytes, store.arena(),
                                                 options.limits, status_out);
             }
-            maybe_mark_contextual_name(ifd_name, ifd_entry.tag, store, &entry);
+            if (mark_contextual_names) {
+                maybe_mark_contextual_name(ifd_name, ifd_entry.tag, store,
+                                           &entry);
+            }
             if (store.add_entry(entry) == kInvalidEntryId) {
                 mark_limit_exceeded(status_out,
                                     store.arena().limit_exceeded()
@@ -5932,6 +5950,61 @@ namespace {
 
         if (vendor == MakerNoteVendor::Kodak && source
             && exif_internal::decode_kodak_makernote_from_source(
+                source, cfg, maker_note_off, maker_note, maker_ifd, store,
+                mn_options, &result->decode)) {
+            return;
+        }
+
+        if (vendor == MakerNoteVendor::Nintendo && source
+            && exif_internal::decode_nintendo_makernote_from_source(
+                source, cfg, maker_note_off, maker_note, maker_ifd, store,
+                mn_options, &result->decode)) {
+            return;
+        }
+
+        if (vendor == MakerNoteVendor::Casio && source
+            && exif_internal::decode_casio_makernote_from_source(
+                source, cfg, maker_note_off, maker_note, maker_ifd, store,
+                mn_options, &result->decode)) {
+            return;
+        }
+
+        if (vendor == MakerNoteVendor::Minolta) {
+            if (exif_internal::decode_minolta_makernote(
+                    cfg, maker_note, 0U, maker_note.size(), maker_ifd, store,
+                    mn_options, &result->decode)) {
+                return;
+            }
+            uint16_t entry_count = 1U;
+            if ((read_tiff_u16(cfg, maker_note, 0U, &entry_count)
+                 && entry_count == 0U)
+                || (read_tiff_u16(TiffConfig { !cfg.le, false }, maker_note, 0U,
+                                  &entry_count)
+                    && entry_count == 0U)) {
+                return;
+            }
+            if ((maker_note.size() >= 3U
+                 && match_bytes(maker_note, 0U, "MLY", 3U))
+                || (maker_note.size() >= 2U
+                    && match_bytes(maker_note, 0U, "+M", 2U))) {
+                // Minolta type-3 payloads are fixed diagnostic blobs rather
+                // than TIFF directories; retain them as opaque metadata.
+                return;
+            }
+            // Other Minolta type-3 payloads are also opaque fixed diagnostic
+            // blobs. The contiguous path does not interpret them either.
+            return;
+        }
+
+        if (vendor == MakerNoteVendor::Flir && source
+            && exif_internal::decode_flir_makernote_from_source(
+                source, cfg, maker_note_off, maker_note, maker_ifd, store,
+                mn_options, &result->decode)) {
+            return;
+        }
+
+        if (vendor == MakerNoteVendor::Ricoh && source
+            && exif_internal::decode_ricoh_makernote_from_source(
                 source, cfg, maker_note_off, maker_note, maker_ifd, store,
                 mn_options, &result->decode)) {
             return;
