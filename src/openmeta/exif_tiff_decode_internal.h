@@ -142,7 +142,8 @@ namespace exif_internal {
         const OffsetPolicy& offsets, std::string_view ifd_name,
         MetaStore& store, const ExifDecodeOptions& options,
         ExifDecodeResult* status_out, EntryFlags extra_flags,
-        bool allow_missing_next_ifd_pointer = false) noexcept;
+        bool allow_missing_next_ifd_pointer = false,
+        uint16_t forced_entry_count         = 0U) noexcept;
 
     // Low-level helpers (implemented in exif_tiff_decode.cc).
     bool match_bytes(std::span<const std::byte> bytes, uint64_t offset,
@@ -274,6 +275,12 @@ namespace exif_internal {
                                std::string_view mk_ifd0, MetaStore& store,
                                const ExifDecodeOptions& options,
                                ExifDecodeResult* status_out) noexcept;
+
+    bool decode_fuji_makernote_from_source(
+        SourceTiffReader* source, uint64_t maker_note_off,
+        std::span<const std::byte> maker_note, std::string_view mk_ifd0,
+        MetaStore& store, const ExifDecodeOptions& options,
+        ExifDecodeResult* status_out) noexcept;
 
     bool decode_sony_makernote(const TiffConfig& parent_cfg,
                                std::span<const std::byte> tiff_bytes,

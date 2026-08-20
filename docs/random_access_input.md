@@ -10,7 +10,8 @@ Version 0.4.100 added the allocation-free source primitive in
 `openmeta/random_access_source.h`. Version 0.4.101 added source-relative ranges,
 caller-owned read windows, and the first decoder conversion. Version 0.4.102
 added source-backed nested TIFF offset resolution. Version 0.4.103 extends that
-conversion to Olympus, Panasonic, and Samsung MakerNotes. The contract now
+conversion to Olympus, Panasonic, and Samsung MakerNotes. Version 0.4.104 adds
+bounded Fujifilm and General Imaging MakerNote source layouts. The contract now
 defines:
 
 - a fixed source size and synchronous `read_at(offset, destination)` callback
@@ -32,15 +33,17 @@ uses checked absolute, MakerNote-relative, and signed adjusted-base candidates.
 Legacy Olympus values and nested sub-IFDs use outer-TIFF offsets, modern
 Olympus/OM System notes retain MakerNote-relative recursion, Panasonic retains
 its binary-table expansion, and self-contained Samsung STMN and Type2 notes
-retain their derived tables.
+retain their derived tables. Fujifilm `FUJIFILM`/`GENERALE` notes use bounded
+MakerNote-relative subranges, while General Imaging Type 2 notes use checked
+source windows without copying or patching bytes.
 
 Callback decoding does not yet claim complete MakerNote parity. Canon retains
 its complete existing derived-table decoder when required values are inside the
 declared MakerNote payload. If Canon values extend outside that payload, the
 main IFD is decoded from the source but the unconverted derived-table work is
 counted by `ExifRandomAccessDecodeResult::nested_payloads_skipped`. Other vendor
-paths with unconverted mixed offset bases, including Fuji, Kodak, Ricoh,
-Nintendo, Casio, Minolta, and FLIR variants, use the same residual instead of
+paths with unconverted mixed offset bases, including Kodak, Ricoh, Nintendo,
+Casio, Minolta, and FLIR variants, use the same residual instead of
 decoding against an incorrect subspan. A contiguous source keeps the full
 existing decoder behavior and reports no random-access residual.
 

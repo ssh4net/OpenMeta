@@ -213,9 +213,10 @@ decoding through this contract with caller-owned structural and value scratch.
 Version 0.4.102 adds source-backed Nikon embedded TIFF/type 1, Sony
 outer-TIFF-relative IFDs, and contained Canon adjusted-base payloads. Version
 0.4.103 adds Olympus nested IFDs, Panasonic binary tables, and Samsung
-STMN/Type2 derived tables. Contiguous input retains the full existing decoder
-behavior. Unconverted mixed-base vendor payloads and derived subtables remain
-explicit residuals, so hosts must check
+STMN/Type2 derived tables. Version 0.4.104 adds Fujifilm self-relative IFDs and
+General Imaging Type 2 source windows. Contiguous input retains the full
+existing decoder behavior. Unconverted mixed-base vendor payloads and derived
+subtables remain explicit residuals, so hosts must check
 ``ExifRandomAccessDecodeResult::complete()`` before claiming full nested parity.
 See :doc:`random_access_input` for buffer sizing, lifetime, short-read,
 concurrency, and performance requirements.

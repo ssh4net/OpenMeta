@@ -5241,20 +5241,23 @@ namespace exif_internal {
         const OffsetPolicy& offsets, std::string_view ifd_name,
         MetaStore& store, const ExifDecodeOptions& options,
         ExifDecodeResult* status_out, EntryFlags extra_flags,
-        bool allow_missing_next_ifd_pointer) noexcept
+        bool allow_missing_next_ifd_pointer,
+        uint16_t forced_entry_count) noexcept
     {
         if (!source || !source->range || !source->result || cfg.bigtiff
             || ifd_name.empty()) {
             return false;
         }
 
-        std::span<const std::byte> count_raw;
-        if (!source_tiff_view(source, ifd_off, 2U, &count_raw)) {
-            return false;
+        uint16_t entry_count = forced_entry_count;
+        if (entry_count == 0U) {
+            std::span<const std::byte> count_raw;
+            if (!source_tiff_view(source, ifd_off, 2U, &count_raw)
+                || !read_tiff_u16(cfg, count_raw, 0U, &entry_count)) {
+                return false;
+            }
         }
-        uint16_t entry_count = 0U;
-        if (!read_tiff_u16(cfg, count_raw, 0U, &entry_count)
-            || entry_count == 0U
+        if (entry_count == 0U
             || entry_count > options.limits.max_entries_per_ifd) {
             return false;
         }
@@ -5916,6 +5919,13 @@ namespace {
         if (vendor == MakerNoteVendor::Panasonic && source
             && exif_internal::decode_panasonic_makernote_from_source(
                 source, cfg, maker_note_off, maker_note, maker_ifd, store,
+                mn_options, &result->decode)) {
+            return;
+        }
+
+        if (vendor == MakerNoteVendor::Fuji && source
+            && exif_internal::decode_fuji_makernote_from_source(
+                source, maker_note_off, maker_note, maker_ifd, store,
                 mn_options, &result->decode)) {
             return;
         }

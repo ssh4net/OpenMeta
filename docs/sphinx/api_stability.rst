@@ -50,9 +50,10 @@ Host-facing API map
      - Experimental
      - Allocation-free memory/callback source with exact reads, explicit
        short-read/I/O/source-change results, caller-owned accounting/scratch,
-       and bounded classic TIFF/BigTIFF/DNG/RW2/ORF IFD decoding. Contiguous
-       input retains full existing behavior; callback results report value
-       scratch requirements and outer-relative MakerNote residuals. See
+       bounded classic TIFF/BigTIFF/DNG/RW2/ORF IFD decoding, and selected
+       source-backed vendor layouts through Fujifilm/General Imaging.
+       Contiguous input retains full existing behavior; callback results report
+       value scratch requirements and remaining nested MakerNote residuals. See
        :doc:`random_access_input`.
    * - Compatibility dumps: ``dump_metadata_compatibility(...)``,
        ``dump_transfer_compatibility(...)``

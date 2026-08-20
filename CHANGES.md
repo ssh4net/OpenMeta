@@ -1,5 +1,29 @@
 # OpenMeta Changes
 
+## 0.4.104 - 2026-08-19
+
+Changes compared with `0.4.103`.
+
+### Added
+
+- Added callback-backed Fujifilm MakerNote decoding for self-relative
+  `FUJIFILM`/`GENERALE` IFDs and both bounded General Imaging Type 2 offset
+  windows without copying or patching source bytes.
+
+### Changed
+
+- The source-backed classic IFD reader can accept a caller-supplied entry count
+  for layouts that store the count outside the readable wire table. Existing
+  callers retain ordinary on-wire count parsing.
+- Random-access decoding now limits the explicit mixed-base residual list to
+  Kodak, Ricoh, Nintendo, Casio, Minolta, and FLIR paths plus external Canon
+  derived subtables.
+
+### Tests And Validation
+
+- Added callback regressions for Fujifilm out-of-line values and General
+  Imaging Type 2 virtual-count decoding.
+
 ## 0.4.103 - 2026-08-19
 
 Changes compared with `0.4.102`.

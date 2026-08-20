@@ -450,6 +450,59 @@ namespace {
     }
 
     static std::vector<std::byte>
+    make_test_tiff_with_makernote_and_trailing_exif_tag(
+        std::string_view make, std::span<const std::byte> maker_note)
+    {
+        const uint32_t ifd0_off       = 8U;
+        const uint32_t ifd0_entry_cnt = 2U;
+        const uint32_t ifd0_size      = 2U + ifd0_entry_cnt * 12U + 4U;
+        const uint32_t make_off       = ifd0_off + ifd0_size;
+        const uint32_t make_count     = static_cast<uint32_t>(make.size() + 1U);
+        const uint32_t exif_ifd_off   = make_off + make_count;
+        const uint32_t exif_entry_cnt = 2U;
+        const uint32_t exif_ifd_size  = 2U + exif_entry_cnt * 12U + 4U;
+        const uint32_t maker_note_off = exif_ifd_off + exif_ifd_size;
+        const uint32_t maker_note_count = static_cast<uint32_t>(
+            maker_note.size());
+
+        std::vector<std::byte> tiff;
+        append_bytes(&tiff, "II");
+        append_u16le(&tiff, 42U);
+        append_u32le(&tiff, ifd0_off);
+
+        append_u16le(&tiff, static_cast<uint16_t>(ifd0_entry_cnt));
+        append_u16le(&tiff, 0x010FU);
+        append_u16le(&tiff, 2U);
+        append_u32le(&tiff, make_count);
+        append_u32le(&tiff, make_off);
+        append_u16le(&tiff, 0x8769U);
+        append_u16le(&tiff, 4U);
+        append_u32le(&tiff, 1U);
+        append_u32le(&tiff, exif_ifd_off);
+        append_u32le(&tiff, 0U);
+
+        append_bytes(&tiff, make);
+        tiff.push_back(std::byte { 0U });
+        EXPECT_EQ(tiff.size(), exif_ifd_off);
+
+        append_u16le(&tiff, static_cast<uint16_t>(exif_entry_cnt));
+        append_u16le(&tiff, 0x927CU);
+        append_u16le(&tiff, 7U);
+        append_u32le(&tiff, maker_note_count);
+        append_u32le(&tiff, maker_note_off);
+        append_u16le(&tiff, 0xA001U);
+        append_u16le(&tiff, 3U);
+        append_u32le(&tiff, 1U);
+        append_u16le(&tiff, 1U);
+        append_u16le(&tiff, 0U);
+        append_u32le(&tiff, 0U);
+
+        EXPECT_EQ(tiff.size(), maker_note_off);
+        tiff.insert(tiff.end(), maker_note.begin(), maker_note.end());
+        return tiff;
+    }
+
+    static std::vector<std::byte>
     make_test_tiff_with_makernote_big_endian_parent(
         std::string_view make, std::span<const std::byte> maker_note)
     {
@@ -10151,6 +10204,41 @@ TEST(MakerNoteDecode, DecodesFujiMakerNoteWithMultipleValueKinds)
     }
 }
 
+TEST(MakerNoteDecode, RandomAccessCallbackMatchesFujiMakerNoteValues)
+{
+    const std::vector<std::byte> mn = make_fuji_makernote_extended();
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_trailing_exif_tag("FUJIFILM", mn);
+
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote           = true;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {},
+                                                          options);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    callback_store.finalize();
+    const std::span<const EntryId> ids = callback_store.find_all(
+        exif_key("mk_fuji0", 0x1023));
+    ASSERT_EQ(ids.size(), 1U);
+    const Entry& entry = callback_store.entry(ids[0]);
+    EXPECT_EQ(entry.value.kind, MetaValueKind::Array);
+    EXPECT_EQ(entry.value.elem_type, MetaElementType::U16);
+    EXPECT_EQ(entry.value.count, 3U);
+
+    const std::span<const EntryId> color_ids = callback_store.find_all(
+        exif_key("exififd", 0xA001));
+    ASSERT_EQ(color_ids.size(), 1U);
+    EXPECT_EQ(callback_store.entry(color_ids[0]).value.data.u64, 1U);
+}
+
 TEST(MakerNoteDecode, MarksFujifilm1304PlaceholderForFujifilmMake)
 {
     const std::vector<std::byte> mn = make_fuji_ge2_makernote_extended();
@@ -10299,6 +10387,36 @@ TEST(MakerNoteDecode, DecodesFujiGeType2MakerNoteWithMultipleTags)
         EXPECT_EQ(e.value.elem_type, MetaElementType::U32);
         EXPECT_EQ(e.value.data.u64, 0x11223344U);
     }
+}
+
+TEST(MakerNoteDecode, RandomAccessCallbackMatchesFujiGeType2Layout)
+{
+    const std::vector<std::byte> mn = make_fuji_ge2_makernote_extended();
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote("GENERAL IMAGING", mn);
+
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote           = true;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {},
+                                                          options);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    callback_store.finalize();
+    const std::span<const EntryId> ids = callback_store.find_all(
+        exif_key("mk_fuji0", 0x1304));
+    ASSERT_EQ(ids.size(), 1U);
+    const Entry& entry = callback_store.entry(ids[0]);
+    EXPECT_EQ(entry.value.kind, MetaValueKind::Scalar);
+    EXPECT_EQ(entry.value.elem_type, MetaElementType::U32);
+    EXPECT_EQ(entry.value.data.u64, 0x11223344U);
 }
 
 TEST(MakerNoteDecode, DecodesKodakKdkMakerNote)
