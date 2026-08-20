@@ -44,6 +44,7 @@ enum class ContainerFormat : uint8_t {
     Heif,
     Avif,
     Cr3,
+    Exr,
 };
 
 /// Logical kind of a discovered metadata block.
@@ -137,7 +138,7 @@ struct ScanResult final {
 struct ContainerRandomAccessScratch final {
     /// Reusable read-ahead cache. JPEG scanning requires up to 512 bytes to
     /// preserve bare-XMP detection parity with the contiguous scanner. PNG,
-    /// WebP, JP2, JXL, and ISO-BMFF scanning require at least 32 bytes.
+    /// WebP, GIF, JP2, JXL, and ISO-BMFF scanning require at least 32 bytes.
     std::span<std::byte> read_window;
     RandomAccessReadWindowOptions window_options;
 };
@@ -266,6 +267,27 @@ scan_gif(std::span<const std::byte> bytes,
          std::span<ContainerBlockRef> out) noexcept;
 ScanResult
 measure_scan_gif(std::span<const std::byte> bytes) noexcept;
+/**
+ * \brief Scans GIF metadata extensions through a bounded positional source.
+ *
+ * Offsets are relative to \p gif. Callback input requires at least 32 bytes of
+ * caller-owned read-window storage. Image raster sub-block payloads are skipped;
+ * metadata extension payloads are located but not fetched.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ContainerRandomAccessScanResult
+scan_gif_random_access(const RandomAccessSourceRange& gif,
+                       std::span<ContainerBlockRef> out,
+                       const ContainerRandomAccessScratch& scratch,
+                       const RandomAccessReadLimits& read_limits
+                       = RandomAccessReadLimits {}) noexcept;
+ContainerRandomAccessScanResult
+measure_scan_gif_random_access(const RandomAccessSourceRange& gif,
+                               const ContainerRandomAccessScratch& scratch,
+                               const RandomAccessReadLimits& read_limits
+                               = RandomAccessReadLimits {}) noexcept;
 /// Scans a TIFF/DNG byte stream; the whole file is exposed as an EXIF/TIFF-IFD block.
 ScanResult
 scan_tiff(std::span<const std::byte> bytes,

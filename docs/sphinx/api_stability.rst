@@ -41,21 +41,26 @@ Host-facing API map
      - Stable
      - v1 query contract for read, structured decode, transfer preparation,
        target edit, and raw-preservation status by format/family.
-   * - Bounded positional input, TIFF-family decode, and container scan:
+   * - Bounded positional input, decode, payload, scan, and snapshot APIs:
        ``RandomAccessSource``, source ranges/read windows,
        ``random_access_read_exact(...)``,
        ``decode_exif_tiff_random_access(...)``,
-       and the ``scan_*_random_access(...)`` family
+       ``decode_exr_header_random_access(...)``,
+       ``extract_payload_random_access(...)``,
+       the ``scan_*_random_access(...)`` family, and
+       ``read_transfer_source_snapshot_random_access(...)``
      - ``openmeta/random_access_source.h``,
-       ``openmeta/exif_tiff_decode.h``, ``openmeta/container_scan.h``
+       ``openmeta/exif_tiff_decode.h``, ``openmeta/exr_decode.h``,
+       ``openmeta/container_payload.h``, ``openmeta/container_scan.h``,
+       ``openmeta/metadata_transfer.h``
      - Experimental
-     - Allocation-free memory/callback source with exact reads, explicit
+     - Allocation-free callback traversal with exact reads, explicit
        short-read/I/O/source-change results, caller-owned accounting/scratch,
-       bounded classic TIFF/BigTIFF/DNG/RW2/ORF IFD decoding, source-backed
-       vendor layouts, and JPEG, PNG, WebP, JP2, JXL, and ISO-BMFF scanning
-       with contiguous descriptor parity while skipping image/media payloads.
-       Callback source failures remain separate from malformed-container/decode
-       status. See :doc:`random_access_input`.
+       and an owned finalized snapshot result. Includes bounded TIFF-family and
+       EXR header decode plus JPEG, PNG, WebP, GIF, JP2, JXL, and ISO-BMFF
+       metadata discovery/fetch while skipping image/media payloads. Native
+       RAF/X3F/CRW and selected recursive or source-wide enrichment remain
+       explicit residuals. See :doc:`random_access_input`.
    * - Compatibility dumps: ``dump_metadata_compatibility(...)``,
        ``dump_transfer_compatibility(...)``
      - ``openmeta/compatibility_dump.h``

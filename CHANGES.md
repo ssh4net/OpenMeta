@@ -1,5 +1,37 @@
 # OpenMeta Changes
 
+## 0.4.109 - 2026-08-20
+
+Changes compared with `0.4.108`.
+
+### Added
+
+- Added allocation-free positional GIF extension scanning and bounded EXR
+  header traversal with caller-owned structural and attribute-value scratch.
+- Added callback-backed logical metadata payload extraction for direct,
+  GIF-sub-block, multipart JPEG, Deflate, and Brotli carriers.
+- Added bounded positional source-snapshot assembly for JPEG, PNG, WebP, GIF,
+  JP2, JXL, ISO-BMFF, TIFF/DNG, and EXR sources without whole-file buffering.
+
+### Changed
+
+- Positional snapshot results retain exact source-I/O diagnostics and aggregate
+  request and byte ceilings across scan, payload, decode, and optional raw
+  carrier reads.
+- Positional snapshots own the finalized decoded store while keeping scanner,
+  payload, decompression, and value workspaces caller-owned and operation-local.
+- Unconverted native RAW, embedded-container, BMFF source-wide enrichment, and
+  whole-file TIFF/EXR raw-carrier paths are reported as explicit residuals.
+
+### Tests And Validation
+
+- Added callback-versus-contiguous GIF/EXR parity, nonzero source-range,
+  malformed/I/O/scratch, payload reassembly, image-data skip, cumulative
+  budget, raw-carrier linkage, and snapshot assembly regressions.
+- Extended positional container fuzz coverage to GIF extension scanning.
+- Made file-backed transfer and LibRaw adapter tests use portable host temporary
+  directories so the full suite can run on Windows as well as Unix hosts.
+
 ## 0.4.108 - 2026-08-20
 
 Changes compared with `0.4.107`.

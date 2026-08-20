@@ -2270,93 +2270,58 @@ measure_scan_webp_random_access(
 }
 
 
-ScanResult
-scan_gif(std::span<const std::byte> bytes,
-         std::span<ContainerBlockRef> out) noexcept
-{
-    BlockSink sink;
-    sink.out = out.data();
-    sink.cap = static_cast<uint32_t>(out.size());
+namespace {
 
-    if (bytes.size() < 13) {
-        sink.result.status = ScanStatus::Malformed;
-        return sink.result;
-    }
-    if (!match(bytes, 0, "GIF87a", 6) && !match(bytes, 0, "GIF89a", 6)) {
-        sink.result.status = ScanStatus::Unsupported;
-        return sink.result;
-    }
+    template<class Bytes>
+    static ScanResult scan_gif_reader(const Bytes& bytes,
+                                      std::span<ContainerBlockRef> out) noexcept
+    {
+        BlockSink sink;
+        sink.out = out.data();
+        sink.cap = static_cast<uint32_t>(out.size());
 
-    uint64_t offset = 6;
-    // Logical Screen Descriptor.
-    if (offset + 7 > bytes.size()) {
-        sink.result.status = ScanStatus::Malformed;
-        return sink.result;
-    }
-    const uint8_t packed = u8(bytes[offset + 4]);
-    offset += 7;
-
-    if ((packed & 0x80U) != 0U) {
-        const uint8_t gct_size_pow = packed & 0x07U;
-        const uint64_t gct_bytes   = 3ULL << (gct_size_pow + 1U);
-        if (offset + gct_bytes > bytes.size()) {
+        if (bytes.size() < 13) {
             sink.result.status = ScanStatus::Malformed;
             return sink.result;
         }
-        offset += gct_bytes;
-    }
-
-    while (offset < bytes.size()) {
-        const uint8_t introducer = u8(bytes[offset]);
-        if (introducer == 0x3B) {  // trailer
-            break;
+        if (!match(bytes, 0, "GIF87a", 6) && !match(bytes, 0, "GIF89a", 6)) {
+            sink.result.status = ScanStatus::Unsupported;
+            return sink.result;
         }
-        if (introducer == 0x21) {  // extension
-            if (offset + 2 > bytes.size()) {
+
+        uint64_t offset = 6;
+        // Logical Screen Descriptor.
+        if (offset + 7 > bytes.size()) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
+        }
+        const uint8_t packed = u8(bytes[offset + 4]);
+        offset += 7;
+
+        if ((packed & 0x80U) != 0U) {
+            const uint8_t gct_size_pow = packed & 0x07U;
+            const uint64_t gct_bytes   = 3ULL << (gct_size_pow + 1U);
+            if (offset + gct_bytes > bytes.size()) {
                 sink.result.status = ScanStatus::Malformed;
                 return sink.result;
             }
-            const uint8_t label = u8(bytes[offset + 1]);
-            if (label == 0xFE) {  // comment extension
-                uint64_t p              = offset + 2;
-                const uint64_t data_off = p;
-                while (p < bytes.size()) {
-                    const uint8_t sub = u8(bytes[p]);
-                    p += 1;
-                    if (sub == 0) {
-                        break;
-                    }
-                    if (p + sub > bytes.size()) {
-                        sink.result.status = ScanStatus::Malformed;
-                        return sink.result;
-                    }
-                    p += sub;
-                }
-                const uint64_t ext_end = p;
+            offset += gct_bytes;
+        }
 
-                ContainerBlockRef block;
-                block.format       = ContainerFormat::Gif;
-                block.kind         = ContainerBlockKind::Comment;
-                block.chunking     = BlockChunking::GifSubBlocks;
-                block.outer_offset = offset;
-                block.outer_size   = ext_end - offset;
-                block.data_offset  = data_off;
-                block.data_size    = ext_end - data_off;
-                block.id           = 0x21FE;  // extension + comment label
-                sink_emit(&sink, block);
-
-                offset = ext_end;
-                continue;
+        while (offset < bytes.size()) {
+            const uint8_t introducer = u8(bytes[offset]);
+            if (introducer == 0x3B) {  // trailer
+                break;
             }
-            if (label == 0xFF) {  // application extension
-                if (offset + 3 > bytes.size()) {
+            if (introducer == 0x21) {  // extension
+                if (offset + 2 > bytes.size()) {
                     sink.result.status = ScanStatus::Malformed;
                     return sink.result;
                 }
-                const uint8_t app_block_size = u8(bytes[offset + 2]);
-                if (app_block_size != 11) {
-                    // Skip: data sub-blocks.
-                    uint64_t p = offset + 3 + app_block_size;
+                const uint8_t label = u8(bytes[offset + 1]);
+                if (label == 0xFE) {  // comment extension
+                    uint64_t p              = offset + 2;
+                    const uint64_t data_off = p;
                     while (p < bytes.size()) {
                         const uint8_t sub = u8(bytes[p]);
                         p += 1;
@@ -2369,22 +2334,95 @@ scan_gif(std::span<const std::byte> bytes,
                         }
                         p += sub;
                     }
-                    offset = p;
+                    const uint64_t ext_end = p;
+
+                    ContainerBlockRef block;
+                    block.format       = ContainerFormat::Gif;
+                    block.kind         = ContainerBlockKind::Comment;
+                    block.chunking     = BlockChunking::GifSubBlocks;
+                    block.outer_offset = offset;
+                    block.outer_size   = ext_end - offset;
+                    block.data_offset  = data_off;
+                    block.data_size    = ext_end - data_off;
+                    block.id           = 0x21FE;  // extension + comment label
+                    sink_emit(&sink, block);
+
+                    offset = ext_end;
+                    continue;
+                }
+                if (label == 0xFF) {  // application extension
+                    if (offset + 3 > bytes.size()) {
+                        sink.result.status = ScanStatus::Malformed;
+                        return sink.result;
+                    }
+                    const uint8_t app_block_size = u8(bytes[offset + 2]);
+                    if (app_block_size != 11) {
+                        // Skip: data sub-blocks.
+                        uint64_t p = offset + 3 + app_block_size;
+                        while (p < bytes.size()) {
+                            const uint8_t sub = u8(bytes[p]);
+                            p += 1;
+                            if (sub == 0) {
+                                break;
+                            }
+                            if (p + sub > bytes.size()) {
+                                sink.result.status = ScanStatus::Malformed;
+                                return sink.result;
+                            }
+                            p += sub;
+                        }
+                        offset = p;
+                        continue;
+                    }
+
+                    if (offset + 3 + 11 > bytes.size()) {
+                        sink.result.status = ScanStatus::Malformed;
+                        return sink.result;
+                    }
+                    const uint64_t app_id_off = offset + 3;
+                    const bool is_xmp = match(bytes, app_id_off, "XMP Data", 8)
+                                        && match(bytes, app_id_off + 8, "XMP",
+                                                 3);
+                    const bool is_icc = match(bytes, app_id_off, "ICCRGBG1", 8)
+                                        && match(bytes, app_id_off + 8, "012",
+                                                 3);
+
+                    uint64_t p              = app_id_off + 11;
+                    const uint64_t data_off = p;
+                    while (p < bytes.size()) {
+                        const uint8_t sub = u8(bytes[p]);
+                        p += 1;
+                        if (sub == 0) {
+                            break;
+                        }
+                        if (p + sub > bytes.size()) {
+                            sink.result.status = ScanStatus::Malformed;
+                            return sink.result;
+                        }
+                        p += sub;
+                    }
+                    const uint64_t ext_end = p;
+
+                    if (is_xmp || is_icc) {
+                        ContainerBlockRef block;
+                        block.format       = ContainerFormat::Gif;
+                        block.kind         = is_xmp ? ContainerBlockKind::Xmp
+                                                    : ContainerBlockKind::Icc;
+                        block.chunking     = BlockChunking::GifSubBlocks;
+                        block.outer_offset = offset;
+                        block.outer_size   = ext_end - offset;
+                        block.data_offset  = data_off;
+                        block.data_size    = ext_end - data_off;
+                        block.id           = 0x21FF;  // extension + app label
+                        sink_emit(&sink, block);
+                    }
+
+                    offset = ext_end;
                     continue;
                 }
 
-                if (offset + 3 + 11 > bytes.size()) {
-                    sink.result.status = ScanStatus::Malformed;
-                    return sink.result;
-                }
-                const uint64_t app_id_off = offset + 3;
-                const bool is_xmp = match(bytes, app_id_off, "XMP Data", 8)
-                                    && match(bytes, app_id_off + 8, "XMP", 3);
-                const bool is_icc = match(bytes, app_id_off, "ICCRGBG1", 8)
-                                    && match(bytes, app_id_off + 8, "012", 3);
-
-                uint64_t p              = app_id_off + 11;
-                const uint64_t data_off = p;
+                // Skip other extension types: 0x21 <label> <sub-blocks>
+                uint64_t p = offset + 2;
                 while (p < bytes.size()) {
                     const uint8_t sub = u8(bytes[p]);
                     p += 1;
@@ -2397,86 +2435,85 @@ scan_gif(std::span<const std::byte> bytes,
                     }
                     p += sub;
                 }
-                const uint64_t ext_end = p;
-
-                if (is_xmp || is_icc) {
-                    ContainerBlockRef block;
-                    block.format       = ContainerFormat::Gif;
-                    block.kind         = is_xmp ? ContainerBlockKind::Xmp
-                                                : ContainerBlockKind::Icc;
-                    block.chunking     = BlockChunking::GifSubBlocks;
-                    block.outer_offset = offset;
-                    block.outer_size   = ext_end - offset;
-                    block.data_offset  = data_off;
-                    block.data_size    = ext_end - data_off;
-                    block.id           = 0x21FF;  // extension + app label
-                    sink_emit(&sink, block);
-                }
-
-                offset = ext_end;
+                offset = p;
                 continue;
             }
 
-            // Skip other extension types: 0x21 <label> <sub-blocks>
-            uint64_t p = offset + 2;
-            while (p < bytes.size()) {
-                const uint8_t sub = u8(bytes[p]);
-                p += 1;
-                if (sub == 0) {
-                    break;
-                }
-                if (p + sub > bytes.size()) {
+            if (introducer == 0x2C) {  // image descriptor
+                if (offset + 10 > bytes.size()) {
                     sink.result.status = ScanStatus::Malformed;
                     return sink.result;
                 }
-                p += sub;
+                const uint8_t img_packed = u8(bytes[offset + 9]);
+                offset += 10;
+                if ((img_packed & 0x80U) != 0U) {
+                    const uint8_t lct_size_pow = img_packed & 0x07U;
+                    const uint64_t lct_bytes   = 3ULL << (lct_size_pow + 1U);
+                    if (offset + lct_bytes > bytes.size()) {
+                        sink.result.status = ScanStatus::Malformed;
+                        return sink.result;
+                    }
+                    offset += lct_bytes;
+                }
+                if (offset + 1 > bytes.size()) {
+                    sink.result.status = ScanStatus::Malformed;
+                    return sink.result;
+                }
+                offset += 1;  // LZW min code size
+                // Image data sub-blocks.
+                while (offset < bytes.size()) {
+                    const uint8_t sub = u8(bytes[offset]);
+                    offset += 1;
+                    if (sub == 0) {
+                        break;
+                    }
+                    if (offset + sub > bytes.size()) {
+                        sink.result.status = ScanStatus::Malformed;
+                        return sink.result;
+                    }
+                    offset += sub;
+                }
+                continue;
             }
-            offset = p;
-            continue;
+
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
         }
 
-        if (introducer == 0x2C) {  // image descriptor
-            if (offset + 10 > bytes.size()) {
-                sink.result.status = ScanStatus::Malformed;
-                return sink.result;
-            }
-            const uint8_t img_packed = u8(bytes[offset + 9]);
-            offset += 10;
-            if ((img_packed & 0x80U) != 0U) {
-                const uint8_t lct_size_pow = img_packed & 0x07U;
-                const uint64_t lct_bytes   = 3ULL << (lct_size_pow + 1U);
-                if (offset + lct_bytes > bytes.size()) {
-                    sink.result.status = ScanStatus::Malformed;
-                    return sink.result;
-                }
-                offset += lct_bytes;
-            }
-            if (offset + 1 > bytes.size()) {
-                sink.result.status = ScanStatus::Malformed;
-                return sink.result;
-            }
-            offset += 1;  // LZW min code size
-            // Image data sub-blocks.
-            while (offset < bytes.size()) {
-                const uint8_t sub = u8(bytes[offset]);
-                offset += 1;
-                if (sub == 0) {
-                    break;
-                }
-                if (offset + sub > bytes.size()) {
-                    sink.result.status = ScanStatus::Malformed;
-                    return sink.result;
-                }
-                offset += sub;
-            }
-            continue;
-        }
-
-        sink.result.status = ScanStatus::Malformed;
         return sink.result;
     }
 
-    return sink.result;
+}  // namespace
+
+
+ScanResult
+scan_gif(std::span<const std::byte> bytes,
+         std::span<ContainerBlockRef> out) noexcept
+{
+    return scan_gif_reader(bytes, out);
+}
+
+
+ContainerRandomAccessScanResult
+scan_gif_random_access(const RandomAccessSourceRange& gif,
+                       std::span<ContainerBlockRef> out,
+                       const ContainerRandomAccessScratch& scratch,
+                       const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_container_random_access(
+        gif, out, scratch, read_limits,
+        [](const auto& bytes, std::span<ContainerBlockRef> blocks) noexcept {
+            return scan_gif_reader(bytes, blocks);
+        });
+}
+
+
+ContainerRandomAccessScanResult
+measure_scan_gif_random_access(const RandomAccessSourceRange& gif,
+                               const ContainerRandomAccessScratch& scratch,
+                               const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_gif_random_access(gif, {}, scratch, read_limits);
 }
 
 

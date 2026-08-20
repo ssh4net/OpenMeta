@@ -132,6 +132,19 @@ enum class ReadTransferSourceSnapshotBytesCode : uint16_t {
     DecodeFailed,
 };
 
+/// Stable result code for positional source snapshot assembly.
+enum class ReadTransferSourceSnapshotRandomAccessCode : uint16_t {
+    None = 0,
+    InvalidArgument,
+    UnsupportedFormat,
+    ScanFailed,
+    ScratchTooSmall,
+    DecodeFailed,
+    /// A usable snapshot was assembled, but explicitly reported source-wide or
+    /// container-specific metadata paths were not decoded.
+    ResidualMetadataPaths,
+};
+
 /// Status for high-level file-to-bundle transfer preparation.
 enum class TransferFileStatus : uint8_t {
     Ok,
@@ -1411,6 +1424,66 @@ struct ReadTransferSourceSnapshotBytesResult final {
     TransferSourceSnapshot snapshot;
 };
 
+/// Caller-owned transient storage for positional source snapshot assembly.
+struct ReadTransferSourceSnapshotRandomAccessScratch final {
+    std::span<ContainerBlockRef> blocks;
+    std::span<ExifIfdRef> ifds;
+    std::span<uint32_t> payload_indices;
+    /// Structural scanner/decoder read-ahead cache.
+    std::span<std::byte> read_window;
+    /// One reassembled or directly fetched logical metadata payload.
+    std::span<std::byte> payload;
+    /// One compressed logical stream before decompression.
+    std::span<std::byte> compressed_payload;
+    /// One EXR/TIFF attribute or out-of-line metadata value.
+    std::span<std::byte> value;
+    RandomAccessReadWindowOptions window_options;
+};
+
+/// Options for bounded positional source snapshot assembly.
+struct ReadTransferSourceSnapshotRandomAccessOptions final {
+    bool include_pointer_tags = true;
+    bool decode_makernote     = false;
+    /// Embedded-container recursion is opt-in for positional workflows. Paths
+    /// not yet converted are counted as explicit residuals.
+    bool decode_embedded_containers = false;
+    bool decompress                 = true;
+    bool preserve_raw_carriers      = false;
+    uint64_t max_raw_carrier_bytes  = 64ULL * 1024ULL * 1024ULL;
+    OpenMetaResourcePolicy policy;
+};
+
+/// Result of bounded positional source snapshot assembly.
+struct ReadTransferSourceSnapshotRandomAccessResult final {
+    TransferStatus status = TransferStatus::Ok;
+    ReadTransferSourceSnapshotRandomAccessCode code
+        = ReadTransferSourceSnapshotRandomAccessCode::None;
+    ContainerFormat format           = ContainerFormat::Unknown;
+    uint64_t input_size              = 0U;
+    uint32_t entry_count             = 0U;
+    uint32_t raw_carrier_count       = 0U;
+    uint64_t raw_carrier_bytes       = 0U;
+    bool raw_carrier_bytes_truncated = false;
+    /// Source-wide enrichment or container-specific decode paths that were
+    /// intentionally not run by this bounded payload-backed assembly path.
+    uint32_t residual_metadata_paths   = 0U;
+    uint64_t payload_scratch_needed    = 0U;
+    uint64_t compressed_scratch_needed = 0U;
+    uint64_t value_scratch_needed      = 0U;
+    SimpleMetaResult read;
+    RandomAccessReadState input;
+    TransferSourceSnapshot snapshot;
+
+    bool complete() const noexcept
+    {
+        return status == TransferStatus::Ok
+               && code == ReadTransferSourceSnapshotRandomAccessCode::None
+               && input.ok() && residual_metadata_paths == 0U
+               && payload_scratch_needed == 0U
+               && compressed_scratch_needed == 0U && value_scratch_needed == 0U;
+    }
+};
+
 /// File-read + decode options for \ref prepare_metadata_for_target_file.
 struct PrepareTransferFileOptions final {
     bool include_pointer_tags       = true;
@@ -2558,6 +2631,31 @@ read_transfer_source_snapshot_bytes(
     std::span<const std::byte> bytes,
     const ReadTransferSourceSnapshotOptions& options
     = ReadTransferSourceSnapshotOptions {}) noexcept;
+
+/**
+ * \brief Assemble a reusable source snapshot through bounded positional reads.
+ *
+ * \p format must identify the supplied source range. The function scans only
+ * structural container data, fetches discovered metadata payloads into
+ * caller-owned scratch, and never materializes the complete source. TIFF/DNG
+ * and EXR use their native positional decoders. The returned snapshot owns its
+ * finalized decoded store and any explicitly requested bounded raw carriers.
+ *
+ * `residual_metadata_paths` reports requested or format-specific enrichment
+ * paths that are not represented by discovered payload blocks. A nonzero value
+ * keeps the usable result but makes `complete()` false.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ReadTransferSourceSnapshotRandomAccessResult
+read_transfer_source_snapshot_random_access(
+    const RandomAccessSourceRange& source, ContainerFormat format,
+    const ReadTransferSourceSnapshotRandomAccessScratch& scratch,
+    const ReadTransferSourceSnapshotRandomAccessOptions& options
+    = ReadTransferSourceSnapshotRandomAccessOptions {},
+    const RandomAccessReadLimits& read_limits
+    = RandomAccessReadLimits {}) noexcept;
 
 /**
  * \brief Serialize a target-neutral source snapshot into owned bytes.

@@ -436,6 +436,12 @@ If the host already has a decoded ``MetaStore``, build a reusable snapshot with
 ``build_transfer_source_snapshot(store)``. If it already owns the source bytes
 in memory, use ``read_transfer_source_snapshot_bytes(bytes)`` instead of the
 file-path reader.
+For large assets exposed through a host positional-read callback, use
+``read_transfer_source_snapshot_random_access(...)``. It fetches structural and
+metadata ranges into caller-owned scratch without buffering the whole file and
+returns an owned finalized snapshot. Check both ``complete()`` and
+``residual_metadata_paths``; native RAF/X3F/CRW and selected recursive or
+source-wide enrichment paths are not positional yet.
 In Python, if the host already has ``doc = openmeta.read(...)``, call
 ``doc.build_transfer_source_snapshot()`` or
 ``openmeta.build_transfer_source_snapshot(doc)`` instead of reopening the

@@ -18,7 +18,9 @@ adds Kodak fixed-layout and outer-TIFF-relative MakerNotes. Version 0.4.106 adds
 Ricoh mixed-base and vendor subdirectory decoding plus Nintendo, Casio, Minolta,
 and FLIR callback parity. Version 0.4.107 adds bounded JPEG segment scanning.
 Version 0.4.108 adds positional PNG/WebP chunk scanning and bounded JP2/JXL/
-ISO-BMFF box and metadata-item traversal. It provides:
+ISO-BMFF box and metadata-item traversal. Version 0.4.109 adds positional GIF
+extension scanning, EXR header traversal, logical metadata payload extraction,
+and decoded source-snapshot assembly. It provides:
 
 - a fixed source size and synchronous ``read_at(offset, destination)`` callback
 - a non-owning descriptor for caller-owned contiguous memory
@@ -55,12 +57,26 @@ Scan without reading entropy-coded image data. Returned offsets are relative to
 the supplied source range.
 
 ``scan_png_random_access(...)``, ``scan_webp_random_access(...)``,
+``scan_gif_random_access(...)``,
 ``scan_jp2_random_access(...)``, ``scan_jxl_random_access(...)``, and
 ``scan_bmff_random_access(...)`` provide the same descriptor contract. PNG text
-prefixes are scanned incrementally. JP2/JXL/BMFF traversal reads structural
-boxes and metadata tables while skipping image codestream, ``mdat``, and
-unrelated payload bytes. These five scanners require a 32-byte minimum window;
-larger windows reduce callback traffic.
+prefixes are scanned incrementally. GIF traversal reads extension framing and
+sub-block lengths while skipping raster sub-block contents. JP2/JXL/BMFF
+traversal reads structural boxes and metadata tables while skipping image
+codestream, ``mdat``, and unrelated payload bytes. These six scanners require a
+32-byte minimum window; larger windows reduce callback traffic.
+
+``decode_exr_header_random_access(...)`` traverses EXR attributes and stops at
+the header terminator without reading chunk tables or pixel data. Structural
+reads use caller-owned read-window storage. The largest selected attribute value
+must fit caller value scratch; ``value_scratch_needed`` reports its exact size.
+``measure_exr_header_random_access(...)`` validates the structure without
+fetching attribute bodies.
+
+``extract_payload_random_access(...)`` fetches one discovered logical metadata
+stream. It supports direct ranges, GIF sub-blocks, multipart JPEG ICC and
+extended XMP, general multipart blocks, and bounded Deflate/Brotli
+decompression through caller-owned compressed and output storage.
 
 Callback example
 ----------------
@@ -161,18 +177,67 @@ work when every required probe fits and otherwise return ``ScratchTooSmall``.
 ``measure_scan_jpeg_random_access(...)`` reports ``scan.needed`` without block
 output storage.
 
-PNG, WebP, JP2, JXL, and ISO-BMFF use the corresponding
+PNG, WebP, GIF, JP2, JXL, and ISO-BMFF use the corresponding
 ``scan_*_random_access(...)`` and ``measure_scan_*_random_access(...)`` pairs.
 They require at least 32 bytes of read-window storage. A 4 KiB or larger window
 is generally a better host default for table-heavy BMFF files.
 
+Bounded payload and snapshot assembly
+-------------------------------------
+
+.. code-block:: cpp
+
+   #include "openmeta/metadata_transfer.h"
+
+   std::array<openmeta::ContainerBlockRef, 64> blocks;
+   std::array<openmeta::ExifIfdRef, 128> ifds;
+   std::array<uint32_t, 64> payload_indices;
+   std::array<std::byte, 4 * 1024> read_window;
+   std::array<std::byte, 2 * 1024 * 1024> payload;
+   std::array<std::byte, 2 * 1024 * 1024> compressed_payload;
+   std::array<std::byte, 1 * 1024 * 1024> value;
+
+   openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+   scratch.blocks             = blocks;
+   scratch.ifds               = ifds;
+   scratch.payload_indices    = payload_indices;
+   scratch.read_window        = read_window;
+   scratch.payload            = payload;
+   scratch.compressed_payload = compressed_payload;
+   scratch.value              = value;
+
+   openmeta::ReadTransferSourceSnapshotRandomAccessResult result =
+       openmeta::read_transfer_source_snapshot_random_access(
+           source_range, openmeta::ContainerFormat::Jpeg,
+           scratch, {}, limits);
+
+The scanner, payload, decompression, and value workspaces are caller-owned and
+valid only for the call. The returned ``TransferSourceSnapshot`` owns its
+finalized ``MetaStore``, so those workspaces may be released or reused afterward.
+Request-count and byte ceilings are cumulative across scan, payload, decode,
+PNG text-prefix, and optional raw-carrier reads.
+
+The high-level positional path supports JPEG, PNG, WebP, GIF, JP2, JXL,
+HEIF/AVIF/CR3 BMFF containers, native TIFF/DNG-family input, and EXR headers.
+Native RAF, X3F, and CRW are not converted yet. Requested embedded recursion,
+selected source-wide BMFF enrichment, unsupported MakerNote subpaths, and
+whole-file TIFF/EXR raw-carrier preservation increment
+``residual_metadata_paths``. The decoded snapshot remains usable, but
+``complete()`` returns false.
+
+Raw-carrier preservation is opt-in and copies only discovered carrier bytes
+within ``max_raw_carrier_bytes``. Ordinary decoded snapshot assembly does not
+retain the whole source, and transfer still uses the normal safety policy and
+decoded re-emission rules.
+
 Real-time and concurrent use
 ----------------------------
 
-The contract adds no global state, virtual dispatch, ``std::function``, hidden
-allocation, file-position mutation, locking, or background work. The callback
-is a plain function pointer, and all counters belong to the caller-provided
-``RandomAccessReadState``.
+The positional source, scanner, decoder, and payload layers add no global state,
+virtual dispatch, ``std::function``, hidden allocation, file-position mutation,
+locking, or background work. The high-level snapshot result intentionally owns
+its ``MetaStore`` and optional raw-carrier bytes. The callback is a plain
+function pointer, and all counters belong to operation-local state.
 
 OpenMeta does not issue concurrent callbacks within one synchronous scan or
 decode.

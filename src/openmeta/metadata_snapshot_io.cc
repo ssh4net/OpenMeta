@@ -538,7 +538,7 @@ namespace {
             || !in->u32(&block->part_count) || !in->u64(&block->logical_offset)
             || !in->u64(&block->logical_size) || !in->u64(&block->group)
             || !in->u32(&block->aux_u32)
-            || format > static_cast<uint8_t>(ContainerFormat::Cr3)
+            || format > static_cast<uint8_t>(ContainerFormat::Exr)
             || kind > static_cast<uint8_t>(
                    ContainerBlockKind::CompressedMetadata)
             || compression > static_cast<uint8_t>(BlockCompression::Brotli)
@@ -626,7 +626,7 @@ serialize_transfer_source_snapshot(
                 "source snapshot carrier route exceeds limit");
         }
         if (static_cast<uint8_t>(carrier.block.format)
-                > static_cast<uint8_t>(ContainerFormat::Cr3)
+                > static_cast<uint8_t>(ContainerFormat::Exr)
             || static_cast<uint8_t>(carrier.block.kind) > static_cast<uint8_t>(
                    ContainerBlockKind::CompressedMetadata)
             || static_cast<uint8_t>(carrier.block.compression)

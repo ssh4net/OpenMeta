@@ -1926,6 +1926,45 @@ namespace {
     }
 
 
+    TEST(ContainerScan, GifRandomAccessMatchesDescriptorsAndSkipsRasterPayload)
+    {
+        std::vector<std::byte> gif;
+        append_bytes(&gif, "GIF89a");
+        gif.insert(gif.end(), 7U, std::byte { 0x00 });
+
+        gif.push_back(std::byte { 0x21 });
+        gif.push_back(std::byte { 0xFE });
+        gif.push_back(std::byte { 0x04 });
+        append_bytes(&gif, "meta");
+        gif.push_back(std::byte { 0x00 });
+
+        gif.push_back(std::byte { 0x2C });
+        gif.insert(gif.end(), 9U, std::byte { 0x00 });
+        gif.push_back(std::byte { 0x02 });
+        gif.push_back(std::byte { 0xFF });
+        const uint64_t raster_begin = gif.size();
+        gif.insert(gif.end(), 255U, std::byte { 0x5A });
+        gif.push_back(std::byte { 0x00 });
+        gif.push_back(std::byte { 0x3B });
+
+        expect_random_access_parity(
+            gif, raster_begin + 128U, raster_begin + 240U,
+            [](std::span<const std::byte> bytes,
+               std::span<ContainerBlockRef> out) noexcept {
+                return scan_gif(bytes, out);
+            },
+            [](const RandomAccessSourceRange& range,
+               std::span<ContainerBlockRef> out,
+               const ContainerRandomAccessScratch& scratch) noexcept {
+                return scan_gif_random_access(range, out, scratch);
+            },
+            [](const RandomAccessSourceRange& range,
+               const ContainerRandomAccessScratch& scratch) noexcept {
+                return measure_scan_gif_random_access(range, scratch);
+            });
+    }
+
+
     TEST(ContainerScan, Jp2AndJxlBoxes)
     {
         std::vector<std::byte> jp2;

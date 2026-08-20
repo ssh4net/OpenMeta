@@ -5,6 +5,7 @@
 #include "openmeta/api.h"
 
 #include "openmeta/meta_store.h"
+#include "openmeta/random_access_source.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -30,6 +31,8 @@ enum class ExrDecodeStatus : uint8_t {
     Malformed,
     /// Resource limits were exceeded.
     LimitExceeded,
+    /// Caller-owned value storage was too small for one or more attributes.
+    OutputTruncated,
 };
 
 /// Resource limits applied during EXR header decode.
@@ -60,6 +63,29 @@ struct ExrDecodeResult final {
     uint32_t entries_decoded = 0;
 };
 
+/// Caller-owned storage for callback-backed EXR header decoding.
+struct ExrRandomAccessScratch final {
+    /// Reusable structural read cache. At least 16 bytes are required.
+    std::span<std::byte> read_window;
+    /// Reusable storage for one attribute value that does not fit the window.
+    std::span<std::byte> value;
+    RandomAccessReadWindowOptions window_options;
+};
+
+/// Combined EXR decode and source-I/O result.
+struct ExrRandomAccessDecodeResult final {
+    ExrDecodeResult decode;
+    RandomAccessReadState input;
+    /// Largest value-buffer requirement observed when caller scratch was too
+    /// small. Zero means no attribute was skipped for this reason.
+    uint64_t value_scratch_needed = 0U;
+
+    bool complete() const noexcept
+    {
+        return input.ok() && value_scratch_needed == 0U;
+    }
+};
+
 /**
  * \brief Decodes OpenEXR header attributes and appends entries into \p store.
  *
@@ -83,6 +109,35 @@ ExrDecodeResult
 measure_exr_header(std::span<const std::byte> exr_bytes,
                    const ExrDecodeOptions& options
                    = ExrDecodeOptions {}) noexcept;
+
+/**
+ * \brief Decodes EXR header attributes through a bounded positional source.
+ *
+ * Callback input uses caller-owned structural and value storage and stops at
+ * the end of the EXR header without reading chunk-offset tables or pixel data.
+ * Contiguous source ranges retain the existing direct decode behavior.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ExrRandomAccessDecodeResult
+decode_exr_header_random_access(
+    const RandomAccessSourceRange& exr, MetaStore& store,
+    const ExrRandomAccessScratch& scratch, EntryFlags flags = EntryFlags::None,
+    const ExrDecodeOptions& options = ExrDecodeOptions {},
+    const RandomAccessReadLimits& read_limits
+    = RandomAccessReadLimits {}) noexcept;
+
+/**
+ * \brief Measures EXR header attributes without fetching attribute bodies.
+ */
+ExrRandomAccessDecodeResult
+measure_exr_header_random_access(const RandomAccessSourceRange& exr,
+                                 const ExrRandomAccessScratch& scratch,
+                                 const ExrDecodeOptions& options
+                                 = ExrDecodeOptions {},
+                                 const RandomAccessReadLimits& read_limits
+                                 = RandomAccessReadLimits {}) noexcept;
 
 }  // namespace openmeta
 OPENMETA_PUBLIC_END

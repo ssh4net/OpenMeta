@@ -73,14 +73,14 @@ Current tracked-gate status:
 | JPEG | Yes | Yes | EXIF, standard and bare APP1 XMP, extended XMP, ICC, MPF, Photoshop IRB, comments, vendor APP blocks, and bounded JUMBF/C2PA; leading-segment scan supports bounded positional callbacks without reading entropy data |
 | PNG | Yes | Yes | EXIF, XMP, ICC, structured PNG text, and bounded JUMBF/C2PA; chunk scan supports bounded positional callbacks without reading pixel payloads |
 | WebP | Yes | Yes | EXIF, XMP, ICC, and bounded JUMBF/C2PA; chunk scan supports bounded positional callbacks without reading image payloads |
-| GIF | Yes | Partial | XMP, ICC, and structured comments |
+| GIF | Yes | Partial | XMP, ICC, and structured comments; extension scan and payload fetch support bounded positional callbacks without reading raster sub-block payloads |
 | TIFF / DNG / TIFF-based RAW | Yes | Yes | EXIF, MakerNote, XMP, IPTC, Photoshop IRB, ICC, GeoTIFF, and bounded JUMBF/C2PA |
 | CRW / CIFF | Yes | Partial | Recursive CIFF directories, stable scalar/subtable decode, derived EXIF bridge, and bounded native Canon CIFF naming/projection |
 | RAF / X3F | Partial | Partial | RAF includes header-declared preview-JPEG EXIF/XMP discovery, FujiIFD/TIFF follow path, native RAF header/directory geometry tags, RAFData geometry projection, and standalone XMP fallback; X3F includes header fields, known PROP properties, section-directory JPEG metadata follow path, and legacy embedded-EXIF fallback |
 | JP2 | Yes | Yes | EXIF, XMP, IPTC, ICC, and GeoTIFF; box scan supports bounded positional callbacks without reading codestream payloads |
 | JXL | Yes | Yes | EXIF, XMP, and bounded JUMBF/C2PA; supported `brob` wrapped metadata is decoded and box scan supports bounded positional callbacks |
 | HEIF / AVIF / CR3 | Yes | Partial | EXIF, XMP, ICC, CR3 maker blocks, BMFF derived fields including `avif`/`avis`/`avio` AVIF brands, and bounded JUMBF/C2PA; structural/item scan supports bounded positional callbacks without reading `mdat` payloads |
-| EXR | n/a via `scan_auto(...)` | Yes | Header attributes only; no pixel decode |
+| EXR | n/a via `scan_auto(...)` | Yes | Header attributes only; bounded positional header traversal stops before pixel/chunk data; no pixel decode |
 
 ## Camera RAW Support Tiers
 

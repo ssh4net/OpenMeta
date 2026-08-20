@@ -1047,23 +1047,26 @@ proxies without an OpenMeta dependency on any one host library.
    subtables are converted. Mixed-base Ricoh, Nintendo, Casio, Minolta, and FLIR
    paths are converted; Canon external derived subtables and unknown vendor
    layouts stay explicit residuals.
-3. [partial in 0.4.108] Refactor shallow sequential container scanners and
+3. [complete in 0.4.109] Refactor shallow sequential container scanners and
    payload extraction for JPEG, PNG, WebP, GIF, and EXR, then bounded box
    traversal for BMFF, JP2, and JXL. JPEG, PNG, WebP, JP2, JXL, and ISO-BMFF
    scanning now has callback/span descriptor parity, caller-owned read windows,
    explicit source failures, and no image/media-payload reads. BMFF parity
    includes brands, item tables/references, ICC properties, and nested CR3
-   metadata wrappers. GIF/EXR scanner conversion, bounded payload extraction,
-   and downstream snapshot assembly remain pending.
+   metadata wrappers. GIF extension scanning, EXR header traversal, bounded
+   logical-payload fetching, and reusable decoded snapshot assembly are also
+   positional. Snapshot assembly aggregates source limits across phases and
+   reports unconverted enrichment paths as explicit residuals.
 4. Refactor native RAF, X3F, and CRW paths and any embedded-container recursion.
    Preserve the current bytes/file behavior as adapters above the same reader,
    not as a separate decoder implementation.
 5. Gate each format on byte-span versus random-reader compatibility dumps,
    malformed/short-read tests, request/byte ceilings, and real-corpus parity
    before advertising that format as random-access capable. JPEG, PNG, WebP,
-   JP2, JXL, and ISO-BMFF scanner parity, malformed/I/O behavior, payload-skip
-   checks, and request/byte ceilings are covered through 0.4.108; payload decode
-   and downstream snapshot assembly remain separate work.
+   GIF, JP2, JXL, ISO-BMFF, TIFF/DNG, and EXR positional decode/snapshot paths,
+   malformed/I/O behavior, payload-skip checks, and cumulative request/byte
+   ceilings are covered through 0.4.109. Native RAF/X3F/CRW, requested embedded
+   recursion, and selected source-wide BMFF enrichment remain explicit work.
 
 #### Raw Snapshot Emission Policy
 

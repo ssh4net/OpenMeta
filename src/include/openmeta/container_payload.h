@@ -50,6 +50,29 @@ struct PayloadResult final {
     uint64_t needed      = 0;
 };
 
+/// Caller-owned storage for callback-backed payload extraction.
+struct PayloadRandomAccessScratch final {
+    /// Reusable cache for GIF sub-block framing and small positional reads.
+    std::span<std::byte> read_window;
+    /// Storage for a compressed logical stream before decompression.
+    std::span<std::byte> compressed;
+    RandomAccessReadWindowOptions window_options;
+};
+
+/// Combined logical-payload and source-I/O result.
+struct PayloadRandomAccessResult final {
+    PayloadResult payload;
+    RandomAccessReadState input;
+    /// Required compressed-stream storage when `scratch.compressed` was too
+    /// small. Zero means no stream was skipped for this reason.
+    uint64_t compressed_scratch_needed = 0U;
+
+    bool complete() const noexcept
+    {
+        return input.ok() && compressed_scratch_needed == 0U;
+    }
+};
+
 /**
  * \brief Extracts the logical payload for a discovered block.
  *
@@ -74,6 +97,29 @@ extract_payload(std::span<const std::byte> file_bytes,
                 std::span<std::byte> out_payload,
                 std::span<uint32_t> scratch_indices,
                 const PayloadOptions& options) noexcept;
+
+/**
+ * \brief Extracts one logical metadata payload through positional reads.
+ *
+ * Offsets in \p blocks are relative to \p source. The function reads only the
+ * selected logical stream. Direct uncompressed reads stop at the accepted
+ * output prefix; framing read-ahead for GIF sub-blocks may overlap adjacent
+ * payload bytes. Compressed streams use caller-owned compressed scratch before
+ * bounded decompression into \p out_payload.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+PayloadRandomAccessResult
+extract_payload_random_access(const RandomAccessSourceRange& source,
+                              std::span<const ContainerBlockRef> blocks,
+                              uint32_t seed_index,
+                              std::span<std::byte> out_payload,
+                              std::span<uint32_t> scratch_indices,
+                              const PayloadRandomAccessScratch& scratch,
+                              const PayloadOptions& options,
+                              const RandomAccessReadLimits& read_limits
+                              = RandomAccessReadLimits {}) noexcept;
 
 }  // namespace openmeta
 OPENMETA_PUBLIC_END

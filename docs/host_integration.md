@@ -294,11 +294,18 @@ with vendor subtables. Version 0.4.106 adds Ricoh, Nintendo, Casio, Minolta, and
 FLIR callback parity. Version 0.4.107 adds bounded leading JPEG metadata-segment
 scanning with 512-byte caller scratch and no entropy-data reads. Version 0.4.108
 adds positional PNG/WebP chunk scanning and JP2/JXL/ISO-BMFF structural and
-metadata-item traversal while skipping image/media payloads. Unconverted
-Canon derived subtables outside the declared payload and unknown vendor layouts
-remain explicit residuals through
+metadata-item traversal while skipping image/media payloads. Version 0.4.109
+adds positional GIF extension scanning, EXR header traversal, bounded logical
+payload fetching, and decoded snapshot assembly through
+`read_transfer_source_snapshot_random_access(...)`. Scanner, decoder, and
+payload workspaces remain caller-owned; the returned snapshot owns its finalized
+store. Aggregate source limits cover every phase, and ordinary decoded assembly
+does not retain the whole file. Unconverted Canon derived subtables outside the
+declared payload and unknown vendor layouts remain explicit residuals through
 `ExifRandomAccessDecodeResult::nested_payloads_skipped`; hosts must check
-`complete()` before claiming full nested parity. See
+`complete()` before claiming full nested parity. Native RAF/X3F/CRW, requested
+embedded recursion, selected BMFF enrichment, and whole-file TIFF/EXR raw
+carriers also remain explicit positional residuals. See
 [random_access_input.md](random_access_input.md) for buffer sizing, lifetime,
 short-read, concurrency, and performance requirements.
 

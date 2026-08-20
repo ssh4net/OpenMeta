@@ -7246,7 +7246,8 @@ NB_MODULE(_openmeta, m)
         .value("Ok", ExrDecodeStatus::Ok)
         .value("Unsupported", ExrDecodeStatus::Unsupported)
         .value("Malformed", ExrDecodeStatus::Malformed)
-        .value("LimitExceeded", ExrDecodeStatus::LimitExceeded);
+        .value("LimitExceeded", ExrDecodeStatus::LimitExceeded)
+        .value("OutputTruncated", ExrDecodeStatus::OutputTruncated);
 
     nb::enum_<ExrAdapterStatus>(m, "ExrAdapterStatus")
         .value("Ok", ExrAdapterStatus::Ok)
@@ -7331,7 +7332,8 @@ NB_MODULE(_openmeta, m)
         .value("Jxl", ContainerFormat::Jxl)
         .value("Heif", ContainerFormat::Heif)
         .value("Avif", ContainerFormat::Avif)
-        .value("Cr3", ContainerFormat::Cr3);
+        .value("Cr3", ContainerFormat::Cr3)
+        .value("Exr", ContainerFormat::Exr);
 
     nb::enum_<ContainerBlockKind>(m, "ContainerBlockKind")
         .value("Unknown", ContainerBlockKind::Unknown)

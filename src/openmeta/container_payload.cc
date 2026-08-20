@@ -723,4 +723,431 @@ extract_payload(std::span<const std::byte> file_bytes,
     return res;
 }
 
+namespace {
+
+    struct RandomPayloadReader final {
+        const RandomAccessSourceRange* source = nullptr;
+        RandomAccessReadWindow window;
+        PayloadRandomAccessResult* result = nullptr;
+        RandomAccessReadLimits limits;
+        RandomAccessReadWindowOptions window_options;
+    };
+
+
+    static bool
+    random_payload_range_valid(const RandomAccessSourceRange& source,
+                               uint64_t offset, uint64_t size) noexcept
+    {
+        return offset <= source.size && size <= source.size - offset;
+    }
+
+
+    static bool random_payload_u8(RandomPayloadReader* reader, uint64_t offset,
+                                  uint8_t* out) noexcept
+    {
+        if (!reader || !reader->source || !reader->result || !out) {
+            return false;
+        }
+        const RandomAccessViewResult view
+            = random_access_read_view(*reader->source, offset, 1U,
+                                      &reader->window, &reader->result->input,
+                                      reader->limits, reader->window_options);
+        if (!view.ok()) {
+            reader->result->payload.status = PayloadStatus::Malformed;
+            return false;
+        }
+        *out = u8(view.bytes[0]);
+        return true;
+    }
+
+
+    static bool random_payload_copy(RandomPayloadReader* reader,
+                                    uint64_t source_offset,
+                                    uint64_t source_size,
+                                    std::span<std::byte> out,
+                                    uint64_t destination_offset,
+                                    uint64_t* io_written) noexcept
+    {
+        if (!reader || !reader->source || !reader->result || !io_written
+            || !random_payload_range_valid(*reader->source, source_offset,
+                                           source_size)) {
+            if (reader && reader->result) {
+                reader->result->payload.status = PayloadStatus::Malformed;
+            }
+            return false;
+        }
+        if (destination_offset >= out.size() || source_size == 0U) {
+            return true;
+        }
+        const uint64_t room = static_cast<uint64_t>(out.size())
+                              - destination_offset;
+        const uint64_t count = (source_size < room) ? source_size : room;
+        if (count == 0U) {
+            return true;
+        }
+        const std::span<std::byte> destination
+            = out.subspan(static_cast<size_t>(destination_offset),
+                          static_cast<size_t>(count));
+        if (random_access_read_exact(*reader->source, source_offset,
+                                     destination, &reader->result->input,
+                                     reader->limits)
+            != RandomAccessReadCode::Ok) {
+            reader->result->payload.status = PayloadStatus::Malformed;
+            return false;
+        }
+        *io_written += count;
+        return true;
+    }
+
+
+    static PayloadResult extract_random_gif_subblocks(
+        RandomPayloadReader* reader, const ContainerBlockRef& block,
+        std::span<std::byte> out, const PayloadOptions& options) noexcept
+    {
+        PayloadResult res;
+        if (!reader || !reader->source
+            || !random_payload_range_valid(*reader->source, block.data_offset,
+                                           block.data_size)) {
+            res.status = PayloadStatus::Malformed;
+            return res;
+        }
+        uint64_t p       = 0U;
+        uint64_t needed  = 0U;
+        uint64_t written = 0U;
+        while (p < block.data_size) {
+            uint8_t sub = 0U;
+            if (!random_payload_u8(reader, block.data_offset + p, &sub)) {
+                return reader->result->payload;
+            }
+            p += 1U;
+            if (sub == 0U) {
+                res.needed  = needed;
+                res.written = written;
+                if (written < needed) {
+                    res.status = PayloadStatus::OutputTruncated;
+                }
+                return res;
+            }
+            if (sub > block.data_size - p) {
+                res.status = PayloadStatus::Malformed;
+                return res;
+            }
+            needed += sub;
+            if (options.limits.max_output_bytes != 0U
+                && needed > options.limits.max_output_bytes) {
+                res.status  = PayloadStatus::LimitExceeded;
+                res.needed  = needed;
+                res.written = written;
+                return res;
+            }
+            if (!random_payload_copy(reader, block.data_offset + p, sub, out,
+                                     written, &written)) {
+                return reader->result->payload;
+            }
+            p += sub;
+        }
+        res.status = PayloadStatus::Malformed;
+        return res;
+    }
+
+
+    static PayloadResult extract_random_parts(
+        RandomPayloadReader* reader, std::span<const ContainerBlockRef> blocks,
+        std::span<const uint32_t> part_indices, uint64_t logical_size,
+        bool use_logical_offsets, std::span<std::byte> out,
+        const PayloadOptions& options) noexcept
+    {
+        PayloadResult res;
+        uint64_t needed = use_logical_offsets ? logical_size : 0U;
+        if (use_logical_offsets && logical_size == 0U) {
+            res.status = PayloadStatus::Malformed;
+            return res;
+        }
+        if (!use_logical_offsets) {
+            for (uint32_t index : part_indices) {
+                const ContainerBlockRef& block = blocks[index];
+                if (!random_payload_range_valid(*reader->source,
+                                                block.data_offset,
+                                                block.data_size)
+                    || needed > UINT64_MAX - block.data_size) {
+                    res.status = PayloadStatus::Malformed;
+                    return res;
+                }
+                needed += block.data_size;
+            }
+        }
+        if (options.limits.max_output_bytes != 0U
+            && needed > options.limits.max_output_bytes) {
+            res.status = PayloadStatus::LimitExceeded;
+            res.needed = needed;
+            return res;
+        }
+
+        uint64_t expected = 0U;
+        uint64_t written  = 0U;
+        for (uint32_t index : part_indices) {
+            const ContainerBlockRef& block = blocks[index];
+            const uint64_t destination     = use_logical_offsets
+                                                 ? block.logical_offset
+                                                 : expected;
+            if (!random_payload_range_valid(*reader->source, block.data_offset,
+                                            block.data_size)
+                || (use_logical_offsets && destination != expected)
+                || destination > needed
+                || block.data_size > needed - destination) {
+                res.status = PayloadStatus::Malformed;
+                return res;
+            }
+            if (!random_payload_copy(reader, block.data_offset, block.data_size,
+                                     out, destination, &written)) {
+                return reader->result->payload;
+            }
+            expected = destination + block.data_size;
+        }
+        if (expected != needed) {
+            res.status = PayloadStatus::Malformed;
+            return res;
+        }
+        res.needed  = needed;
+        res.written = written;
+        if (written < needed) {
+            res.status = PayloadStatus::OutputTruncated;
+        }
+        return res;
+    }
+
+
+    static PayloadResult extract_payload_random_uncompressed(
+        RandomPayloadReader* reader, std::span<const ContainerBlockRef> blocks,
+        uint32_t seed_index, std::span<std::byte> out_payload,
+        std::span<uint32_t> scratch_indices,
+        const PayloadOptions& options) noexcept
+    {
+        PayloadResult res;
+        if (!reader || !reader->source || seed_index >= blocks.size()) {
+            res.status = PayloadStatus::Malformed;
+            return res;
+        }
+        const ContainerBlockRef& seed = blocks[seed_index];
+        if (seed.chunking == BlockChunking::GifSubBlocks) {
+            return extract_random_gif_subblocks(reader, seed, out_payload,
+                                                options);
+        }
+        if (seed.part_count <= 1U
+            && seed.chunking != BlockChunking::JpegApp2SeqTotal
+            && seed.chunking != BlockChunking::JpegXmpExtendedGuidOffset) {
+            if (!random_payload_range_valid(*reader->source, seed.data_offset,
+                                            seed.data_size)) {
+                res.status = PayloadStatus::Malformed;
+                return res;
+            }
+            if (options.limits.max_output_bytes != 0U
+                && seed.data_size > options.limits.max_output_bytes) {
+                res.status = PayloadStatus::LimitExceeded;
+                res.needed = seed.data_size;
+                return res;
+            }
+            uint64_t written = 0U;
+            if (!random_payload_copy(reader, seed.data_offset, seed.data_size,
+                                     out_payload, 0U, &written)) {
+                return reader->result->payload;
+            }
+            res.needed  = seed.data_size;
+            res.written = written;
+            if (written < seed.data_size) {
+                res.status = PayloadStatus::OutputTruncated;
+            }
+            return res;
+        }
+
+        size_t count = 0U;
+        for (size_t i = 0U; i < blocks.size(); ++i) {
+            const ContainerBlockRef& block = blocks[i];
+            bool match                     = false;
+            if (seed.chunking == BlockChunking::JpegApp2SeqTotal) {
+                match = blocks_match_jpeg_icc(seed, block);
+            } else if (seed.chunking
+                       == BlockChunking::JpegXmpExtendedGuidOffset) {
+                match = blocks_match_jpeg_xmp_ext(seed, block);
+            } else if (seed.part_count > 1U) {
+                match = blocks_match_multipart(seed, block);
+            }
+            if (!match) {
+                continue;
+            }
+            if (count >= options.limits.max_parts
+                || count >= scratch_indices.size() || i > UINT32_MAX) {
+                res.status = PayloadStatus::LimitExceeded;
+                res.needed = count + 1U;
+                return res;
+            }
+            scratch_indices[count++] = static_cast<uint32_t>(i);
+        }
+        if (count == 0U) {
+            res.status = PayloadStatus::Malformed;
+            return res;
+        }
+        std::span<uint32_t> parts = scratch_indices.first(count);
+
+        if (seed.chunking == BlockChunking::JpegApp2SeqTotal) {
+            insertion_sort_by_part_index(parts, blocks);
+            const uint32_t expected_total = seed.part_count != 0U
+                                                ? seed.part_count
+                                                : static_cast<uint32_t>(count);
+            if (expected_total == 0U
+                || expected_total > options.limits.max_parts
+                || count != expected_total) {
+                res.status = (expected_total > options.limits.max_parts)
+                                 ? PayloadStatus::LimitExceeded
+                                 : PayloadStatus::Malformed;
+                return res;
+            }
+            for (uint32_t i = 0U; i < count; ++i) {
+                if (blocks[parts[i]].part_index != i) {
+                    res.status = PayloadStatus::Malformed;
+                    return res;
+                }
+            }
+            return extract_random_parts(reader, blocks, parts, 0U, false,
+                                        out_payload, options);
+        }
+
+        if (seed.chunking == BlockChunking::JpegXmpExtendedGuidOffset) {
+            insertion_sort_by_logical_offset(parts, blocks);
+            uint64_t logical_size = seed.logical_size;
+            if (logical_size == 0U) {
+                for (uint32_t index : parts) {
+                    const ContainerBlockRef& block = blocks[index];
+                    if (block.logical_offset > UINT64_MAX - block.data_size) {
+                        res.status = PayloadStatus::Malformed;
+                        return res;
+                    }
+                    const uint64_t end = block.logical_offset + block.data_size;
+                    logical_size = (end > logical_size) ? end : logical_size;
+                }
+            }
+            return extract_random_parts(reader, blocks, parts, logical_size,
+                                        true, out_payload, options);
+        }
+
+        insertion_sort_by_part_index(parts, blocks);
+        bool any_offsets = false;
+        for (uint32_t index : parts) {
+            any_offsets = any_offsets || blocks[index].logical_offset != 0U;
+        }
+        if (any_offsets) {
+            insertion_sort_by_logical_offset(parts, blocks);
+            uint64_t logical_size = 0U;
+            for (uint32_t index : parts) {
+                const ContainerBlockRef& block = blocks[index];
+                if (block.logical_size != 0U) {
+                    logical_size = block.logical_size;
+                }
+                if (block.logical_offset > UINT64_MAX - block.data_size) {
+                    res.status = PayloadStatus::Malformed;
+                    return res;
+                }
+                const uint64_t end = block.logical_offset + block.data_size;
+                logical_size       = (logical_size == 0U || end > logical_size)
+                                         ? end
+                                         : logical_size;
+            }
+            return extract_random_parts(reader, blocks, parts, logical_size,
+                                        true, out_payload, options);
+        }
+
+        const uint32_t expected_total = seed.part_count != 0U
+                                            ? seed.part_count
+                                            : static_cast<uint32_t>(count);
+        if (expected_total == 0U || expected_total > options.limits.max_parts
+            || count != expected_total) {
+            res.status = (expected_total > options.limits.max_parts)
+                             ? PayloadStatus::LimitExceeded
+                             : PayloadStatus::Malformed;
+            return res;
+        }
+        for (uint32_t i = 0U; i < count; ++i) {
+            if (blocks[parts[i]].part_index != i) {
+                res.status = PayloadStatus::Malformed;
+                return res;
+            }
+        }
+        return extract_random_parts(reader, blocks, parts, 0U, false,
+                                    out_payload, options);
+    }
+
+}  // namespace
+
+
+PayloadRandomAccessResult
+extract_payload_random_access(
+    const RandomAccessSourceRange& source,
+    std::span<const ContainerBlockRef> blocks, uint32_t seed_index,
+    std::span<std::byte> out_payload, std::span<uint32_t> scratch_indices,
+    const PayloadRandomAccessScratch& scratch, const PayloadOptions& options,
+    const RandomAccessReadLimits& read_limits) noexcept
+{
+    PayloadRandomAccessResult result;
+    if (!random_access_source_range_valid(source)
+        || seed_index >= blocks.size()) {
+        result.input.code     = RandomAccessReadCode::InvalidArgument;
+        result.payload.status = PayloadStatus::Malformed;
+        return result;
+    }
+    if (source.source.contiguous_data != nullptr) {
+        const std::span<const std::byte> bytes(
+            source.source.contiguous_data
+                + static_cast<size_t>(source.source_offset),
+            static_cast<size_t>(source.size));
+        result.payload = extract_payload(bytes, blocks, seed_index, out_payload,
+                                         scratch_indices, options);
+        return result;
+    }
+    if (scratch.read_window.empty()) {
+        result.input.code = RandomAccessReadCode::ScratchTooSmall;
+        result.input.failure_request_bytes = 1U;
+        result.payload.status              = PayloadStatus::OutputTruncated;
+        return result;
+    }
+
+    RandomPayloadReader reader;
+    reader.source         = &source;
+    reader.window.storage = scratch.read_window;
+    reader.result         = &result;
+    reader.limits         = read_limits;
+    reader.window_options = scratch.window_options;
+
+    const ContainerBlockRef& seed = blocks[seed_index];
+    if (!options.decompress || seed.compression == BlockCompression::None) {
+        result.payload = extract_payload_random_uncompressed(
+            &reader, blocks, seed_index, out_payload, scratch_indices, options);
+        return result;
+    }
+
+    PayloadOptions compressed_options          = options;
+    compressed_options.decompress              = false;
+    compressed_options.limits.max_output_bytes = 0U;
+    result.payload = extract_payload_random_uncompressed(&reader, blocks,
+                                                         seed_index,
+                                                         scratch.compressed,
+                                                         scratch_indices,
+                                                         compressed_options);
+    if (result.payload.status == PayloadStatus::OutputTruncated) {
+        result.compressed_scratch_needed = result.payload.needed;
+        return result;
+    }
+    if (result.payload.status != PayloadStatus::Ok) {
+        return result;
+    }
+
+    ContainerBlockRef compressed_block;
+    compressed_block.compression = seed.compression;
+    compressed_block.data_size   = result.payload.written;
+    const std::array<ContainerBlockRef, 1> one { compressed_block };
+    result.payload = extract_payload(
+        scratch.compressed.first(static_cast<size_t>(result.payload.written)),
+        one, 0U, out_payload, scratch_indices, options);
+    return result;
+}
+
 }  // namespace openmeta

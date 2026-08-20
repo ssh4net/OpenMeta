@@ -18,6 +18,47 @@
 namespace openmeta {
 namespace {
 
+    struct PayloadCallbackState final {
+        std::span<const std::byte> bytes;
+        RandomAccessIoCode code  = RandomAccessIoCode::Ok;
+        uint64_t max_bytes       = UINT64_MAX;
+        uint64_t forbidden_begin = UINT64_MAX;
+        uint64_t forbidden_end   = UINT64_MAX;
+        bool touched_forbidden   = false;
+        uint32_t calls           = 0U;
+    };
+
+
+    static RandomAccessIoResult
+    payload_read_at(void* context, uint64_t offset,
+                    std::span<std::byte> destination) noexcept
+    {
+        PayloadCallbackState* state = static_cast<PayloadCallbackState*>(
+            context);
+        state->calls += 1U;
+        const uint64_t request_end
+            = destination.size() <= UINT64_MAX - offset
+                  ? offset + static_cast<uint64_t>(destination.size())
+                  : UINT64_MAX;
+        if (offset < state->forbidden_end
+            && request_end > state->forbidden_begin) {
+            state->touched_forbidden = true;
+        }
+        uint64_t available = 0U;
+        if (offset <= state->bytes.size()) {
+            available = static_cast<uint64_t>(state->bytes.size()) - offset;
+        }
+        uint64_t count = static_cast<uint64_t>(destination.size());
+        count          = (count < available) ? count : available;
+        count          = (count < state->max_bytes) ? count : state->max_bytes;
+        if (count != 0U) {
+            std::memcpy(destination.data(),
+                        state->bytes.data() + static_cast<size_t>(offset),
+                        static_cast<size_t>(count));
+        }
+        return RandomAccessIoResult { state->code, count };
+    }
+
     static void append_u16be(std::vector<std::byte>* out, uint16_t v)
     {
         out->push_back(std::byte { static_cast<uint8_t>((v >> 8) & 0xFF) });
@@ -144,6 +185,75 @@ namespace {
     }
 
 
+    TEST(ContainerPayload, RandomAccessGifSubBlocksMatchContiguous)
+    {
+        const std::array<std::byte, 10> bytes {
+            std::byte { 3U },  std::byte { 'a' }, std::byte { 'b' },
+            std::byte { 'c' }, std::byte { 4U },  std::byte { 'd' },
+            std::byte { 'e' }, std::byte { 'f' }, std::byte { 'g' },
+            std::byte { 0U }
+        };
+        ContainerBlockRef block;
+        block.format    = ContainerFormat::Gif;
+        block.kind      = ContainerBlockKind::Comment;
+        block.chunking  = BlockChunking::GifSubBlocks;
+        block.data_size = bytes.size();
+        const std::array<ContainerBlockRef, 1> blocks { block };
+
+        PayloadCallbackState callback { bytes };
+        const RandomAccessSource source
+            = make_callback_random_access_source(bytes.size(), &callback,
+                                                 payload_read_at, true);
+        const RandomAccessSourceRange range = make_random_access_source_range(
+            source);
+        std::array<std::byte, 4> read_window {};
+        PayloadRandomAccessScratch random_scratch;
+        random_scratch.read_window                       = read_window;
+        random_scratch.window_options.minimum_read_bytes = read_window.size();
+        std::array<std::byte, 16> out {};
+        std::array<uint32_t, 4> indices {};
+        const PayloadRandomAccessResult result
+            = extract_payload_random_access(range, blocks, 0U, out, indices,
+                                            random_scratch, PayloadOptions {});
+        ASSERT_TRUE(result.complete());
+        EXPECT_EQ(result.payload.status, PayloadStatus::Ok);
+        EXPECT_EQ(result.payload.written, 7U);
+        EXPECT_EQ(std::memcmp(out.data(), "abcdefg", 7U), 0);
+    }
+
+
+    TEST(ContainerPayload, RandomAccessTruncatedOutputDoesNotFetchSuffix)
+    {
+        std::vector<std::byte> bytes(1024U * 1024U, std::byte { 0x5A });
+        ContainerBlockRef block;
+        block.kind      = ContainerBlockKind::Xmp;
+        block.data_size = bytes.size();
+        const std::array<ContainerBlockRef, 1> blocks { block };
+        PayloadCallbackState callback { bytes };
+        callback.forbidden_begin = 16U;
+        callback.forbidden_end   = bytes.size();
+        const RandomAccessSource source
+            = make_callback_random_access_source(bytes.size(), &callback,
+                                                 payload_read_at, true);
+        const RandomAccessSourceRange range = make_random_access_source_range(
+            source);
+        std::array<std::byte, 8> read_window {};
+        std::array<std::byte, 16> out {};
+        std::array<uint32_t, 1> indices {};
+        PayloadRandomAccessScratch scratch;
+        scratch.read_window = read_window;
+        const PayloadRandomAccessResult result
+            = extract_payload_random_access(range, blocks, 0U, out, indices,
+                                            scratch, PayloadOptions {});
+        ASSERT_TRUE(result.complete());
+        EXPECT_EQ(result.payload.status, PayloadStatus::OutputTruncated);
+        EXPECT_EQ(result.payload.needed, bytes.size());
+        EXPECT_EQ(result.payload.written, out.size());
+        EXPECT_EQ(result.input.bytes_requested, out.size());
+        EXPECT_FALSE(callback.touched_forbidden);
+    }
+
+
     TEST(ContainerPayload, JpegIccSeqTotal)
     {
         std::vector<std::byte> jpeg;
@@ -205,6 +315,25 @@ namespace {
         EXPECT_EQ(short_res.status, PayloadStatus::OutputTruncated);
         EXPECT_EQ(short_res.needed, 4U);
         EXPECT_EQ(short_res.written, 3U);
+
+        PayloadCallbackState callback { jpeg };
+        const RandomAccessSource source
+            = make_callback_random_access_source(jpeg.size(), &callback,
+                                                 payload_read_at, true);
+        const RandomAccessSourceRange range = make_random_access_source_range(
+            source);
+        std::array<std::byte, 8> read_window {};
+        PayloadRandomAccessScratch random_scratch;
+        random_scratch.read_window = read_window;
+        out.fill(std::byte { 0U });
+        const PayloadRandomAccessResult random_result
+            = extract_payload_random_access(
+                range,
+                std::span<const ContainerBlockRef>(blocks.data(), scan.written),
+                0U, out, scratch, random_scratch, opts);
+        ASSERT_TRUE(random_result.complete());
+        EXPECT_EQ(random_result.payload.status, PayloadStatus::Ok);
+        EXPECT_EQ(std::memcmp(out.data(), "ABCD", 4U), 0);
     }
 
 
@@ -570,10 +699,10 @@ namespace {
 
         append_png_chunk(&png, fourcc('c', 'a', 'B', 'X'),
                          std::span<const std::byte>(jumb_box.data(), mid));
-        append_png_chunk(
-            &png, fourcc('c', 'a', 'B', 'X'),
-            std::span<const std::byte>(jumb_box.data() + static_cast<ptrdiff_t>(mid),
-                                       jumb_box.size() - mid));
+        append_png_chunk(&png, fourcc('c', 'a', 'B', 'X'),
+                         std::span<const std::byte>(
+                             jumb_box.data() + static_cast<ptrdiff_t>(mid),
+                             jumb_box.size() - mid));
         append_png_chunk(&png, fourcc('I', 'E', 'N', 'D'), {});
 
         std::array<ContainerBlockRef, 8> blocks {};
@@ -619,9 +748,8 @@ namespace {
             webp.push_back(std::byte { 0x00 });
         }
 
-        const uint32_t riff_size
-            = static_cast<uint32_t>((webp.size() >= 8U) ? (webp.size() - 8U)
-                                                        : 0U);
+        const uint32_t riff_size = static_cast<uint32_t>(
+            (webp.size() >= 8U) ? (webp.size() - 8U) : 0U);
         webp[4] = std::byte { static_cast<uint8_t>((riff_size >> 0) & 0xFFU) };
         webp[5] = std::byte { static_cast<uint8_t>((riff_size >> 8) & 0xFFU) };
         webp[6] = std::byte { static_cast<uint8_t>((riff_size >> 16) & 0xFFU) };
@@ -670,16 +798,14 @@ namespace {
 
         append_fourcc(&webp, fourcc('C', '2', 'P', 'A'));
         append_u32le(&webp, static_cast<uint32_t>(jumb_box.size() - mid));
-        webp.insert(
-            webp.end(), jumb_box.begin() + static_cast<ptrdiff_t>(mid),
-            jumb_box.end());
+        webp.insert(webp.end(), jumb_box.begin() + static_cast<ptrdiff_t>(mid),
+                    jumb_box.end());
         if (((jumb_box.size() - mid) & 1U) != 0U) {
             webp.push_back(std::byte { 0x00 });
         }
 
-        const uint32_t riff_size
-            = static_cast<uint32_t>((webp.size() >= 8U) ? (webp.size() - 8U)
-                                                        : 0U);
+        const uint32_t riff_size = static_cast<uint32_t>(
+            (webp.size() >= 8U) ? (webp.size() - 8U) : 0U);
         webp[4] = std::byte { static_cast<uint8_t>((riff_size >> 0) & 0xFFU) };
         webp[5] = std::byte { static_cast<uint8_t>((riff_size >> 8) & 0xFFU) };
         webp[6] = std::byte { static_cast<uint8_t>((riff_size >> 16) & 0xFFU) };
@@ -859,6 +985,39 @@ namespace {
                               0, out, scratch, opts);
         EXPECT_EQ(res.status, PayloadStatus::Ok);
         ASSERT_EQ(res.written, xml.size());
+        EXPECT_EQ(std::memcmp(out.data(), xml.data(), xml.size()), 0);
+
+        PayloadCallbackState callback { png };
+        const RandomAccessSource source
+            = make_callback_random_access_source(png.size(), &callback,
+                                                 payload_read_at, true);
+        const RandomAccessSourceRange range = make_random_access_source_range(
+            source);
+        std::array<std::byte, 16> read_window {};
+        std::array<std::byte, 4> compressed_small {};
+        PayloadRandomAccessScratch random_scratch;
+        random_scratch.read_window = read_window;
+        random_scratch.compressed  = compressed_small;
+        const PayloadRandomAccessResult needs_compressed
+            = extract_payload_random_access(
+                range,
+                std::span<const ContainerBlockRef>(blocks.data(), scan.written),
+                0U, out, scratch, random_scratch, opts);
+        EXPECT_FALSE(needs_compressed.complete());
+        EXPECT_EQ(needs_compressed.payload.status,
+                  PayloadStatus::OutputTruncated);
+        EXPECT_EQ(needs_compressed.compressed_scratch_needed, comp.size());
+
+        std::vector<std::byte> compressed(comp.size());
+        random_scratch.compressed = compressed;
+        const PayloadRandomAccessResult random_result
+            = extract_payload_random_access(
+                range,
+                std::span<const ContainerBlockRef>(blocks.data(), scan.written),
+                0U, out, scratch, random_scratch, opts);
+        ASSERT_TRUE(random_result.complete());
+        EXPECT_EQ(random_result.payload.status, PayloadStatus::Ok);
+        EXPECT_EQ(random_result.payload.written, xml.size());
         EXPECT_EQ(std::memcmp(out.data(), xml.data(), xml.size()), 0);
     }
 #endif

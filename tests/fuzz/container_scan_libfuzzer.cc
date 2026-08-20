@@ -104,8 +104,9 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
         const RandomAccessReadLimits&) noexcept;
     const RandomScanner scanners[] = {
         scan_jpeg_random_access, scan_png_random_access,
-        scan_webp_random_access, scan_jp2_random_access,
-        scan_jxl_random_access,  scan_bmff_random_access,
+        scan_webp_random_access, scan_gif_random_access,
+        scan_jp2_random_access,  scan_jxl_random_access,
+        scan_bmff_random_access,
     };
     for (RandomScanner scanner : scanners) {
         ContainerBlockRef callback_blocks[64] = {};

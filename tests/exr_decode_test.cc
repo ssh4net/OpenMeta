@@ -3,6 +3,7 @@
 #include "openmeta/exr_decode.h"
 
 #include "openmeta/meta_key.h"
+#include "openmeta/metadata_transfer.h"
 #include "openmeta/simple_meta.h"
 
 #include <array>
@@ -16,6 +17,46 @@
 
 namespace openmeta {
 namespace {
+
+    struct ExrCallbackState final {
+        std::span<const std::byte> bytes;
+        RandomAccessIoCode code  = RandomAccessIoCode::Ok;
+        uint64_t max_bytes       = UINT64_MAX;
+        uint64_t forbidden_begin = UINT64_MAX;
+        uint64_t forbidden_end   = UINT64_MAX;
+        bool touched_forbidden   = false;
+        uint32_t calls           = 0U;
+    };
+
+
+    static RandomAccessIoResult
+    exr_read_at(void* context, uint64_t offset,
+                std::span<std::byte> destination) noexcept
+    {
+        ExrCallbackState* state = static_cast<ExrCallbackState*>(context);
+        state->calls += 1U;
+        const uint64_t request_end
+            = destination.size() <= UINT64_MAX - offset
+                  ? offset + static_cast<uint64_t>(destination.size())
+                  : UINT64_MAX;
+        if (offset < state->forbidden_end
+            && request_end > state->forbidden_begin) {
+            state->touched_forbidden = true;
+        }
+        uint64_t available = 0U;
+        if (offset <= state->bytes.size()) {
+            available = static_cast<uint64_t>(state->bytes.size()) - offset;
+        }
+        uint64_t count = static_cast<uint64_t>(destination.size());
+        count          = (count < available) ? count : available;
+        count          = (count < state->max_bytes) ? count : state->max_bytes;
+        if (count != 0U) {
+            std::memcpy(destination.data(),
+                        state->bytes.data() + static_cast<size_t>(offset),
+                        static_cast<size_t>(count));
+        }
+        return RandomAccessIoResult { state->code, count };
+    }
 
     static void append_u32le(std::vector<std::byte>* out, uint32_t v)
     {
@@ -244,6 +285,166 @@ TEST(ExrDecode, EstimateMatchesDecodeCounters)
     EXPECT_EQ(decoded.status, estimate.status);
     EXPECT_EQ(decoded.parts_decoded, estimate.parts_decoded);
     EXPECT_EQ(decoded.entries_decoded, estimate.entries_decoded);
+}
+
+
+TEST(ExrDecode, RandomAccessMatchesContiguousAndStopsBeforePixelData)
+{
+    std::vector<std::byte> exr = build_exr_single_part();
+    const uint64_t header_size = exr.size();
+    exr.insert(exr.end(), 4096U, std::byte { 0xA5 });
+
+    constexpr uint64_t prefix_size = 29U;
+    std::vector<std::byte> backing(prefix_size, std::byte { 0x11 });
+    backing.insert(backing.end(), exr.begin(), exr.end());
+    ExrCallbackState callback { backing };
+    callback.forbidden_begin = prefix_size + header_size + 32U;
+    callback.forbidden_end   = backing.size();
+    const RandomAccessSource source
+        = make_callback_random_access_source(backing.size(), &callback,
+                                             exr_read_at, true);
+    const RandomAccessSourceRange range
+        = make_random_access_source_range(source, prefix_size, exr.size());
+
+    std::array<std::byte, 32> read_window {};
+    std::array<std::byte, 256> value {};
+    ExrRandomAccessScratch scratch;
+    scratch.read_window                       = read_window;
+    scratch.value                             = value;
+    scratch.window_options.minimum_read_bytes = read_window.size();
+
+    MetaStore positional_store;
+    const ExrRandomAccessDecodeResult positional
+        = decode_exr_header_random_access(range, positional_store, scratch);
+    ASSERT_TRUE(positional.complete());
+    EXPECT_EQ(positional.decode.status, ExrDecodeStatus::Ok);
+    EXPECT_EQ(positional.decode.parts_decoded, 1U);
+    EXPECT_EQ(positional.decode.entries_decoded, 2U);
+    EXPECT_GT(callback.calls, 0U);
+    EXPECT_FALSE(callback.touched_forbidden);
+    EXPECT_LT(positional.input.bytes_requested,
+              static_cast<uint64_t>(exr.size()));
+
+    MetaStore contiguous_store;
+    const ExrDecodeResult contiguous
+        = decode_exr_header(std::span<const std::byte>(exr.data(), exr.size()),
+                            contiguous_store);
+    EXPECT_EQ(positional.decode.status, contiguous.status);
+    EXPECT_EQ(positional.decode.parts_decoded, contiguous.parts_decoded);
+    EXPECT_EQ(positional.decode.entries_decoded, contiguous.entries_decoded);
+
+    const ExrRandomAccessDecodeResult measured
+        = measure_exr_header_random_access(range, scratch);
+    EXPECT_TRUE(measured.complete());
+    EXPECT_EQ(measured.decode.status, ExrDecodeStatus::Ok);
+    EXPECT_EQ(measured.decode.entries_decoded, 2U);
+}
+
+
+TEST(ExrDecode, RandomAccessMeasureSkipsLargeValuesAndDecodeReportsScratch)
+{
+    std::vector<std::byte> exr;
+    append_u32le(&exr, 20000630U);
+    append_u32le(&exr, 2U);
+    std::vector<std::byte> large(4096U, std::byte { 0x4A });
+    append_attr_raw(&exr, "large", "bytes", large);
+    append_attr_text(&exr, "owner", "string", "Vlad");
+    exr.push_back(std::byte { 0U });
+
+    ExrCallbackState measured_callback { exr };
+    measured_callback.forbidden_begin = 8U + 6U + 6U + 4U + 32U;
+    measured_callback.forbidden_end = measured_callback.forbidden_begin + 4000U;
+    RandomAccessSource source
+        = make_callback_random_access_source(exr.size(), &measured_callback,
+                                             exr_read_at, true);
+    RandomAccessSourceRange range = make_random_access_source_range(source);
+    std::array<std::byte, 32> read_window {};
+    ExrRandomAccessScratch measure_scratch;
+    measure_scratch.read_window                       = read_window;
+    measure_scratch.window_options.minimum_read_bytes = read_window.size();
+
+    const ExrRandomAccessDecodeResult measured
+        = measure_exr_header_random_access(range, measure_scratch);
+    EXPECT_TRUE(measured.complete());
+    EXPECT_EQ(measured.decode.status, ExrDecodeStatus::Ok);
+    EXPECT_EQ(measured.decode.entries_decoded, 2U);
+    EXPECT_FALSE(measured_callback.touched_forbidden);
+
+    ExrCallbackState decode_callback { exr };
+    source = make_callback_random_access_source(exr.size(), &decode_callback,
+                                                exr_read_at, true);
+    range  = make_random_access_source_range(source);
+    std::array<std::byte, 64> value {};
+    ExrRandomAccessScratch decode_scratch;
+    decode_scratch.read_window                       = read_window;
+    decode_scratch.value                             = value;
+    decode_scratch.window_options.minimum_read_bytes = read_window.size();
+    MetaStore store;
+    const ExrRandomAccessDecodeResult decoded
+        = decode_exr_header_random_access(range, store, decode_scratch);
+    EXPECT_FALSE(decoded.complete());
+    EXPECT_EQ(decoded.decode.status, ExrDecodeStatus::OutputTruncated);
+    EXPECT_EQ(decoded.value_scratch_needed, 4096U);
+    EXPECT_EQ(decoded.decode.entries_decoded, 1U);
+}
+
+
+TEST(ExrDecode, RandomAccessReportsScratchAndSourceFailures)
+{
+    const std::vector<std::byte> exr = build_exr_single_part();
+    ExrCallbackState callback { exr };
+    RandomAccessSource source = make_callback_random_access_source(exr.size(),
+                                                                   &callback,
+                                                                   exr_read_at);
+    const RandomAccessSourceRange range = make_random_access_source_range(
+        source);
+    std::array<std::byte, 15> small_window {};
+    ExrRandomAccessScratch small;
+    small.read_window = small_window;
+    MetaStore store;
+    const ExrRandomAccessDecodeResult too_small
+        = decode_exr_header_random_access(range, store, small);
+    EXPECT_EQ(too_small.input.code, RandomAccessReadCode::ScratchTooSmall);
+    EXPECT_EQ(too_small.input.failure_request_bytes, 16U);
+
+    std::array<std::byte, 32> window {};
+    ExrRandomAccessScratch scratch;
+    scratch.read_window = window;
+    callback.code       = RandomAccessIoCode::IoError;
+    const ExrRandomAccessDecodeResult io_error
+        = measure_exr_header_random_access(range, scratch);
+    EXPECT_EQ(io_error.input.code, RandomAccessReadCode::IoError);
+}
+
+
+TEST(ExrDecode, RandomAccessSnapshotAssemblyUsesNativeHeaderTraversal)
+{
+    std::vector<std::byte> exr = build_exr_single_part();
+    const uint64_t header_size = exr.size();
+    exr.insert(exr.end(), 4096U, std::byte { 0x7CU });
+    ExrCallbackState callback { exr };
+    callback.forbidden_begin = header_size + 32U;
+    callback.forbidden_end   = exr.size();
+    const RandomAccessSource source
+        = make_callback_random_access_source(exr.size(), &callback, exr_read_at,
+                                             true);
+    const RandomAccessSourceRange range = make_random_access_source_range(
+        source);
+    std::array<std::byte, 32> window {};
+    std::array<std::byte, 256> value {};
+    ReadTransferSourceSnapshotRandomAccessScratch scratch;
+    scratch.read_window                       = window;
+    scratch.value                             = value;
+    scratch.window_options.minimum_read_bytes = window.size();
+    const ReadTransferSourceSnapshotRandomAccessResult result
+        = read_transfer_source_snapshot_random_access(range,
+                                                      ContainerFormat::Exr,
+                                                      scratch);
+    ASSERT_TRUE(result.complete());
+    EXPECT_EQ(result.entry_count, 2U);
+    EXPECT_EQ(result.read.exr.status, ExrDecodeStatus::Ok);
+    EXPECT_FALSE(callback.touched_forbidden);
+    EXPECT_TRUE(result.snapshot.store.is_finalized());
 }
 
 TEST(ExrDecode, PreservesUnknownTypeNameByDefault)

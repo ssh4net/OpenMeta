@@ -83,6 +83,7 @@ namespace {
         case ExrDecodeStatus::Unsupported: return "unsupported";
         case ExrDecodeStatus::Malformed: return "malformed";
         case ExrDecodeStatus::LimitExceeded: return "limit_exceeded";
+        case ExrDecodeStatus::OutputTruncated: return "output_truncated";
         }
         return "unknown";
     }
@@ -351,6 +352,7 @@ namespace {
         case ContainerFormat::Heif: return "heif";
         case ContainerFormat::Avif: return "avif";
         case ContainerFormat::Cr3: return "cr3";
+        case ContainerFormat::Exr: return "exr";
         }
         return "unknown";
     }

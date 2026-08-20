@@ -3574,6 +3574,41 @@ struct TestJpegSegment final {
     std::span<const std::byte> payload;
 };
 
+struct SnapshotCallbackState final {
+    std::span<const std::byte> bytes;
+    openmeta::RandomAccessIoCode code = openmeta::RandomAccessIoCode::Ok;
+    uint64_t forbidden_begin          = UINT64_MAX;
+    uint64_t forbidden_end            = UINT64_MAX;
+    bool touched_forbidden            = false;
+    uint32_t calls                    = 0U;
+};
+
+static openmeta::RandomAccessIoResult
+snapshot_read_at(void* context, uint64_t offset,
+                 std::span<std::byte> destination) noexcept
+{
+    SnapshotCallbackState* state = static_cast<SnapshotCallbackState*>(context);
+    state->calls += 1U;
+    const uint64_t request_end
+        = destination.size() <= UINT64_MAX - offset
+              ? offset + static_cast<uint64_t>(destination.size())
+              : UINT64_MAX;
+    if (offset < state->forbidden_end && request_end > state->forbidden_begin) {
+        state->touched_forbidden = true;
+    }
+    uint64_t count = 0U;
+    if (offset <= state->bytes.size()) {
+        count = static_cast<uint64_t>(state->bytes.size()) - offset;
+        count = count < destination.size() ? count : destination.size();
+    }
+    if (count != 0U) {
+        std::memcpy(destination.data(),
+                    state->bytes.data() + static_cast<size_t>(offset),
+                    static_cast<size_t>(count));
+    }
+    return { state->code, count };
+}
+
 static void
 append_test_jpeg_segment(std::vector<std::byte>* out, uint8_t marker,
                          std::span<const std::byte> payload)
@@ -4402,6 +4437,20 @@ text_contains(std::string_view text, std::string_view needle) noexcept
     return false;
 }
 
+static std::string
+compatibility_dump_escape(std::string_view text)
+{
+    std::string out;
+    out.reserve(text.size());
+    for (const char c : text) {
+        if (c == '\\' || c == '"') {
+            out.push_back('\\');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
 static uint32_t
 count_blocks_with_kind(const openmeta::PreparedTransferBundle& bundle,
                        openmeta::TransferBlockKind kind) noexcept
@@ -4447,11 +4496,18 @@ derive_test_xmp_sidecar_path(const std::string& path)
 static std::string
 temp_root()
 {
-    const char* env = std::getenv("TMPDIR");
-    if (env && *env) {
-        return std::string(env);
+    constexpr const char* kVariables[] = { "TMPDIR", "TEMP", "TMP" };
+    for (const char* variable : kVariables) {
+        const char* value = std::getenv(variable);
+        if (value && *value) {
+            return std::string(value);
+        }
     }
+#if defined(_WIN32)
+    return ".";
+#else
     return "/tmp";
+#endif
 }
 
 static std::string
@@ -4463,8 +4519,12 @@ unique_temp_path(const char* suffix)
         std::chrono::steady_clock::now().time_since_epoch().count());
 
     std::string path = temp_root();
-    if (!path.empty() && path.back() != '/') {
+    if (!path.empty() && path.back() != '/' && path.back() != '\\') {
+#if defined(_WIN32)
+        path.push_back('\\');
+#else
         path.push_back('/');
+#endif
     }
 
     char name[160];
@@ -7676,6 +7736,322 @@ TEST(MetadataTransferApi, ReadTransferSourceSnapshotBytesMatchesFileReader)
     EXPECT_EQ(prepared_bytes.blocks[0].payload,
               prepared_file.blocks[0].payload);
 }
+
+TEST(MetadataTransferApi,
+     ReadTransferSourceSnapshotRandomAccessSkipsPixelsAndPreservesCarriers)
+{
+    const std::vector<std::byte> exif = make_app1_exif_payload();
+    std::vector<std::byte> xmp;
+    ASSERT_TRUE(
+        build_test_creator_tool_jpeg_xmp_app1_payload("PositionalSnapshot",
+                                                      &xmp));
+    std::array<TestJpegSegment, 2> segments { {
+        { 0xE1U, std::span<const std::byte>(exif.data(), exif.size()) },
+        { 0xE1U, std::span<const std::byte>(xmp.data(), xmp.size()) },
+    } };
+    std::vector<std::byte> jpeg = make_jpeg_with_segments(segments);
+    ASSERT_GE(jpeg.size(), 2U);
+    jpeg.resize(jpeg.size() - 2U);
+    jpeg.push_back(std::byte { 0xFFU });
+    jpeg.push_back(std::byte { 0xDAU });
+    const uint64_t raster_begin = jpeg.size();
+    jpeg.insert(jpeg.end(), 1024U * 1024U, std::byte { 0x6BU });
+
+    const openmeta::ReadTransferSourceSnapshotBytesResult contiguous
+        = openmeta::read_transfer_source_snapshot_bytes(jpeg);
+    ASSERT_EQ(contiguous.status, openmeta::TransferStatus::Ok);
+
+    constexpr uint64_t prefix_size = 31U;
+    std::vector<std::byte> backing(prefix_size, std::byte { 0xA5U });
+    backing.insert(backing.end(), jpeg.begin(), jpeg.end());
+    SnapshotCallbackState callback { backing };
+    callback.forbidden_begin = prefix_size + raster_begin + 1024U;
+    callback.forbidden_end   = backing.size();
+    const openmeta::RandomAccessSource source
+        = openmeta::make_callback_random_access_source(backing.size(),
+                                                       &callback,
+                                                       snapshot_read_at, true);
+    const openmeta::RandomAccessSourceRange range
+        = openmeta::make_random_access_source_range(source, prefix_size,
+                                                    jpeg.size());
+
+    std::array<openmeta::ContainerBlockRef, 16> blocks {};
+    std::array<openmeta::ExifIfdRef, 64> ifds {};
+    std::array<uint32_t, 16> payload_indices {};
+    std::array<std::byte, 512> read_window {};
+    std::array<std::byte, 8192> payload {};
+    std::array<std::byte, 8192> compressed {};
+    std::array<std::byte, 8192> value {};
+    openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+    scratch.blocks                            = blocks;
+    scratch.ifds                              = ifds;
+    scratch.payload_indices                   = payload_indices;
+    scratch.read_window                       = read_window;
+    scratch.payload                           = payload;
+    scratch.compressed_payload                = compressed;
+    scratch.value                             = value;
+    scratch.window_options.minimum_read_bytes = read_window.size();
+
+    openmeta::ReadTransferSourceSnapshotRandomAccessOptions options;
+    options.preserve_raw_carriers = true;
+    openmeta::RandomAccessReadLimits limits;
+    limits.max_requests          = 256U;
+    limits.max_total_bytes       = 128U * 1024U;
+    limits.max_single_read_bytes = 16U * 1024U;
+    const openmeta::ReadTransferSourceSnapshotRandomAccessResult positional
+        = openmeta::read_transfer_source_snapshot_random_access(
+            range, openmeta::ContainerFormat::Jpeg, scratch, options, limits);
+
+    ASSERT_TRUE(positional.complete());
+    EXPECT_EQ(positional.entry_count, contiguous.entry_count);
+    EXPECT_EQ(positional.raw_carrier_count, 2U);
+    EXPECT_FALSE(positional.raw_carrier_bytes_truncated);
+    EXPECT_GT(callback.calls, 0U);
+    EXPECT_FALSE(callback.touched_forbidden);
+    EXPECT_LT(positional.input.bytes_requested,
+              static_cast<uint64_t>(jpeg.size()));
+    ASSERT_EQ(positional.snapshot.raw_carriers.size(), 2U);
+    EXPECT_EQ(positional.snapshot.raw_carriers[0].route, "jpeg:app1-exif");
+    EXPECT_EQ(positional.snapshot.raw_carriers[1].route, "jpeg:app1-xmp");
+    EXPECT_FALSE(positional.snapshot.raw_carriers[0].decoded_entry_ids.empty());
+    EXPECT_FALSE(positional.snapshot.raw_carriers[1].decoded_entry_ids.empty());
+}
+
+
+TEST(MetadataTransferApi, ReadTransferSourceSnapshotRandomAccessReportsScratch)
+{
+    const std::vector<std::byte> exif = make_app1_exif_payload();
+    const std::array<TestJpegSegment, 1> segments { {
+        { 0xE1U, std::span<const std::byte>(exif.data(), exif.size()) },
+    } };
+    const std::vector<std::byte> jpeg = make_jpeg_with_segments(segments);
+    SnapshotCallbackState callback { jpeg };
+    const openmeta::RandomAccessSource source
+        = openmeta::make_callback_random_access_source(jpeg.size(), &callback,
+                                                       snapshot_read_at, true);
+    const openmeta::RandomAccessSourceRange range
+        = openmeta::make_random_access_source_range(source);
+    std::array<openmeta::ContainerBlockRef, 4> blocks {};
+    std::array<openmeta::ExifIfdRef, 8> ifds {};
+    std::array<uint32_t, 4> indices {};
+    std::array<std::byte, 512> window {};
+    std::array<std::byte, 8> payload {};
+    openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+    scratch.blocks          = blocks;
+    scratch.ifds            = ifds;
+    scratch.payload_indices = indices;
+    scratch.read_window     = window;
+    scratch.payload         = payload;
+    const openmeta::ReadTransferSourceSnapshotRandomAccessResult result
+        = openmeta::read_transfer_source_snapshot_random_access(
+            range, openmeta::ContainerFormat::Jpeg, scratch);
+    EXPECT_FALSE(result.complete());
+    EXPECT_EQ(result.status, openmeta::TransferStatus::LimitExceeded);
+    EXPECT_EQ(
+        result.code,
+        openmeta::ReadTransferSourceSnapshotRandomAccessCode::ScratchTooSmall);
+    EXPECT_GT(result.payload_scratch_needed, payload.size());
+}
+
+
+TEST(MetadataTransferApi,
+     ReadTransferSourceSnapshotRandomAccessHonorsCumulativeReadBudgets)
+{
+    const std::vector<std::byte> exif = make_app1_exif_payload();
+    const std::array<TestJpegSegment, 1> segments { {
+        { 0xE1U, std::span<const std::byte>(exif.data(), exif.size()) },
+    } };
+    const std::vector<std::byte> jpeg = make_jpeg_with_segments(segments);
+    SnapshotCallbackState callback { jpeg };
+    const openmeta::RandomAccessSource source
+        = openmeta::make_callback_random_access_source(jpeg.size(), &callback,
+                                                       snapshot_read_at, true);
+    const openmeta::RandomAccessSourceRange range
+        = openmeta::make_random_access_source_range(source);
+    std::array<openmeta::ContainerBlockRef, 4> blocks {};
+    std::array<openmeta::ExifIfdRef, 8> ifds {};
+    std::array<uint32_t, 4> indices {};
+    std::array<std::byte, 512> window {};
+    std::array<std::byte, 1024> payload {};
+    std::array<std::byte, 1024> compressed {};
+    std::array<std::byte, 1024> value {};
+
+    openmeta::ContainerRandomAccessScratch scan_scratch;
+    scan_scratch.read_window = window;
+    const openmeta::ContainerRandomAccessScanResult scan
+        = openmeta::scan_jpeg_random_access(range, blocks, scan_scratch);
+    ASSERT_TRUE(scan.complete());
+    ASSERT_GT(scan.input.requests_issued, 0U);
+    ASSERT_GT(scan.input.bytes_requested, 0U);
+
+    openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+    scratch.blocks             = blocks;
+    scratch.ifds               = ifds;
+    scratch.payload_indices    = indices;
+    scratch.read_window        = window;
+    scratch.payload            = payload;
+    scratch.compressed_payload = compressed;
+    scratch.value              = value;
+
+    openmeta::RandomAccessReadLimits request_limits;
+    request_limits.max_requests    = scan.input.requests_issued;
+    request_limits.max_total_bytes = 0U;
+    const openmeta::ReadTransferSourceSnapshotRandomAccessResult request_result
+        = openmeta::read_transfer_source_snapshot_random_access(
+            range, openmeta::ContainerFormat::Jpeg, scratch, {},
+            request_limits);
+    EXPECT_EQ(request_result.status, openmeta::TransferStatus::LimitExceeded);
+    EXPECT_EQ(request_result.input.code,
+              openmeta::RandomAccessReadCode::RequestLimitExceeded);
+    EXPECT_EQ(request_result.input.requests_issued, scan.input.requests_issued);
+
+    openmeta::RandomAccessReadLimits byte_limits;
+    byte_limits.max_requests    = 0U;
+    byte_limits.max_total_bytes = scan.input.bytes_requested;
+    const openmeta::ReadTransferSourceSnapshotRandomAccessResult byte_result
+        = openmeta::read_transfer_source_snapshot_random_access(
+            range, openmeta::ContainerFormat::Jpeg, scratch, {}, byte_limits);
+    EXPECT_EQ(byte_result.status, openmeta::TransferStatus::LimitExceeded);
+    EXPECT_EQ(byte_result.input.code,
+              openmeta::RandomAccessReadCode::ByteLimitExceeded);
+    EXPECT_EQ(byte_result.input.bytes_requested, scan.input.bytes_requested);
+}
+
+
+TEST(MetadataTransferApi,
+     ReadTransferSourceSnapshotRandomAccessPreservesInputFailure)
+{
+    const std::array<std::byte, 2> jpeg { std::byte { 0xFFU },
+                                          std::byte { 0xD8U } };
+    SnapshotCallbackState callback { jpeg };
+    callback.code = openmeta::RandomAccessIoCode::IoError;
+    const openmeta::RandomAccessSource source
+        = openmeta::make_callback_random_access_source(jpeg.size(), &callback,
+                                                       snapshot_read_at, true);
+    std::array<openmeta::ContainerBlockRef, 2> blocks {};
+    std::array<std::byte, 32> window {};
+    openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+    scratch.blocks      = blocks;
+    scratch.read_window = window;
+    const openmeta::ReadTransferSourceSnapshotRandomAccessResult result
+        = openmeta::read_transfer_source_snapshot_random_access(
+            openmeta::make_random_access_source_range(source),
+            openmeta::ContainerFormat::Jpeg, scratch);
+    EXPECT_EQ(result.status, openmeta::TransferStatus::InternalError);
+    EXPECT_EQ(result.code,
+              openmeta::ReadTransferSourceSnapshotRandomAccessCode::ScanFailed);
+    EXPECT_EQ(result.input.code, openmeta::RandomAccessReadCode::IoError);
+    EXPECT_EQ(result.input.io_code, openmeta::RandomAccessIoCode::IoError);
+}
+
+
+TEST(MetadataTransferApi, ReadTransferSourceSnapshotRandomAccessUsesNativeTiff)
+{
+    const std::vector<std::byte> app1 = make_app1_exif_payload();
+    ASSERT_GT(app1.size(), 6U);
+    std::vector<std::byte> tiff(app1.begin() + 6, app1.end());
+    const uint64_t metadata_end = tiff.size();
+    tiff.insert(tiff.end(), 1024U * 1024U, std::byte { 0x39U });
+    SnapshotCallbackState callback { tiff };
+    callback.forbidden_begin = metadata_end + 512U;
+    callback.forbidden_end   = tiff.size();
+    const openmeta::RandomAccessSource source
+        = openmeta::make_callback_random_access_source(tiff.size(), &callback,
+                                                       snapshot_read_at, true);
+    const openmeta::RandomAccessSourceRange range
+        = openmeta::make_random_access_source_range(source);
+    std::array<openmeta::ExifIfdRef, 16> ifds {};
+    std::array<std::byte, 64> window {};
+    std::array<std::byte, 256> value {};
+    openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+    scratch.ifds                              = ifds;
+    scratch.read_window                       = window;
+    scratch.value                             = value;
+    scratch.window_options.minimum_read_bytes = window.size();
+    const openmeta::ReadTransferSourceSnapshotRandomAccessResult result
+        = openmeta::read_transfer_source_snapshot_random_access(
+            range, openmeta::ContainerFormat::Tiff, scratch);
+    ASSERT_TRUE(result.complete());
+    EXPECT_EQ(result.entry_count, 1U);
+    EXPECT_EQ(result.read.exif.status, openmeta::ExifDecodeStatus::Ok);
+    EXPECT_FALSE(callback.touched_forbidden);
+    EXPECT_LT(result.input.bytes_requested, static_cast<uint64_t>(tiff.size()));
+}
+
+
+TEST(MetadataTransferApi,
+     ReadTransferSourceSnapshotRandomAccessReportsNativeRawResidual)
+{
+    const std::vector<std::byte> app1 = make_app1_exif_payload();
+    ASSERT_GT(app1.size(), 6U);
+    const std::vector<std::byte> tiff(app1.begin() + 6, app1.end());
+    const openmeta::RandomAccessSource source
+        = openmeta::make_memory_random_access_source(tiff);
+    std::array<openmeta::ExifIfdRef, 16> ifds {};
+    std::array<std::byte, 64> window {};
+    std::array<std::byte, 256> value {};
+    openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+    scratch.ifds        = ifds;
+    scratch.read_window = window;
+    scratch.value       = value;
+    openmeta::ReadTransferSourceSnapshotRandomAccessOptions options;
+    options.preserve_raw_carriers = true;
+    const openmeta::ReadTransferSourceSnapshotRandomAccessResult result
+        = openmeta::read_transfer_source_snapshot_random_access(
+            openmeta::make_random_access_source_range(source),
+            openmeta::ContainerFormat::Tiff, scratch, options);
+    EXPECT_EQ(result.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(result.code,
+              openmeta::ReadTransferSourceSnapshotRandomAccessCode::
+                  ResidualMetadataPaths);
+    EXPECT_EQ(result.residual_metadata_paths, 1U);
+    EXPECT_FALSE(result.complete());
+    EXPECT_EQ(result.entry_count, 1U);
+    EXPECT_TRUE(result.snapshot.store.is_finalized());
+}
+
+
+TEST(MetadataTransferApi, ReadTransferSourceSnapshotRandomAccessDecodesPngText)
+{
+    std::vector<std::byte> text;
+    append_bytes(&text, "Description");
+    text.push_back(std::byte { 0U });
+    append_bytes(&text, "bounded text");
+    std::vector<std::byte> metadata;
+    append_png_chunk(&metadata, openmeta::fourcc('t', 'E', 'X', 't'), text);
+    const std::vector<std::byte> png = build_minimal_png_file(metadata);
+    SnapshotCallbackState callback { png };
+    const openmeta::RandomAccessSource source
+        = openmeta::make_callback_random_access_source(png.size(), &callback,
+                                                       snapshot_read_at, true);
+    const openmeta::RandomAccessSourceRange range
+        = openmeta::make_random_access_source_range(source);
+    std::array<openmeta::ContainerBlockRef, 8> blocks {};
+    std::array<openmeta::ExifIfdRef, 8> ifds {};
+    std::array<uint32_t, 8> indices {};
+    std::array<std::byte, 64> window {};
+    std::array<std::byte, 256> payload {};
+    std::array<std::byte, 256> compressed {};
+    std::array<std::byte, 128> value {};
+    openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+    scratch.blocks             = blocks;
+    scratch.ifds               = ifds;
+    scratch.payload_indices    = indices;
+    scratch.read_window        = window;
+    scratch.payload            = payload;
+    scratch.compressed_payload = compressed;
+    scratch.value              = value;
+    const openmeta::ReadTransferSourceSnapshotRandomAccessResult result
+        = openmeta::read_transfer_source_snapshot_random_access(
+            range, openmeta::ContainerFormat::Png, scratch);
+    ASSERT_TRUE(result.complete());
+    openmeta::MetaKeyView key;
+    key.kind                  = openmeta::MetaKeyKind::PngText;
+    key.data.png_text.keyword = "Description";
+    key.data.png_text.field   = "text";
+    EXPECT_EQ(result.snapshot.store.find_all(key).size(), 1U);
+}
+
 
 TEST(MetadataTransferApi, ReadTransferSourceSnapshotRawCarriersAreOptIn)
 {
@@ -31853,7 +32229,8 @@ TEST(MetadataTransferApi,
         std::string sidecar_summary
             = "xmp_sidecar_requested=true xmp_sidecar_status=\"ok\" "
               "xmp_sidecar_path=\"";
-        sidecar_summary.append(expected_sidecar_path);
+        sidecar_summary.append(
+            compatibility_dump_escape(expected_sidecar_path));
         sidecar_summary.push_back('"');
         EXPECT_TRUE(text_contains(transfer_dump, sidecar_summary))
             << transfer_dump;
@@ -31861,14 +32238,15 @@ TEST(MetadataTransferApi,
         std::string persist_summary
             = "persist status=\"ok\" message=\"persisted transfer outputs\" "
               "output_status=\"ok\" output_path=\"";
-        persist_summary.append(output_path);
+        persist_summary.append(compatibility_dump_escape(output_path));
         persist_summary.push_back('"');
         EXPECT_TRUE(text_contains(transfer_dump, persist_summary))
             << transfer_dump;
 
         std::string persist_sidecar = "xmp_sidecar_status=\"ok\" "
                                       "xmp_sidecar_path=\"";
-        persist_sidecar.append(expected_sidecar_path);
+        persist_sidecar.append(
+            compatibility_dump_escape(expected_sidecar_path));
         persist_sidecar.push_back('"');
         EXPECT_TRUE(text_contains(transfer_dump, persist_sidecar))
             << transfer_dump;
@@ -32028,7 +32406,7 @@ TEST(MetadataTransferApi,
         std::string cleanup_summary = "xmp_sidecar_cleanup_requested=true "
                                       "xmp_sidecar_cleanup_status=\"ok\" "
                                       "xmp_sidecar_cleanup_path=\"";
-        cleanup_summary.append(output_sidecar_path);
+        cleanup_summary.append(compatibility_dump_escape(output_sidecar_path));
         cleanup_summary.push_back('"');
         EXPECT_TRUE(text_contains(transfer_dump, cleanup_summary))
             << transfer_dump;
@@ -32036,7 +32414,7 @@ TEST(MetadataTransferApi,
         std::string persist_summary
             = "persist status=\"ok\" message=\"persisted transfer outputs\" "
               "output_status=\"ok\" output_path=\"";
-        persist_summary.append(output_path);
+        persist_summary.append(compatibility_dump_escape(output_path));
         persist_summary.push_back('"');
         EXPECT_TRUE(text_contains(transfer_dump, persist_summary))
             << transfer_dump;

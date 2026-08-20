@@ -7,6 +7,8 @@
 #include <gtest/gtest.h>
 
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 namespace openmeta {
@@ -27,6 +29,35 @@ static bool write_bytes(const char* path,
                            == bytes.size();
     std::fclose(f);
     return ok;
+}
+
+static std::string temp_path(const char* name)
+{
+    constexpr const char* kVariables[] = { "TMPDIR", "TEMP", "TMP" };
+    std::string path;
+    for (const char* variable : kVariables) {
+        const char* value = std::getenv(variable);
+        if (value && *value) {
+            path = value;
+            break;
+        }
+    }
+    if (path.empty()) {
+#if defined(_WIN32)
+        path = ".";
+#else
+        path = "/tmp";
+#endif
+    }
+    if (path.back() != '/' && path.back() != '\\') {
+#if defined(_WIN32)
+        path.push_back('\\');
+#else
+        path.push_back('/');
+#endif
+    }
+    path.append(name);
+    return path;
 }
 
 static std::vector<std::byte> make_minimal_tiff_with_orientation(
@@ -354,11 +385,11 @@ TEST(LibRawAdapter, PrefersExifOverXmpOrientation) {
 
 TEST(LibRawAdapter, FileHelperReadsExifOrientationFromTiff) {
     const std::vector<std::byte> bytes = make_minimal_tiff_with_orientation(6U);
-    const char* const path = "/tmp/openmeta_libraw_orientation.tif";
-    ASSERT_TRUE(write_bytes(path, bytes));
+    const std::string path = temp_path("openmeta_libraw_orientation.tif");
+    ASSERT_TRUE(write_bytes(path.c_str(), bytes));
 
     const LibRawOrientationFileResult result
-        = map_meta_orientation_to_libraw_flip_from_file(path);
+        = map_meta_orientation_to_libraw_flip_from_file(path.c_str());
     EXPECT_EQ(result.file_status, LibRawOrientationFileStatus::Ok);
     EXPECT_EQ(result.orientation.status, LibRawOrientationStatus::Ok);
     EXPECT_EQ(result.orientation.source, LibRawOrientationSource::ExifIfd0);
@@ -370,11 +401,12 @@ TEST(LibRawAdapter, FileHelperReadsExifOrientationFromTiff) {
 
 TEST(LibRawAdapter, FileHelperAssumesDefaultWhenOrientationMissing) {
     const std::vector<std::byte> bytes = make_minimal_tiff_without_orientation();
-    const char* const path = "/tmp/openmeta_libraw_orientation_default.tif";
-    ASSERT_TRUE(write_bytes(path, bytes));
+    const std::string path
+        = temp_path("openmeta_libraw_orientation_default.tif");
+    ASSERT_TRUE(write_bytes(path.c_str(), bytes));
 
     const LibRawOrientationFileResult result
-        = map_meta_orientation_to_libraw_flip_from_file(path);
+        = map_meta_orientation_to_libraw_flip_from_file(path.c_str());
     EXPECT_EQ(result.file_status, LibRawOrientationFileStatus::Ok);
     EXPECT_EQ(result.orientation.status, LibRawOrientationStatus::Ok);
     EXPECT_EQ(result.orientation.code,
