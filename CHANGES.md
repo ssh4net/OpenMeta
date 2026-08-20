@@ -1,5 +1,32 @@
 # OpenMeta Changes
 
+## 0.4.105 - 2026-08-20
+
+Changes compared with `0.4.104`.
+
+### Added
+
+- Added callback-backed Kodak MakerNote decoding for fixed-layout records and
+  outer-TIFF-relative Type 8, Type 10, and Type 11 IFDs, including pointer and
+  embedded vendor subtables.
+- Added a bounded Kodak nearby-IFD resolver that reads through caller-owned
+  random-access windows without materializing the TIFF payload.
+
+### Changed
+
+- Kodak callback candidate scoring now matches contiguous TIFF scoring by
+  rejecting invalid TIFF types before considering zero-length values. This
+  prevents binary bytes from outranking the intended vendor IFD.
+- Random-access residual reporting no longer classifies supported Kodak
+  MakerNotes as unconverted. Source I/O and value-scratch shortages remain
+  explicit through `ExifRandomAccessDecodeResult`.
+
+### Tests And Validation
+
+- Added callback regressions for Kodak KDK records, outer-TIFF out-of-line
+  values, nested pointer tables, invalid-type decoys, and value-scratch
+  requirements.
+
 ## 0.4.104 - 2026-08-19
 
 Changes compared with `0.4.103`.

@@ -46,6 +46,18 @@ namespace {
     }
 
 
+    static void append_classic_ifd_entry_le(std::vector<std::byte>* out,
+                                            uint16_t tag, uint16_t type,
+                                            uint32_t count,
+                                            uint32_t value_or_offset)
+    {
+        append_u16le(out, tag);
+        append_u16le(out, type);
+        append_u32le(out, count);
+        append_u32le(out, value_or_offset);
+    }
+
+
     static void append_u16be(std::vector<std::byte>* out, uint16_t v)
     {
         out->push_back(std::byte { static_cast<uint8_t>((v >> 8) & 0xFF) });
@@ -10466,6 +10478,162 @@ TEST(MakerNoteDecode, DecodesKodakKdkMakerNote)
             store.arena().span(e.value.data.span).size());
         EXPECT_EQ(v, "03:04:05.06");
     }
+}
+
+
+TEST(MakerNoteDecode, RandomAccessCallbackMatchesKodakKdkMakerNote)
+{
+    const std::vector<std::byte> mn   = make_kodak_kdk_makernote();
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("KODAK",
+                                                                      mn);
+
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote           = true;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {},
+                                                          options);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    callback_store.finalize();
+    const std::span<const EntryId> ids = callback_store.find_all(
+        exif_key("mk_kodak0", 0x000c));
+    ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(callback_store.entry(ids[0]).value.data.u64, 800U);
+}
+
+
+TEST(MakerNoteDecode, RandomAccessDecodesKodakOuterTiffValue)
+{
+    std::vector<std::byte> mn;
+    append_u16le(&mn, 4U);
+    append_classic_ifd_entry_le(&mn, 0x0104U, 3U, 1U, 9U);
+    append_classic_ifd_entry_le(&mn, 0x0200U, 3U, 1U, 1U);
+    append_classic_ifd_entry_le(&mn, 0x0203U, 3U, 1U, 2U);
+    append_classic_ifd_entry_le(&mn, 0x0F02U, 3U, 4U, 0U);
+    append_u32le(&mn, 0U);
+
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote_and_model(
+        "KODAK", "KODAK P712 ZOOM DIGITAL CAMERA", mn);
+    const size_t maker_note_off = tiff.size() - mn.size();
+    const uint32_t value_off    = static_cast<uint32_t>(tiff.size());
+    append_u16le(&tiff, 11U);
+    append_u16le(&tiff, 22U);
+    append_u16le(&tiff, 33U);
+    append_u16le(&tiff, 44U);
+    write_u32le_at(&tiff, maker_note_off + 2U + 3U * 12U + 8U, value_off);
+
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote           = true;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {},
+                                                          options);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    callback_store.finalize();
+    const std::span<const EntryId> ids = callback_store.find_all(
+        exif_key("mk_kodak_type8_0", 0x0F02U));
+    ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(callback_store.entry(ids[0]).value.kind, MetaValueKind::Array);
+    EXPECT_EQ(callback_store.entry(ids[0]).value.elem_type,
+              MetaElementType::U16);
+    EXPECT_EQ(callback_store.entry(ids[0]).value.count, 4U);
+}
+
+
+TEST(MakerNoteDecode, RandomAccessKodakNearbyIfdRejectsInvalidTypeDecoy)
+{
+    std::vector<std::byte> mn;
+    append_u16le(&mn, 4U);
+    append_classic_ifd_entry_le(&mn, 0x0104U, 3U, 1U, 9U);
+    append_classic_ifd_entry_le(&mn, 0x0200U, 3U, 1U, 1U);
+    append_classic_ifd_entry_le(&mn, 0x0203U, 3U, 1U, 2U);
+    append_classic_ifd_entry_le(&mn, 0xFF00U, 4U, 1U, 0U);
+    append_u32le(&mn, 0U);
+
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote_and_model(
+        "KODAK", "KODAK P850 ZOOM DIGITAL CAMERA", mn);
+    const size_t maker_note_off = tiff.size() - mn.size();
+    while (tiff.size() < 4096U) {
+        tiff.push_back(std::byte { 0U });
+    }
+
+    append_u16le(&tiff, 10U);
+    for (uint16_t i = 0U; i < 10U; ++i) {
+        append_classic_ifd_entry_le(&tiff, static_cast<uint16_t>(0x7000U + i),
+                                    0U, 0U, 0U);
+    }
+    append_u32le(&tiff, 0U);
+
+    const uint32_t camera_ifd_off = static_cast<uint32_t>(tiff.size());
+    append_u16le(&tiff, 6U);
+    for (uint16_t i = 0U; i < 6U; ++i) {
+        append_classic_ifd_entry_le(&tiff, static_cast<uint16_t>(0x0200U + i),
+                                    3U, 1U, static_cast<uint32_t>(10U + i));
+    }
+    append_u32le(&tiff, 0U);
+    write_u32le_at(&tiff, maker_note_off + 2U + 3U * 12U + 8U, camera_ifd_off);
+
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote           = true;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {},
+                                                          options);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    callback_store.finalize();
+    const std::span<const EntryId> ids = callback_store.find_all(
+        exif_key("mk_kodak_camerainfo_0", 0x0205U));
+    ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(callback_store.entry(ids[0]).value.data.u64, 15U);
+}
+
+
+TEST(MakerNoteDecode, RandomAccessKodakOuterValueReportsScratchRequirement)
+{
+    static constexpr uint32_t kPayloadBytes = 5000U;
+    std::vector<std::byte> mn;
+    append_u16le(&mn, 4U);
+    append_classic_ifd_entry_le(&mn, 0x0104U, 3U, 1U, 9U);
+    append_classic_ifd_entry_le(&mn, 0x0200U, 3U, 1U, 1U);
+    append_classic_ifd_entry_le(&mn, 0x0203U, 3U, 1U, 2U);
+    append_classic_ifd_entry_le(&mn, 0x0F02U, 7U, kPayloadBytes, 0U);
+    append_u32le(&mn, 0U);
+
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote_and_model(
+        "KODAK", "KODAK P880 ZOOM DIGITAL CAMERA", mn);
+    const size_t maker_note_off = tiff.size() - mn.size();
+    const uint32_t value_off    = static_cast<uint32_t>(tiff.size());
+    tiff.insert(tiff.end(), kPayloadBytes, std::byte { 0x5AU });
+    write_u32le_at(&tiff, maker_note_off + 2U + 3U * 12U + 8U, value_off);
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, store);
+    EXPECT_TRUE(result.input.ok());
+    EXPECT_EQ(result.value_scratch_needed, kPayloadBytes);
+    EXPECT_EQ(result.nested_payloads_skipped, 0U);
+    EXPECT_FALSE(result.complete());
 }
 
 

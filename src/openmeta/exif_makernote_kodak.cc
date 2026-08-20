@@ -1502,6 +1502,521 @@ namespace {
         return true;
     }
 
+
+    static bool decode_kodak_fixed_layout(std::span<const std::byte> mn,
+                                          std::string_view mk_ifd0,
+                                          std::string_view model,
+                                          MetaStore& store,
+                                          const ExifDecodeOptions& options,
+                                          ExifDecodeResult* status_out) noexcept
+    {
+        if (starts_with_kdk(mn)) {
+            return decode_kodak_kdk(mn, mk_ifd0, store, options, status_out);
+        }
+
+        {
+            char scratch[32];
+            const std::string_view type7_ifd
+                = make_kodak_makernote_ifd_token(options, "type7", mk_ifd0,
+                                                 std::span<char>(scratch));
+            if (decode_kodak_serial_only(mn, type7_ifd, store, options,
+                                         status_out)) {
+                return true;
+            }
+        }
+
+        if (!model.empty()) {
+            if (model.find("DX3215") != std::string_view::npos) {
+                char scratch[32];
+                const std::string_view type6_ifd
+                    = make_kodak_makernote_ifd_token(options, "type6", mk_ifd0,
+                                                     std::span<char>(scratch));
+                return decode_kodak_type6(mn, type6_ifd, false, store, options,
+                                          status_out);
+            }
+            if (model.find("DX3700") != std::string_view::npos) {
+                char scratch[32];
+                const std::string_view type6_ifd
+                    = make_kodak_makernote_ifd_token(options, "type6", mk_ifd0,
+                                                     std::span<char>(scratch));
+                return decode_kodak_type6(mn, type6_ifd, true, store, options,
+                                          status_out);
+            }
+        }
+
+        {
+            char scratch[32];
+            const std::string_view type9_ifd
+                = make_kodak_makernote_ifd_token(options, "type9", mk_ifd0,
+                                                 std::span<char>(scratch));
+            if (decode_kodak_type9(mn, type9_ifd, store, options, status_out)) {
+                return true;
+            }
+        }
+
+        if (!model.empty()) {
+            if (model.find("DC200") != std::string_view::npos
+                || model.find("DC210") != std::string_view::npos
+                || model.find("DC215") != std::string_view::npos) {
+                char scratch[32];
+                const std::string_view type4_ifd
+                    = make_kodak_makernote_ifd_token(options, "type4", mk_ifd0,
+                                                     std::span<char>(scratch));
+                if (decode_kodak_type4(mn, type4_ifd, store, options,
+                                       status_out)) {
+                    return true;
+                }
+            }
+
+            if (model.find("DC240") != std::string_view::npos
+                || model.find("DC280") != std::string_view::npos
+                || model.find("DC3400") != std::string_view::npos
+                || model.find("DC5000") != std::string_view::npos) {
+                char scratch[32];
+                const std::string_view type3_ifd
+                    = make_kodak_makernote_ifd_token(options, "type3", mk_ifd0,
+                                                     std::span<char>(scratch));
+                if (decode_kodak_type3(mn, type3_ifd, store, options,
+                                       status_out)) {
+                    return true;
+                }
+            }
+
+            if (model.find("CX4200") != std::string_view::npos
+                || model.find("CX4210") != std::string_view::npos
+                || model.find("CX4230") != std::string_view::npos
+                || model.find("CX4300") != std::string_view::npos
+                || model.find("CX4310") != std::string_view::npos
+                || model.find("CX6200") != std::string_view::npos
+                || model.find("CX6230") != std::string_view::npos) {
+                char scratch[32];
+                const std::string_view type5_ifd
+                    = make_kodak_makernote_ifd_token(options, "type5", mk_ifd0,
+                                                     std::span<char>(scratch));
+                if (decode_kodak_type5(mn, type5_ifd, store, options,
+                                       status_out)) {
+                    return true;
+                }
+            }
+        }
+
+        char scratch[32];
+        const std::string_view type2_ifd
+            = make_kodak_makernote_ifd_token(options, "type2", mk_ifd0,
+                                             std::span<char>(scratch));
+        return decode_kodak_type2(mn, type2_ifd, store, options, status_out);
+    }
+
+
+    static bool kodak_checked_add(uint64_t a, uint64_t b,
+                                  uint64_t* out) noexcept
+    {
+        if (!out || a > UINT64_MAX - b) {
+            return false;
+        }
+        *out = a + b;
+        return true;
+    }
+
+
+    static bool score_source_kodak_ifd(SourceTiffReader* source,
+                                       const TiffConfig& cfg, uint64_t ifd_off,
+                                       const ExifDecodeLimits& limits,
+                                       ClassicIfdCandidate* out) noexcept
+    {
+        std::span<const std::byte> count_raw;
+        if (!source || cfg.bigtiff
+            || !source_tiff_contains(*source, ifd_off, 2U)
+            || !source_tiff_view(source, ifd_off, 2U, &count_raw)) {
+            return false;
+        }
+
+        uint16_t entry_count = 0U;
+        if (!read_tiff_u16(cfg, count_raw, 0U, &entry_count)
+            || entry_count == 0U || entry_count > 512U
+            || entry_count > limits.max_entries_per_ifd) {
+            return false;
+        }
+
+        const uint64_t table_bytes = uint64_t(entry_count) * 12U;
+        uint64_t entries_off       = 0U;
+        uint64_t needed            = 0U;
+        if (!kodak_checked_add(ifd_off, 2U, &entries_off)
+            || !kodak_checked_add(table_bytes, 4U, &needed)
+            || !source_tiff_contains(*source, entries_off, needed)) {
+            return false;
+        }
+
+        uint32_t valid = 0U;
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            const uint64_t delta = uint64_t(i) * 12U;
+            uint64_t entry_off   = 0U;
+            if (!kodak_checked_add(entries_off, delta, &entry_off)) {
+                return false;
+            }
+
+            std::span<const std::byte> raw;
+            if (!source_tiff_view(source, entry_off, 12U, &raw)) {
+                return false;
+            }
+            ClassicIfdEntry entry;
+            if (!read_classic_ifd_entry(cfg, raw, 0U, &entry)) {
+                return false;
+            }
+            const uint64_t unit = tiff_type_size(entry.type);
+            if (unit == 0U || uint64_t(entry.count32) > UINT64_MAX / unit) {
+                continue;
+            }
+            const uint64_t value_bytes = uint64_t(entry.count32) * unit;
+            if (value_bytes > limits.max_value_bytes) {
+                continue;
+            }
+            if (value_bytes <= 4U
+                || source_tiff_contains(*source, entry.value_or_off32,
+                                        value_bytes)) {
+                valid += 1U;
+            }
+        }
+
+        const uint32_t min_valid = entry_count > 4U ? uint32_t(entry_count) / 2U
+                                                    : uint32_t(entry_count);
+        if (valid < min_valid) {
+            return false;
+        }
+        if (out) {
+            out->offset        = ifd_off;
+            out->le            = cfg.le;
+            out->entry_count   = entry_count;
+            out->valid_entries = valid;
+        }
+        return true;
+    }
+
+
+    static bool
+    source_kodak_ifd_structural(SourceTiffReader* source, const TiffConfig& cfg,
+                                uint64_t ifd_off,
+                                const ExifDecodeLimits& limits) noexcept
+    {
+        std::span<const std::byte> count_raw;
+        if (!source || cfg.bigtiff
+            || !source_tiff_contains(*source, ifd_off, 2U)
+            || !source_tiff_view(source, ifd_off, 2U, &count_raw)) {
+            return false;
+        }
+
+        uint16_t entry_count = 0U;
+        if (!read_tiff_u16(cfg, count_raw, 0U, &entry_count)
+            || entry_count == 0U || entry_count > 512U
+            || entry_count > limits.max_entries_per_ifd) {
+            return false;
+        }
+
+        uint64_t entries_off = 0U;
+        uint64_t needed      = 0U;
+        return kodak_checked_add(ifd_off, 2U, &entries_off)
+               && kodak_checked_add(uint64_t(entry_count) * 12U, 4U, &needed)
+               && source_tiff_contains(*source, entries_off, needed);
+    }
+
+
+    static bool find_source_kodak_ifd_near(SourceTiffReader* source,
+                                           uint64_t approx_off, uint64_t radius,
+                                           const ExifDecodeLimits& limits,
+                                           ClassicIfdCandidate* out) noexcept
+    {
+        if (!source || !source->range || !out
+            || approx_off > source->range->size) {
+            return false;
+        }
+
+        const uint64_t start = approx_off > radius ? approx_off - radius : 0U;
+        const uint64_t available = source->range->size - approx_off;
+        const uint64_t end       = available < radius ? source->range->size
+                                                      : approx_off + radius;
+        ClassicIfdCandidate best;
+        bool found = false;
+        for (uint64_t off = start; off <= end && end - off >= 2U; off += 2U) {
+            for (uint32_t endian = 0U; endian < 2U; ++endian) {
+                TiffConfig cfg;
+                cfg.le      = endian == 0U;
+                cfg.bigtiff = false;
+                ClassicIfdCandidate candidate;
+                if (!score_source_kodak_ifd(source, cfg, off, limits,
+                                            &candidate)) {
+                    continue;
+                }
+                const uint64_t distance = off >= approx_off ? off - approx_off
+                                                            : approx_off - off;
+                const uint64_t best_distance = best.offset >= approx_off
+                                                   ? best.offset - approx_off
+                                                   : approx_off - best.offset;
+                if (!found || candidate.valid_entries > best.valid_entries
+                    || (candidate.valid_entries == best.valid_entries
+                        && distance < best_distance)
+                    || (candidate.valid_entries == best.valid_entries
+                        && distance == 0U && candidate.offset < best.offset)) {
+                    best  = candidate;
+                    found = true;
+                }
+            }
+            if (off > UINT64_MAX - 2U) {
+                break;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+        *out = best;
+        return true;
+    }
+
+
+    static bool decode_source_kodak_named_ifd(
+        SourceTiffReader* source, const TiffConfig& cfg, uint64_t ifd_off,
+        std::string_view mk_prefix, std::string_view table, MetaStore& store,
+        const ExifDecodeOptions& options, ExifDecodeResult* status_out) noexcept
+    {
+        char scratch[64];
+        const std::string_view ifd_token
+            = make_mk_subtable_ifd_token(mk_prefix, table, 0U,
+                                         std::span<char>(scratch));
+        if (ifd_token.empty()) {
+            return false;
+        }
+        OffsetPolicy offsets;
+        return decode_classic_ifd_from_source(source, cfg, ifd_off, offsets,
+                                              ifd_token, store, options,
+                                              status_out, EntryFlags::None);
+    }
+
+
+    static bool decode_source_kodak_pointer_ifd(
+        SourceTiffReader* source, uint64_t pointer,
+        const TiffConfig* preferred_cfg, uint64_t scan_radius,
+        std::string_view mk_prefix, std::string_view table, MetaStore& store,
+        const ExifDecodeOptions& options, ExifDecodeResult* status_out) noexcept
+    {
+        ClassicIfdCandidate candidate;
+        if (preferred_cfg
+            && source_kodak_ifd_structural(source, *preferred_cfg, pointer,
+                                           options.limits)) {
+            return decode_source_kodak_named_ifd(source, *preferred_cfg,
+                                                 pointer, mk_prefix, table,
+                                                 store, options, status_out);
+        }
+
+        if (source_tiff_contains(*source, pointer, 2U)) {
+            std::span<const std::byte> marker;
+            if (!source_tiff_view(source, pointer, 2U, &marker)) {
+                return false;
+            }
+            const uint8_t m0 = u8(marker[0]);
+            const uint8_t m1 = u8(marker[1]);
+            if ((m0 == 'I' && m1 == 'I') || (m0 == 'M' && m1 == 'M')) {
+                uint64_t ifd_off = 0U;
+                TiffConfig cfg;
+                cfg.le      = m0 == 'I';
+                cfg.bigtiff = false;
+                if (kodak_checked_add(pointer, 2U, &ifd_off)
+                    && source_kodak_ifd_structural(source, cfg, ifd_off,
+                                                   options.limits)) {
+                    return decode_source_kodak_named_ifd(source, cfg, ifd_off,
+                                                         mk_prefix, table,
+                                                         store, options,
+                                                         status_out);
+                }
+            }
+        }
+
+        if (!find_source_kodak_ifd_near(source, pointer, scan_radius,
+                                        options.limits, &candidate)) {
+            return false;
+        }
+        TiffConfig cfg;
+        cfg.le      = candidate.le;
+        cfg.bigtiff = false;
+        return decode_source_kodak_named_ifd(source, cfg, candidate.offset,
+                                             mk_prefix, table, store, options,
+                                             status_out);
+    }
+
+
+    enum class SourceKodakResult : uint8_t {
+        NotRecognized,
+        Complete,
+        Incomplete,
+    };
+
+
+    static SourceKodakResult decode_kodak_type8_from_source(
+        SourceTiffReader* source, const TiffConfig& parent_cfg,
+        uint64_t maker_note_off, std::span<const std::byte> mn,
+        std::string_view mk_ifd0, std::string_view model, MetaStore& store,
+        const ExifDecodeOptions& options, ExifDecodeResult* status_out) noexcept
+    {
+        if (!source || !source->range || mk_ifd0.empty()
+            || !source_tiff_contains(*source, maker_note_off, mn.size())) {
+            return SourceKodakResult::NotRecognized;
+        }
+
+        const bool has_marker = mn.size() >= 2U
+                                && ((u8(mn[0]) == 'I' && u8(mn[1]) == 'I')
+                                    || (u8(mn[0]) == 'M' && u8(mn[1]) == 'M'));
+        if (has_marker && mn.size() >= 4U) {
+            TiffConfig header_cfg;
+            header_cfg.le      = u8(mn[0]) == 'I';
+            header_cfg.bigtiff = false;
+            uint16_t version   = 0U;
+            if (read_tiff_u16(header_cfg, mn, 2U, &version) && version == 42U) {
+                return SourceKodakResult::NotRecognized;
+            }
+        }
+
+        ClassicIfdCandidate main;
+        TiffConfig cfg;
+        cfg.bigtiff           = false;
+        uint64_t main_ifd_off = maker_note_off;
+        if (has_marker) {
+            cfg.le = u8(mn[0]) == 'I';
+            if (!kodak_checked_add(maker_note_off, 2U, &main_ifd_off)
+                || !score_source_kodak_ifd(source, cfg, main_ifd_off,
+                                           options.limits, &main)) {
+                return SourceKodakResult::NotRecognized;
+            }
+        } else {
+            bool found = false;
+            for (uint32_t endian = 0U; endian < 2U; ++endian) {
+                TiffConfig candidate_cfg;
+                candidate_cfg.le      = endian == 0U;
+                candidate_cfg.bigtiff = false;
+                ClassicIfdCandidate candidate;
+                if (!score_source_kodak_ifd(source, candidate_cfg,
+                                            maker_note_off, options.limits,
+                                            &candidate)) {
+                    continue;
+                }
+                if (!found || candidate.valid_entries > main.valid_entries) {
+                    main  = candidate;
+                    cfg   = candidate_cfg;
+                    found = true;
+                }
+            }
+            if (!found || main.valid_entries < 4U) {
+                return SourceKodakResult::NotRecognized;
+            }
+        }
+
+        char main_ifd_scratch[32];
+        const std::string_view main_ifd = make_kodak_makernote_ifd_token(
+            options, select_kodak_absolute_ifd_subtable(model, has_marker),
+            mk_ifd0, std::span<char>(main_ifd_scratch));
+        OffsetPolicy offsets;
+        if (!decode_classic_ifd_from_source(source, cfg, main_ifd_off, offsets,
+                                            main_ifd, store, options,
+                                            status_out, EntryFlags::None)) {
+            return SourceKodakResult::Incomplete;
+        }
+
+        uint64_t entries_off = 0U;
+        if (!kodak_checked_add(main_ifd_off, 2U, &entries_off)) {
+            return SourceKodakResult::Incomplete;
+        }
+
+        const std::string_view mk_prefix = options.tokens.ifd_prefix;
+        uint32_t fc00                    = 0U;
+        bool have_fc00                   = false;
+        bool complete                    = true;
+        for (uint32_t i = 0U; i < main.entry_count; ++i) {
+            uint64_t entry_off = 0U;
+            if (!kodak_checked_add(entries_off, uint64_t(i) * 12U, &entry_off)) {
+                return SourceKodakResult::Incomplete;
+            }
+            std::span<const std::byte> raw;
+            if (!source_tiff_view(source, entry_off, 12U, &raw)) {
+                return SourceKodakResult::Incomplete;
+            }
+            ClassicIfdEntry entry;
+            if (!read_classic_ifd_entry(cfg, raw, 0U, &entry)) {
+                complete = false;
+                continue;
+            }
+
+            if (entry.tag == 0xFC00U && entry.type == 4U
+                && entry.count32 == 1U) {
+                fc00      = entry.value_or_off32;
+                have_fc00 = true;
+            }
+
+            if (entry.type == 4U && entry.count32 == 1U
+                && entry.value_or_off32 != 0U) {
+                std::string_view table;
+                switch (entry.tag) {
+                case 0xFC01U: table = "subifd1"; break;
+                case 0xFC02U: table = "subifd2"; break;
+                case 0xFC03U: table = "subifd3"; break;
+                case 0xFC04U: table = "subifd4"; break;
+                case 0xFC05U: table = "subifd5"; break;
+                case 0xFC06U: table = "subifd6"; break;
+                case 0xFF00U: table = "camerainfo"; break;
+                default: break;
+                }
+                if (!table.empty()
+                    && !decode_source_kodak_pointer_ifd(
+                        source, entry.value_or_off32, nullptr, 2048U, mk_prefix,
+                        table, store, options, status_out)
+                    && (!source->result->input.ok()
+                        || source->result->value_scratch_needed != 0U)) {
+                    complete = false;
+                }
+            }
+
+            if (entry.type == 7U && entry.count32 > 4U
+                && entry.value_or_off32 != 0U) {
+                std::string_view table;
+                switch (entry.tag) {
+                case 0xFC00U: table = "subifd0"; break;
+                case 0xFC01U: table = "subifd1"; break;
+                case 0xFC02U: table = "subifd2"; break;
+                case 0xFC03U: table = "subifd3"; break;
+                case 0xFC04U: table = "subifd4"; break;
+                case 0xFC05U: table = "subifd5"; break;
+                case 0xFC06U: table = "subifd6"; break;
+                case 0xFCFFU: table = "subifd255"; break;
+                default: break;
+                }
+                if (!table.empty()) {
+                    const uint64_t value_bytes = entry.count32;
+                    if (value_bytes <= options.limits.max_value_bytes
+                        && source_tiff_contains(*source, entry.value_or_off32,
+                                                value_bytes)) {
+                        std::span<const std::byte> sub_bytes;
+                        if (!source_tiff_value(source, entry.value_or_off32,
+                                               value_bytes, &sub_bytes)) {
+                            complete = false;
+                        } else {
+                            decode_kodak_embedded_subifd(sub_bytes, mk_prefix,
+                                                         table, store, options,
+                                                         status_out);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (have_fc00 && fc00 != 0U
+            && !decode_source_kodak_pointer_ifd(source, fc00, &parent_cfg, 512U,
+                                                mk_prefix, "subifd0", store,
+                                                options, status_out)
+            && (!source->result->input.ok()
+                || source->result->value_scratch_needed != 0U)) {
+            complete = false;
+        }
+
+        return complete ? SourceKodakResult::Complete
+                        : SourceKodakResult::Incomplete;
+    }
+
 }  // namespace
 
 bool
@@ -1526,104 +2041,12 @@ decode_kodak_makernote(const TiffConfig& parent_cfg,
         = tiff_bytes.subspan(static_cast<size_t>(maker_note_off),
                              static_cast<size_t>(maker_note_bytes));
 
-    if (starts_with_kdk(mn)) {
-        return decode_kodak_kdk(mn, mk_ifd0, store, options, status_out);
-    }
-
-    {
-        char scratch[32];
-        const std::string_view type7_ifd
-            = make_kodak_makernote_ifd_token(options, "type7", mk_ifd0,
-                                             std::span<char>(scratch));
-        if (decode_kodak_serial_only(mn, type7_ifd, store, options,
-                                     status_out)) {
-            return true;
-        }
-    }
-
     ExifContext ctx(store);
     std::string_view model;
     (void)ctx.find_first_text("ifd0", 0x0110 /* Model */, &model);
-    if (!model.empty()) {
-        if (model.find("DX3215") != std::string_view::npos) {
-            char scratch[32];
-            const std::string_view type6_ifd
-                = make_kodak_makernote_ifd_token(options, "type6", mk_ifd0,
-                                                 std::span<char>(scratch));
-            return decode_kodak_type6(mn, type6_ifd, false, store, options,
-                                      status_out);
-        }
-        if (model.find("DX3700") != std::string_view::npos) {
-            char scratch[32];
-            const std::string_view type6_ifd
-                = make_kodak_makernote_ifd_token(options, "type6", mk_ifd0,
-                                                 std::span<char>(scratch));
-            return decode_kodak_type6(mn, type6_ifd, true, store, options,
-                                      status_out);
-        }
-    }
-
-    {
-        char scratch[32];
-        const std::string_view type9_ifd
-            = make_kodak_makernote_ifd_token(options, "type9", mk_ifd0,
-                                             std::span<char>(scratch));
-        if (decode_kodak_type9(mn, type9_ifd, store, options, status_out)) {
-            return true;
-        }
-    }
-
-    if (!model.empty()) {
-        if (model.find("DC200") != std::string_view::npos
-            || model.find("DC210") != std::string_view::npos
-            || model.find("DC215") != std::string_view::npos) {
-            char scratch[32];
-            const std::string_view type4_ifd
-                = make_kodak_makernote_ifd_token(options, "type4", mk_ifd0,
-                                                 std::span<char>(scratch));
-            if (decode_kodak_type4(mn, type4_ifd, store, options, status_out)) {
-                return true;
-            }
-        }
-
-        if (model.find("DC240") != std::string_view::npos
-            || model.find("DC280") != std::string_view::npos
-            || model.find("DC3400") != std::string_view::npos
-            || model.find("DC5000") != std::string_view::npos) {
-            char scratch[32];
-            const std::string_view type3_ifd
-                = make_kodak_makernote_ifd_token(options, "type3", mk_ifd0,
-                                                 std::span<char>(scratch));
-            if (decode_kodak_type3(mn, type3_ifd, store, options, status_out)) {
-                return true;
-            }
-        }
-
-        if (model.find("CX4200") != std::string_view::npos
-            || model.find("CX4210") != std::string_view::npos
-            || model.find("CX4230") != std::string_view::npos
-            || model.find("CX4300") != std::string_view::npos
-            || model.find("CX4310") != std::string_view::npos
-            || model.find("CX6200") != std::string_view::npos
-            || model.find("CX6230") != std::string_view::npos) {
-            char scratch[32];
-            const std::string_view type5_ifd
-                = make_kodak_makernote_ifd_token(options, "type5", mk_ifd0,
-                                                 std::span<char>(scratch));
-            if (decode_kodak_type5(mn, type5_ifd, store, options, status_out)) {
-                return true;
-            }
-        }
-    }
-
-    {
-        char scratch[32];
-        const std::string_view type2_ifd
-            = make_kodak_makernote_ifd_token(options, "type2", mk_ifd0,
-                                             std::span<char>(scratch));
-        if (decode_kodak_type2(mn, type2_ifd, store, options, status_out)) {
-            return true;
-        }
+    if (decode_kodak_fixed_layout(mn, mk_ifd0, model, store, options,
+                                  status_out)) {
+        return true;
     }
 
     if (decode_kodak_type8_absolute(parent_cfg, tiff_bytes, maker_note_off,
@@ -1633,6 +2056,62 @@ decode_kodak_makernote(const TiffConfig& parent_cfg,
     }
 
     return decode_kodak_tiff(mn, mk_ifd0, model, store, options, status_out);
+}
+
+
+bool
+decode_kodak_makernote_from_source(SourceTiffReader* source,
+                                   const TiffConfig& parent_cfg,
+                                   uint64_t maker_note_off,
+                                   std::span<const std::byte> maker_note,
+                                   std::string_view mk_ifd0, MetaStore& store,
+                                   const ExifDecodeOptions& options,
+                                   ExifDecodeResult* status_out) noexcept
+{
+    if (!source || !source->result || mk_ifd0.empty()
+        || !source_tiff_contains(*source, maker_note_off, maker_note.size())) {
+        return false;
+    }
+
+    ExifContext ctx(store);
+    std::string_view model;
+    (void)ctx.find_first_text("ifd0", 0x0110 /* Model */, &model);
+    if (decode_kodak_fixed_layout(maker_note, mk_ifd0, model, store, options,
+                                  status_out)) {
+        return true;
+    }
+
+    const SourceKodakResult source_result
+        = decode_kodak_type8_from_source(source, parent_cfg, maker_note_off,
+                                         maker_note, mk_ifd0, model, store,
+                                         options, status_out);
+    if (source_result == SourceKodakResult::Complete) {
+        return true;
+    }
+    if (!source->result->input.ok()
+        || source->result->value_scratch_needed != 0U) {
+        return false;
+    }
+    if (source_result == SourceKodakResult::Incomplete) {
+        return true;
+    }
+
+    if (decode_kodak_tiff(maker_note, mk_ifd0, model, store, options,
+                          status_out)) {
+        return true;
+    }
+
+    ClassicIfdCandidate best;
+    if (!find_best_classic_ifd_candidate(maker_note, 256U, options.limits,
+                                         &best)) {
+        return true;
+    }
+    TiffConfig cfg;
+    cfg.le      = best.le;
+    cfg.bigtiff = false;
+    decode_classic_ifd_no_header(cfg, maker_note, best.offset, mk_ifd0, store,
+                                 options, status_out, EntryFlags::None);
+    return true;
 }
 
 }  // namespace openmeta::exif_internal

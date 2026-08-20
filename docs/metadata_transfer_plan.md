@@ -1034,7 +1034,7 @@ proxies without an OpenMeta dependency on any one host library.
    exact-read, short-read, overflow, request-count, byte-budget, and source-size
    consistency failures. Concurrent calls against an immutable source must not
    share mutable decoder state.
-2. [partial in 0.4.104] Refactor TIFF/DNG and TIFF-based camera RAW header/IFD
+2. [partial in 0.4.105] Refactor TIFF/DNG and TIFF-based camera RAW header/IFD
    traversal first. Classic TIFF, BigTIFF, DNG, RW2, and ORF structural/value
    decoding now uses caller-owned windows after type/count/range validation.
    PrintIM, GeoTIFF, Pentax DNG private data, selected self-contained
@@ -1042,9 +1042,10 @@ proxies without an OpenMeta dependency on any one host library.
    contained Canon adjusted-base payloads are converted. Olympus outer-relative
    and modern nested IFDs, Panasonic binary tables, and Samsung STMN/Type2
    derived tables are also converted. Fujifilm self-relative and General
-   Imaging Type 2 source layouts are converted. Mixed-base Kodak, Ricoh,
-   Nintendo, Casio, Minolta, and FLIR paths plus Canon external derived subtables
-   stay explicit residuals.
+   Imaging Type 2 source layouts are converted. Kodak fixed-layout records and
+   outer-TIFF-relative Type 8, Type 10, and Type 11 IFDs plus their vendor
+   subtables are converted. Mixed-base Ricoh, Nintendo, Casio, Minolta, and FLIR
+   paths plus Canon external derived subtables stay explicit residuals.
 3. Refactor shallow sequential container scanners and payload extraction for
    JPEG, PNG, WebP, GIF, and EXR, then bounded box traversal for BMFF, JP2, and
    JXL. Decoders receive owned bounded metadata payloads rather than a borrowed

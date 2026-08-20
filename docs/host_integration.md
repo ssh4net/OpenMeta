@@ -288,8 +288,10 @@ source-backed Nikon embedded TIFF/type 1, Sony outer-TIFF-relative IFDs, and
 contained Canon adjusted-base payloads. Version 0.4.103 adds legacy and modern
 Olympus nested IFDs, Panasonic binary tables, and self-contained Samsung STMN
 and Type2 derived tables. Version 0.4.104 adds bounded Fujifilm self-relative
-IFDs and General Imaging Type 2 source windows. Unconverted mixed-base vendor
-payloads or derived subtables remain explicit residuals through
+IFDs and General Imaging Type 2 source windows. Version 0.4.105 adds Kodak
+fixed-layout records and outer-TIFF-relative Type 8, Type 10, and Type 11 IFDs
+with vendor subtables. Unconverted mixed-base vendor payloads or derived
+subtables remain explicit residuals through
 `ExifRandomAccessDecodeResult::nested_payloads_skipped`; hosts must check
 `complete()` before claiming full nested parity. See
 [random_access_input.md](random_access_input.md) for buffer sizing, lifetime,

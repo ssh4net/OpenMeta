@@ -5930,6 +5930,13 @@ namespace {
             return;
         }
 
+        if (vendor == MakerNoteVendor::Kodak && source
+            && exif_internal::decode_kodak_makernote_from_source(
+                source, cfg, maker_note_off, maker_note, maker_ifd, store,
+                mn_options, &result->decode)) {
+            return;
+        }
+
         if (vendor == MakerNoteVendor::Samsung
             && exif_internal::decode_samsung_makernote(
                 cfg, maker_note, 0U, maker_note.size(), maker_ifd, store,

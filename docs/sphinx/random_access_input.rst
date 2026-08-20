@@ -13,7 +13,8 @@ Version 0.4.100 added the allocation-free source primitive in
 caller-owned read windows, and the first decoder conversion. Version 0.4.102
 added source-backed nested TIFF offset resolution. Version 0.4.103 extends the
 conversion to Olympus, Panasonic, and Samsung MakerNotes. Version 0.4.104 adds
-bounded Fujifilm and General Imaging MakerNote source layouts. It provides:
+bounded Fujifilm and General Imaging MakerNote source layouts. Version 0.4.105
+adds Kodak fixed-layout and outer-TIFF-relative MakerNotes. It provides:
 
 - a fixed source size and synchronous ``read_at(offset, destination)`` callback
 - a non-owning descriptor for caller-owned contiguous memory
@@ -30,10 +31,11 @@ GeoTIFF, Pentax DNG private data, and selected self-contained MakerNotes are
 also decoded from caller scratch. Nikon embedded TIFF/type 1, Sony outer-TIFF
 IFDs, contained Canon adjusted-base payloads, Olympus nested IFDs, Panasonic
 binary tables, Samsung STMN/Type2 derived tables, Fujifilm self-relative IFDs,
-and General Imaging Type 2 source windows use the same bounded source.
+General Imaging Type 2 source windows, and Kodak Type 8, Type 10, and Type 11
+IFDs with vendor subtables use the same bounded source.
 
-Callback decoding still reports unconverted mixed-base Kodak, Ricoh,
-Nintendo, Casio, Minolta, and FLIR payloads and Canon derived subtables whose
+Callback decoding still reports unconverted mixed-base Ricoh, Nintendo, Casio,
+Minolta, and FLIR payloads and Canon derived subtables whose
 values extend outside the declared MakerNote through
 ``nested_payloads_skipped`` and ``complete()`` rather than decoding against an
 incorrect subspan. Contiguous sources retain the complete existing
