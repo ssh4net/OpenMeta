@@ -216,9 +216,11 @@ outer-TIFF-relative IFDs, and contained Canon adjusted-base payloads. Version
 STMN/Type2 derived tables. Version 0.4.104 adds Fujifilm self-relative IFDs and
 General Imaging Type 2 source windows. Version 0.4.105 adds Kodak fixed-layout
 records and outer-TIFF-relative Type 8, Type 10, and Type 11 IFDs with vendor
-subtables. Contiguous input retains the full existing decoder behavior.
-Unconverted mixed-base vendor payloads and derived subtables remain explicit
-residuals, so hosts must check
+subtables. Version 0.4.106 adds Ricoh, Nintendo, Casio, Minolta, and FLIR callback
+parity. Version 0.4.107 adds bounded leading JPEG metadata-segment scanning with
+512-byte caller scratch and no entropy-data reads. Contiguous input retains the
+full existing decoder behavior. Canon derived subtables outside the declared
+payload and unknown vendor layouts remain explicit residuals, so hosts must check
 ``ExifRandomAccessDecodeResult::complete()`` before claiming full nested parity.
 See :doc:`random_access_input` for buffer sizing, lifetime, short-read,
 concurrency, and performance requirements.

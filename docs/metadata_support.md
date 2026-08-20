@@ -70,7 +70,7 @@ Current tracked-gate status:
 
 | Container / input type | Block discovery | Structured decode in `simple_meta_read(...)` | Notes |
 | --- | --- | --- | --- |
-| JPEG | Yes | Yes | EXIF, standard and bare APP1 XMP, extended XMP, ICC, MPF, Photoshop IRB, comments, vendor APP blocks, and bounded JUMBF/C2PA |
+| JPEG | Yes | Yes | EXIF, standard and bare APP1 XMP, extended XMP, ICC, MPF, Photoshop IRB, comments, vendor APP blocks, and bounded JUMBF/C2PA; leading-segment scan supports bounded positional callbacks without reading entropy data |
 | PNG | Yes | Yes | EXIF, XMP, ICC, structured PNG text, and bounded JUMBF/C2PA |
 | WebP | Yes | Yes | EXIF, XMP, ICC, and bounded JUMBF/C2PA |
 | GIF | Yes | Partial | XMP, ICC, and structured comments |

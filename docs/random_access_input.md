@@ -14,7 +14,8 @@ conversion to Olympus, Panasonic, and Samsung MakerNotes. Version 0.4.104 adds
 bounded Fujifilm and General Imaging MakerNote source layouts. Version 0.4.105
 adds Kodak fixed-layout and outer-TIFF-relative MakerNotes. Version 0.4.106
 adds Ricoh mixed-base and vendor subdirectory decoding plus Nintendo, Casio,
-Minolta, and FLIR callback parity. The contract now defines:
+Minolta, and FLIR callback parity. Version 0.4.107 adds bounded JPEG segment
+scanning. The contract now defines:
 
 - a fixed source size and synchronous `read_at(offset, destination)` callback
 - a non-owning descriptor for caller-owned contiguous memory
@@ -53,6 +54,13 @@ counted by `ExifRandomAccessDecodeResult::nested_payloads_skipped`. Unknown or
 unsupported vendor layouts use the same residual instead of decoding against an
 incorrect subspan. A contiguous source keeps the full existing decoder behavior
 and reports no random-access residual.
+
+`scan_jpeg_random_access(...)` locates leading EXIF, XMP, ICC, MPF, vendor APP,
+JUMBF, Photoshop IRB, FLIR, and comment segments through the same positional
+source. It reads at most 512 bytes from a metadata segment for classification,
+preserves multipart APP11 normalization, and stops at Start of Scan without
+reading entropy-coded image data. Returned offsets are relative to the supplied
+source range.
 
 ## Callback Example
 
@@ -125,6 +133,38 @@ double, and ASCII parameter payloads. If it is too small,
 `value_scratch_needed` reports the required byte count; OpenMeta does not
 allocate a replacement.
 
+## JPEG Segment Scan Example
+
+```cpp
+#include "openmeta/container_scan.h"
+
+std::array<std::byte, 512> scan_window;
+openmeta::ContainerRandomAccessScratch scan_scratch;
+scan_scratch.read_window = scan_window;
+scan_scratch.window_options.minimum_read_bytes = scan_window.size();
+
+openmeta::RandomAccessSourceRange jpeg =
+    openmeta::make_random_access_source_range(
+        source, jpeg_offset, jpeg_size);
+std::array<openmeta::ContainerBlockRef, 32> blocks;
+
+openmeta::ContainerRandomAccessScanResult scan =
+    openmeta::scan_jpeg_random_access(
+        jpeg, blocks, scan_scratch, limits);
+if (!scan.complete()) {
+    // Inspect scan.input for short read, I/O, source change, scratch, or limit.
+}
+if (scan.scan.status != openmeta::ScanStatus::Ok) {
+    // The source was read successfully but is unsupported or malformed.
+}
+```
+
+The 512-byte window is the maximum JPEG classification probe and preserves bare
+APP1 XMP detection parity. Smaller windows remain valid for inputs whose
+metadata probes fit, but return `ScratchTooSmall` when a larger probe is needed.
+Use `measure_scan_jpeg_random_access(...)` with the same scratch and limits to
+obtain `scan.needed` without block output storage.
+
 ## Real-Time And Concurrent Use
 
 The contract adds no global state, virtual dispatch, `std::function`, hidden
@@ -132,7 +172,7 @@ allocation, file-position mutation, locking, or background work. The callback
 is a plain function pointer, and all counters belong to the caller-provided
 `RandomAccessReadState`.
 
-OpenMeta will not issue concurrent callback calls within one synchronous decode.
+OpenMeta will not issue concurrent callback calls within one synchronous scan or decode.
 Separate operations may share an immutable source when `concurrent_reads` is
 true and the host context actually supports concurrent positional reads. Each
 operation must use separate decoder scratch and `RandomAccessReadState` objects.

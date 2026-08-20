@@ -1,5 +1,33 @@
 # OpenMeta Changes
 
+## 0.4.107 - 2026-08-20
+
+Changes compared with `0.4.106`.
+
+### Added
+
+- Added allocation-free `scan_jpeg_random_access(...)` and
+  `measure_scan_jpeg_random_access(...)` entry points over caller-owned
+  positional sources and read windows.
+- Added explicit combined scan and source-I/O results, preserving short-read,
+  I/O, cancellation, source-change, scratch, and resource-limit diagnostics.
+
+### Changed
+
+- Callback JPEG scanning reads bounded marker and metadata-prefix windows, stops
+  at Start of Scan, and does not fetch entropy-coded image data.
+- Positional JPEG output preserves range-relative block offsets and the existing
+  EXIF, XMP, ICC, MPF, APP4, APP11 JUMBF, Photoshop IRB, FLIR, and comment
+  classification contract, including multipart APP11 normalization.
+
+### Tests And Validation
+
+- Added contiguous-versus-callback descriptor parity, non-zero source-range,
+  bare-XMP probe, APP11 reassembly, entropy-skip, malformed-segment, memory
+  source, scratch-shortage, short-read, I/O-error, and byte-budget regressions.
+- Extended the container-scan fuzz target through callback-backed JPEG scanning
+  and the same discovered-range invariants.
+
 ## 0.4.106 - 2026-08-20
 
 Changes compared with `0.4.105`.

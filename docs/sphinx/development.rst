@@ -442,7 +442,9 @@ For JUMBF/C2PA preflight traversal checks, call
 Other preflight estimate APIs use the same bounded-options model:
 
 - ``measure_scan_auto(file_bytes)``
-- ``measure_scan_jpeg(bytes)``, ``measure_scan_png(bytes)``,
+- ``measure_scan_jpeg(bytes)``,
+  ``measure_scan_jpeg_random_access(jpeg_range, scratch, read_limits)``,
+  ``measure_scan_png(bytes)``,
   ``measure_scan_webp(bytes)``, ``measure_scan_gif(bytes)``,
   ``measure_scan_tiff(bytes)``, ``measure_scan_jp2(bytes)``,
   ``measure_scan_jxl(bytes)``, ``measure_scan_bmff(bytes)``

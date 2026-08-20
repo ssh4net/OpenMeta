@@ -41,19 +41,20 @@ Host-facing API map
      - Stable
      - v1 query contract for read, structured decode, transfer preparation,
        target edit, and raw-preservation status by format/family.
-   * - Bounded positional input and TIFF-family decode:
+   * - Bounded positional input, TIFF-family decode, and JPEG scan:
        ``RandomAccessSource``, source ranges/read windows,
        ``random_access_read_exact(...)``,
-       ``decode_exif_tiff_random_access(...)``
+       ``decode_exif_tiff_random_access(...)``,
+       ``scan_jpeg_random_access(...)``
      - ``openmeta/random_access_source.h``,
-       ``openmeta/exif_tiff_decode.h``
+       ``openmeta/exif_tiff_decode.h``, ``openmeta/container_scan.h``
      - Experimental
      - Allocation-free memory/callback source with exact reads, explicit
        short-read/I/O/source-change results, caller-owned accounting/scratch,
-       bounded classic TIFF/BigTIFF/DNG/RW2/ORF IFD decoding, and selected
-       source-backed vendor layouts through Fujifilm/General Imaging.
-       Contiguous input retains full existing behavior; callback results report
-       value scratch requirements and remaining nested MakerNote residuals. See
+       bounded classic TIFF/BigTIFF/DNG/RW2/ORF IFD decoding, source-backed
+       vendor layouts, and leading JPEG metadata-segment scanning with
+       contiguous descriptor parity and no entropy-data reads. Callback source
+       failures remain separate from malformed-container/decode status. See
        :doc:`random_access_input`.
    * - Compatibility dumps: ``dump_metadata_compatibility(...)``,
        ``dump_transfer_compatibility(...)``

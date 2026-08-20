@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <span>
 
 namespace openmeta {
@@ -44,6 +45,29 @@ verify_ranges(std::span<const std::byte> bytes,
     }
 }
 
+
+struct FuzzCallback final {
+    std::span<const std::byte> bytes;
+};
+
+
+static RandomAccessIoResult
+fuzz_read_at(void* context, uint64_t offset,
+             std::span<std::byte> destination) noexcept
+{
+    FuzzCallback* callback = static_cast<FuzzCallback*>(context);
+    if (offset > callback->bytes.size()
+        || destination.size() > callback->bytes.size() - offset) {
+        return RandomAccessIoResult { RandomAccessIoCode::Ok, 0U };
+    }
+    if (!destination.empty()) {
+        std::memcpy(destination.data(), callback->bytes.data() + offset,
+                    destination.size());
+    }
+    return RandomAccessIoResult { RandomAccessIoCode::Ok,
+                                  static_cast<uint64_t>(destination.size()) };
+}
+
 }  // namespace openmeta
 
 extern "C" int
@@ -64,5 +88,23 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     }
     verify_ranges(bytes,
                   std::span<const ContainerBlockRef>(blocks_buf, res.written));
+
+    FuzzCallback callback { bytes };
+    const RandomAccessSource source
+        = make_callback_random_access_source(bytes.size(), &callback,
+                                             fuzz_read_at);
+    const RandomAccessSourceRange range = make_random_access_source_range(
+        source);
+    std::byte read_window[512] = {};
+    ContainerRandomAccessScratch scratch;
+    scratch.read_window                   = read_window;
+    ContainerBlockRef callback_blocks[64] = {};
+    const ContainerRandomAccessScanResult callback_result
+        = scan_jpeg_random_access(range, callback_blocks, scratch);
+    if (callback_result.scan.written > 64U) {
+        fuzz_trap();
+    }
+    verify_ranges(bytes, std::span<const ContainerBlockRef>(
+                             callback_blocks, callback_result.scan.written));
     return 0;
 }

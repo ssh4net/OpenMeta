@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <string_view>
 #include <vector>
 
@@ -114,6 +115,57 @@ namespace {
         const uint16_t seg_len = static_cast<uint16_t>(payload.size() + 2);
         append_u16be(out, seg_len);
         out->insert(out->end(), payload.begin(), payload.end());
+    }
+
+
+    struct JpegCallbackState final {
+        std::span<const std::byte> bytes;
+        RandomAccessIoCode code = RandomAccessIoCode::Ok;
+        uint64_t max_bytes      = UINT64_MAX;
+        uint32_t calls          = 0U;
+    };
+
+
+    static RandomAccessIoResult
+    jpeg_read_at(void* context, uint64_t offset,
+                 std::span<std::byte> destination) noexcept
+    {
+        JpegCallbackState* state = static_cast<JpegCallbackState*>(context);
+        state->calls += 1U;
+        uint64_t available = 0U;
+        if (offset <= state->bytes.size()) {
+            available = static_cast<uint64_t>(state->bytes.size()) - offset;
+        }
+        uint64_t count = static_cast<uint64_t>(destination.size());
+        count          = (count < available) ? count : available;
+        count          = (count < state->max_bytes) ? count : state->max_bytes;
+        if (count != 0U) {
+            std::memcpy(destination.data(),
+                        state->bytes.data() + static_cast<size_t>(offset),
+                        static_cast<size_t>(count));
+        }
+        return RandomAccessIoResult { state->code, count };
+    }
+
+
+    static void expect_same_block(const ContainerBlockRef& expected,
+                                  const ContainerBlockRef& actual)
+    {
+        EXPECT_EQ(actual.format, expected.format);
+        EXPECT_EQ(actual.kind, expected.kind);
+        EXPECT_EQ(actual.compression, expected.compression);
+        EXPECT_EQ(actual.chunking, expected.chunking);
+        EXPECT_EQ(actual.outer_offset, expected.outer_offset);
+        EXPECT_EQ(actual.outer_size, expected.outer_size);
+        EXPECT_EQ(actual.data_offset, expected.data_offset);
+        EXPECT_EQ(actual.data_size, expected.data_size);
+        EXPECT_EQ(actual.id, expected.id);
+        EXPECT_EQ(actual.part_index, expected.part_index);
+        EXPECT_EQ(actual.part_count, expected.part_count);
+        EXPECT_EQ(actual.logical_offset, expected.logical_offset);
+        EXPECT_EQ(actual.logical_size, expected.logical_size);
+        EXPECT_EQ(actual.group, expected.group);
+        EXPECT_EQ(actual.aux_u32, expected.aux_u32);
     }
 
 
@@ -766,6 +818,234 @@ namespace {
         EXPECT_EQ(est_auto.written, 0U);
         EXPECT_EQ(est_auto.needed, 4U);
     }
+
+    TEST(ContainerScan, JpegRandomAccessMatchesContiguousDescriptors)
+    {
+        std::vector<std::byte> jpeg = { std::byte { 0xFF },
+                                        std::byte { 0xD8 } };
+
+        const std::array<std::byte, 14> exif_payload = {
+            std::byte { 'E' },  std::byte { 'x' },  std::byte { 'i' },
+            std::byte { 'f' },  std::byte { 0x00 }, std::byte { 0x00 },
+            std::byte { 'I' },  std::byte { 'I' },  std::byte { 0x2A },
+            std::byte { 0x00 }, std::byte { 0x08 }, std::byte { 0x00 },
+            std::byte { 0x00 }, std::byte { 0x00 },
+        };
+        append_jpeg_segment(&jpeg, 0xFFE1U, exif_payload);
+
+        std::vector<std::byte> bare_xmp(490U, std::byte { ' ' });
+        append_bytes(&bare_xmp, "<?xpacket begin=''?>");
+        bare_xmp.insert(bare_xmp.end(), 32U, std::byte { ' ' });
+        append_jpeg_segment(&jpeg, 0xFFE1U, bare_xmp);
+
+        std::vector<std::byte> icc;
+        append_bytes(&icc, "ICC_PROFILE");
+        icc.push_back(std::byte { 0x00 });
+        icc.push_back(std::byte { 0x01 });
+        icc.push_back(std::byte { 0x01 });
+        append_bytes(&icc, "profile");
+        append_jpeg_segment(&jpeg, 0xFFE2U, icc);
+
+        auto append_jumbf_part = [&](uint32_t sequence,
+                                     std::string_view payload) {
+            std::vector<std::byte> part;
+            append_bytes(&part, "JP");
+            part.push_back(std::byte { 0x00 });
+            part.push_back(std::byte { 0x00 });
+            append_u32be(&part, sequence);
+            append_u32be(&part, 12U);
+            append_fourcc(&part, fourcc('j', 'u', 'm', 'b'));
+            append_bytes(&part, payload);
+            append_jpeg_segment(&jpeg, 0xFFEBU, part);
+        };
+        append_jumbf_part(1U, "AB");
+        append_jumbf_part(2U, "CD");
+
+        auto append_ambiguous_app11 = [&](std::string_view payload) {
+            std::vector<std::byte> part;
+            append_bytes(&part, "JP");
+            part.push_back(std::byte { 0x00 });
+            part.push_back(std::byte { 0x00 });
+            append_u32be(&part, 1U);
+            append_u32be(&part, 12U);
+            append_fourcc(&part, fourcc('c', '2', 'p', 'a'));
+            append_bytes(&part, payload);
+            append_jpeg_segment(&jpeg, 0xFFEBU, part);
+        };
+        append_ambiguous_app11("EF");
+        append_ambiguous_app11("GH");
+
+        const std::array<std::byte, 4> app4 = {
+            std::byte { 'D' },
+            std::byte { 'J' },
+            std::byte { 'I' },
+            std::byte { '1' },
+        };
+        append_jpeg_segment(&jpeg, 0xFFE4U, app4);
+
+        std::vector<std::byte> photoshop;
+        append_bytes(&photoshop, "Photoshop 3.0");
+        photoshop.push_back(std::byte { 0x00 });
+        append_bytes(&photoshop, "8BIM");
+        append_jpeg_segment(&jpeg, 0xFFEDU, photoshop);
+
+        const std::array<std::byte, 7> comment = {
+            std::byte { 'c' }, std::byte { 'o' }, std::byte { 'm' },
+            std::byte { 'm' }, std::byte { 'e' }, std::byte { 'n' },
+            std::byte { 't' },
+        };
+        append_jpeg_segment(&jpeg, 0xFFFEU, comment);
+
+        // The positional scanner must stop before entropy-coded image data.
+        jpeg.push_back(std::byte { 0xFF });
+        jpeg.push_back(std::byte { 0xDA });
+        jpeg.insert(jpeg.end(), 1024U * 1024U, std::byte { 0x7F });
+
+        std::array<ContainerBlockRef, 16> expected {};
+        const ScanResult contiguous = scan_jpeg(jpeg, expected);
+        ASSERT_EQ(contiguous.status, ScanStatus::Ok);
+        ASSERT_GT(contiguous.written, 0U);
+
+        constexpr size_t prefix_size = 37U;
+        std::vector<std::byte> backing(prefix_size, std::byte { 0xA5 });
+        backing.insert(backing.end(), jpeg.begin(), jpeg.end());
+        JpegCallbackState callback { backing };
+        const RandomAccessSource source
+            = make_callback_random_access_source(backing.size(), &callback,
+                                                 jpeg_read_at, true);
+        const RandomAccessSourceRange range
+            = make_random_access_source_range(source, prefix_size, jpeg.size());
+        std::array<std::byte, 512> storage {};
+        ContainerRandomAccessScratch scratch;
+        scratch.read_window                       = storage;
+        scratch.window_options.minimum_read_bytes = storage.size();
+
+        std::array<ContainerBlockRef, 16> actual {};
+        const ContainerRandomAccessScanResult positional
+            = scan_jpeg_random_access(range, actual, scratch);
+        ASSERT_TRUE(positional.complete());
+        EXPECT_EQ(positional.scan.status, contiguous.status);
+        EXPECT_EQ(positional.scan.written, contiguous.written);
+        EXPECT_EQ(positional.scan.needed, contiguous.needed);
+        for (uint32_t i = 0U; i < contiguous.written; ++i) {
+            expect_same_block(expected[i], actual[i]);
+        }
+        EXPECT_GT(callback.calls, 0U);
+        EXPECT_LT(positional.input.bytes_requested, 16U * 1024U);
+        EXPECT_LT(positional.input.bytes_requested,
+                  static_cast<uint64_t>(jpeg.size()));
+
+        const ContainerRandomAccessScanResult measured
+            = measure_scan_jpeg_random_access(range, scratch);
+        EXPECT_TRUE(measured.complete());
+        EXPECT_EQ(measured.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(measured.scan.written, 0U);
+        EXPECT_EQ(measured.scan.needed, contiguous.needed);
+    }
+
+
+    TEST(ContainerScan, JpegRandomAccessReportsScratchAndInputFailures)
+    {
+        std::vector<std::byte> jpeg = { std::byte { 0xFF },
+                                        std::byte { 0xD8 } };
+        std::vector<std::byte> app1(600U, std::byte { 'x' });
+        append_jpeg_segment(&jpeg, 0xFFE1U, app1);
+        jpeg.push_back(std::byte { 0xFF });
+        jpeg.push_back(std::byte { 0xD9 });
+
+        std::array<ContainerBlockRef, 4> blocks {};
+        std::array<std::byte, 64> small_storage {};
+        ContainerRandomAccessScratch small_scratch;
+        small_scratch.read_window                       = small_storage;
+        small_scratch.window_options.minimum_read_bytes = small_storage.size();
+
+        JpegCallbackState small_callback { jpeg };
+        RandomAccessSource source
+            = make_callback_random_access_source(jpeg.size(), &small_callback,
+                                                 jpeg_read_at);
+        RandomAccessSourceRange range = make_random_access_source_range(source);
+        const ContainerRandomAccessScanResult too_small
+            = scan_jpeg_random_access(range, blocks, small_scratch);
+        EXPECT_FALSE(too_small.complete());
+        EXPECT_EQ(too_small.input.code, RandomAccessReadCode::ScratchTooSmall);
+        EXPECT_EQ(too_small.input.failure_request_bytes, 512U);
+
+        std::array<std::byte, 512> storage {};
+        ContainerRandomAccessScratch scratch;
+        scratch.read_window                       = storage;
+        scratch.window_options.minimum_read_bytes = storage.size();
+
+        JpegCallbackState io_callback { jpeg };
+        io_callback.code = RandomAccessIoCode::IoError;
+        source = make_callback_random_access_source(jpeg.size(), &io_callback,
+                                                    jpeg_read_at);
+        range  = make_random_access_source_range(source);
+        const ContainerRandomAccessScanResult io_error
+            = scan_jpeg_random_access(range, blocks, scratch);
+        EXPECT_EQ(io_error.input.code, RandomAccessReadCode::IoError);
+        EXPECT_EQ(io_error.input.io_code, RandomAccessIoCode::IoError);
+
+        JpegCallbackState short_callback { jpeg };
+        short_callback.max_bytes = 1U;
+        source = make_callback_random_access_source(jpeg.size(),
+                                                    &short_callback,
+                                                    jpeg_read_at);
+        range  = make_random_access_source_range(source);
+        const ContainerRandomAccessScanResult short_read
+            = scan_jpeg_random_access(range, blocks, scratch);
+        EXPECT_EQ(short_read.input.code, RandomAccessReadCode::ShortRead);
+
+        JpegCallbackState limited_callback { jpeg };
+        source = make_callback_random_access_source(jpeg.size(),
+                                                    &limited_callback,
+                                                    jpeg_read_at);
+        range  = make_random_access_source_range(source);
+        RandomAccessReadLimits limits;
+        limits.max_total_bytes = 64U;
+        const ContainerRandomAccessScanResult limited
+            = scan_jpeg_random_access(range, blocks, scratch, limits);
+        EXPECT_EQ(limited.input.code, RandomAccessReadCode::ByteLimitExceeded);
+    }
+
+
+    TEST(ContainerScan, JpegRandomAccessPreservesMalformedAndMemoryBehavior)
+    {
+        const std::array<std::byte, 6> malformed = {
+            std::byte { 0xFF }, std::byte { 0xD8 }, std::byte { 0xFF },
+            std::byte { 0xE1 }, std::byte { 0x01 }, std::byte { 0x00 },
+        };
+        std::array<ContainerBlockRef, 2> blocks {};
+        EXPECT_EQ(scan_jpeg(malformed, blocks).status, ScanStatus::Malformed);
+
+        JpegCallbackState callback { malformed };
+        RandomAccessSource source
+            = make_callback_random_access_source(malformed.size(), &callback,
+                                                 jpeg_read_at);
+        RandomAccessSourceRange range = make_random_access_source_range(source);
+        std::array<std::byte, 512> storage {};
+        ContainerRandomAccessScratch scratch;
+        scratch.read_window = storage;
+        const ContainerRandomAccessScanResult positional
+            = scan_jpeg_random_access(range, blocks, scratch);
+        EXPECT_TRUE(positional.complete());
+        EXPECT_EQ(positional.scan.status, ScanStatus::Malformed);
+
+        const std::array<std::byte, 4> minimal = {
+            std::byte { 0xFF },
+            std::byte { 0xD8 },
+            std::byte { 0xFF },
+            std::byte { 0xD9 },
+        };
+        source = make_memory_random_access_source(minimal);
+        range  = make_random_access_source_range(source);
+        const ContainerRandomAccessScanResult memory_result
+            = scan_jpeg_random_access(range, blocks,
+                                      ContainerRandomAccessScratch {});
+        EXPECT_TRUE(memory_result.complete());
+        EXPECT_EQ(memory_result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(memory_result.input.requests_issued, 0U);
+    }
+
 
     TEST(ContainerScan, JpegApp1BareXmpPacket)
     {

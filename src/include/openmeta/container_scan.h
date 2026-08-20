@@ -3,6 +3,7 @@
 #pragma once
 
 #include "openmeta/api.h"
+#include "openmeta/random_access_source.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -132,6 +133,24 @@ struct ScanResult final {
     uint32_t needed   = 0;
 };
 
+/// Caller-owned storage for callback-backed container scanning.
+struct ContainerRandomAccessScratch final {
+    /// Reusable read-ahead cache. JPEG scanning requires up to 512 bytes to
+    /// preserve bare-XMP detection parity with the contiguous scanner.
+    std::span<std::byte> read_window;
+    RandomAccessReadWindowOptions window_options;
+};
+
+/// Combined container-scan and source-I/O result.
+struct ContainerRandomAccessScanResult final {
+    ScanResult scan;
+    RandomAccessReadState input;
+
+    /// True when the positional source was read without an I/O or limit error.
+    /// The container can still be malformed or unsupported; inspect `scan`.
+    bool complete() const noexcept { return input.ok(); }
+};
+
 /// Packs four ASCII characters into a big-endian FourCC integer.
 static constexpr uint32_t
 fourcc(char a, char b, char c, char d) noexcept
@@ -162,6 +181,32 @@ scan_jpeg(std::span<const std::byte> bytes,
           std::span<ContainerBlockRef> out) noexcept;
 ScanResult
 measure_scan_jpeg(std::span<const std::byte> bytes) noexcept;
+
+/**
+ * \brief Scans JPEG metadata segments through a bounded positional source.
+ *
+ * Discovered offsets are relative to \p jpeg, not the backing source. Callback
+ * input uses caller-owned scratch and never reads entropy-coded image data.
+ * A 512-byte read window preserves all contiguous scanner classifications;
+ * smaller windows report \ref RandomAccessReadCode::ScratchTooSmall when a
+ * larger segment probe is required.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ContainerRandomAccessScanResult
+scan_jpeg_random_access(const RandomAccessSourceRange& jpeg,
+                        std::span<ContainerBlockRef> out,
+                        const ContainerRandomAccessScratch& scratch,
+                        const RandomAccessReadLimits& read_limits
+                        = RandomAccessReadLimits {}) noexcept;
+
+/// Measures JPEG metadata block count through the same positional scan path.
+ContainerRandomAccessScanResult
+measure_scan_jpeg_random_access(const RandomAccessSourceRange& jpeg,
+                                const ContainerRandomAccessScratch& scratch,
+                                const RandomAccessReadLimits& read_limits
+                                = RandomAccessReadLimits {}) noexcept;
 /// Scans a PNG byte stream and returns all metadata chunks found.
 ScanResult
 scan_png(std::span<const std::byte> bytes,

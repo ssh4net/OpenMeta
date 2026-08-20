@@ -1034,7 +1034,7 @@ proxies without an OpenMeta dependency on any one host library.
    exact-read, short-read, overflow, request-count, byte-budget, and source-size
    consistency failures. Concurrent calls against an immutable source must not
    share mutable decoder state.
-2. [partial in 0.4.105] Refactor TIFF/DNG and TIFF-based camera RAW header/IFD
+2. [partial in 0.4.106] Refactor TIFF/DNG and TIFF-based camera RAW header/IFD
    traversal first. Classic TIFF, BigTIFF, DNG, RW2, and ORF structural/value
    decoding now uses caller-owned windows after type/count/range validation.
    PrintIM, GeoTIFF, Pentax DNG private data, selected self-contained
@@ -1045,17 +1045,23 @@ proxies without an OpenMeta dependency on any one host library.
    Imaging Type 2 source layouts are converted. Kodak fixed-layout records and
    outer-TIFF-relative Type 8, Type 10, and Type 11 IFDs plus their vendor
    subtables are converted. Mixed-base Ricoh, Nintendo, Casio, Minolta, and FLIR
-   paths plus Canon external derived subtables stay explicit residuals.
-3. Refactor shallow sequential container scanners and payload extraction for
-   JPEG, PNG, WebP, GIF, and EXR, then bounded box traversal for BMFF, JP2, and
-   JXL. Decoders receive owned bounded metadata payloads rather than a borrowed
-   full-file span.
+   paths are converted; Canon external derived subtables and unknown vendor
+   layouts stay explicit residuals.
+3. [partial in 0.4.107] Refactor shallow sequential container scanners and
+   payload extraction for JPEG, PNG, WebP, GIF, and EXR, then bounded box
+   traversal for BMFF, JP2, and JXL. JPEG segment scanning now has callback/span
+   descriptor parity, caller-owned 512-byte classification scratch, explicit
+   source failures, and no entropy-data reads. PNG, WebP, GIF, EXR, BMFF, JP2,
+   and JXL remain pending. Decoders receive owned bounded metadata payloads
+   rather than a borrowed full-file span.
 4. Refactor native RAF, X3F, and CRW paths and any embedded-container recursion.
    Preserve the current bytes/file behavior as adapters above the same reader,
    not as a separate decoder implementation.
 5. Gate each format on byte-span versus random-reader compatibility dumps,
    malformed/short-read tests, request/byte ceilings, and real-corpus parity
-   before advertising that format as random-access capable.
+   before advertising that format as random-access capable. JPEG scanner parity,
+   malformed/short-read behavior, and request/byte ceilings are covered in
+   0.4.107; payload decode and downstream snapshot assembly remain separate work.
 
 #### Raw Snapshot Emission Policy
 

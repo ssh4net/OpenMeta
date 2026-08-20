@@ -1036,6 +1036,569 @@ scan_jpeg(std::span<const std::byte> bytes,
 
 namespace {
 
+    static uint64_t jpeg_positional_probe_size(uint16_t marker,
+                                               uint64_t payload_size) noexcept
+    {
+        uint64_t maximum = 0U;
+        switch (marker) {
+        case 0xFFE1U: maximum = 512U; break;
+        case 0xFFE2U: maximum = 14U; break;
+        case 0xFFE4U: maximum = 4U; break;
+        case 0xFFEBU: maximum = 24U; break;
+        case 0xFFEDU: maximum = 14U; break;
+        default: return 0U;
+        }
+        return (payload_size < maximum) ? payload_size : maximum;
+    }
+
+
+    static bool
+    jpeg_positional_view(const RandomAccessSourceRange& jpeg, uint64_t offset,
+                         uint64_t size, RandomAccessReadWindow* window,
+                         RandomAccessReadState* state,
+                         const RandomAccessReadLimits& limits,
+                         const RandomAccessReadWindowOptions& window_options,
+                         std::span<const std::byte>* out) noexcept
+    {
+        const RandomAccessViewResult view
+            = random_access_read_view(jpeg, offset, size, window, state, limits,
+                                      window_options);
+        if (!view.ok()) {
+            return false;
+        }
+        *out = view.bytes;
+        return true;
+    }
+
+
+    static void classify_positional_jpeg_segment(
+        uint16_t marker, std::span<const std::byte> prefix,
+        uint64_t seg_payload_off, uint64_t seg_payload_size,
+        uint64_t seg_total_off, uint64_t seg_total_size,
+        BlockSink* sink) noexcept
+    {
+        if (marker == 0xFFE1U) {
+            if (seg_payload_size >= 10U && prefix.size() >= 10U
+                && match(prefix, 0U, "Exif", 4U) && u8(prefix[4U]) == 0U) {
+                const bool is_tiff
+                    = (u8(prefix[6U]) == 'I' && u8(prefix[7U]) == 'I'
+                       && u8(prefix[8U]) == 0x2AU && u8(prefix[9U]) == 0U)
+                      || (u8(prefix[6U]) == 'M' && u8(prefix[7U]) == 'M'
+                          && u8(prefix[8U]) == 0U && u8(prefix[9U]) == 0x2AU);
+                if (is_tiff) {
+                    ContainerBlockRef block;
+                    block.format       = ContainerFormat::Jpeg;
+                    block.kind         = ContainerBlockKind::Exif;
+                    block.outer_offset = seg_total_off;
+                    block.outer_size   = seg_total_size;
+                    block.data_offset  = seg_payload_off + 6U;
+                    block.data_size    = seg_payload_size - 6U;
+                    block.id           = marker;
+                    sink_emit(sink, block);
+                }
+            } else if (match(prefix, 0U, "http://ns.adobe.com/xap/1.0/\0",
+                             29U)) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Jpeg;
+                block.kind         = ContainerBlockKind::Xmp;
+                block.outer_offset = seg_total_off;
+                block.outer_size   = seg_total_size;
+                block.data_offset  = seg_payload_off + 29U;
+                block.data_size    = seg_payload_size - 29U;
+                block.id           = marker;
+                sink_emit(sink, block);
+            } else if (has_xmp_packet_hint(prefix, 0U, prefix.size())) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Jpeg;
+                block.kind         = ContainerBlockKind::Xmp;
+                block.outer_offset = seg_total_off;
+                block.outer_size   = seg_total_size;
+                block.data_offset  = seg_payload_off;
+                block.data_size    = seg_payload_size;
+                block.id           = marker;
+                sink_emit(sink, block);
+            } else if (match(prefix, 0U, "http://ns.adobe.com/xmp/extension/\0",
+                             35U)) {
+                if (seg_payload_size >= 75U && prefix.size() >= 75U) {
+                    uint32_t full_len = 0U;
+                    uint32_t part_off = 0U;
+                    if (read_u32be(prefix, 67U, &full_len)
+                        && read_u32be(prefix, 71U, &part_off)) {
+                        ContainerBlockRef block;
+                        block.format = ContainerFormat::Jpeg;
+                        block.kind   = ContainerBlockKind::XmpExtended;
+                        block.chunking
+                            = BlockChunking::JpegXmpExtendedGuidOffset;
+                        block.outer_offset   = seg_total_off;
+                        block.outer_size     = seg_total_size;
+                        block.data_offset    = seg_payload_off + 75U;
+                        block.data_size      = seg_payload_size - 75U;
+                        block.id             = marker;
+                        block.logical_offset = part_off;
+                        block.logical_size   = full_len;
+                        block.group = fnv1a_64(prefix.subspan(35U, 32U));
+                        sink_emit(sink, block);
+                    }
+                }
+            } else if (seg_payload_size >= 4U
+                       && match(prefix, 0U, "QVCI", 4U)) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Jpeg;
+                block.kind         = ContainerBlockKind::MakerNote;
+                block.outer_offset = seg_total_off;
+                block.outer_size   = seg_total_size;
+                block.data_offset  = seg_payload_off;
+                block.data_size    = seg_payload_size;
+                block.id           = marker;
+                block.aux_u32      = fourcc('Q', 'V', 'C', 'I');
+                sink_emit(sink, block);
+            } else if (seg_payload_size >= 8U && prefix.size() >= 8U
+                       && match(prefix, 0U, "FLIR", 4U)
+                       && u8(prefix[4U]) == 0U) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Jpeg;
+                block.kind         = ContainerBlockKind::MakerNote;
+                block.outer_offset = seg_total_off;
+                block.outer_size   = seg_total_size;
+                block.data_offset  = seg_payload_off + 8U;
+                block.data_size    = seg_payload_size - 8U;
+                block.id           = marker;
+                block.aux_u32      = fourcc('F', 'L', 'I', 'R');
+                block.part_index   = u8(prefix[6U]);
+                block.part_count   = static_cast<uint32_t>(u8(prefix[7U])) + 1U;
+                block.group        = fourcc('F', 'L', 'I', 'R');
+                sink_emit(sink, block);
+            }
+            return;
+        }
+
+        if (marker == 0xFFE2U) {
+            if (match(prefix, 0U, "ICC_PROFILE\0", 12U)
+                && seg_payload_size >= 14U && prefix.size() >= 14U) {
+                const uint8_t seq = u8(prefix[12U]);
+                const uint8_t tot = u8(prefix[13U]);
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Jpeg;
+                block.kind         = ContainerBlockKind::Icc;
+                block.chunking     = BlockChunking::JpegApp2SeqTotal;
+                block.outer_offset = seg_total_off;
+                block.outer_size   = seg_total_size;
+                block.data_offset  = seg_payload_off + 14U;
+                block.data_size    = seg_payload_size - 14U;
+                block.id           = marker;
+                block.part_index = (seq > 0U) ? static_cast<uint32_t>(seq - 1U)
+                                              : 0U;
+                block.part_count = tot;
+                sink_emit(sink, block);
+            } else if (match(prefix, 0U, "MPF\0", 4U)) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Jpeg;
+                block.kind         = ContainerBlockKind::Mpf;
+                block.outer_offset = seg_total_off;
+                block.outer_size   = seg_total_size;
+                block.data_offset  = seg_payload_off + 4U;
+                block.data_size    = seg_payload_size - 4U;
+                block.id           = marker;
+                sink_emit(sink, block);
+            }
+            return;
+        }
+
+        if (marker == 0xFFE4U) {
+            ContainerBlockRef block;
+            block.format       = ContainerFormat::Jpeg;
+            block.kind         = ContainerBlockKind::MakerNote;
+            block.outer_offset = seg_total_off;
+            block.outer_size   = seg_total_size;
+            block.data_offset  = seg_payload_off;
+            block.data_size    = seg_payload_size;
+            block.id           = marker;
+            if (seg_payload_size >= 4U) {
+                (void)read_u32be(prefix, 0U, &block.aux_u32);
+            }
+            sink_emit(sink, block);
+            return;
+        }
+
+        if (marker == 0xFFEBU) {
+            if (seg_payload_size >= 16U && prefix.size() >= 16U
+                && u8(prefix[0U]) == 'J' && u8(prefix[1U]) == 'P') {
+                uint32_t seq    = 0U;
+                uint32_t size32 = 0U;
+                uint32_t type   = 0U;
+                if (read_u32be(prefix, 4U, &seq)
+                    && read_u32be(prefix, 8U, &size32)
+                    && read_u32be(prefix, 12U, &type)) {
+                    uint32_t header_size = 8U;
+                    uint64_t box_size    = size32;
+                    if (size32 == 1U && seg_payload_size >= 24U
+                        && prefix.size() >= 24U) {
+                        uint64_t size64 = 0U;
+                        if (read_u64be(prefix, 16U, &size64)) {
+                            header_size = 16U;
+                            box_size    = size64;
+                        }
+                    }
+                    if (box_size >= header_size
+                        && seg_payload_size >= 8U + header_size) {
+                        ContainerBlockRef block;
+                        block.format       = ContainerFormat::Jpeg;
+                        block.kind         = ContainerBlockKind::Jumbf;
+                        block.outer_offset = seg_total_off;
+                        block.outer_size   = seg_total_size;
+                        block.data_offset  = seg_payload_off + 8U + header_size;
+                        block.data_size = seg_payload_size - (8U + header_size);
+                        block.id        = marker;
+                        block.aux_u32   = type;
+                        block.part_index   = seq;
+                        block.logical_size = box_size;
+                        block.group = fnv1a_64(prefix.subspan(8U, header_size));
+                        if (block.group == 0U) {
+                            block.group = 1U;
+                        }
+                        sink_emit(sink, block);
+                    }
+                }
+            }
+            return;
+        }
+
+        if (marker == 0xFFEDU) {
+            if (match(prefix, 0U, "Photoshop 3.0\0", 14U)) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Jpeg;
+                block.kind         = ContainerBlockKind::PhotoshopIrB;
+                block.chunking     = BlockChunking::PsIrB8Bim;
+                block.outer_offset = seg_total_off;
+                block.outer_size   = seg_total_size;
+                block.data_offset  = seg_payload_off + 14U;
+                block.data_size    = seg_payload_size - 14U;
+                block.id           = marker;
+                sink_emit(sink, block);
+            }
+            return;
+        }
+
+        if (marker == 0xFFFEU) {
+            ContainerBlockRef block;
+            block.format       = ContainerFormat::Jpeg;
+            block.kind         = ContainerBlockKind::Comment;
+            block.outer_offset = seg_total_off;
+            block.outer_size   = seg_total_size;
+            block.data_offset  = seg_payload_off;
+            block.data_size    = seg_payload_size;
+            block.id           = marker;
+            sink_emit(sink, block);
+        }
+    }
+
+
+    static void normalize_positional_jpeg_jumbf(BlockSink* sink) noexcept
+    {
+        const uint32_t written = sink->result.written;
+        for (uint32_t i = 0U; i < written; ++i) {
+            ContainerBlockRef& seed = sink->out[i];
+            if (seed.format != ContainerFormat::Jpeg
+                || seed.kind != ContainerBlockKind::Jumbf || seed.id != 0xFFEBU
+                || seed.part_count != 0U) {
+                continue;
+            }
+
+            bool seen_group = false;
+            for (uint32_t k = 0U; k < i; ++k) {
+                const ContainerBlockRef& previous = sink->out[k];
+                if (previous.format == ContainerFormat::Jpeg
+                    && previous.kind == ContainerBlockKind::Jumbf
+                    && previous.id == 0xFFEBU && previous.group == seed.group) {
+                    seen_group = true;
+                    break;
+                }
+            }
+            if (seen_group) {
+                continue;
+            }
+
+            uint32_t count = 0U;
+            bool has_zero  = false;
+            for (uint32_t j = 0U; j < written; ++j) {
+                const ContainerBlockRef& block = sink->out[j];
+                if (block.format == ContainerFormat::Jpeg
+                    && block.kind == ContainerBlockKind::Jumbf
+                    && block.id == 0xFFEBU && block.group == seed.group) {
+                    count += 1U;
+                    has_zero = has_zero || block.part_index == 0U;
+                }
+            }
+            if (count == 0U) {
+                continue;
+            }
+
+            auto valid_base = [&](uint32_t base) noexcept {
+                uint32_t minimum = UINT32_MAX;
+                uint32_t maximum = 0U;
+                for (uint32_t j = 0U; j < written; ++j) {
+                    const ContainerBlockRef& block = sink->out[j];
+                    if (block.format != ContainerFormat::Jpeg
+                        || block.kind != ContainerBlockKind::Jumbf
+                        || block.id != 0xFFEBU || block.group != seed.group) {
+                        continue;
+                    }
+                    if (block.part_index < base) {
+                        return false;
+                    }
+                    const uint32_t index = block.part_index - base;
+                    minimum              = (index < minimum) ? index : minimum;
+                    maximum              = (index > maximum) ? index : maximum;
+                }
+                if (minimum != 0U || maximum + 1U != count) {
+                    return false;
+                }
+                for (uint32_t a = 0U; a < written; ++a) {
+                    const ContainerBlockRef& first = sink->out[a];
+                    if (first.format != ContainerFormat::Jpeg
+                        || first.kind != ContainerBlockKind::Jumbf
+                        || first.id != 0xFFEBU || first.group != seed.group) {
+                        continue;
+                    }
+                    for (uint32_t b = a + 1U; b < written; ++b) {
+                        const ContainerBlockRef& second = sink->out[b];
+                        if (second.format == ContainerFormat::Jpeg
+                            && second.kind == ContainerBlockKind::Jumbf
+                            && second.id == 0xFFEBU
+                            && second.group == seed.group
+                            && first.part_index == second.part_index) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            };
+
+            auto make_independent = [&]() noexcept {
+                for (uint32_t j = 0U; j < written; ++j) {
+                    ContainerBlockRef& block = sink->out[j];
+                    if (block.format != ContainerFormat::Jpeg
+                        || block.kind != ContainerBlockKind::Jumbf
+                        || block.id != 0xFFEBU || block.group != seed.group) {
+                        continue;
+                    }
+                    block.part_index            = 0U;
+                    block.part_count            = 1U;
+                    const uint64_t header_start = block.outer_offset + 12U;
+                    if (block.data_offset <= header_start) {
+                        continue;
+                    }
+                    const uint64_t header_size = block.data_offset
+                                                 - header_start;
+                    if ((header_size == 8U || header_size == 16U)
+                        && block.data_offset >= header_size) {
+                        block.data_offset -= header_size;
+                        block.data_size += header_size;
+                    }
+                }
+            };
+
+            uint32_t base = has_zero ? 0U : 1U;
+            if (!valid_base(base)) {
+                const uint32_t alternative = (base == 0U) ? 1U : 0U;
+                if (valid_base(alternative)) {
+                    base = alternative;
+                } else {
+                    make_independent();
+                    continue;
+                }
+            }
+
+            for (uint32_t j = 0U; j < written; ++j) {
+                ContainerBlockRef& block = sink->out[j];
+                if (block.format == ContainerFormat::Jpeg
+                    && block.kind == ContainerBlockKind::Jumbf
+                    && block.id == 0xFFEBU && block.group == seed.group) {
+                    block.part_index -= base;
+                    block.part_count = count;
+                }
+            }
+            for (uint32_t j = 0U; j < written; ++j) {
+                ContainerBlockRef& block = sink->out[j];
+                if (block.format != ContainerFormat::Jpeg
+                    || block.kind != ContainerBlockKind::Jumbf
+                    || block.id != 0xFFEBU || block.group != seed.group
+                    || block.part_index != 0U) {
+                    continue;
+                }
+                const uint64_t header_start = block.outer_offset + 12U;
+                if (block.data_offset > header_start) {
+                    const uint64_t header_size = block.data_offset
+                                                 - header_start;
+                    if ((header_size == 8U || header_size == 16U)
+                        && block.data_offset >= header_size) {
+                        block.data_offset -= header_size;
+                        block.data_size += header_size;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+
+    static ScanResult scan_positional_jpeg(
+        const RandomAccessSourceRange& jpeg, std::span<ContainerBlockRef> out,
+        RandomAccessReadWindow* window, RandomAccessReadState* state,
+        const RandomAccessReadLimits& limits,
+        const RandomAccessReadWindowOptions& window_options) noexcept
+    {
+        BlockSink sink;
+        sink.out = out.data();
+        sink.cap = static_cast<uint32_t>(out.size());
+
+        if (jpeg.size < 2U) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
+        }
+
+        std::span<const std::byte> bytes;
+        if (!jpeg_positional_view(jpeg, 0U, 2U, window, state, limits,
+                                  window_options, &bytes)) {
+            return sink.result;
+        }
+        if (u8(bytes[0U]) != 0xFFU || u8(bytes[1U]) != 0xD8U) {
+            sink.result.status = ScanStatus::Unsupported;
+            return sink.result;
+        }
+
+        uint64_t offset = 2U;
+        while (offset <= jpeg.size && jpeg.size - offset >= 2U) {
+            if (!jpeg_positional_view(jpeg, offset, 1U, window, state, limits,
+                                      window_options, &bytes)) {
+                return sink.result;
+            }
+            if (u8(bytes[0U]) != 0xFFU) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+
+            const uint64_t prefix_offset = offset;
+            do {
+                offset += 1U;
+                if (offset >= jpeg.size) {
+                    break;
+                }
+                if (!jpeg_positional_view(jpeg, offset, 1U, window, state,
+                                          limits, window_options, &bytes)) {
+                    return sink.result;
+                }
+            } while (u8(bytes[0U]) == 0xFFU);
+            if (offset >= jpeg.size) {
+                break;
+            }
+            if (offset <= prefix_offset) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+
+            const uint64_t marker_offset = offset - 1U;
+            const uint8_t marker_low     = u8(bytes[0U]);
+            offset += 1U;
+            const uint16_t marker = static_cast<uint16_t>(
+                0xFF00U | static_cast<uint16_t>(marker_low));
+
+            if (marker == 0xFFD9U || marker == 0xFFDAU) {
+                break;
+            }
+            if ((marker >= 0xFFD0U && marker <= 0xFFD7U) || marker == 0xFF01U) {
+                continue;
+            }
+
+            if (offset > jpeg.size || jpeg.size - offset < 2U
+                || !jpeg_positional_view(jpeg, offset, 2U, window, state,
+                                         limits, window_options, &bytes)) {
+                if (state->ok()) {
+                    sink.result.status = ScanStatus::Malformed;
+                }
+                return sink.result;
+            }
+            uint16_t segment_length = 0U;
+            if (!read_u16be(bytes, 0U, &segment_length)
+                || segment_length < 2U) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+
+            const uint64_t payload_offset = offset + 2U;
+            const uint64_t payload_size   = static_cast<uint64_t>(segment_length
+                                                                  - 2U);
+            const uint64_t total_size     = 2U
+                                        + static_cast<uint64_t>(segment_length);
+            if (!checked_range(payload_offset, payload_size, jpeg.size)
+                || !checked_range(marker_offset, total_size, jpeg.size)) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+
+            const uint64_t probe_size
+                = jpeg_positional_probe_size(marker, payload_size);
+            std::span<const std::byte> prefix;
+            if (probe_size != 0U
+                && !jpeg_positional_view(jpeg, payload_offset, probe_size,
+                                         window, state, limits, window_options,
+                                         &prefix)) {
+                return sink.result;
+            }
+            classify_positional_jpeg_segment(marker, prefix, payload_offset,
+                                             payload_size, marker_offset,
+                                             total_size, &sink);
+            offset = payload_offset + payload_size;
+        }
+
+        normalize_positional_jpeg_jumbf(&sink);
+        return sink.result;
+    }
+
+}  // namespace
+
+
+ContainerRandomAccessScanResult
+scan_jpeg_random_access(const RandomAccessSourceRange& jpeg,
+                        std::span<ContainerBlockRef> out,
+                        const ContainerRandomAccessScratch& scratch,
+                        const RandomAccessReadLimits& read_limits) noexcept
+{
+    ContainerRandomAccessScanResult result;
+    if (!random_access_source_range_valid(jpeg)) {
+        result.input.code = RandomAccessReadCode::InvalidArgument;
+        return result;
+    }
+
+    if (jpeg.source.contiguous_data != nullptr) {
+        const std::byte* begin = jpeg.source.contiguous_data
+                                 + static_cast<size_t>(jpeg.source_offset);
+        result.scan = scan_jpeg(
+            std::span<const std::byte>(begin, static_cast<size_t>(jpeg.size)),
+            out);
+        return result;
+    }
+
+    RandomAccessReadWindow window;
+    window.storage = scratch.read_window;
+    result.scan    = scan_positional_jpeg(jpeg, out, &window, &result.input,
+                                          read_limits, scratch.window_options);
+    return result;
+}
+
+
+ContainerRandomAccessScanResult
+measure_scan_jpeg_random_access(
+    const RandomAccessSourceRange& jpeg,
+    const ContainerRandomAccessScratch& scratch,
+    const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_jpeg_random_access(jpeg, {}, scratch, read_limits);
+}
+
+
+namespace {
+
     static bool
     looks_like_bmff_box_header_fragment(std::span<const std::byte> bytes,
                                         const ContainerBlockRef& b) noexcept
@@ -1853,8 +2416,8 @@ scan_jp2(std::span<const std::byte> bytes,
         return sink.result;
     }
 
-    uint64_t offset    = 0;
-    const uint64_t end = bytes.size();
+    uint64_t offset          = 0;
+    const uint64_t end       = bytes.size();
     const uint32_t kMaxBoxes = 1U << 16;
     uint32_t boxes_remaining = kMaxBoxes;
     while (offset < end) {
@@ -1927,8 +2490,8 @@ scan_jxl(std::span<const std::byte> bytes,
         return sink.result;
     }
 
-    uint64_t offset    = 0;
-    const uint64_t end = bytes.size();
+    uint64_t offset          = 0;
+    const uint64_t end       = bytes.size();
     const uint32_t kMaxBoxes = 1U << 16;
     uint32_t boxes_remaining = kMaxBoxes;
     while (offset < end) {
@@ -3701,7 +4264,7 @@ namespace {
         bool has_iprp = false;
         bool has_dinf = false;
 
-        uint64_t child_off       = payload_off + 4;  // FullBox header.
+        uint64_t child_off          = payload_off + 4;  // FullBox header.
         const uint64_t child_end    = meta.end;
         const uint32_t kMaxChildren = 1U << 16;
         uint32_t child_count        = 0;
