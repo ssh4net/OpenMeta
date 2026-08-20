@@ -1,5 +1,33 @@
 # OpenMeta Changes
 
+## 0.4.108 - 2026-08-20
+
+Changes compared with `0.4.107`.
+
+### Added
+
+- Added allocation-free positional scan and measure APIs for PNG, WebP, JP2,
+  JXL, and ISO-BMFF sources using caller-owned read windows.
+- Added callback-backed BMFF brand, metadata-item/location/reference, ICC
+  property, JP2 UUID, and nested CR3 metadata traversal.
+
+### Changed
+
+- PNG and WebP chunk scanning and JP2/JXL/BMFF box scanning now share parser
+  logic between contiguous and callback sources, preserving descriptor order,
+  normalization, and range-relative offsets.
+- Positional scanners skip pixel codestream, RIFF image, and BMFF `mdat`
+  payloads while retaining explicit source-I/O and resource-limit diagnostics.
+- WebP scanning now rejects an odd-sized RIFF chunk whose required padding byte
+  lies outside the declared RIFF extent.
+
+### Tests And Validation
+
+- Added contiguous-versus-callback descriptor and measure parity, non-zero
+  source-range, scratch/I/O, incremental PNG prefix, BMFF item-table, and large
+  payload-skip regressions for all five formats.
+- Extended container fuzzing through every positional chunk/box scanner.
+
 ## 0.4.107 - 2026-08-20
 
 Changes compared with `0.4.106`.

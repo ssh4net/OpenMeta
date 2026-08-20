@@ -97,14 +97,27 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
         source);
     std::byte read_window[512] = {};
     ContainerRandomAccessScratch scratch;
-    scratch.read_window                   = read_window;
-    ContainerBlockRef callback_blocks[64] = {};
-    const ContainerRandomAccessScanResult callback_result
-        = scan_jpeg_random_access(range, callback_blocks, scratch);
-    if (callback_result.scan.written > 64U) {
-        fuzz_trap();
+    scratch.read_window = read_window;
+    using RandomScanner = ContainerRandomAccessScanResult (*)(
+        const RandomAccessSourceRange&, std::span<ContainerBlockRef>,
+        const ContainerRandomAccessScratch&,
+        const RandomAccessReadLimits&) noexcept;
+    const RandomScanner scanners[] = {
+        scan_jpeg_random_access, scan_png_random_access,
+        scan_webp_random_access, scan_jp2_random_access,
+        scan_jxl_random_access,  scan_bmff_random_access,
+    };
+    for (RandomScanner scanner : scanners) {
+        ContainerBlockRef callback_blocks[64] = {};
+        const ContainerRandomAccessScanResult callback_result
+            = scanner(range, callback_blocks, scratch,
+                      RandomAccessReadLimits {});
+        if (callback_result.scan.written > 64U) {
+            fuzz_trap();
+        }
+        verify_ranges(bytes,
+                      std::span<const ContainerBlockRef>(
+                          callback_blocks, callback_result.scan.written));
     }
-    verify_ranges(bytes, std::span<const ContainerBlockRef>(
-                             callback_blocks, callback_result.scan.written));
     return 0;
 }

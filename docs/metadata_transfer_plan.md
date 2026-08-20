@@ -1047,21 +1047,23 @@ proxies without an OpenMeta dependency on any one host library.
    subtables are converted. Mixed-base Ricoh, Nintendo, Casio, Minolta, and FLIR
    paths are converted; Canon external derived subtables and unknown vendor
    layouts stay explicit residuals.
-3. [partial in 0.4.107] Refactor shallow sequential container scanners and
+3. [partial in 0.4.108] Refactor shallow sequential container scanners and
    payload extraction for JPEG, PNG, WebP, GIF, and EXR, then bounded box
-   traversal for BMFF, JP2, and JXL. JPEG segment scanning now has callback/span
-   descriptor parity, caller-owned 512-byte classification scratch, explicit
-   source failures, and no entropy-data reads. PNG, WebP, GIF, EXR, BMFF, JP2,
-   and JXL remain pending. Decoders receive owned bounded metadata payloads
-   rather than a borrowed full-file span.
+   traversal for BMFF, JP2, and JXL. JPEG, PNG, WebP, JP2, JXL, and ISO-BMFF
+   scanning now has callback/span descriptor parity, caller-owned read windows,
+   explicit source failures, and no image/media-payload reads. BMFF parity
+   includes brands, item tables/references, ICC properties, and nested CR3
+   metadata wrappers. GIF/EXR scanner conversion, bounded payload extraction,
+   and downstream snapshot assembly remain pending.
 4. Refactor native RAF, X3F, and CRW paths and any embedded-container recursion.
    Preserve the current bytes/file behavior as adapters above the same reader,
    not as a separate decoder implementation.
 5. Gate each format on byte-span versus random-reader compatibility dumps,
    malformed/short-read tests, request/byte ceilings, and real-corpus parity
-   before advertising that format as random-access capable. JPEG scanner parity,
-   malformed/short-read behavior, and request/byte ceilings are covered in
-   0.4.107; payload decode and downstream snapshot assembly remain separate work.
+   before advertising that format as random-access capable. JPEG, PNG, WebP,
+   JP2, JXL, and ISO-BMFF scanner parity, malformed/I/O behavior, payload-skip
+   checks, and request/byte ceilings are covered through 0.4.108; payload decode
+   and downstream snapshot assembly remain separate work.
 
 #### Raw Snapshot Emission Policy
 

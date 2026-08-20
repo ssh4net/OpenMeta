@@ -445,9 +445,16 @@ Other preflight estimate APIs use the same bounded-options model:
 - ``measure_scan_jpeg(bytes)``,
   ``measure_scan_jpeg_random_access(jpeg_range, scratch, read_limits)``,
   ``measure_scan_png(bytes)``,
-  ``measure_scan_webp(bytes)``, ``measure_scan_gif(bytes)``,
+  ``measure_scan_png_random_access(png_range, scratch, read_limits)``,
+  ``measure_scan_webp(bytes)``,
+  ``measure_scan_webp_random_access(webp_range, scratch, read_limits)``,
+  ``measure_scan_gif(bytes)``,
   ``measure_scan_tiff(bytes)``, ``measure_scan_jp2(bytes)``,
-  ``measure_scan_jxl(bytes)``, ``measure_scan_bmff(bytes)``
+  ``measure_scan_jp2_random_access(jp2_range, scratch, read_limits)``,
+  ``measure_scan_jxl(bytes)``,
+  ``measure_scan_jxl_random_access(jxl_range, scratch, read_limits)``,
+  ``measure_scan_bmff(bytes)``,
+  ``measure_scan_bmff_random_access(bmff_range, scratch, read_limits)``
 - ``measure_exif_tiff(exif_bytes, exif_options)``
 - ``measure_xmp_packet(xmp_bytes, xmp_options)``
 - ``measure_icc_profile(icc_bytes, icc_options)``

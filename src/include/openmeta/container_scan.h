@@ -136,7 +136,8 @@ struct ScanResult final {
 /// Caller-owned storage for callback-backed container scanning.
 struct ContainerRandomAccessScratch final {
     /// Reusable read-ahead cache. JPEG scanning requires up to 512 bytes to
-    /// preserve bare-XMP detection parity with the contiguous scanner.
+    /// preserve bare-XMP detection parity with the contiguous scanner. PNG,
+    /// WebP, JP2, JXL, and ISO-BMFF scanning require at least 32 bytes.
     std::span<std::byte> read_window;
     RandomAccessReadWindowOptions window_options;
 };
@@ -213,12 +214,52 @@ scan_png(std::span<const std::byte> bytes,
          std::span<ContainerBlockRef> out) noexcept;
 ScanResult
 measure_scan_png(std::span<const std::byte> bytes) noexcept;
+/**
+ * \brief Scans PNG metadata chunks through a bounded positional source.
+ *
+ * Offsets are relative to \p png. Callback input requires at least 32 bytes of
+ * caller-owned read-window storage and skips pixel payloads.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ContainerRandomAccessScanResult
+scan_png_random_access(const RandomAccessSourceRange& png,
+                       std::span<ContainerBlockRef> out,
+                       const ContainerRandomAccessScratch& scratch,
+                       const RandomAccessReadLimits& read_limits
+                       = RandomAccessReadLimits {}) noexcept;
+ContainerRandomAccessScanResult
+measure_scan_png_random_access(const RandomAccessSourceRange& png,
+                               const ContainerRandomAccessScratch& scratch,
+                               const RandomAccessReadLimits& read_limits
+                               = RandomAccessReadLimits {}) noexcept;
 /// Scans a RIFF/WebP byte stream and returns all metadata chunks found.
 ScanResult
 scan_webp(std::span<const std::byte> bytes,
           std::span<ContainerBlockRef> out) noexcept;
 ScanResult
 measure_scan_webp(std::span<const std::byte> bytes) noexcept;
+/**
+ * \brief Scans WebP metadata chunks through a bounded positional source.
+ *
+ * Offsets are relative to \p webp. Callback input requires at least 32 bytes of
+ * caller-owned read-window storage and skips image payloads.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ContainerRandomAccessScanResult
+scan_webp_random_access(const RandomAccessSourceRange& webp,
+                        std::span<ContainerBlockRef> out,
+                        const ContainerRandomAccessScratch& scratch,
+                        const RandomAccessReadLimits& read_limits
+                        = RandomAccessReadLimits {}) noexcept;
+ContainerRandomAccessScanResult
+measure_scan_webp_random_access(const RandomAccessSourceRange& webp,
+                                const ContainerRandomAccessScratch& scratch,
+                                const RandomAccessReadLimits& read_limits
+                                = RandomAccessReadLimits {}) noexcept;
 /// Scans a GIF byte stream and returns all metadata extension blocks found.
 ScanResult
 scan_gif(std::span<const std::byte> bytes,
@@ -237,12 +278,52 @@ scan_jp2(std::span<const std::byte> bytes,
          std::span<ContainerBlockRef> out) noexcept;
 ScanResult
 measure_scan_jp2(std::span<const std::byte> bytes) noexcept;
+/**
+ * \brief Scans JP2 metadata boxes through a bounded positional source.
+ *
+ * Offsets are relative to \p jp2. Callback input requires at least 32 bytes of
+ * caller-owned read-window storage and skips codestream payloads.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ContainerRandomAccessScanResult
+scan_jp2_random_access(const RandomAccessSourceRange& jp2,
+                       std::span<ContainerBlockRef> out,
+                       const ContainerRandomAccessScratch& scratch,
+                       const RandomAccessReadLimits& read_limits
+                       = RandomAccessReadLimits {}) noexcept;
+ContainerRandomAccessScanResult
+measure_scan_jp2_random_access(const RandomAccessSourceRange& jp2,
+                               const ContainerRandomAccessScratch& scratch,
+                               const RandomAccessReadLimits& read_limits
+                               = RandomAccessReadLimits {}) noexcept;
 /// Scans a JPEG XL container byte stream and returns metadata boxes found.
 ScanResult
 scan_jxl(std::span<const std::byte> bytes,
          std::span<ContainerBlockRef> out) noexcept;
 ScanResult
 measure_scan_jxl(std::span<const std::byte> bytes) noexcept;
+/**
+ * \brief Scans JXL metadata boxes through a bounded positional source.
+ *
+ * Offsets are relative to \p jxl. Callback input requires at least 32 bytes of
+ * caller-owned read-window storage and skips codestream payloads.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ContainerRandomAccessScanResult
+scan_jxl_random_access(const RandomAccessSourceRange& jxl,
+                       std::span<ContainerBlockRef> out,
+                       const ContainerRandomAccessScratch& scratch,
+                       const RandomAccessReadLimits& read_limits
+                       = RandomAccessReadLimits {}) noexcept;
+ContainerRandomAccessScanResult
+measure_scan_jxl_random_access(const RandomAccessSourceRange& jxl,
+                               const ContainerRandomAccessScratch& scratch,
+                               const RandomAccessReadLimits& read_limits
+                               = RandomAccessReadLimits {}) noexcept;
 /// Scans an ISO-BMFF (`ftyp`) container (e.g. HEIF/AVIF/CR3) and returns
 /// metadata items found within `meta` boxes.
 ScanResult
@@ -250,6 +331,27 @@ scan_bmff(std::span<const std::byte> bytes,
           std::span<ContainerBlockRef> out) noexcept;
 ScanResult
 measure_scan_bmff(std::span<const std::byte> bytes) noexcept;
+/**
+ * \brief Scans ISO-BMFF metadata through a bounded positional source.
+ *
+ * Offsets are relative to \p bmff. Callback input requires at least 32 bytes of
+ * caller-owned read-window storage. Structural boxes and metadata item tables
+ * are traversed without reading `mdat` payloads.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ContainerRandomAccessScanResult
+scan_bmff_random_access(const RandomAccessSourceRange& bmff,
+                        std::span<ContainerBlockRef> out,
+                        const ContainerRandomAccessScratch& scratch,
+                        const RandomAccessReadLimits& read_limits
+                        = RandomAccessReadLimits {}) noexcept;
+ContainerRandomAccessScanResult
+measure_scan_bmff_random_access(const RandomAccessSourceRange& bmff,
+                                const ContainerRandomAccessScratch& scratch,
+                                const RandomAccessReadLimits& read_limits
+                                = RandomAccessReadLimits {}) noexcept;
 
 }  // namespace openmeta
 OPENMETA_PUBLIC_END

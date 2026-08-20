@@ -16,8 +16,9 @@ conversion to Olympus, Panasonic, and Samsung MakerNotes. Version 0.4.104 adds
 bounded Fujifilm and General Imaging MakerNote source layouts. Version 0.4.105
 adds Kodak fixed-layout and outer-TIFF-relative MakerNotes. Version 0.4.106 adds
 Ricoh mixed-base and vendor subdirectory decoding plus Nintendo, Casio, Minolta,
-and FLIR callback parity. Version 0.4.107 adds bounded JPEG segment scanning. It
-provides:
+and FLIR callback parity. Version 0.4.107 adds bounded JPEG segment scanning.
+Version 0.4.108 adds positional PNG/WebP chunk scanning and bounded JP2/JXL/
+ISO-BMFF box and metadata-item traversal. It provides:
 
 - a fixed source size and synchronous ``read_at(offset, destination)`` callback
 - a non-owning descriptor for caller-owned contiguous memory
@@ -52,6 +53,14 @@ positional source. It reads at most 512 bytes from a metadata segment for
 classification, preserves multipart APP11 normalization, and stops at Start of
 Scan without reading entropy-coded image data. Returned offsets are relative to
 the supplied source range.
+
+``scan_png_random_access(...)``, ``scan_webp_random_access(...)``,
+``scan_jp2_random_access(...)``, ``scan_jxl_random_access(...)``, and
+``scan_bmff_random_access(...)`` provide the same descriptor contract. PNG text
+prefixes are scanned incrementally. JP2/JXL/BMFF traversal reads structural
+boxes and metadata tables while skipping image codestream, ``mdat``, and
+unrelated payload bytes. These five scanners require a 32-byte minimum window;
+larger windows reduce callback traffic.
 
 Callback example
 ----------------
@@ -120,8 +129,8 @@ batch adjacent reads. The value scratch holds one out-of-line metadata value or
 the combined GeoTIFF parameter payloads. ``value_scratch_needed`` reports an
 insufficient buffer without hidden allocation.
 
-JPEG segment scan
------------------
+Container scan
+--------------
 
 .. code-block:: cpp
 
@@ -152,6 +161,11 @@ work when every required probe fits and otherwise return ``ScratchTooSmall``.
 ``measure_scan_jpeg_random_access(...)`` reports ``scan.needed`` without block
 output storage.
 
+PNG, WebP, JP2, JXL, and ISO-BMFF use the corresponding
+``scan_*_random_access(...)`` and ``measure_scan_*_random_access(...)`` pairs.
+They require at least 32 bytes of read-window storage. A 4 KiB or larger window
+is generally a better host default for table-heavy BMFF files.
+
 Real-time and concurrent use
 ----------------------------
 
@@ -168,7 +182,8 @@ must use separate decoder scratch and accounting state.
 
 The TIFF/DNG decoder batches adjacent structural reads through caller-owned
 scratch and keeps out-of-line values in separate caller storage so they do not
-evict the structural cache. Pixel payloads are outside this metadata contract.
+evict the structural cache. Pixel and media payloads are outside this metadata
+contract and are not read by positional container scanning.
 
 Source lifetime
 ---------------

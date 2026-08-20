@@ -15,7 +15,8 @@ bounded Fujifilm and General Imaging MakerNote source layouts. Version 0.4.105
 adds Kodak fixed-layout and outer-TIFF-relative MakerNotes. Version 0.4.106
 adds Ricoh mixed-base and vendor subdirectory decoding plus Nintendo, Casio,
 Minolta, and FLIR callback parity. Version 0.4.107 adds bounded JPEG segment
-scanning. The contract now defines:
+scanning. Version 0.4.108 adds positional PNG/WebP chunk scanning and bounded
+JP2/JXL/ISO-BMFF box and metadata-item traversal. The contract now defines:
 
 - a fixed source size and synchronous `read_at(offset, destination)` callback
 - a non-owning descriptor for caller-owned contiguous memory
@@ -61,6 +62,15 @@ source. It reads at most 512 bytes from a metadata segment for classification,
 preserves multipart APP11 normalization, and stops at Start of Scan without
 reading entropy-coded image data. Returned offsets are relative to the supplied
 source range.
+
+`scan_png_random_access(...)`, `scan_webp_random_access(...)`,
+`scan_jp2_random_access(...)`, `scan_jxl_random_access(...)`, and
+`scan_bmff_random_access(...)` provide the same descriptor contract. PNG text
+prefixes are scanned incrementally. JP2/JXL/BMFF traversal reads box headers,
+brands, item-location tables, item references, ICC properties, and CR3 metadata
+wrappers as needed, but skips image codestream, `mdat`, and unrelated payload
+bytes. A 32-byte window is the minimum for these five scanners; larger windows
+reduce callback traffic.
 
 ## Callback Example
 
@@ -133,7 +143,7 @@ double, and ASCII parameter payloads. If it is too small,
 `value_scratch_needed` reports the required byte count; OpenMeta does not
 allocate a replacement.
 
-## JPEG Segment Scan Example
+## Container Scan Example
 
 ```cpp
 #include "openmeta/container_scan.h"
@@ -165,6 +175,12 @@ metadata probes fit, but return `ScratchTooSmall` when a larger probe is needed.
 Use `measure_scan_jpeg_random_access(...)` with the same scratch and limits to
 obtain `scan.needed` without block output storage.
 
+For PNG, WebP, JP2, JXL, and ISO-BMFF sources, call the corresponding
+`scan_*_random_access(...)` or `measure_scan_*_random_access(...)` function with
+the same source-range and result pattern. These scanners require at least 32
+bytes of read-window storage. A 4 KiB or larger read-ahead window is generally a
+better host default for table-heavy BMFF files.
+
 ## Real-Time And Concurrent Use
 
 The contract adds no global state, virtual dispatch, `std::function`, hidden
@@ -180,8 +196,9 @@ operation must use separate decoder scratch and `RandomAccessReadState` objects.
 The TIFF/DNG decoder batches adjacent structural reads through the caller-owned
 window instead of issuing one host callback for every scalar. Out-of-line
 metadata values use caller value scratch so they do not evict the structural
-cache. Pixel payloads are outside this metadata input contract and are not
-fetched as part of ordinary metadata decoding.
+cache. Pixel and media payloads are outside this metadata input contract and
+are not fetched as part of ordinary metadata decoding or positional container
+scanning.
 
 ## Source Lifetime
 

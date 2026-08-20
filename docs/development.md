@@ -1370,6 +1370,9 @@ const openmeta::ScanResult scan_est
 const openmeta::ContainerRandomAccessScanResult jpeg_scan_est
     = openmeta::measure_scan_jpeg_random_access(
         jpeg_range, jpeg_scan_scratch, read_limits);
+const openmeta::ContainerRandomAccessScanResult bmff_scan_est
+    = openmeta::measure_scan_bmff_random_access(
+        bmff_range, container_scan_scratch, read_limits);
 const openmeta::ExifDecodeResult exif_est
     = openmeta::measure_exif_tiff(exif_bytes, exif_options);
 const openmeta::XmpDecodeResult xmp_est

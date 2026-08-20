@@ -120,9 +120,12 @@ namespace {
 
     struct JpegCallbackState final {
         std::span<const std::byte> bytes;
-        RandomAccessIoCode code = RandomAccessIoCode::Ok;
-        uint64_t max_bytes      = UINT64_MAX;
-        uint32_t calls          = 0U;
+        RandomAccessIoCode code  = RandomAccessIoCode::Ok;
+        uint64_t max_bytes       = UINT64_MAX;
+        uint32_t calls           = 0U;
+        uint64_t forbidden_begin = UINT64_MAX;
+        uint64_t forbidden_end   = UINT64_MAX;
+        bool touched_forbidden   = false;
     };
 
 
@@ -132,6 +135,14 @@ namespace {
     {
         JpegCallbackState* state = static_cast<JpegCallbackState*>(context);
         state->calls += 1U;
+        const uint64_t request_end
+            = (destination.size() <= UINT64_MAX - offset)
+                  ? offset + static_cast<uint64_t>(destination.size())
+                  : UINT64_MAX;
+        if (offset < state->forbidden_end
+            && request_end > state->forbidden_begin) {
+            state->touched_forbidden = true;
+        }
         uint64_t available = 0U;
         if (offset <= state->bytes.size()) {
             available = static_cast<uint64_t>(state->bytes.size()) - offset;
@@ -166,6 +177,59 @@ namespace {
         EXPECT_EQ(actual.logical_size, expected.logical_size);
         EXPECT_EQ(actual.group, expected.group);
         EXPECT_EQ(actual.aux_u32, expected.aux_u32);
+    }
+
+
+    template<class ScanFn, class RandomScanFn, class RandomMeasureFn>
+    static void expect_random_access_parity(std::span<const std::byte> bytes,
+                                            uint64_t forbidden_begin,
+                                            uint64_t forbidden_end, ScanFn scan,
+                                            RandomScanFn random_scan,
+                                            RandomMeasureFn random_measure)
+    {
+        std::array<ContainerBlockRef, 16> expected {};
+        const ScanResult contiguous = scan(bytes, expected);
+        ASSERT_EQ(contiguous.status, ScanStatus::Ok);
+        ASSERT_GT(contiguous.written, 0U);
+
+        constexpr uint64_t prefix_size = 23U;
+        std::vector<std::byte> backing(prefix_size, std::byte { 0xA5 });
+        backing.insert(backing.end(), bytes.begin(), bytes.end());
+        JpegCallbackState callback { backing };
+        callback.forbidden_begin = prefix_size + forbidden_begin;
+        callback.forbidden_end   = prefix_size + forbidden_end;
+        const RandomAccessSource source
+            = make_callback_random_access_source(backing.size(), &callback,
+                                                 jpeg_read_at, true);
+        const RandomAccessSourceRange range
+            = make_random_access_source_range(source, prefix_size,
+                                              bytes.size());
+        std::array<std::byte, 128> storage {};
+        ContainerRandomAccessScratch scratch;
+        scratch.read_window                       = storage;
+        scratch.window_options.minimum_read_bytes = storage.size();
+
+        std::array<ContainerBlockRef, 16> actual {};
+        const ContainerRandomAccessScanResult positional
+            = random_scan(range, actual, scratch);
+        ASSERT_TRUE(positional.complete());
+        EXPECT_EQ(positional.scan.status, contiguous.status);
+        EXPECT_EQ(positional.scan.written, contiguous.written);
+        EXPECT_EQ(positional.scan.needed, contiguous.needed);
+        for (uint32_t i = 0U; i < contiguous.written; ++i) {
+            expect_same_block(expected[i], actual[i]);
+        }
+        EXPECT_GT(callback.calls, 0U);
+        EXPECT_FALSE(callback.touched_forbidden);
+        EXPECT_LT(positional.input.bytes_requested,
+                  static_cast<uint64_t>(bytes.size()));
+
+        const ContainerRandomAccessScanResult measured
+            = random_measure(range, scratch);
+        EXPECT_TRUE(measured.complete());
+        EXPECT_EQ(measured.scan.status, contiguous.status);
+        EXPECT_EQ(measured.scan.written, 0U);
+        EXPECT_EQ(measured.scan.needed, contiguous.needed);
     }
 
 
@@ -1044,6 +1108,235 @@ namespace {
         EXPECT_TRUE(memory_result.complete());
         EXPECT_EQ(memory_result.scan.status, ScanStatus::Ok);
         EXPECT_EQ(memory_result.input.requests_issued, 0U);
+    }
+
+
+    TEST(ContainerScan,
+         ChunkAndBoxRandomAccessMatchesContiguousAndSkipsPayloads)
+    {
+        constexpr size_t payload_size = 1024U * 1024U;
+
+        auto append_png_chunk = [](std::vector<std::byte>* png, uint32_t type,
+                                   std::span<const std::byte> payload) {
+            append_u32be(png, static_cast<uint32_t>(payload.size()));
+            append_fourcc(png, type);
+            png->insert(png->end(), payload.begin(), payload.end());
+            append_u32be(png, 0U);  // CRC is outside the shallow scan contract.
+        };
+
+        std::vector<std::byte> png = {
+            std::byte { 0x89 }, std::byte { 0x50 }, std::byte { 0x4E },
+            std::byte { 0x47 }, std::byte { 0x0D }, std::byte { 0x0A },
+            std::byte { 0x1A }, std::byte { 0x0A },
+        };
+        std::vector<std::byte> itxt;
+        append_bytes(&itxt, "XML:com.adobe.xmp");
+        itxt.push_back(std::byte { 0U });
+        itxt.push_back(std::byte { 0U });
+        itxt.push_back(std::byte { 0U });
+        itxt.insert(itxt.end(), 96U, std::byte { 'e' });
+        itxt.push_back(std::byte { 0U });
+        itxt.insert(itxt.end(), 96U, std::byte { 't' });
+        itxt.push_back(std::byte { 0U });
+        append_bytes(&itxt, "<x:xmpmeta/>");
+        append_png_chunk(&png, fourcc('i', 'T', 'X', 't'), itxt);
+        std::vector<std::byte> png_pixels(payload_size, std::byte { 0x55 });
+        const uint64_t png_payload_begin = png.size() + 8U;
+        append_png_chunk(&png, fourcc('I', 'D', 'A', 'T'), png_pixels);
+        append_png_chunk(&png, fourcc('I', 'E', 'N', 'D'), {});
+        expect_random_access_parity(
+            png, png_payload_begin + 4096U,
+            png_payload_begin + payload_size - 4096U,
+            [](auto bytes, auto out) { return scan_png(bytes, out); },
+            [](const auto& range, auto out, const auto& scratch) {
+                return scan_png_random_access(range, out, scratch);
+            },
+            [](const auto& range, const auto& scratch) {
+                return measure_scan_png_random_access(range, scratch);
+            });
+
+        std::vector<std::byte> webp;
+        append_bytes(&webp, "RIFF");
+        append_u32le(&webp, 0U);
+        append_bytes(&webp, "WEBP");
+        std::vector<std::byte> webp_exif;
+        append_bytes(&webp_exif, "Exif");
+        webp_exif.push_back(std::byte { 0U });
+        webp_exif.push_back(std::byte { 0U });
+        append_bytes(&webp_exif, "II");
+        webp_exif.push_back(std::byte { 0x2A });
+        webp_exif.push_back(std::byte { 0U });
+        append_u32le(&webp_exif, 8U);
+        append_fourcc(&webp, fourcc('E', 'X', 'I', 'F'));
+        append_u32le(&webp, static_cast<uint32_t>(webp_exif.size()));
+        webp.insert(webp.end(), webp_exif.begin(), webp_exif.end());
+        append_fourcc(&webp, fourcc('V', 'P', '8', ' '));
+        append_u32le(&webp, static_cast<uint32_t>(payload_size));
+        const uint64_t webp_payload_begin = webp.size();
+        webp.insert(webp.end(), payload_size, std::byte { 0x66 });
+        const uint32_t riff_size = static_cast<uint32_t>(webp.size() - 8U);
+        webp[4U] = std::byte { static_cast<uint8_t>(riff_size >> 0U) };
+        webp[5U] = std::byte { static_cast<uint8_t>(riff_size >> 8U) };
+        webp[6U] = std::byte { static_cast<uint8_t>(riff_size >> 16U) };
+        webp[7U] = std::byte { static_cast<uint8_t>(riff_size >> 24U) };
+        expect_random_access_parity(
+            webp, webp_payload_begin + 4096U,
+            webp_payload_begin + payload_size - 4096U,
+            [](auto bytes, auto out) { return scan_webp(bytes, out); },
+            [](const auto& range, auto out, const auto& scratch) {
+                return scan_webp_random_access(range, out, scratch);
+            },
+            [](const auto& range, const auto& scratch) {
+                return measure_scan_webp_random_access(range, scratch);
+            });
+
+        std::vector<std::byte> jp2;
+        append_u32be(&jp2, 12U);
+        append_fourcc(&jp2, fourcc('j', 'P', ' ', ' '));
+        append_u32be(&jp2, 0x0D0A870AU);
+        append_u32be(&jp2, static_cast<uint32_t>(8U + payload_size));
+        append_fourcc(&jp2, fourcc('j', 'p', '2', 'c'));
+        const uint64_t jp2_payload_begin = jp2.size();
+        jp2.insert(jp2.end(), payload_size, std::byte { 0x77 });
+        const std::array<std::byte, 6> jp2_xmp = {
+            std::byte { '<' }, std::byte { 'x' }, std::byte { 'm' },
+            std::byte { 'p' }, std::byte { '/' }, std::byte { '>' },
+        };
+        append_bmff_box(&jp2, fourcc('x', 'm', 'l', ' '), jp2_xmp);
+        expect_random_access_parity(
+            jp2, jp2_payload_begin + 4096U,
+            jp2_payload_begin + payload_size - 4096U,
+            [](auto bytes, auto out) { return scan_jp2(bytes, out); },
+            [](const auto& range, auto out, const auto& scratch) {
+                return scan_jp2_random_access(range, out, scratch);
+            },
+            [](const auto& range, const auto& scratch) {
+                return measure_scan_jp2_random_access(range, scratch);
+            });
+
+        std::vector<std::byte> jxl;
+        append_u32be(&jxl, 12U);
+        append_fourcc(&jxl, fourcc('J', 'X', 'L', ' '));
+        append_u32be(&jxl, 0x0D0A870AU);
+        append_u32be(&jxl, static_cast<uint32_t>(8U + payload_size));
+        append_fourcc(&jxl, fourcc('j', 'x', 'l', 'c'));
+        const uint64_t jxl_payload_begin = jxl.size();
+        jxl.insert(jxl.end(), payload_size, std::byte { 0x88 });
+        const std::array<std::byte, 6> jxl_xmp = jp2_xmp;
+        append_bmff_box(&jxl, fourcc('x', 'm', 'l', ' '), jxl_xmp);
+        expect_random_access_parity(
+            jxl, jxl_payload_begin + 4096U,
+            jxl_payload_begin + payload_size - 4096U,
+            [](auto bytes, auto out) { return scan_jxl(bytes, out); },
+            [](const auto& range, auto out, const auto& scratch) {
+                return scan_jxl_random_access(range, out, scratch);
+            },
+            [](const auto& range, const auto& scratch) {
+                return measure_scan_jxl_random_access(range, scratch);
+            });
+
+        std::vector<std::byte> infe_payload;
+        append_fullbox_header(&infe_payload, 2U);
+        append_u16be(&infe_payload, 1U);
+        append_u16be(&infe_payload, 0U);
+        append_fourcc(&infe_payload, fourcc('m', 'i', 'm', 'e'));
+        append_bytes(&infe_payload, "xmp");
+        infe_payload.push_back(std::byte { 0U });
+        append_bytes(&infe_payload, "application/rdf+xml");
+        infe_payload.push_back(std::byte { 0U });
+        std::vector<std::byte> infe;
+        append_bmff_box(&infe, fourcc('i', 'n', 'f', 'e'), infe_payload);
+        std::vector<std::byte> iinf_payload;
+        append_fullbox_header(&iinf_payload, 0U);
+        append_u16be(&iinf_payload, 1U);
+        iinf_payload.insert(iinf_payload.end(), infe.begin(), infe.end());
+        std::vector<std::byte> iinf;
+        append_bmff_box(&iinf, fourcc('i', 'i', 'n', 'f'), iinf_payload);
+
+        std::vector<std::byte> iloc_payload;
+        append_fullbox_header(&iloc_payload, 1U);
+        iloc_payload.push_back(std::byte { 0x44 });
+        iloc_payload.push_back(std::byte { 0x40 });
+        append_u16be(&iloc_payload, 1U);
+        append_u16be(&iloc_payload, 1U);
+        append_u16be(&iloc_payload, 1U);  // construction_method = idat
+        append_u16be(&iloc_payload, 0U);
+        append_u32be(&iloc_payload, 0U);
+        append_u16be(&iloc_payload, 1U);
+        append_u32be(&iloc_payload, 0U);
+        append_u32be(&iloc_payload, static_cast<uint32_t>(jp2_xmp.size()));
+        std::vector<std::byte> iloc;
+        append_bmff_box(&iloc, fourcc('i', 'l', 'o', 'c'), iloc_payload);
+
+        std::vector<std::byte> idat;
+        append_bmff_box(&idat, fourcc('i', 'd', 'a', 't'), jp2_xmp);
+        std::vector<std::byte> meta_payload;
+        append_fullbox_header(&meta_payload, 0U);
+        meta_payload.insert(meta_payload.end(), iinf.begin(), iinf.end());
+        meta_payload.insert(meta_payload.end(), iloc.begin(), iloc.end());
+        meta_payload.insert(meta_payload.end(), idat.begin(), idat.end());
+
+        std::vector<std::byte> bmff;
+        std::vector<std::byte> ftyp_payload;
+        append_fourcc(&ftyp_payload, fourcc('h', 'e', 'i', 'c'));
+        append_u32be(&ftyp_payload, 0U);
+        append_fourcc(&ftyp_payload, fourcc('m', 'i', 'f', '1'));
+        append_bmff_box(&bmff, fourcc('f', 't', 'y', 'p'), ftyp_payload);
+        append_u32be(&bmff, static_cast<uint32_t>(8U + payload_size));
+        append_fourcc(&bmff, fourcc('m', 'd', 'a', 't'));
+        const uint64_t bmff_payload_begin = bmff.size();
+        bmff.insert(bmff.end(), payload_size, std::byte { 0x99 });
+        append_bmff_box(&bmff, fourcc('m', 'e', 't', 'a'), meta_payload);
+        expect_random_access_parity(
+            bmff, bmff_payload_begin + 4096U,
+            bmff_payload_begin + payload_size - 4096U,
+            [](auto bytes, auto out) { return scan_bmff(bytes, out); },
+            [](const auto& range, auto out, const auto& scratch) {
+                return scan_bmff_random_access(range, out, scratch);
+            },
+            [](const auto& range, const auto& scratch) {
+                return measure_scan_bmff_random_access(range, scratch);
+            });
+    }
+
+
+    TEST(ContainerScan, ChunkAndBoxRandomAccessReportsScratchAndIoFailures)
+    {
+        const std::array<std::byte, 8> png = {
+            std::byte { 0x89 }, std::byte { 0x50 }, std::byte { 0x4E },
+            std::byte { 0x47 }, std::byte { 0x0D }, std::byte { 0x0A },
+            std::byte { 0x1A }, std::byte { 0x0A },
+        };
+        JpegCallbackState callback { png };
+        RandomAccessSource source
+            = make_callback_random_access_source(png.size(), &callback,
+                                                 jpeg_read_at);
+        RandomAccessSourceRange range = make_random_access_source_range(source);
+        std::array<ContainerBlockRef, 2> blocks {};
+        std::array<std::byte, 31> small_storage {};
+        ContainerRandomAccessScratch small;
+        small.read_window = small_storage;
+        const ContainerRandomAccessScanResult too_small
+            = scan_png_random_access(range, blocks, small);
+        EXPECT_EQ(too_small.input.code, RandomAccessReadCode::ScratchTooSmall);
+        EXPECT_EQ(too_small.input.failure_request_bytes, 32U);
+
+        std::array<std::byte, 32> storage {};
+        ContainerRandomAccessScratch scratch;
+        scratch.read_window = storage;
+        callback.code       = RandomAccessIoCode::IoError;
+        const ContainerRandomAccessScanResult io_error
+            = scan_png_random_access(range, blocks, scratch);
+        EXPECT_EQ(io_error.input.code, RandomAccessReadCode::IoError);
+
+        source = make_memory_random_access_source(png);
+        range  = make_random_access_source_range(source);
+        const ContainerRandomAccessScanResult memory
+            = scan_png_random_access(range, blocks,
+                                     ContainerRandomAccessScratch {});
+        EXPECT_TRUE(memory.complete());
+        EXPECT_EQ(memory.input.requests_issued, 0U);
+        EXPECT_EQ(memory.scan.status, ScanStatus::Ok);
     }
 
 

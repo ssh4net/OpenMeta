@@ -260,6 +260,111 @@ namespace {
     }
 
 
+    class PositionalBytes final {
+    public:
+        PositionalBytes(const RandomAccessSourceRange& range,
+                        RandomAccessReadWindow* window,
+                        RandomAccessReadState* state,
+                        const RandomAccessReadLimits& limits,
+                        const RandomAccessReadWindowOptions& options) noexcept
+            : range_(range)
+            , window_(window)
+            , state_(state)
+            , limits_(limits)
+            , options_(options)
+        {
+        }
+
+        uint64_t size() const noexcept { return range_.size; }
+
+        bool view(uint64_t offset, uint64_t size,
+                  std::span<const std::byte>* out) const noexcept
+        {
+            if (!out || !state_ || !state_->ok()) {
+                return false;
+            }
+            const RandomAccessViewResult result
+                = random_access_read_view(range_, offset, size, window_, state_,
+                                          limits_, options_);
+            if (!result.ok()) {
+                return false;
+            }
+            *out = result.bytes;
+            return true;
+        }
+
+        std::byte operator[](uint64_t offset) const noexcept
+        {
+            std::span<const std::byte> bytes;
+            return view(offset, 1U, &bytes) ? bytes[0U] : std::byte {};
+        }
+
+    private:
+        const RandomAccessSourceRange& range_;
+        RandomAccessReadWindow* window_;
+        RandomAccessReadState* state_;
+        const RandomAccessReadLimits& limits_;
+        const RandomAccessReadWindowOptions& options_;
+    };
+
+
+    static bool match(const PositionalBytes& bytes, uint64_t offset,
+                      const char* s, uint32_t s_len) noexcept
+    {
+        if (!s || !checked_range(offset, s_len, bytes.size())) {
+            return false;
+        }
+        std::span<const std::byte> view;
+        return bytes.view(offset, s_len, &view)
+               && std::memcmp(view.data(), s, static_cast<size_t>(s_len)) == 0;
+    }
+
+
+    static bool match_bytes(const PositionalBytes& bytes, uint64_t offset,
+                            const std::byte* data, uint32_t data_len) noexcept
+    {
+        if (!data || !checked_range(offset, data_len, bytes.size())) {
+            return false;
+        }
+        std::span<const std::byte> view;
+        return bytes.view(offset, data_len, &view)
+               && std::memcmp(view.data(), data, static_cast<size_t>(data_len))
+                      == 0;
+    }
+
+
+    static bool read_u16be(const PositionalBytes& bytes, uint64_t offset,
+                           uint16_t* out) noexcept
+    {
+        std::span<const std::byte> view;
+        return bytes.view(offset, 2U, &view) && read_u16be(view, 0U, out);
+    }
+
+
+    static bool read_u32be(const PositionalBytes& bytes, uint64_t offset,
+                           uint32_t* out) noexcept
+    {
+        std::span<const std::byte> view;
+        return bytes.view(offset, 4U, &view) && read_u32be(view, 0U, out);
+    }
+
+
+    static bool read_u32le(const PositionalBytes& bytes, uint64_t offset,
+                           uint32_t* out) noexcept
+    {
+        std::span<const std::byte> view;
+        return bytes.view(offset, 4U, &view) && read_u32le(view, 0U, out);
+    }
+
+
+    static bool read_u64be(const PositionalBytes& bytes, uint64_t offset,
+                           uint64_t* out) noexcept
+    {
+        std::span<const std::byte> view;
+        return bytes.view(offset, 8U, &view) && read_u64be(view, 0U, out);
+    }
+
+
     static bool looks_like_tiff_at(std::span<const std::byte> bytes,
                                    uint64_t offset) noexcept
     {
@@ -433,6 +538,53 @@ namespace {
         }
         block->chunking = BlockChunking::BmffExifTiffOffsetU32Be;
         block->aux_u32  = tiff_off;
+        block->data_offset += skip;
+        block->data_size -= skip;
+    }
+
+
+    static void skip_exif_preamble(ContainerBlockRef* block,
+                                   const PositionalBytes& bytes) noexcept
+    {
+        if (!block || block->data_size < 10U
+            || !match(bytes, block->data_offset, "Exif", 4U)
+            || u8(bytes[block->data_offset + 4U]) != 0U) {
+            return;
+        }
+
+        const uint64_t tiff_offset = block->data_offset + 6U;
+        if (!checked_range(tiff_offset, 4U, bytes.size())) {
+            return;
+        }
+        const uint8_t a    = u8(bytes[tiff_offset + 0U]);
+        const uint8_t b    = u8(bytes[tiff_offset + 1U]);
+        const uint8_t c    = u8(bytes[tiff_offset + 2U]);
+        const uint8_t d    = u8(bytes[tiff_offset + 3U]);
+        const bool is_tiff = (a == 'I' && b == 'I' && c == 0x2AU && d == 0U)
+                             || (a == 'M' && b == 'M' && c == 0U && d == 0x2AU);
+        if (is_tiff) {
+            block->data_offset += 6U;
+            block->data_size -= 6U;
+        }
+    }
+
+
+    static void skip_bmff_exif_offset(ContainerBlockRef* block,
+                                      const PositionalBytes& bytes) noexcept
+    {
+        if (!block || block->data_size < 4U) {
+            return;
+        }
+        uint32_t tiff_offset = 0U;
+        if (!read_u32be(bytes, block->data_offset, &tiff_offset)) {
+            return;
+        }
+        const uint64_t skip = 4U + static_cast<uint64_t>(tiff_offset);
+        if (skip >= block->data_size) {
+            return;
+        }
+        block->chunking = BlockChunking::BmffExifTiffOffsetU32Be;
+        block->aux_u32  = tiff_offset;
         block->data_offset += skip;
         block->data_size -= skip;
     }
@@ -1599,8 +1751,9 @@ measure_scan_jpeg_random_access(
 
 namespace {
 
+    template<class Bytes>
     static bool
-    looks_like_bmff_box_header_fragment(std::span<const std::byte> bytes,
+    looks_like_bmff_box_header_fragment(const Bytes& bytes,
                                         const ContainerBlockRef& b) noexcept
     {
         if (b.data_size < 8U
@@ -1648,10 +1801,10 @@ namespace {
         return written;
     }
 
-    static void normalize_split_jumbf_blocks(BlockSink* sink,
-                                             std::span<const std::byte> bytes,
-                                             ContainerFormat format,
-                                             uint32_t id) noexcept
+    template<class Bytes>
+    static void
+    normalize_split_jumbf_blocks(BlockSink* sink, const Bytes& bytes,
+                                 ContainerFormat format, uint32_t id) noexcept
     {
         if (!sink || !sink->out || sink->result.written == 0U) {
             return;
@@ -1720,6 +1873,337 @@ namespace {
         }
     }
 
+    template<class Bytes>
+    static ScanResult scan_png_reader(const Bytes& bytes,
+                                      std::span<ContainerBlockRef> out) noexcept
+    {
+        BlockSink sink;
+        sink.out = out.data();
+        sink.cap = static_cast<uint32_t>(out.size());
+
+        if (bytes.size() < kPngSignatureSize) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
+        }
+        if (!match_bytes(bytes, 0, kPngSignature.data(), kPngSignatureSize)) {
+            sink.result.status = ScanStatus::Unsupported;
+            return sink.result;
+        }
+
+        uint64_t offset = kPngSignatureSize;
+        while (checked_range(offset, 12U, bytes.size())) {
+            const uint64_t chunk_off = offset;
+            uint32_t len             = 0;
+            uint32_t type            = 0;
+            if (!read_u32be(bytes, offset, &len)
+                || !read_u32be(bytes, offset + 4, &type)) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+            const uint64_t data_off   = offset + 8;
+            const uint64_t data_size  = static_cast<uint64_t>(len);
+            const uint64_t crc_off    = data_off + data_size;
+            const uint64_t chunk_size = 12 + data_size;
+            if (!checked_range(data_off, data_size, bytes.size())
+                || !checked_range(crc_off, 4U, bytes.size())) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+
+            if (type == fourcc('e', 'X', 'I', 'f')) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Png;
+                block.kind         = ContainerBlockKind::Exif;
+                block.outer_offset = chunk_off;
+                block.outer_size   = chunk_size;
+                block.data_offset  = data_off;
+                block.data_size    = data_size;
+                block.id           = type;
+                sink_emit(&sink, block);
+            } else if (type == fourcc('c', 'a', 'B', 'X')) {
+                // PNG C2PA chunk: JUMBF payload stored directly in the chunk data.
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Png;
+                block.kind         = ContainerBlockKind::Jumbf;
+                block.outer_offset = chunk_off;
+                block.outer_size   = chunk_size;
+                block.data_offset  = data_off;
+                block.data_size    = data_size;
+                block.id           = type;
+                sink_emit(&sink, block);
+            } else if (type == fourcc('i', 'C', 'C', 'P')) {
+                // profile_name\0 + compression_method + compressed_profile
+                uint64_t p         = data_off;
+                const uint64_t end = data_off + data_size;
+                while (p < end && u8(bytes[p]) != 0) {
+                    p += 1;
+                }
+                if (p + 2 <= end) {
+                    const uint64_t comp_method_off = p + 1;
+                    (void)u8(bytes[comp_method_off]);
+                    ContainerBlockRef block;
+                    block.format       = ContainerFormat::Png;
+                    block.kind         = ContainerBlockKind::Icc;
+                    block.compression  = BlockCompression::Deflate;
+                    block.outer_offset = chunk_off;
+                    block.outer_size   = chunk_size;
+                    block.data_offset  = comp_method_off + 1;
+                    block.data_size    = end - (comp_method_off + 1);
+                    block.id           = type;
+                    sink_emit(&sink, block);
+                }
+            } else if (type == fourcc('i', 'T', 'X', 't')) {
+                // keyword\0 + comp_flag + comp_method + lang\0 + trans\0 + text
+                uint64_t p         = data_off;
+                const uint64_t end = data_off + data_size;
+                while (p < end && u8(bytes[p]) != 0) {
+                    p += 1;
+                }
+                const uint64_t keyword_end = p;
+                if (keyword_end + 3 <= end) {
+                    const uint64_t comp_flag_off = keyword_end + 1;
+                    const uint8_t comp_flag      = u8(bytes[comp_flag_off]);
+                    (void)u8(bytes[comp_flag_off + 1]);  // comp method
+
+                    const uint32_t kXmpKeywordLen = 17;
+                    bool is_xmp                   = false;
+                    if (keyword_end - data_off == kXmpKeywordLen) {
+                        is_xmp = match(bytes, data_off, "XML:com.adobe.xmp",
+                                       kXmpKeywordLen);
+                    }
+
+                    uint64_t lang = comp_flag_off + 2;
+                    while (lang < end && u8(bytes[lang]) != 0) {
+                        lang += 1;
+                    }
+                    if (lang >= end) {
+                        goto next_chunk;
+                    }
+                    uint64_t trans = lang + 1;
+                    while (trans < end && u8(bytes[trans]) != 0) {
+                        trans += 1;
+                    }
+                    if (trans >= end) {
+                        goto next_chunk;
+                    }
+                    const uint64_t text_off = trans + 1;
+                    if (text_off <= end && is_xmp) {
+                        ContainerBlockRef block;
+                        block.format       = ContainerFormat::Png;
+                        block.kind         = ContainerBlockKind::Xmp;
+                        block.outer_offset = chunk_off;
+                        block.outer_size   = chunk_size;
+                        block.data_offset  = text_off;
+                        block.data_size    = end - text_off;
+                        block.id           = type;
+                        if (comp_flag != 0) {
+                            block.compression = BlockCompression::Deflate;
+                        }
+                        sink_emit(&sink, block);
+                    } else if (text_off <= end) {
+                        ContainerBlockRef block;
+                        block.format       = ContainerFormat::Png;
+                        block.kind         = ContainerBlockKind::Text;
+                        block.outer_offset = chunk_off;
+                        block.outer_size   = chunk_size;
+                        block.data_offset  = text_off;
+                        block.data_size    = end - text_off;
+                        block.id           = type;
+                        if (comp_flag != 0) {
+                            block.compression = BlockCompression::Deflate;
+                        }
+                        sink_emit(&sink, block);
+                    }
+                }
+            } else if (type == fourcc('z', 'T', 'X', 't')) {
+                // keyword\0 + comp_method + compressed_text
+                uint64_t p         = data_off;
+                const uint64_t end = data_off + data_size;
+                while (p < end && u8(bytes[p]) != 0) {
+                    p += 1;
+                }
+                if (p + 2 <= end) {
+                    ContainerBlockRef block;
+                    block.format       = ContainerFormat::Png;
+                    block.kind         = ContainerBlockKind::Text;
+                    block.compression  = BlockCompression::Deflate;
+                    block.outer_offset = chunk_off;
+                    block.outer_size   = chunk_size;
+                    block.data_offset  = (p + 2);
+                    block.data_size    = end - (p + 2);
+                    block.id           = type;
+                    sink_emit(&sink, block);
+                }
+            } else if (type == fourcc('t', 'E', 'X', 't')) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Png;
+                block.kind         = ContainerBlockKind::Text;
+                block.outer_offset = chunk_off;
+                block.outer_size   = chunk_size;
+                block.data_offset  = data_off;
+                block.data_size    = data_size;
+                block.id           = type;
+                sink_emit(&sink, block);
+            }
+
+        next_chunk:
+            offset += chunk_size;
+            if (type == fourcc('I', 'E', 'N', 'D')) {
+                break;
+            }
+        }
+
+        normalize_split_jumbf_blocks(&sink, bytes, ContainerFormat::Png,
+                                     fourcc('c', 'a', 'B', 'X'));
+
+        return sink.result;
+    }
+
+
+    template<class Bytes>
+    static ScanResult
+    scan_webp_reader(const Bytes& bytes,
+                     std::span<ContainerBlockRef> out) noexcept
+    {
+        BlockSink sink;
+        sink.out = out.data();
+        sink.cap = static_cast<uint32_t>(out.size());
+
+        if (bytes.size() < 12) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
+        }
+        if (!match(bytes, 0, "RIFF", 4) || !match(bytes, 8, "WEBP", 4)) {
+            sink.result.status = ScanStatus::Unsupported;
+            return sink.result;
+        }
+
+        uint32_t riff_size = 0;
+        if (!read_u32le(bytes, 4, &riff_size)) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
+        }
+        const uint64_t file_end = (riff_size + 8ULL < bytes.size())
+                                      ? (riff_size + 8ULL)
+                                      : static_cast<uint64_t>(bytes.size());
+
+        uint64_t offset = 12;
+        while (checked_range(offset, 8U, file_end)) {
+            const uint64_t chunk_off = offset;
+            uint32_t type            = 0;
+            uint32_t size_le         = 0;
+            if (!read_u32be(bytes, offset, &type)
+                || !read_u32le(bytes, offset + 4, &size_le)) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+
+            const uint64_t data_off  = offset + 8;
+            const uint64_t data_size = size_le;
+            if (!checked_range(data_off, data_size, file_end)) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+            uint64_t next = data_off + data_size;
+            if ((data_size & 1U) != 0U) {
+                if (next >= file_end) {
+                    sink.result.status = ScanStatus::Malformed;
+                    return sink.result;
+                }
+                next += 1;
+            }
+
+            if (type == fourcc('E', 'X', 'I', 'F')) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Webp;
+                block.kind         = ContainerBlockKind::Exif;
+                block.outer_offset = chunk_off;
+                block.outer_size   = next - chunk_off;
+                block.data_offset  = data_off;
+                block.data_size    = data_size;
+                block.id           = type;
+                skip_exif_preamble(&block, bytes);
+                sink_emit(&sink, block);
+            } else if (type == fourcc('C', '2', 'P', 'A')) {
+                // WebP/RIFF C2PA chunk: JUMBF payload stored directly in the chunk data.
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Webp;
+                block.kind         = ContainerBlockKind::Jumbf;
+                block.outer_offset = chunk_off;
+                block.outer_size   = next - chunk_off;
+                block.data_offset  = data_off;
+                block.data_size    = data_size;
+                block.id           = type;
+                sink_emit(&sink, block);
+            } else if (type == fourcc('X', 'M', 'P', ' ')) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Webp;
+                block.kind         = ContainerBlockKind::Xmp;
+                block.outer_offset = chunk_off;
+                block.outer_size   = next - chunk_off;
+                block.data_offset  = data_off;
+                block.data_size    = data_size;
+                block.id           = type;
+                sink_emit(&sink, block);
+            } else if (type == fourcc('I', 'C', 'C', 'P')) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Webp;
+                block.kind         = ContainerBlockKind::Icc;
+                block.outer_offset = chunk_off;
+                block.outer_size   = next - chunk_off;
+                block.data_offset  = data_off;
+                block.data_size    = data_size;
+                block.id           = type;
+                sink_emit(&sink, block);
+            }
+
+            offset = next;
+        }
+
+        normalize_split_jumbf_blocks(&sink, bytes, ContainerFormat::Webp,
+                                     fourcc('C', '2', 'P', 'A'));
+
+        return sink.result;
+    }
+
+
+    template<class Scanner>
+    static ContainerRandomAccessScanResult
+    scan_container_random_access(const RandomAccessSourceRange& range,
+                                 std::span<ContainerBlockRef> out,
+                                 const ContainerRandomAccessScratch& scratch,
+                                 const RandomAccessReadLimits& read_limits,
+                                 Scanner scanner) noexcept
+    {
+        ContainerRandomAccessScanResult result;
+        if (!random_access_source_range_valid(range)) {
+            result.input.code = RandomAccessReadCode::InvalidArgument;
+            return result;
+        }
+
+        if (range.source.contiguous_data != nullptr) {
+            const std::byte* begin = range.source.contiguous_data
+                                     + static_cast<size_t>(range.source_offset);
+            result.scan = scanner(std::span<const std::byte>(
+                                      begin, static_cast<size_t>(range.size)),
+                                  out);
+            return result;
+        }
+
+        if (scratch.read_window.size() < 32U) {
+            result.input.code = RandomAccessReadCode::ScratchTooSmall;
+            result.input.failure_request_bytes = 32U;
+            return result;
+        }
+
+        RandomAccessReadWindow window;
+        window.storage = scratch.read_window;
+        const PositionalBytes bytes(range, &window, &result.input, read_limits,
+                                    scratch.window_options);
+        result.scan = scanner(bytes, out);
+        return result;
+    }
+
 }  // namespace
 
 
@@ -1727,185 +2211,30 @@ ScanResult
 scan_png(std::span<const std::byte> bytes,
          std::span<ContainerBlockRef> out) noexcept
 {
-    BlockSink sink;
-    sink.out = out.data();
-    sink.cap = static_cast<uint32_t>(out.size());
+    return scan_png_reader(bytes, out);
+}
 
-    if (bytes.size() < kPngSignatureSize) {
-        sink.result.status = ScanStatus::Malformed;
-        return sink.result;
-    }
-    if (!match_bytes(bytes, 0, kPngSignature.data(), kPngSignatureSize)) {
-        sink.result.status = ScanStatus::Unsupported;
-        return sink.result;
-    }
 
-    uint64_t offset = kPngSignatureSize;
-    while (offset + 12 <= bytes.size()) {
-        const uint64_t chunk_off = offset;
-        uint32_t len             = 0;
-        uint32_t type            = 0;
-        if (!read_u32be(bytes, offset, &len)
-            || !read_u32be(bytes, offset + 4, &type)) {
-            sink.result.status = ScanStatus::Malformed;
-            return sink.result;
-        }
-        const uint64_t data_off   = offset + 8;
-        const uint64_t data_size  = static_cast<uint64_t>(len);
-        const uint64_t crc_off    = data_off + data_size;
-        const uint64_t chunk_size = 12 + data_size;
-        if (crc_off + 4 > bytes.size()) {
-            sink.result.status = ScanStatus::Malformed;
-            return sink.result;
-        }
+ContainerRandomAccessScanResult
+scan_png_random_access(const RandomAccessSourceRange& png,
+                       std::span<ContainerBlockRef> out,
+                       const ContainerRandomAccessScratch& scratch,
+                       const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_container_random_access(
+        png, out, scratch, read_limits,
+        [](const auto& bytes, std::span<ContainerBlockRef> blocks) noexcept {
+            return scan_png_reader(bytes, blocks);
+        });
+}
 
-        if (type == fourcc('e', 'X', 'I', 'f')) {
-            ContainerBlockRef block;
-            block.format       = ContainerFormat::Png;
-            block.kind         = ContainerBlockKind::Exif;
-            block.outer_offset = chunk_off;
-            block.outer_size   = chunk_size;
-            block.data_offset  = data_off;
-            block.data_size    = data_size;
-            block.id           = type;
-            sink_emit(&sink, block);
-        } else if (type == fourcc('c', 'a', 'B', 'X')) {
-            // PNG C2PA chunk: JUMBF payload stored directly in the chunk data.
-            ContainerBlockRef block;
-            block.format       = ContainerFormat::Png;
-            block.kind         = ContainerBlockKind::Jumbf;
-            block.outer_offset = chunk_off;
-            block.outer_size   = chunk_size;
-            block.data_offset  = data_off;
-            block.data_size    = data_size;
-            block.id           = type;
-            sink_emit(&sink, block);
-        } else if (type == fourcc('i', 'C', 'C', 'P')) {
-            // profile_name\0 + compression_method + compressed_profile
-            uint64_t p         = data_off;
-            const uint64_t end = data_off + data_size;
-            while (p < end && u8(bytes[p]) != 0) {
-                p += 1;
-            }
-            if (p + 2 <= end) {
-                const uint64_t comp_method_off = p + 1;
-                (void)u8(bytes[comp_method_off]);
-                ContainerBlockRef block;
-                block.format       = ContainerFormat::Png;
-                block.kind         = ContainerBlockKind::Icc;
-                block.compression  = BlockCompression::Deflate;
-                block.outer_offset = chunk_off;
-                block.outer_size   = chunk_size;
-                block.data_offset  = comp_method_off + 1;
-                block.data_size    = end - (comp_method_off + 1);
-                block.id           = type;
-                sink_emit(&sink, block);
-            }
-        } else if (type == fourcc('i', 'T', 'X', 't')) {
-            // keyword\0 + comp_flag + comp_method + lang\0 + trans\0 + text
-            uint64_t p         = data_off;
-            const uint64_t end = data_off + data_size;
-            while (p < end && u8(bytes[p]) != 0) {
-                p += 1;
-            }
-            const uint64_t keyword_end = p;
-            if (keyword_end + 3 <= end) {
-                const uint64_t comp_flag_off = keyword_end + 1;
-                const uint8_t comp_flag      = u8(bytes[comp_flag_off]);
-                (void)u8(bytes[comp_flag_off + 1]);  // comp method
 
-                const uint32_t kXmpKeywordLen = 17;
-                bool is_xmp                   = false;
-                if (keyword_end - data_off == kXmpKeywordLen) {
-                    is_xmp = match(bytes, data_off, "XML:com.adobe.xmp",
-                                   kXmpKeywordLen);
-                }
-
-                uint64_t lang = comp_flag_off + 2;
-                while (lang < end && u8(bytes[lang]) != 0) {
-                    lang += 1;
-                }
-                if (lang >= end) {
-                    goto next_chunk;
-                }
-                uint64_t trans = lang + 1;
-                while (trans < end && u8(bytes[trans]) != 0) {
-                    trans += 1;
-                }
-                if (trans >= end) {
-                    goto next_chunk;
-                }
-                const uint64_t text_off = trans + 1;
-                if (text_off <= end && is_xmp) {
-                    ContainerBlockRef block;
-                    block.format       = ContainerFormat::Png;
-                    block.kind         = ContainerBlockKind::Xmp;
-                    block.outer_offset = chunk_off;
-                    block.outer_size   = chunk_size;
-                    block.data_offset  = text_off;
-                    block.data_size    = end - text_off;
-                    block.id           = type;
-                    if (comp_flag != 0) {
-                        block.compression = BlockCompression::Deflate;
-                    }
-                    sink_emit(&sink, block);
-                } else if (text_off <= end) {
-                    ContainerBlockRef block;
-                    block.format       = ContainerFormat::Png;
-                    block.kind         = ContainerBlockKind::Text;
-                    block.outer_offset = chunk_off;
-                    block.outer_size   = chunk_size;
-                    block.data_offset  = text_off;
-                    block.data_size    = end - text_off;
-                    block.id           = type;
-                    if (comp_flag != 0) {
-                        block.compression = BlockCompression::Deflate;
-                    }
-                    sink_emit(&sink, block);
-                }
-            }
-        } else if (type == fourcc('z', 'T', 'X', 't')) {
-            // keyword\0 + comp_method + compressed_text
-            uint64_t p         = data_off;
-            const uint64_t end = data_off + data_size;
-            while (p < end && u8(bytes[p]) != 0) {
-                p += 1;
-            }
-            if (p + 2 <= end) {
-                ContainerBlockRef block;
-                block.format       = ContainerFormat::Png;
-                block.kind         = ContainerBlockKind::Text;
-                block.compression  = BlockCompression::Deflate;
-                block.outer_offset = chunk_off;
-                block.outer_size   = chunk_size;
-                block.data_offset  = (p + 2);
-                block.data_size    = end - (p + 2);
-                block.id           = type;
-                sink_emit(&sink, block);
-            }
-        } else if (type == fourcc('t', 'E', 'X', 't')) {
-            ContainerBlockRef block;
-            block.format       = ContainerFormat::Png;
-            block.kind         = ContainerBlockKind::Text;
-            block.outer_offset = chunk_off;
-            block.outer_size   = chunk_size;
-            block.data_offset  = data_off;
-            block.data_size    = data_size;
-            block.id           = type;
-            sink_emit(&sink, block);
-        }
-
-    next_chunk:
-        offset += chunk_size;
-        if (type == fourcc('I', 'E', 'N', 'D')) {
-            break;
-        }
-    }
-
-    normalize_split_jumbf_blocks(&sink, bytes, ContainerFormat::Png,
-                                 fourcc('c', 'a', 'B', 'X'));
-
-    return sink.result;
+ContainerRandomAccessScanResult
+measure_scan_png_random_access(const RandomAccessSourceRange& png,
+                               const ContainerRandomAccessScratch& scratch,
+                               const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_png_random_access(png, {}, scratch, read_limits);
 }
 
 
@@ -1913,101 +2242,31 @@ ScanResult
 scan_webp(std::span<const std::byte> bytes,
           std::span<ContainerBlockRef> out) noexcept
 {
-    BlockSink sink;
-    sink.out = out.data();
-    sink.cap = static_cast<uint32_t>(out.size());
+    return scan_webp_reader(bytes, out);
+}
 
-    if (bytes.size() < 12) {
-        sink.result.status = ScanStatus::Malformed;
-        return sink.result;
-    }
-    if (!match(bytes, 0, "RIFF", 4) || !match(bytes, 8, "WEBP", 4)) {
-        sink.result.status = ScanStatus::Unsupported;
-        return sink.result;
-    }
 
-    uint32_t riff_size = 0;
-    if (!read_u32le(bytes, 4, &riff_size)) {
-        sink.result.status = ScanStatus::Malformed;
-        return sink.result;
-    }
-    const uint64_t file_end = (riff_size + 8ULL < bytes.size())
-                                  ? (riff_size + 8ULL)
-                                  : static_cast<uint64_t>(bytes.size());
+ContainerRandomAccessScanResult
+scan_webp_random_access(const RandomAccessSourceRange& webp,
+                        std::span<ContainerBlockRef> out,
+                        const ContainerRandomAccessScratch& scratch,
+                        const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_container_random_access(
+        webp, out, scratch, read_limits,
+        [](const auto& bytes, std::span<ContainerBlockRef> blocks) noexcept {
+            return scan_webp_reader(bytes, blocks);
+        });
+}
 
-    uint64_t offset = 12;
-    while (offset + 8 <= file_end) {
-        const uint64_t chunk_off = offset;
-        uint32_t type            = 0;
-        uint32_t size_le         = 0;
-        if (!read_u32be(bytes, offset, &type)
-            || !read_u32le(bytes, offset + 4, &size_le)) {
-            sink.result.status = ScanStatus::Malformed;
-            return sink.result;
-        }
 
-        const uint64_t data_off  = offset + 8;
-        const uint64_t data_size = size_le;
-        uint64_t next            = data_off + data_size;
-        if (next > file_end) {
-            sink.result.status = ScanStatus::Malformed;
-            return sink.result;
-        }
-        if ((data_size & 1U) != 0U) {
-            next += 1;
-        }
-
-        if (type == fourcc('E', 'X', 'I', 'F')) {
-            ContainerBlockRef block;
-            block.format       = ContainerFormat::Webp;
-            block.kind         = ContainerBlockKind::Exif;
-            block.outer_offset = chunk_off;
-            block.outer_size   = next - chunk_off;
-            block.data_offset  = data_off;
-            block.data_size    = data_size;
-            block.id           = type;
-            skip_exif_preamble(&block, bytes);
-            sink_emit(&sink, block);
-        } else if (type == fourcc('C', '2', 'P', 'A')) {
-            // WebP/RIFF C2PA chunk: JUMBF payload stored directly in the chunk data.
-            ContainerBlockRef block;
-            block.format       = ContainerFormat::Webp;
-            block.kind         = ContainerBlockKind::Jumbf;
-            block.outer_offset = chunk_off;
-            block.outer_size   = next - chunk_off;
-            block.data_offset  = data_off;
-            block.data_size    = data_size;
-            block.id           = type;
-            sink_emit(&sink, block);
-        } else if (type == fourcc('X', 'M', 'P', ' ')) {
-            ContainerBlockRef block;
-            block.format       = ContainerFormat::Webp;
-            block.kind         = ContainerBlockKind::Xmp;
-            block.outer_offset = chunk_off;
-            block.outer_size   = next - chunk_off;
-            block.data_offset  = data_off;
-            block.data_size    = data_size;
-            block.id           = type;
-            sink_emit(&sink, block);
-        } else if (type == fourcc('I', 'C', 'C', 'P')) {
-            ContainerBlockRef block;
-            block.format       = ContainerFormat::Webp;
-            block.kind         = ContainerBlockKind::Icc;
-            block.outer_offset = chunk_off;
-            block.outer_size   = next - chunk_off;
-            block.data_offset  = data_off;
-            block.data_size    = data_size;
-            block.id           = type;
-            sink_emit(&sink, block);
-        }
-
-        offset = next;
-    }
-
-    normalize_split_jumbf_blocks(&sink, bytes, ContainerFormat::Webp,
-                                 fourcc('C', '2', 'P', 'A'));
-
-    return sink.result;
+ContainerRandomAccessScanResult
+measure_scan_webp_random_access(
+    const RandomAccessSourceRange& webp,
+    const ContainerRandomAccessScratch& scratch,
+    const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_webp_random_access(webp, {}, scratch, read_limits);
 }
 
 
@@ -2233,9 +2492,9 @@ namespace {
         std::array<std::byte, 16> uuid {};
     };
 
-    static bool parse_bmff_box(std::span<const std::byte> bytes,
-                               uint64_t offset, uint64_t parent_end,
-                               BmffBox* out) noexcept
+    template<class Bytes>
+    static bool parse_bmff_box(const Bytes& bytes, uint64_t offset,
+                               uint64_t parent_end, BmffBox* out) noexcept
     {
         if (!out || parent_end > bytes.size()
             || !checked_range(offset, 8, parent_end)) {
@@ -2299,8 +2558,8 @@ namespace {
     }
 
 
-    static void scan_jp2_box_payload(std::span<const std::byte> bytes,
-                                     const BmffBox& box,
+    template<class Bytes>
+    static void scan_jp2_box_payload(const Bytes& bytes, const BmffBox& box,
                                      BlockSink* sink) noexcept
     {
         const uint64_t payload_off  = box.offset + box.header_size;
@@ -2387,77 +2646,219 @@ namespace {
 
 }  // namespace
 
+namespace {
+
+    template<class Bytes>
+    static ScanResult scan_jp2_reader(const Bytes& bytes,
+                                      std::span<ContainerBlockRef> out) noexcept
+    {
+        BlockSink sink;
+        sink.out = out.data();
+        sink.cap = static_cast<uint32_t>(out.size());
+
+        if (bytes.size() < 12) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
+        }
+
+        uint32_t first_size = 0;
+        uint32_t first_type = 0;
+        if (!read_u32be(bytes, 0, &first_size)
+            || !read_u32be(bytes, 4, &first_type)) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
+        }
+        if (first_size != 12 || first_type != fourcc('j', 'P', ' ', ' ')) {
+            sink.result.status = ScanStatus::Unsupported;
+            return sink.result;
+        }
+        if (!match_bytes(bytes, 8, kJp2Signature.data(), 4)) {
+            sink.result.status = ScanStatus::Unsupported;
+            return sink.result;
+        }
+
+        uint64_t offset          = 0;
+        const uint64_t end       = bytes.size();
+        const uint32_t kMaxBoxes = 1U << 16;
+        uint32_t boxes_remaining = kMaxBoxes;
+        while (offset < end) {
+            if (boxes_remaining == 0) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+            boxes_remaining -= 1;
+            BmffBox box;
+            if (!parse_bmff_box(bytes, offset, end, &box)) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+
+            scan_jp2_box_payload(bytes, box, &sink);
+
+            // jp2h contains child boxes (ihdr/colr/...). Scan its children for ICC.
+            if (box.type == fourcc('j', 'p', '2', 'h')) {
+                uint64_t child_off       = box.offset + box.header_size;
+                const uint64_t child_end = box.end;
+                while (child_off < child_end) {
+                    if (boxes_remaining == 0) {
+                        sink.result.status = ScanStatus::Malformed;
+                        return sink.result;
+                    }
+                    boxes_remaining -= 1;
+                    BmffBox child;
+                    if (!parse_bmff_box(bytes, child_off, child_end, &child)) {
+                        sink.result.status = ScanStatus::Malformed;
+                        return sink.result;
+                    }
+                    scan_jp2_box_payload(bytes, child, &sink);
+                    child_off = child.end;
+                }
+            }
+
+            offset = box.end;
+        }
+
+        return sink.result;
+    }
+
+
+    template<class Bytes>
+    static ScanResult scan_jxl_reader(const Bytes& bytes,
+                                      std::span<ContainerBlockRef> out) noexcept
+    {
+        BlockSink sink;
+        sink.out = out.data();
+        sink.cap = static_cast<uint32_t>(out.size());
+
+        if (bytes.size() < 12) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
+        }
+
+        uint32_t first_size = 0;
+        uint32_t first_type = 0;
+        if (!read_u32be(bytes, 0, &first_size)
+            || !read_u32be(bytes, 4, &first_type)) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
+        }
+        if (first_size != 12 || first_type != fourcc('J', 'X', 'L', ' ')) {
+            sink.result.status = ScanStatus::Unsupported;
+            return sink.result;
+        }
+        if (!match_bytes(bytes, 8, kJp2Signature.data(), 4)) {
+            sink.result.status = ScanStatus::Unsupported;
+            return sink.result;
+        }
+
+        uint64_t offset          = 0;
+        const uint64_t end       = bytes.size();
+        const uint32_t kMaxBoxes = 1U << 16;
+        uint32_t boxes_remaining = kMaxBoxes;
+        while (offset < end) {
+            if (boxes_remaining == 0) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+            boxes_remaining -= 1;
+            BmffBox box;
+            if (!parse_bmff_box(bytes, offset, end, &box)) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+
+            const uint64_t payload_off  = box.offset + box.header_size;
+            const uint64_t payload_size = box.size - box.header_size;
+
+            if (box.type == fourcc('E', 'x', 'i', 'f')) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Jxl;
+                block.kind         = ContainerBlockKind::Exif;
+                block.outer_offset = box.offset;
+                block.outer_size   = box.size;
+                block.data_offset  = payload_off;
+                block.data_size    = payload_size;
+                block.id           = box.type;
+                skip_bmff_exif_offset(&block, bytes);
+                sink_emit(&sink, block);
+            } else if (box.type == fourcc('x', 'm', 'l', ' ')) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Jxl;
+                block.kind         = ContainerBlockKind::Xmp;
+                block.outer_offset = box.offset;
+                block.outer_size   = box.size;
+                block.data_offset  = payload_off;
+                block.data_size    = payload_size;
+                block.id           = box.type;
+                sink_emit(&sink, block);
+            } else if (box.type == fourcc('j', 'u', 'm', 'b')
+                       || box.type == fourcc('c', '2', 'p', 'a')) {
+                ContainerBlockRef block;
+                block.format       = ContainerFormat::Jxl;
+                block.kind         = ContainerBlockKind::Jumbf;
+                block.outer_offset = box.offset;
+                block.outer_size   = box.size;
+                block.data_offset  = payload_off;
+                block.data_size    = payload_size;
+                block.id           = box.type;
+                sink_emit(&sink, block);
+            } else if (box.type == fourcc('b', 'r', 'o', 'b')) {
+                if (payload_size >= 4) {
+                    uint32_t realtype = 0;
+                    if (read_u32be(bytes, payload_off, &realtype)) {
+                        ContainerBlockRef block;
+                        block.format = ContainerFormat::Jxl;
+                        block.kind   = ContainerBlockKind::CompressedMetadata;
+                        block.compression = BlockCompression::Brotli;
+                        block.chunking = BlockChunking::BrobU32BeRealTypePrefix;
+                        block.outer_offset = box.offset;
+                        block.outer_size   = box.size;
+                        block.data_offset  = payload_off + 4;
+                        block.data_size    = payload_size - 4;
+                        block.id           = box.type;
+                        block.aux_u32      = realtype;
+                        sink_emit(&sink, block);
+                    }
+                }
+            }
+
+            offset = box.end;
+        }
+
+        return sink.result;
+    }
+
+}  // namespace
+
+
 ScanResult
 scan_jp2(std::span<const std::byte> bytes,
          std::span<ContainerBlockRef> out) noexcept
 {
-    BlockSink sink;
-    sink.out = out.data();
-    sink.cap = static_cast<uint32_t>(out.size());
+    return scan_jp2_reader(bytes, out);
+}
 
-    if (bytes.size() < 12) {
-        sink.result.status = ScanStatus::Malformed;
-        return sink.result;
-    }
 
-    uint32_t first_size = 0;
-    uint32_t first_type = 0;
-    if (!read_u32be(bytes, 0, &first_size)
-        || !read_u32be(bytes, 4, &first_type)) {
-        sink.result.status = ScanStatus::Malformed;
-        return sink.result;
-    }
-    if (first_size != 12 || first_type != fourcc('j', 'P', ' ', ' ')) {
-        sink.result.status = ScanStatus::Unsupported;
-        return sink.result;
-    }
-    if (!match_bytes(bytes, 8, kJp2Signature.data(), 4)) {
-        sink.result.status = ScanStatus::Unsupported;
-        return sink.result;
-    }
+ContainerRandomAccessScanResult
+scan_jp2_random_access(const RandomAccessSourceRange& jp2,
+                       std::span<ContainerBlockRef> out,
+                       const ContainerRandomAccessScratch& scratch,
+                       const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_container_random_access(
+        jp2, out, scratch, read_limits,
+        [](const auto& bytes, std::span<ContainerBlockRef> blocks) noexcept {
+            return scan_jp2_reader(bytes, blocks);
+        });
+}
 
-    uint64_t offset          = 0;
-    const uint64_t end       = bytes.size();
-    const uint32_t kMaxBoxes = 1U << 16;
-    uint32_t boxes_remaining = kMaxBoxes;
-    while (offset < end) {
-        if (boxes_remaining == 0) {
-            sink.result.status = ScanStatus::Malformed;
-            return sink.result;
-        }
-        boxes_remaining -= 1;
-        BmffBox box;
-        if (!parse_bmff_box(bytes, offset, end, &box)) {
-            sink.result.status = ScanStatus::Malformed;
-            return sink.result;
-        }
 
-        scan_jp2_box_payload(bytes, box, &sink);
-
-        // jp2h contains child boxes (ihdr/colr/...). Scan its children for ICC.
-        if (box.type == fourcc('j', 'p', '2', 'h')) {
-            uint64_t child_off       = box.offset + box.header_size;
-            const uint64_t child_end = box.end;
-            while (child_off < child_end) {
-                if (boxes_remaining == 0) {
-                    sink.result.status = ScanStatus::Malformed;
-                    return sink.result;
-                }
-                boxes_remaining -= 1;
-                BmffBox child;
-                if (!parse_bmff_box(bytes, child_off, child_end, &child)) {
-                    sink.result.status = ScanStatus::Malformed;
-                    return sink.result;
-                }
-                scan_jp2_box_payload(bytes, child, &sink);
-                child_off = child.end;
-            }
-        }
-
-        offset = box.end;
-    }
-
-    return sink.result;
+ContainerRandomAccessScanResult
+measure_scan_jp2_random_access(const RandomAccessSourceRange& jp2,
+                               const ContainerRandomAccessScratch& scratch,
+                               const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_jp2_random_access(jp2, {}, scratch, read_limits);
 }
 
 
@@ -2465,106 +2866,30 @@ ScanResult
 scan_jxl(std::span<const std::byte> bytes,
          std::span<ContainerBlockRef> out) noexcept
 {
-    BlockSink sink;
-    sink.out = out.data();
-    sink.cap = static_cast<uint32_t>(out.size());
+    return scan_jxl_reader(bytes, out);
+}
 
-    if (bytes.size() < 12) {
-        sink.result.status = ScanStatus::Malformed;
-        return sink.result;
-    }
 
-    uint32_t first_size = 0;
-    uint32_t first_type = 0;
-    if (!read_u32be(bytes, 0, &first_size)
-        || !read_u32be(bytes, 4, &first_type)) {
-        sink.result.status = ScanStatus::Malformed;
-        return sink.result;
-    }
-    if (first_size != 12 || first_type != fourcc('J', 'X', 'L', ' ')) {
-        sink.result.status = ScanStatus::Unsupported;
-        return sink.result;
-    }
-    if (!match_bytes(bytes, 8, kJp2Signature.data(), 4)) {
-        sink.result.status = ScanStatus::Unsupported;
-        return sink.result;
-    }
+ContainerRandomAccessScanResult
+scan_jxl_random_access(const RandomAccessSourceRange& jxl,
+                       std::span<ContainerBlockRef> out,
+                       const ContainerRandomAccessScratch& scratch,
+                       const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_container_random_access(
+        jxl, out, scratch, read_limits,
+        [](const auto& bytes, std::span<ContainerBlockRef> blocks) noexcept {
+            return scan_jxl_reader(bytes, blocks);
+        });
+}
 
-    uint64_t offset          = 0;
-    const uint64_t end       = bytes.size();
-    const uint32_t kMaxBoxes = 1U << 16;
-    uint32_t boxes_remaining = kMaxBoxes;
-    while (offset < end) {
-        if (boxes_remaining == 0) {
-            sink.result.status = ScanStatus::Malformed;
-            return sink.result;
-        }
-        boxes_remaining -= 1;
-        BmffBox box;
-        if (!parse_bmff_box(bytes, offset, end, &box)) {
-            sink.result.status = ScanStatus::Malformed;
-            return sink.result;
-        }
 
-        const uint64_t payload_off  = box.offset + box.header_size;
-        const uint64_t payload_size = box.size - box.header_size;
-
-        if (box.type == fourcc('E', 'x', 'i', 'f')) {
-            ContainerBlockRef block;
-            block.format       = ContainerFormat::Jxl;
-            block.kind         = ContainerBlockKind::Exif;
-            block.outer_offset = box.offset;
-            block.outer_size   = box.size;
-            block.data_offset  = payload_off;
-            block.data_size    = payload_size;
-            block.id           = box.type;
-            skip_bmff_exif_offset(&block, bytes);
-            sink_emit(&sink, block);
-        } else if (box.type == fourcc('x', 'm', 'l', ' ')) {
-            ContainerBlockRef block;
-            block.format       = ContainerFormat::Jxl;
-            block.kind         = ContainerBlockKind::Xmp;
-            block.outer_offset = box.offset;
-            block.outer_size   = box.size;
-            block.data_offset  = payload_off;
-            block.data_size    = payload_size;
-            block.id           = box.type;
-            sink_emit(&sink, block);
-        } else if (box.type == fourcc('j', 'u', 'm', 'b')
-                   || box.type == fourcc('c', '2', 'p', 'a')) {
-            ContainerBlockRef block;
-            block.format       = ContainerFormat::Jxl;
-            block.kind         = ContainerBlockKind::Jumbf;
-            block.outer_offset = box.offset;
-            block.outer_size   = box.size;
-            block.data_offset  = payload_off;
-            block.data_size    = payload_size;
-            block.id           = box.type;
-            sink_emit(&sink, block);
-        } else if (box.type == fourcc('b', 'r', 'o', 'b')) {
-            if (payload_size >= 4) {
-                uint32_t realtype = 0;
-                if (read_u32be(bytes, payload_off, &realtype)) {
-                    ContainerBlockRef block;
-                    block.format       = ContainerFormat::Jxl;
-                    block.kind         = ContainerBlockKind::CompressedMetadata;
-                    block.compression  = BlockCompression::Brotli;
-                    block.chunking     = BlockChunking::BrobU32BeRealTypePrefix;
-                    block.outer_offset = box.offset;
-                    block.outer_size   = box.size;
-                    block.data_offset  = payload_off + 4;
-                    block.data_size    = payload_size - 4;
-                    block.id           = box.type;
-                    block.aux_u32      = realtype;
-                    sink_emit(&sink, block);
-                }
-            }
-        }
-
-        offset = box.end;
-    }
-
-    return sink.result;
+ContainerRandomAccessScanResult
+measure_scan_jxl_random_access(const RandomAccessSourceRange& jxl,
+                               const ContainerRandomAccessScratch& scratch,
+                               const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_jxl_random_access(jxl, {}, scratch, read_limits);
 }
 
 
@@ -2617,8 +2942,8 @@ namespace {
     }
 
 
-    static bool bmff_format_from_ftyp(std::span<const std::byte> bytes,
-                                      const BmffBox& ftyp,
+    template<class Bytes>
+    static bool bmff_format_from_ftyp(const Bytes& bytes, const BmffBox& ftyp,
                                       ContainerFormat* out) noexcept
     {
         const uint64_t payload_off  = ftyp.offset + ftyp.header_size;
@@ -2668,8 +2993,8 @@ namespace {
     }
 
 
-    static bool read_uint_be_n(std::span<const std::byte> bytes,
-                               uint64_t offset, uint32_t n,
+    template<class Bytes>
+    static bool read_uint_be_n(const Bytes& bytes, uint64_t offset, uint32_t n,
                                uint64_t* out) noexcept
     {
         if (n == 0) {
@@ -2688,9 +3013,9 @@ namespace {
     }
 
 
-    static bool find_cstring_end(std::span<const std::byte> bytes,
-                                 uint64_t start, uint64_t end,
-                                 uint64_t* out_end) noexcept
+    template<class Bytes>
+    static bool find_cstring_end(const Bytes& bytes, uint64_t start,
+                                 uint64_t end, uint64_t* out_end) noexcept
     {
         const uint64_t limit = (end < bytes.size()) ? end : bytes.size();
         for (uint64_t p = start; p < limit; ++p) {
@@ -2712,9 +3037,10 @@ namespace {
     }
 
 
-    static bool cstring_equals_icase(std::span<const std::byte> bytes,
-                                     uint64_t start, uint64_t end,
-                                     const char* s, uint32_t s_len) noexcept
+    template<class Bytes>
+    static bool cstring_equals_icase(const Bytes& bytes, uint64_t start,
+                                     uint64_t end, const char* s,
+                                     uint32_t s_len) noexcept
     {
         uint64_t s_end = 0;
         if (!find_cstring_end(bytes, start, end, &s_end)) {
@@ -2738,9 +3064,10 @@ namespace {
     }
 
 
-    static bool ascii_span_equals_icase(std::span<const std::byte> bytes,
-                                        uint64_t start, uint64_t len,
-                                        const char* s, uint32_t s_len) noexcept
+    template<class Bytes>
+    static bool ascii_span_equals_icase(const Bytes& bytes, uint64_t start,
+                                        uint64_t len, const char* s,
+                                        uint32_t s_len) noexcept
     {
         if (len != s_len || start + len > bytes.size()) {
             return false;
@@ -2756,8 +3083,9 @@ namespace {
     }
 
 
-    static bool bmff_mime_span_is_xmp(std::span<const std::byte> bytes,
-                                      uint64_t start, uint64_t end) noexcept
+    template<class Bytes>
+    static bool bmff_mime_span_is_xmp(const Bytes& bytes, uint64_t start,
+                                      uint64_t end) noexcept
     {
         if (start >= end || end > bytes.size()) {
             return false;
@@ -2804,8 +3132,9 @@ namespace {
     }
 
 
-    static bool bmff_mime_span_is_jumbf(std::span<const std::byte> bytes,
-                                        uint64_t start, uint64_t end) noexcept
+    template<class Bytes>
+    static bool bmff_mime_span_is_jumbf(const Bytes& bytes, uint64_t start,
+                                        uint64_t end) noexcept
     {
         if (start >= end || end > bytes.size()) {
             return false;
@@ -2850,8 +3179,9 @@ namespace {
     }
 
 
-    static bool bmff_mime_content_is_xmp(std::span<const std::byte> bytes,
-                                         uint64_t start, uint64_t end) noexcept
+    template<class Bytes>
+    static bool bmff_mime_content_is_xmp(const Bytes& bytes, uint64_t start,
+                                         uint64_t end) noexcept
     {
         uint64_t s_end = 0;
         if (!find_cstring_end(bytes, start, end, &s_end)) {
@@ -2861,8 +3191,8 @@ namespace {
     }
 
 
-    static bool bmff_mime_content_is_jumbf(std::span<const std::byte> bytes,
-                                           uint64_t start,
+    template<class Bytes>
+    static bool bmff_mime_content_is_jumbf(const Bytes& bytes, uint64_t start,
                                            uint64_t end) noexcept
     {
         uint64_t s_end = 0;
@@ -2873,8 +3203,8 @@ namespace {
     }
 
 
-    static bool bmff_collect_meta_items(std::span<const std::byte> bytes,
-                                        const BmffBox& iinf,
+    template<class Bytes>
+    static bool bmff_collect_meta_items(const Bytes& bytes, const BmffBox& iinf,
                                         std::span<BmffMetaItem> out_items,
                                         uint32_t* out_count) noexcept
     {
@@ -3104,8 +3434,8 @@ namespace {
         return nullptr;
     }
 
-    static bool bmff_parse_dref_table(std::span<const std::byte> bytes,
-                                      const BmffBox& dref,
+    template<class Bytes>
+    static bool bmff_parse_dref_table(const Bytes& bytes, const BmffBox& dref,
                                       BmffDrefTable* out) noexcept
     {
         if (!out) {
@@ -3291,7 +3621,8 @@ namespace {
     }
 
 
-    static bool bmff_parse_iref_iloc_table(std::span<const std::byte> bytes,
+    template<class Bytes>
+    static bool bmff_parse_iref_iloc_table(const Bytes& bytes,
                                            const BmffBox& iref,
                                            std::span<const BmffMetaItem> items,
                                            BmffIlocRefTable* out) noexcept
@@ -3519,10 +3850,11 @@ namespace {
     }
 
 
+    template<class Bytes>
     static bool
-    bmff_emit_items_from_iloc(std::span<const std::byte> bytes,
-                              const BmffBox& iloc, const BmffBox* idat,
-                              const BmffBox* iref, const BmffDrefTable* dref,
+    bmff_emit_items_from_iloc(const Bytes& bytes, const BmffBox& iloc,
+                              const BmffBox* idat, const BmffBox* iref,
+                              const BmffDrefTable* dref,
                               std::span<const BmffMetaItem> items,
                               ContainerFormat format, BlockSink* sink) noexcept
     {
@@ -4133,8 +4465,8 @@ namespace {
         return true;
     }
 
-    static void bmff_scan_ipco_for_icc(std::span<const std::byte> bytes,
-                                       const BmffBox& ipco,
+    template<class Bytes>
+    static void bmff_scan_ipco_for_icc(const Bytes& bytes, const BmffBox& ipco,
                                        ContainerFormat format,
                                        BlockSink* sink) noexcept
     {
@@ -4197,8 +4529,8 @@ namespace {
         }
     }
 
-    static void bmff_scan_iprp_for_icc(std::span<const std::byte> bytes,
-                                       const BmffBox& iprp,
+    template<class Bytes>
+    static void bmff_scan_iprp_for_icc(const Bytes& bytes, const BmffBox& iprp,
                                        ContainerFormat format,
                                        BlockSink* sink) noexcept
     {
@@ -4240,8 +4572,9 @@ namespace {
     }
 
 
-    static void bmff_scan_meta_box(std::span<const std::byte> bytes,
-                                   const BmffBox& meta, ContainerFormat format,
+    template<class Bytes>
+    static void bmff_scan_meta_box(const Bytes& bytes, const BmffBox& meta,
+                                   ContainerFormat format,
                                    BlockSink* sink) noexcept
     {
         const uint64_t payload_off  = meta.offset + meta.header_size;
@@ -4374,8 +4707,8 @@ namespace {
     }
 
 
-    static bool bmff_is_tiff_at(std::span<const std::byte> bytes,
-                                uint64_t offset) noexcept
+    template<class Bytes>
+    static bool bmff_is_tiff_at(const Bytes& bytes, uint64_t offset) noexcept
     {
         if (offset + 4 > bytes.size()) {
             return false;
@@ -4390,8 +4723,9 @@ namespace {
     }
 
 
+    template<class Bytes>
     static bool
-    bmff_adjust_block_to_tiff_payload(std::span<const std::byte> bytes,
+    bmff_adjust_block_to_tiff_payload(const Bytes& bytes,
                                       ContainerBlockRef* block) noexcept
     {
         if (!block) {
@@ -4434,7 +4768,8 @@ namespace {
         return true;
     }
 
-    static bool bmff_payload_may_contain_boxes(std::span<const std::byte> bytes,
+    template<class Bytes>
+    static bool bmff_payload_may_contain_boxes(const Bytes& bytes,
                                                uint64_t payload_off,
                                                uint64_t payload_end) noexcept
     {
@@ -4493,8 +4828,8 @@ namespace {
     }
 
 
-    static void bmff_scan_cr3_canon_uuid(std::span<const std::byte> bytes,
-                                         const BmffBox& box,
+    template<class Bytes>
+    static void bmff_scan_cr3_canon_uuid(const Bytes& bytes, const BmffBox& box,
                                          BlockSink* sink) noexcept
     {
         const uint64_t payload_off0 = box.offset + box.header_size;
@@ -4600,7 +4935,8 @@ namespace {
     }
 
 
-    static bool bmff_emit_jp2_uuid_payload(std::span<const std::byte> bytes,
+    template<class Bytes>
+    static bool bmff_emit_jp2_uuid_payload(const Bytes& bytes,
                                            const BmffBox& box,
                                            BlockSink* sink) noexcept
     {
@@ -4642,10 +4978,10 @@ namespace {
     }
 
 
-    static bool
-    bmff_emit_jp2_direct_metadata_box(std::span<const std::byte> bytes,
-                                      const BmffBox& box,
-                                      BlockSink* sink) noexcept
+    template<class Bytes>
+    static bool bmff_emit_jp2_direct_metadata_box(const Bytes& bytes,
+                                                  const BmffBox& box,
+                                                  BlockSink* sink) noexcept
     {
         const uint64_t payload_off  = box.offset + box.header_size;
         const uint64_t payload_size = box.size - box.header_size;
@@ -4703,8 +5039,9 @@ namespace {
         uint32_t boxes_remaining = 1U << 18;
     };
 
-    static void bmff_scan_for_meta(std::span<const std::byte> bytes,
-                                   uint64_t begin, uint64_t end, uint32_t depth,
+    template<class Bytes>
+    static void bmff_scan_for_meta(const Bytes& bytes, uint64_t begin,
+                                   uint64_t end, uint32_t depth,
                                    ContainerFormat format, BlockSink* sink,
                                    BmffScanBudget* budget) noexcept
     {
@@ -4786,62 +5123,95 @@ namespace {
         }
     }
 
+    template<class Bytes>
+    static ScanResult
+    scan_bmff_reader(const Bytes& bytes,
+                     std::span<ContainerBlockRef> out) noexcept
+    {
+        BlockSink sink;
+        sink.out = out.data();
+        sink.cap = static_cast<uint32_t>(out.size());
+
+        if (bytes.size() < 8) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
+        }
+
+        // Most ISO-BMFF files start with `ftyp`, but some real-world files include a
+        // leading `free`/`skip`/`wide` box (or other top-level boxes) before `ftyp`.
+        // Locate the first `ftyp` box in the top-level stream.
+        BmffBox ftyp {};
+        bool found_ftyp          = false;
+        uint64_t off             = 0;
+        const uint32_t kMaxBoxes = 1U << 14;
+        uint32_t seen            = 0;
+        while (checked_range(off, 8, bytes.size())) {
+            seen += 1;
+            if (seen > kMaxBoxes) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+
+            BmffBox box {};
+            if (!parse_bmff_box(bytes, off, bytes.size(), &box)) {
+                sink.result.status = ScanStatus::Malformed;
+                return sink.result;
+            }
+            if (box.type == fourcc('f', 't', 'y', 'p')) {
+                ftyp       = box;
+                found_ftyp = true;
+                break;
+            }
+            off = box.end;
+        }
+        if (!found_ftyp) {
+            sink.result.status = ScanStatus::Unsupported;
+            return sink.result;
+        }
+
+        ContainerFormat format = ContainerFormat::Unknown;
+        if (!bmff_format_from_ftyp(bytes, ftyp, &format)) {
+            sink.result.status = ScanStatus::Unsupported;
+            return sink.result;
+        }
+
+        BmffScanBudget budget;
+        bmff_scan_for_meta(bytes, 0, bytes.size(), 0, format, &sink, &budget);
+        return sink.result;
+    }
+
 }  // namespace
+
 
 ScanResult
 scan_bmff(std::span<const std::byte> bytes,
           std::span<ContainerBlockRef> out) noexcept
 {
-    BlockSink sink;
-    sink.out = out.data();
-    sink.cap = static_cast<uint32_t>(out.size());
+    return scan_bmff_reader(bytes, out);
+}
 
-    if (bytes.size() < 8) {
-        sink.result.status = ScanStatus::Malformed;
-        return sink.result;
-    }
 
-    // Most ISO-BMFF files start with `ftyp`, but some real-world files include a
-    // leading `free`/`skip`/`wide` box (or other top-level boxes) before `ftyp`.
-    // Locate the first `ftyp` box in the top-level stream.
-    BmffBox ftyp {};
-    bool found_ftyp          = false;
-    uint64_t off             = 0;
-    const uint32_t kMaxBoxes = 1U << 14;
-    uint32_t seen            = 0;
-    while (checked_range(off, 8, bytes.size())) {
-        seen += 1;
-        if (seen > kMaxBoxes) {
-            sink.result.status = ScanStatus::Malformed;
-            return sink.result;
-        }
+ContainerRandomAccessScanResult
+scan_bmff_random_access(const RandomAccessSourceRange& bmff,
+                        std::span<ContainerBlockRef> out,
+                        const ContainerRandomAccessScratch& scratch,
+                        const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_container_random_access(
+        bmff, out, scratch, read_limits,
+        [](const auto& bytes, std::span<ContainerBlockRef> blocks) noexcept {
+            return scan_bmff_reader(bytes, blocks);
+        });
+}
 
-        BmffBox box {};
-        if (!parse_bmff_box(bytes, off, bytes.size(), &box)) {
-            sink.result.status = ScanStatus::Malformed;
-            return sink.result;
-        }
-        if (box.type == fourcc('f', 't', 'y', 'p')) {
-            ftyp       = box;
-            found_ftyp = true;
-            break;
-        }
-        off = box.end;
-    }
-    if (!found_ftyp) {
-        sink.result.status = ScanStatus::Unsupported;
-        return sink.result;
-    }
 
-    ContainerFormat format = ContainerFormat::Unknown;
-    if (!bmff_format_from_ftyp(bytes, ftyp, &format)) {
-        sink.result.status = ScanStatus::Unsupported;
-        return sink.result;
-    }
-
-    BmffScanBudget budget;
-    bmff_scan_for_meta(bytes, 0, bytes.size(), 0, format, &sink, &budget);
-    return sink.result;
+ContainerRandomAccessScanResult
+measure_scan_bmff_random_access(
+    const RandomAccessSourceRange& bmff,
+    const ContainerRandomAccessScratch& scratch,
+    const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_bmff_random_access(bmff, {}, scratch, read_limits);
 }
 
 

@@ -218,8 +218,10 @@ General Imaging Type 2 source windows. Version 0.4.105 adds Kodak fixed-layout
 records and outer-TIFF-relative Type 8, Type 10, and Type 11 IFDs with vendor
 subtables. Version 0.4.106 adds Ricoh, Nintendo, Casio, Minolta, and FLIR callback
 parity. Version 0.4.107 adds bounded leading JPEG metadata-segment scanning with
-512-byte caller scratch and no entropy-data reads. Contiguous input retains the
-full existing decoder behavior. Canon derived subtables outside the declared
+512-byte caller scratch and no entropy-data reads. Version 0.4.108 adds
+positional PNG/WebP chunk scanning and JP2/JXL/ISO-BMFF structural and
+metadata-item traversal while skipping image/media payloads. Contiguous input
+retains the full existing decoder behavior. Canon derived subtables outside the declared
 payload and unknown vendor layouts remain explicit residuals, so hosts must check
 ``ExifRandomAccessDecodeResult::complete()`` before claiming full nested parity.
 See :doc:`random_access_input` for buffer sizing, lifetime, short-read,
