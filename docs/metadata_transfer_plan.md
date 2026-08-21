@@ -967,6 +967,10 @@ writer-confidence slice above; it should be sequenced around it.
 
 #### Near-Term Host Contract Work
 
+- [x] publish Host Adoption Profile v1 as the narrow stable contract for
+  positional snapshot read, structured diagnostics, snapshot persistence,
+  FlatHost reconciliation, and the typed codec-operation schema; keep prepared
+  bundle construction/execution outside the profile
 - [x] add a small runtime capability query API for read, structured decode,
   transfer preparation, and target edit support by format and metadata family
 - [x] mark public host-facing APIs with stability levels such as stable,

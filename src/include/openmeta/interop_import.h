@@ -21,6 +21,9 @@
 OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
+/// Stable typed FlatHost import and reconciliation contract version.
+inline constexpr uint32_t kFlatHostImportContractVersion = 1U;
+
 /// How one flat host record identifies its destination metadata key.
 enum class FlatHostImportTarget : uint8_t {
     /// Update one exact source entry exported earlier by the host.
@@ -115,7 +118,7 @@ struct FlatHostImportResult final {
  * an immutable finalized source store.
  *
  * \par API Stability
- * Experimental host-facing API.
+ * Stable host-facing v1 API in Host Adoption Profile v1.
  */
 FlatHostImportResult
 import_flat_host_metadata(const MetaStore& source,

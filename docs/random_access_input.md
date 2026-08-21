@@ -4,6 +4,11 @@ OpenMeta's random-access input contract is designed for image-processing and
 transcoding hosts that already own storage, scheduling, and I/O policy. It is
 not tied to a particular image library or file abstraction.
 
+The positional source primitive, top-level snapshot assembly, and structured
+read diagnostics are stable in
+[Host Adoption Profile v1](host_adoption_profile.md). Low-level format-specific
+scanner, payload, and decoder APIs remain experimental.
+
 ## Current Scope
 
 Version 0.4.100 added the allocation-free source primitive in
@@ -21,7 +26,9 @@ positional GIF extension scanning, EXR header traversal, logical metadata
 payload extraction, and decoded source-snapshot assembly. Version 0.4.111 adds
 native RAF, X3F, and CRW/CIFF positional metadata traversal plus structured
 snapshot-read diagnostics. Version 0.4.112 adds bounded RAF preview-JPEG and
-FujiIFD traversal plus X3F section-JPEG traversal. The contract now defines:
+FujiIFD traversal plus X3F section-JPEG traversal. Version 0.4.113 stabilizes
+the source primitive, top-level snapshot assembly, and diagnostics through Host
+Adoption Profile v1. The contract now defines:
 
 - a fixed source size and synchronous `read_at(offset, destination)` callback
 - a non-owning descriptor for caller-owned contiguous memory

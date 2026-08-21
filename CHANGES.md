@@ -1,5 +1,37 @@
 # OpenMeta Changes
 
+## 0.4.113 - 2026-08-21
+
+Changes compared with `0.4.112`.
+
+### Added
+
+- Added Host Adoption Profile v1 with an allocation-free runtime descriptor for
+  exact compile-time/linked-library contract checks.
+- Added independent v1 contract versions for positional input, positional read
+  results, decoded source snapshots, structured diagnostics, and typed FlatHost
+  import.
+- Added a host-profile regression covering positional read, diagnostics,
+  snapshot persistence, FlatHost reconciliation, target preparation, and typed
+  codec handoff.
+
+### Changed
+
+- Stabilized the narrow positional source/snapshot/diagnostic surface, decoded
+  snapshot object and v1 persistence, and typed FlatHost reconciliation.
+- Kept low-level format scanners/decoders, convenience snapshot readers,
+  prepared bundles, adapter-view construction/execution, and raw-carrier
+  passthrough policy explicitly experimental.
+- Documented the stable high-throughput reconciliation sequence, ownership,
+  concurrency, residual, and compatibility requirements.
+
+### Tests And Validation
+
+- Added runtime descriptor/ABI-shape checks and an end-to-end stable-state to
+  typed-operation workflow regression.
+- Extended the installed shared-library consumer to verify the linked Host
+  Adoption Profile v1 contract.
+
 ## 0.4.112 - 2026-08-21
 
 Changes compared with `0.4.111`.

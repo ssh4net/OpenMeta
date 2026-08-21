@@ -18,6 +18,8 @@ contract, see [metadata_transfer_plan.md](metadata_transfer_plan.md).
 
 If you already own the encoder or host API, see
 [host_integration.md](host_integration.md).
+For the narrow stable high-throughput integration boundary, see
+[host_adoption_profile.md](host_adoption_profile.md).
 For public API adoption status, see [api_stability.md](api_stability.md).
 For the stable flat host naming contract, see
 [flat_host_mapping.md](flat_host_mapping.md).

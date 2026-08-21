@@ -7819,6 +7819,111 @@ TEST(MetadataTransferApi,
 }
 
 
+TEST(MetadataTransferApi,
+     HostAdoptionProfileReadPersistReconcileAndBuildTypedHandoff)
+{
+    const std::vector<std::byte> exif = make_app1_exif_payload();
+    std::vector<std::byte> xmp;
+    ASSERT_TRUE(
+        build_test_creator_tool_jpeg_xmp_app1_payload("HostProfileSource",
+                                                      &xmp));
+    const std::array<TestJpegSegment, 2> segments { {
+        { 0xE1U, std::span<const std::byte>(exif.data(), exif.size()) },
+        { 0xE1U, std::span<const std::byte>(xmp.data(), xmp.size()) },
+    } };
+    const std::vector<std::byte> jpeg = make_jpeg_with_segments(segments);
+    SnapshotCallbackState callback { jpeg };
+    const openmeta::RandomAccessSource source
+        = openmeta::make_callback_random_access_source(jpeg.size(), &callback,
+                                                       snapshot_read_at, true);
+
+    std::array<openmeta::ContainerBlockRef, 16> blocks {};
+    std::array<openmeta::ExifIfdRef, 64> ifds {};
+    std::array<uint32_t, 16> payload_indices {};
+    std::array<std::byte, 512> read_window {};
+    std::array<std::byte, 8192> payload {};
+    std::array<std::byte, 8192> compressed {};
+    std::array<std::byte, 8192> value {};
+    openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+    scratch.blocks             = blocks;
+    scratch.ifds               = ifds;
+    scratch.payload_indices    = payload_indices;
+    scratch.read_window        = read_window;
+    scratch.payload            = payload;
+    scratch.compressed_payload = compressed;
+    scratch.value              = value;
+
+    const openmeta::ReadTransferSourceSnapshotRandomAccessResult read
+        = openmeta::read_transfer_source_snapshot_random_access(
+            openmeta::make_random_access_source_range(source),
+            openmeta::ContainerFormat::Jpeg, scratch);
+    ASSERT_TRUE(read.complete());
+
+    std::array<openmeta::ReadTransferSourceDiagnostic, 4> diagnostics {};
+    const openmeta::ReadTransferSourceDiagnosticsResult diagnostic_result
+        = openmeta::collect_read_transfer_source_diagnostics(read, diagnostics);
+    EXPECT_TRUE(diagnostic_result.complete());
+    EXPECT_EQ(diagnostic_result.needed, 0U);
+
+    std::vector<std::byte> serialized;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(read.snapshot,
+                                                           &serialized)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::TransferSourceSnapshot restored;
+    ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(serialized,
+                                                             &restored)
+                  .status,
+              openmeta::TransferStatus::Ok);
+
+    constexpr std::array<std::byte, 13> replacement {
+        std::byte { 'H' }, std::byte { 'o' }, std::byte { 's' },
+        std::byte { 't' }, std::byte { 'P' }, std::byte { 'r' },
+        std::byte { 'o' }, std::byte { 'f' }, std::byte { 'i' },
+        std::byte { 'l' }, std::byte { 'e' }, std::byte { 'V' },
+        std::byte { '1' },
+    };
+    openmeta::FlatHostImportItem change;
+    change.name                = "XMP:CreatorTool";
+    change.target              = openmeta::FlatHostImportTarget::UniqueName;
+    change.value.kind          = openmeta::MetaValueKind::Text;
+    change.value.elem_type     = openmeta::MetaElementType::U8;
+    change.value.text_encoding = openmeta::TextEncoding::Utf8;
+    change.value.count         = replacement.size();
+    change.value.payload       = replacement;
+    openmeta::FlatHostImportResult imported
+        = openmeta::import_flat_host_metadata(
+            restored.store,
+            std::span<const openmeta::FlatHostImportItem>(&change, 1U));
+    ASSERT_TRUE(imported.ok()) << imported.message;
+    restored.store = std::move(imported.store);
+
+    openmeta::PrepareTransferRequest request;
+    request.target_format = openmeta::TransferTargetFormat::Jpeg;
+    openmeta::PreparedTransferBundle bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(restored, request,
+                                                             &bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+
+    openmeta::PreparedTransferAdapterView view;
+    ASSERT_EQ(
+        openmeta::build_prepared_transfer_adapter_view(bundle, &view).status,
+        openmeta::TransferStatus::Ok);
+    EXPECT_EQ(view.contract_version,
+              openmeta::kPreparedTransferAdapterContractVersion);
+    EXPECT_EQ(view.target_format, openmeta::TransferTargetFormat::Jpeg);
+    ASSERT_FALSE(view.ops.empty());
+    EXPECT_EQ(
+        openmeta::validate_prepared_transfer_adapter_view(bundle, view).status,
+        openmeta::TransferStatus::Ok);
+    for (const openmeta::PreparedTransferAdapterOp& op : view.ops) {
+        EXPECT_EQ(op.kind, openmeta::TransferAdapterOpKind::JpegMarker);
+        EXPECT_GT(op.payload_size, 0U);
+    }
+}
+
+
 TEST(MetadataTransferApi, ReadTransferSourceSnapshotRandomAccessReportsScratch)
 {
     const std::vector<std::byte> exif = make_app1_exif_payload();

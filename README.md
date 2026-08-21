@@ -86,6 +86,9 @@ That guide covers the shortest useful paths for:
 
 If you already own the encoder, SDK objects, or output container, follow
 [docs/host_integration.md](docs/host_integration.md) next.
+High-throughput and realtime hosts should also use
+[docs/host_adoption_profile.md](docs/host_adoption_profile.md) as the narrow
+versioned compatibility boundary.
 
 ## Documentation
 
@@ -93,6 +96,8 @@ If you already own the encoder, SDK objects, or output container, follow
 - [docs/quick_start.md](docs/quick_start.md): shortest adoption path
 - [docs/host_integration.md](docs/host_integration.md): C++ host and encoder
   integration patterns
+- [docs/host_adoption_profile.md](docs/host_adoption_profile.md): stable
+  positional read, snapshot persistence, reconciliation, and diagnostic profile
 - [docs/metadata_support.md](docs/metadata_support.md): metadata support matrix
 - [docs/metadata_transfer_plan.md](docs/metadata_transfer_plan.md): transfer
   status and roadmap

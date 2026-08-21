@@ -36,35 +36,42 @@ Host-facing API map
      - Header
      - Stability
      - Notes
+   * - Host Adoption Profile v1:
+       ``host_adoption_profile()``,
+       ``host_adoption_profile_matches(...)``
+     - ``openmeta/host_adoption.h``
+     - Stable
+     - Exact compile-time/runtime contract descriptor for the narrow positional
+       read, persistence, reconciliation, diagnostics, and typed codec-operation
+       schema. See :doc:`host_adoption_profile`.
    * - Runtime capability query: ``metadata_capability(...)``
      - ``openmeta/metadata_capabilities.h``
      - Stable
      - v1 query contract for read, structured decode, transfer preparation,
        target edit, and raw-preservation status by format/family.
-   * - Bounded positional input, decode, payload, scan, snapshot, and
-       diagnostic APIs:
+   * - Positional source, snapshot, and read diagnostics:
        ``RandomAccessSource``, source ranges/read windows,
        ``random_access_read_exact(...)``,
-       ``decode_exif_tiff_random_access(...)``,
-       ``decode_exr_header_random_access(...)``,
-       ``extract_payload_random_access(...)``,
-       the ``scan_*_random_access(...)`` family, and
        ``read_transfer_source_snapshot_random_access(...)``, and
        ``collect_read_transfer_source_diagnostics(...)``
-     - ``openmeta/random_access_source.h``,
-       ``openmeta/exif_tiff_decode.h``, ``openmeta/exr_decode.h``,
-       ``openmeta/container_payload.h``, ``openmeta/container_scan.h``,
-       ``openmeta/metadata_transfer.h``
+     - ``openmeta/random_access_source.h``, ``openmeta/metadata_transfer.h``
+     - Stable v1
+     - Allocation-free exact callback reads, caller-owned accounting/scratch,
+       owned finalized snapshots, explicit completeness/residual semantics, and
+       caller-buffered structured diagnostics. Format coverage may grow
+       additively. See :doc:`host_adoption_profile` and
+       :doc:`random_access_input`.
+   * - Low-level positional format decode, payload, and scan APIs:
+       ``decode_exif_tiff_random_access(...)``,
+       ``decode_exr_header_random_access(...)``,
+       ``extract_payload_random_access(...)``, and the
+       ``scan_*_random_access(...)`` family
+     - ``openmeta/exif_tiff_decode.h``, ``openmeta/exr_decode.h``,
+       ``openmeta/container_payload.h``, ``openmeta/container_scan.h``
      - Experimental
-     - Allocation-free callback traversal with exact reads, explicit
-       short-read/I/O/source-change results, caller-owned accounting/scratch,
-       an owned finalized snapshot result, and caller-buffered structured
-       diagnostics. Includes bounded TIFF-family, EXR header, native
-       RAF/X3F/CRW decode, RAF preview/FujiIFD and X3F section-JPEG enrichment,
-       plus JPEG, PNG, WebP, GIF, JP2, JXL, and ISO-BMFF metadata
-       discovery/fetch while skipping image/media payloads. Undeclared
-       source-wide fallback searches and selected recursive enrichment remain
-       explicit residuals. See :doc:`random_access_input`.
+     - Format-specific structures and scratch requirements may still evolve.
+       The stable top-level snapshot result exposes unsupported or incomplete
+       lanes as explicit residuals.
    * - Compatibility dumps: ``dump_metadata_compatibility(...)``,
        ``dump_transfer_compatibility(...)``
      - ``openmeta/compatibility_dump.h``
@@ -97,6 +104,12 @@ Host-facing API map
      - ``openmeta/interop_export.h``
      - Stable
      - Stable v1 flat host naming contract. See :doc:`flat_host_mapping`.
+   * - Typed FlatHost import: ``import_flat_host_metadata(...)``
+     - ``openmeta/interop_import.h``
+     - Stable v1
+     - Transactional detached-store reconciliation by exact source identity,
+       unique FlatHost name, or explicit typed key. Removals retain stable
+       ``Dirty | Deleted`` tombstones; ambiguous names are rejected.
    * - Fresh metadata creation: ``create_metadata(...)`` and typed field
        helpers
      - ``openmeta/metadata_creation.h``
@@ -439,20 +452,32 @@ Host-facing API map
      - Diagnostic preflight for opt-in raw carriers. Reports candidate
        carriers and primary block reasons such as missing payload, target
        incompatibility, safety filtering, content-bound C2PA, explicit profile
-       policy, missing decoded-entry links, or unsupported carrier kind. Does
-       Hosts can call it directly before enabling snapshot passthrough.
-   * - Source snapshot type and read helpers:
-       ``TransferSourceSnapshot``,
+       policy, missing decoded-entry links, or unsupported carrier kind. Hosts
+       can call it directly before enabling snapshot passthrough.
+   * - Decoded source snapshot state: ``TransferSourceSnapshot``
+     - ``openmeta/metadata_transfer.h``
+     - Stable v1 profile
+     - Stable decoded-store state for positional read, persistence, and
+       reconciliation. Optional raw-carrier records are preserved as data, but
+       raw-carrier passthrough policy remains experimental. Const reuse is safe
+       when callers do not mutate the snapshot.
+   * - File/bytes/build snapshot helpers:
        ``read_transfer_source_snapshot_file(...)``,
        ``read_transfer_source_snapshot_bytes(...)``,
        ``build_transfer_source_snapshot(...)``
      - ``openmeta/metadata_transfer.h``
      - Experimental
-     - Current snapshots are decoded-store-backed by default. Opt-in raw
-       carriers preserve bounded source payload/provenance records and
-       snapshot-local decoded entry ids for host diagnostics and bounded
-       passthrough decisions. Const reuse is safe when callers do not mutate
-       the snapshot and do not share returned result objects across writers.
+     - Convenience entry points outside the narrow positional Host Adoption
+       Profile.
+   * - Versioned source snapshot persistence:
+       ``serialize_transfer_source_snapshot(...)``,
+       ``deserialize_transfer_source_snapshot(...)``
+     - ``openmeta/metadata_transfer.h``
+     - Stable v1
+     - Target-neutral canonical v1 representation with transactional bounded
+       parsing and an exact compatibility vector. Preserves store blocks,
+       duplicate order, typed values, provenance, tombstones, flags, and
+       optional raw-carrier links. Unknown versions are rejected atomically.
    * - Fileless preparation:
        ``prepare_metadata_for_target_snapshot(...)``
      - ``openmeta/metadata_transfer.h``
@@ -476,13 +501,24 @@ Host-facing API map
      - Intended for hosts that already own a prepared bundle and destination
        bytes. Treat bundles as immutable except through documented patch
        helpers.
+   * - Typed adapter operation schema:
+       ``PreparedTransferAdapterOp``, ``TransferAdapterOpKind``,
+       ``kPreparedTransferAdapterContractVersion``
+     - ``openmeta/metadata_transfer.h``
+     - Stable v1 schema
+     - Enum-based insertion operations with explicit marker, tag, box, chunk,
+       item, property, and payload sizing fields. Codecs do not parse route
+       strings.
    * - Adapter-view execution:
        ``build_prepared_transfer_adapter_view(...)``,
+       ``validate_prepared_transfer_adapter_view(...)``,
+       ``get_prepared_transfer_adapter_exr_attribute_view(...)``, and
        ``emit_prepared_transfer_adapter_view(...)``
      - ``openmeta/metadata_transfer.h``
      - Experimental
-     - Target-neutral operation view for host-owned encoders and writers.
-       Route and dispatch details may still evolve.
+     - Builds and validates the stable v1 operation schema over an experimental
+       prepared bundle. Construction and payload resolution remain coupled to
+       the broader prepared-bundle model.
    * - Generated transfer payload internals, route strings, low-level package
        chunks, and diagnostic counters not documented by a stable API page
      - ``openmeta/metadata_transfer.h``
@@ -539,3 +575,6 @@ Use stable APIs for normal application integrations. Use experimental APIs when
 they match a real workflow and the integration can track OpenMeta releases.
 Avoid internal surfaces unless you are contributing to OpenMeta itself or
 writing a test that is intentionally tied to implementation details.
+
+High-throughput hosts should use :doc:`host_adoption_profile` as the
+compatibility boundary and query format capabilities separately.

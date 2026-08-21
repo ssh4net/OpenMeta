@@ -395,6 +395,7 @@ set(OPENMETA_SOURCES
   src/openmeta/exif_tiff_decode.cc
   src/openmeta/geotiff_decode.cc
   src/openmeta/geotiff_key_names.cc
+  src/openmeta/host_adoption.cc
   src/openmeta/icc_decode.cc
   src/openmeta/icc_interpret.cc
   src/openmeta/interop_export.cc
@@ -988,6 +989,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/exif_tiff_decode_test.cc
     tests/exif_value_names_test.cc
     tests/geotiff_decode_test.cc
+    tests/host_adoption_test.cc
     tests/iptc_iim_decode_test.cc
     tests/interop_export_test.cc
     tests/interop_import_test.cc

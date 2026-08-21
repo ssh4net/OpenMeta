@@ -13,6 +13,8 @@ OpenMeta is not an image encoder. The normal pattern is:
 If you want the shortest end-to-end examples first, start with
 :doc:`quick_start`.
 For public API adoption status, see :doc:`api_stability`.
+For the narrow stable realtime/transcoding boundary, see
+:doc:`host_adoption_profile`.
 For the stable flat host naming contract, see :doc:`flat_host_mapping`.
 For deterministic host compatibility baselines, see :doc:`compatibility_dump`.
 For generated XMP merge and writeback precedence, see
@@ -353,6 +355,8 @@ name, type, and value fields without parsing route or payload framing.
 ``validate_prepared_transfer_adapter_view(...)`` compares every operation with
 the canonical compiled view before codec handoff. Sink payloads are borrowed
 for the callback; typed EXR fields borrow from the unchanged source bundle.
+The operation schema is stable v1; adapter-view construction, validation, and
+emission remain experimental because they expose the prepared-bundle model.
 
 Backend-emitter pattern
 ~~~~~~~~~~~~~~~~~~~~~~~

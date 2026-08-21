@@ -37,6 +37,7 @@ and must not be used as an asset-authenticity or trust gate.
 
    quick_start
    host_integration
+   host_adoption_profile
    random_access_input
    api_stability
    flat_host_mapping

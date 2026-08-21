@@ -11,10 +11,16 @@
 /**
  * \file random_access_source.h
  * \brief Allocation-free positional byte-source contract for bounded readers.
+ *
+ * \par API Stability
+ * Stable host-facing v1 API in Host Adoption Profile v1.
  */
 
 OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
+
+/// Stable allocation-free positional source contract version.
+inline constexpr uint32_t kRandomAccessSourceContractVersion = 1U;
 
 /// Status returned directly by a host-provided positional read callback.
 enum class RandomAccessIoCode : uint8_t {
@@ -184,7 +190,7 @@ random_access_source_range_valid(const RandomAccessSourceRange& range) noexcept;
  * source implementation.
  *
  * \par API Stability
- * Experimental host-facing API.
+ * Stable host-facing v1 API in Host Adoption Profile v1.
  */
 RandomAccessReadCode
 random_access_read_exact(const RandomAccessSource& source, uint64_t offset,

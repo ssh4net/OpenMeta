@@ -40,6 +40,15 @@ inline constexpr uint32_t kPreparedTransferAdapterContractVersion = 1U;
 /// Version of the persisted target-neutral source snapshot wire format.
 inline constexpr uint32_t kTransferSourceSnapshotSerializationVersion = 1U;
 
+/// Stable positional source snapshot contract version.
+inline constexpr uint32_t kReadTransferSourceSnapshotContractVersion = 1U;
+
+/// Stable decoded source snapshot object contract version.
+inline constexpr uint32_t kTransferSourceSnapshotContractVersion = 1U;
+
+/// Stable positional snapshot diagnostic contract version.
+inline constexpr uint32_t kReadTransferSourceDiagnosticsContractVersion = 1U;
+
 /// Target container family for prepared transfer bundles.
 enum class TransferTargetFormat : uint8_t {
     Jpeg,
@@ -762,10 +771,9 @@ struct TransferRawCarrierPassthroughAudit final {
  * \brief Reusable source snapshot for later transfer preparation.
  *
  * \par API Stability
- * Experimental host-facing API. The default snapshot remains decoded-store
- * backed. Raw carrier provenance and payload bytes are kept only when read
- * options explicitly request them; transfer preparation still uses decoded
- * re-emission unless the request enables an explicit bounded passthrough mode.
+ * Stable decoded-store object contract in Host Adoption Profile v1. Raw carrier
+ * provenance and payload bytes are optional snapshot data; their target
+ * passthrough policy remains experimental and is not part of the profile.
  *
  * Const reuse is safe when callers do not mutate the snapshot and do not share
  * returned result objects across writers.
@@ -1463,7 +1471,7 @@ struct ReadTransferSourceSnapshotBytesResult final {
     TransferSourceSnapshot snapshot;
 };
 
-/// Caller-owned transient storage for positional source snapshot assembly.
+/// Stable v1 caller-owned storage for positional source snapshot assembly.
 struct ReadTransferSourceSnapshotRandomAccessScratch final {
     std::span<ContainerBlockRef> blocks;
     std::span<ExifIfdRef> ifds;
@@ -1479,7 +1487,7 @@ struct ReadTransferSourceSnapshotRandomAccessScratch final {
     RandomAccessReadWindowOptions window_options;
 };
 
-/// Options for bounded positional source snapshot assembly.
+/// Stable v1 options for bounded positional source snapshot assembly.
 struct ReadTransferSourceSnapshotRandomAccessOptions final {
     bool include_pointer_tags = true;
     bool decode_makernote     = false;
@@ -1492,7 +1500,7 @@ struct ReadTransferSourceSnapshotRandomAccessOptions final {
     OpenMetaResourcePolicy policy;
 };
 
-/// Result of bounded positional source snapshot assembly.
+/// Stable v1 result of bounded positional source snapshot assembly.
 struct ReadTransferSourceSnapshotRandomAccessResult final {
     TransferStatus status = TransferStatus::Ok;
     ReadTransferSourceSnapshotRandomAccessCode code
@@ -1523,13 +1531,13 @@ struct ReadTransferSourceSnapshotRandomAccessResult final {
     }
 };
 
-/// Requested optional lanes used to classify positional read residuals.
+/// Stable v1 optional lanes used to classify positional read residuals.
 struct ReadTransferSourceDiagnosticOptions final {
     bool decode_makernote_requested           = false;
     bool decode_embedded_containers_requested = false;
 };
 
-/// One allocation-free diagnostic projected from a positional read result.
+/// One stable v1 allocation-free positional read diagnostic.
 struct ReadTransferSourceDiagnostic final {
     ReadTransferSourceDiagnosticSeverity severity
         = ReadTransferSourceDiagnosticSeverity::Error;
@@ -1545,7 +1553,7 @@ struct ReadTransferSourceDiagnostic final {
     RandomAccessReadCode input_code = RandomAccessReadCode::Ok;
 };
 
-/// Caller-buffer result for structured positional read diagnostics.
+/// Stable v1 caller-buffer result for positional read diagnostics.
 struct ReadTransferSourceDiagnosticsResult final {
     uint32_t written = 0U;
     uint32_t needed  = 0U;
@@ -2718,7 +2726,8 @@ read_transfer_source_snapshot_bytes(
  * keeps the usable result but makes `complete()` false.
  *
  * \par API Stability
- * Experimental host-facing API.
+ * Stable host-facing v1 API in Host Adoption Profile v1. Format coverage may
+ * grow additively; callers must inspect `complete()` and residual diagnostics.
  */
 ReadTransferSourceSnapshotRandomAccessResult
 read_transfer_source_snapshot_random_access(
@@ -2738,7 +2747,7 @@ read_transfer_source_snapshot_random_access(
  * incomplete requested MakerNote or embedded-container lane where applicable.
  *
  * \par API Stability
- * Experimental host-facing API.
+ * Stable host-facing v1 API in Host Adoption Profile v1.
  */
 ReadTransferSourceDiagnosticsResult
 collect_read_transfer_source_diagnostics(
@@ -2747,15 +2756,19 @@ collect_read_transfer_source_diagnostics(
     const ReadTransferSourceDiagnosticOptions& options
     = ReadTransferSourceDiagnosticOptions {}) noexcept;
 
+/// Stable v1 name for one positional diagnostic severity.
 const char*
 read_transfer_source_diagnostic_severity_name(
     ReadTransferSourceDiagnosticSeverity severity) noexcept;
+/// Stable v1 name for one positional diagnostic domain.
 const char*
 read_transfer_source_diagnostic_domain_name(
     ReadTransferSourceDiagnosticDomain domain) noexcept;
+/// Stable v1 name for one positional diagnostic code.
 const char*
 read_transfer_source_diagnostic_code_name(
     ReadTransferSourceDiagnosticCode code) noexcept;
+/// Stable v1 default English message for one positional diagnostic code.
 const char*
 read_transfer_source_diagnostic_message(
     ReadTransferSourceDiagnosticCode code) noexcept;
@@ -2768,7 +2781,7 @@ read_transfer_source_diagnostic_message(
  * not make a raw carrier safe to relocate or write into another container.
  *
  * \par API Stability
- * Experimental host-facing API.
+ * Stable host-facing object API and v1 wire format in Host Adoption Profile v1.
  */
 TransferSourceSnapshotIoResult
 serialize_transfer_source_snapshot(
@@ -2783,7 +2796,7 @@ serialize_transfer_source_snapshot(
  * complete representation and every arena reference have been validated.
  *
  * \par API Stability
- * Experimental host-facing API.
+ * Stable host-facing object API and v1 wire format in Host Adoption Profile v1.
  */
 TransferSourceSnapshotIoResult
 deserialize_transfer_source_snapshot(
@@ -2963,7 +2976,8 @@ build_prepared_transfer_adapter_view(const PreparedTransferBundle& bundle,
  * may use this as a preflight before handing operations to a codec.
  *
  * \par API Stability
- * Experimental host-facing API; candidate for the narrow adoption profile.
+ * Experimental host-facing API. The typed operation schema is stable v1, but
+ * this validator remains coupled to the experimental prepared-bundle model.
  */
 EmitTransferResult
 validate_prepared_transfer_adapter_view(
@@ -2978,7 +2992,8 @@ validate_prepared_transfer_adapter_view(
  * avoids exposing the internal EXR route and payload framing to host codecs.
  *
  * \par API Stability
- * Experimental host-facing API; candidate for the narrow adoption profile.
+ * Experimental host-facing API. The returned typed fields follow the stable v1
+ * adapter schema, but resolution remains coupled to the prepared-bundle model.
  */
 EmitTransferResult
 get_prepared_transfer_adapter_exr_attribute_view(

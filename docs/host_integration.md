@@ -12,6 +12,8 @@ OpenMeta is not an image encoder. The usual pattern is:
 If you want the shortest end-to-end examples first, start with
 [quick_start.md](quick_start.md).
 For public API adoption status, see [api_stability.md](api_stability.md).
+For the narrow stable realtime/transcoding boundary, see
+[host_adoption_profile.md](host_adoption_profile.md).
 For the stable flat host naming contract, see
 [flat_host_mapping.md](flat_host_mapping.md).
 For deterministic host compatibility baselines, see
@@ -385,6 +387,8 @@ openmeta::emit_prepared_transfer_adapter_view(prepared.bundle, view, sink);
 This is a good fit when your host already has its own abstraction for
 "metadata op + bytes". `kPreparedTransferAdapterContractVersion` versions the
 codec-facing operation schema independently from internal route strings.
+The operation schema is stable v1; adapter-view construction, validation, and
+emission remain experimental because they expose the prepared-bundle model.
 
 | Operation kind | Insertion fields |
 | --- | --- |
