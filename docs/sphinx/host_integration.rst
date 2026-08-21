@@ -266,7 +266,10 @@ Use ``ExportNamePolicy::Spec`` for specification names such as
 ``Exif:ISOSpeedRatings`` and ``Exif:ExposureBiasValue``. Typed writeback uses
 ``import_flat_host_metadata(...)``. Existing values can use an exact source
 entry id or a unique flat name; new entries require an explicit ``MetaKeyView``.
-Ambiguous duplicate names are rejected.
+Ambiguous duplicate names are rejected. ``RemoveSourceEntry`` and
+``RemoveUniqueName`` retain ``Dirty | Deleted`` tombstones, preserving entry
+ids, provenance, and snapshot raw-carrier links while export and transfer omit
+the deleted metadata.
 
 EXR attribute batches
 ---------------------
@@ -330,9 +333,20 @@ Use this when you want one target-neutral operation list.
    openmeta::PreparedTransferAdapterView view;
    openmeta::build_prepared_transfer_adapter_view(
        prepared.bundle, &view, openmeta::EmitTransferOptions {});
+   openmeta::validate_prepared_transfer_adapter_view(prepared.bundle, view);
 
    MySink sink;
    openmeta::emit_prepared_transfer_adapter_view(prepared.bundle, view, sink);
+
+``kPreparedTransferAdapterContractVersion`` versions this codec-facing schema
+independently from internal route strings. Marker, tag, box, chunk, BMFF item,
+and BMFF property identifiers are explicit operation fields. For
+``ExrAttribute``, call
+``get_prepared_transfer_adapter_exr_attribute_view(...)`` to obtain borrowed
+name, type, and value fields without parsing route or payload framing.
+``validate_prepared_transfer_adapter_view(...)`` compares every operation with
+the canonical compiled view before codec handoff. Sink payloads are borrowed
+for the callback; typed EXR fields borrow from the unchanged source bundle.
 
 Backend-emitter pattern
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -489,6 +503,41 @@ Snapshots can be persisted without retaining the original source or bundle:
 Parsing is transactional and bounded by ``TransferSourceSnapshotIoOptions``.
 Preserved raw carriers remain provenance data and are not implicitly safe to
 relocate or rewrite.
+The canonical v1 wire representation is compatibility-locked. Current readers
+accept v1 and reject unknown versions without changing the output snapshot.
+
+Reconcile host attributes after deserialization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The supported deferred-edit sequence is deserialize, compare host FlatHost
+attributes, transactionally import updates/additions/removals, replace only the
+snapshot store, and then prepare target payloads.
+
+.. code-block:: cpp
+
+   openmeta::TransferSourceSnapshot snapshot;
+   openmeta::deserialize_transfer_source_snapshot(persisted, &snapshot);
+
+   std::vector<openmeta::FlatHostImportItem> changes = host_changes();
+   openmeta::FlatHostImportOptions import_options;
+   import_options.name_policy = openmeta::ExportNamePolicy::Spec;
+
+   openmeta::FlatHostImportResult imported =
+       openmeta::import_flat_host_metadata(snapshot.store, changes,
+                                           import_options);
+   if (imported.ok()) {
+       snapshot.store = std::move(imported.store);
+   }
+
+   openmeta::PrepareTransferRequest request;
+   request.target_format = openmeta::TransferTargetFormat::Webp;
+   openmeta::PreparedTransferBundle bundle;
+   openmeta::prepare_metadata_for_target_snapshot(snapshot, request, &bundle);
+
+Import preserves source entry positions and appends additions, so raw-carrier
+``decoded_entry_ids`` remain valid. Tombstones retain removed-entry identity;
+untouched complex metadata and optional raw carriers remain available to normal
+target safety and serialization policy.
 Snapshot execution supports the same existing-sidecar merge and destination
 carrier-precedence controls as the file helper; when loading an existing
 sidecar it defaults to ``edit_target_path`` unless

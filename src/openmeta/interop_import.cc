@@ -70,6 +70,19 @@ namespace {
         return false;
     }
 
+    static bool import_target_is_remove(FlatHostImportTarget target) noexcept
+    {
+        return target == FlatHostImportTarget::RemoveSourceEntry
+               || target == FlatHostImportTarget::RemoveUniqueName;
+    }
+
+    static bool
+    import_target_uses_source_entry(FlatHostImportTarget target) noexcept
+    {
+        return target == FlatHostImportTarget::SourceEntry
+               || target == FlatHostImportTarget::RemoveSourceEntry;
+    }
+
     static bool copy_import_value(const FlatHostImportValue& source,
                                   ByteArena* arena, MetaValue* out) noexcept
     {
@@ -302,14 +315,19 @@ import_flat_host_metadata(const MetaStore& source,
         const FlatHostImportItem& item = items[i];
         const uint32_t item_index      = static_cast<uint32_t>(i);
         if (item.name.empty() || item.name.size() > options.max_name_bytes
-            || static_cast<uint8_t>(item.target)
-                   > static_cast<uint8_t>(FlatHostImportTarget::ExplicitKey)) {
+            || static_cast<uint8_t>(item.target) > static_cast<uint8_t>(
+                   FlatHostImportTarget::RemoveUniqueName)) {
             return import_error(FlatHostImportCode::InvalidArgument, item_index,
                                 "flat host import item identity is invalid");
         }
         if (!import_value_is_valid(item.value)) {
             return import_error(FlatHostImportCode::InvalidValue, item_index,
                                 "flat host import value is invalid");
+        }
+        const bool remove = import_target_is_remove(item.target);
+        if (remove && item.value.kind != MetaValueKind::Empty) {
+            return import_error(FlatHostImportCode::InvalidValue, item_index,
+                                "flat host remove item must not carry a value");
         }
         if (item.value.payload.size()
             > std::numeric_limits<uint64_t>::max() - value_bytes) {
@@ -328,7 +346,7 @@ import_flat_host_metadata(const MetaStore& source,
         }
 
         EntryId target = kInvalidEntryId;
-        if (item.target == FlatHostImportTarget::SourceEntry) {
+        if (import_target_uses_source_entry(item.target)) {
             target = item.source_entry;
             if (target >= source_entries.size()) {
                 return import_error(FlatHostImportCode::EntryNotFound,
@@ -391,13 +409,17 @@ import_flat_host_metadata(const MetaStore& source,
         Entry entry = source_entries[i];
         if (updates[i] != kNoImportItem) {
             const FlatHostImportItem& item = items[updates[i]];
-            if (!copy_import_value(item.value, &imported.arena(),
-                                   &entry.value)) {
-                return import_error(FlatHostImportCode::LimitExceeded,
-                                    updates[i],
-                                    "flat host imported value was rejected");
+            if (import_target_is_remove(item.target)) {
+                entry.flags |= EntryFlags::Dirty | EntryFlags::Deleted;
+            } else {
+                if (!copy_import_value(item.value, &imported.arena(),
+                                       &entry.value)) {
+                    return import_error(FlatHostImportCode::LimitExceeded,
+                                        updates[i],
+                                        "flat host imported value was rejected");
+                }
+                entry.flags |= EntryFlags::Dirty;
             }
-            entry.flags |= EntryFlags::Dirty;
             updated += 1U;
         }
         if (imported.add_entry(entry) == kInvalidEntryId) {

@@ -34,6 +34,9 @@ namespace openmeta {
 /// Stable metadata transfer contract version.
 inline constexpr uint32_t kMetadataTransferContractVersion = 1U;
 
+/// Version of the codec-facing typed adapter operation contract.
+inline constexpr uint32_t kPreparedTransferAdapterContractVersion = 1U;
+
 /// Version of the persisted target-neutral source snapshot wire format.
 inline constexpr uint32_t kTransferSourceSnapshotSerializationVersion = 1U;
 
@@ -1259,7 +1262,7 @@ struct PreparedTransferAdapterOp final {
 
 /// One target-neutral adapter view over prepared transfer operations.
 struct PreparedTransferAdapterView final {
-    uint32_t contract_version          = kMetadataTransferContractVersion;
+    uint32_t contract_version = kPreparedTransferAdapterContractVersion;
     TransferTargetFormat target_format = TransferTargetFormat::Jpeg;
     EmitTransferOptions emit;
     std::vector<PreparedTransferAdapterOp> ops;
@@ -2851,6 +2854,36 @@ build_prepared_transfer_adapter_view(const PreparedTransferBundle& bundle,
                                      PreparedTransferAdapterView* out_view,
                                      const EmitTransferOptions& options
                                      = {}) noexcept;
+
+/**
+ * \brief Validate a codec-facing adapter view against its source bundle.
+ *
+ * Validation rebuilds the canonical operation list and compares every
+ * kind-specific field, including marker/tag/box/chunk/BMFF identifiers. Hosts
+ * may use this as a preflight before handing operations to a codec.
+ *
+ * \par API Stability
+ * Experimental host-facing API; candidate for the narrow adoption profile.
+ */
+EmitTransferResult
+validate_prepared_transfer_adapter_view(
+    const PreparedTransferBundle& bundle,
+    const PreparedTransferAdapterView& view) noexcept;
+
+/**
+ * \brief Resolve one EXR adapter operation into typed insertion values.
+ *
+ * The returned name, type, and value borrow storage from \p bundle and remain
+ * valid only while that bundle and its block payloads are unchanged. This
+ * avoids exposing the internal EXR route and payload framing to host codecs.
+ *
+ * \par API Stability
+ * Experimental host-facing API; candidate for the narrow adoption profile.
+ */
+EmitTransferResult
+get_prepared_transfer_adapter_exr_attribute_view(
+    const PreparedTransferBundle& bundle, const PreparedTransferAdapterOp& op,
+    ExrPreparedAttributeView* out_attribute) noexcept;
 
 /**
  * \brief Emit one prepared adapter view into a generic host-side sink.

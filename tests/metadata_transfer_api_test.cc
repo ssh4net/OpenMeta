@@ -2,6 +2,7 @@
 
 #include "openmeta/compatibility_dump.h"
 #include "openmeta/container_scan.h"
+#include "openmeta/interop_import.h"
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_value.h"
 #include "openmeta/metadata_transfer.h"
@@ -38007,7 +38008,8 @@ TEST(MetadataTransferApi, BuildPreparedJxlEncoderHandoffViewWithIcc)
     EXPECT_EQ(result.status, openmeta::TransferStatus::Ok);
     EXPECT_EQ(result.code, openmeta::EmitTransferCode::None);
     EXPECT_EQ(result.emitted, 3U);
-    EXPECT_EQ(view.contract_version, bundle.contract_version);
+    EXPECT_EQ(view.contract_version,
+              openmeta::kPreparedTransferAdapterContractVersion);
     EXPECT_TRUE(view.has_icc_profile);
     EXPECT_EQ(view.icc_block_index, 0U);
     EXPECT_EQ(view.icc_profile_bytes, 4U);
@@ -38817,7 +38819,8 @@ TEST(MetadataTransferApi, BuildPreparedTransferAdapterViewJpeg)
 
     EXPECT_EQ(result.status, openmeta::TransferStatus::Ok);
     EXPECT_EQ(result.emitted, 2U);
-    EXPECT_EQ(view.contract_version, bundle.contract_version);
+    EXPECT_EQ(view.contract_version,
+              openmeta::kPreparedTransferAdapterContractVersion);
     EXPECT_EQ(view.target_format, openmeta::TransferTargetFormat::Jpeg);
     EXPECT_EQ(view.emit.skip_empty_payloads, false);
     ASSERT_EQ(view.ops.size(), 2U);
@@ -39194,6 +39197,51 @@ TEST(MetadataTransferApi, BuildPreparedTransferAdapterViewExr)
     EXPECT_EQ(view.ops[1].block_index, 1U);
     EXPECT_EQ(view.ops[1].payload_size, model.payload.size());
     EXPECT_EQ(view.ops[1].serialized_size, model.payload.size());
+
+    openmeta::ExrPreparedAttributeView attribute;
+    const openmeta::EmitTransferResult resolved
+        = openmeta::get_prepared_transfer_adapter_exr_attribute_view(
+            bundle, view.ops[0], &attribute);
+    ASSERT_EQ(resolved.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(attribute.name, "Make");
+    EXPECT_EQ(attribute.type_name, "string");
+    EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                   attribute.value.data()),
+                               attribute.value.size()),
+              "Vendor");
+    EXPECT_FALSE(attribute.is_opaque);
+}
+
+TEST(MetadataTransferApi, ValidatePreparedTransferAdapterViewRejectsMutation)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Jpeg;
+
+    openmeta::PreparedTransferBlock exif;
+    exif.route   = "jpeg:app1-exif";
+    exif.payload = { std::byte { 0x01 } };
+    bundle.blocks.push_back(exif);
+
+    openmeta::PreparedTransferAdapterView view;
+    ASSERT_EQ(
+        openmeta::build_prepared_transfer_adapter_view(bundle, &view).status,
+        openmeta::TransferStatus::Ok);
+    EXPECT_EQ(
+        openmeta::validate_prepared_transfer_adapter_view(bundle, view).status,
+        openmeta::TransferStatus::Ok);
+
+    view.ops[0].jpeg_marker_code = 0xE2U;
+    const openmeta::EmitTransferResult invalid
+        = openmeta::validate_prepared_transfer_adapter_view(bundle, view);
+    EXPECT_EQ(invalid.status, openmeta::TransferStatus::InvalidArgument);
+    EXPECT_EQ(invalid.code, openmeta::EmitTransferCode::PlanMismatch);
+    EXPECT_EQ(invalid.failed_block_index, 0U);
+
+    view.ops[0].jpeg_marker_code = 0xE1U;
+    bundle.contract_version += 1U;
+    EXPECT_EQ(
+        openmeta::validate_prepared_transfer_adapter_view(bundle, view).code,
+        openmeta::EmitTransferCode::PlanMismatch);
 }
 
 TEST(MetadataTransferApi, EmitPreparedTransferAdapterViewJpeg)
@@ -46217,6 +46265,218 @@ TEST(MetadataTransferApi,
     EXPECT_EQ(limited_result.code,
               openmeta::TransferSourceSnapshotIoCode::LimitExceeded);
     EXPECT_EQ(output.store.entries().size(), 1U);
+}
+
+TEST(MetadataTransferApi, TransferSourceSnapshotV1CanonicalBytesRemainStable)
+{
+    constexpr std::string_view golden_hex
+        = "4f4d534e41503031010000000100000001000000040000000000000000000000"
+          "0000000000000000000000000000000000000000000000000069666430010000"
+          "0002000000030000000000000000040000001201010200010000000600000000"
+          "0000000000000000000000000000000000000000000000000000000000";
+    const auto hex_nibble = [](char value) noexcept -> uint8_t {
+        if (value >= '0' && value <= '9') {
+            return static_cast<uint8_t>(value - '0');
+        }
+        if (value >= 'a' && value <= 'f') {
+            return static_cast<uint8_t>(value - 'a' + 10);
+        }
+        return 0xFFU;
+    };
+    std::vector<std::byte> golden;
+    ASSERT_EQ(golden_hex.size() % 2U, 0U);
+    golden.reserve(golden_hex.size() / 2U);
+    for (size_t i = 0U; i < golden_hex.size(); i += 2U) {
+        const uint8_t high = hex_nibble(golden_hex[i]);
+        const uint8_t low  = hex_nibble(golden_hex[i + 1U]);
+        ASSERT_LE(high, 0x0FU);
+        ASSERT_LE(low, 0x0FU);
+        golden.push_back(
+            std::byte { static_cast<uint8_t>((high << 4U) | low) });
+    }
+
+    openmeta::TransferSourceSnapshot snapshot;
+    const openmeta::BlockId block = snapshot.store.add_block(
+        openmeta::BlockInfo { 1U, 2U, 3U });
+    openmeta::Entry orientation;
+    orientation.key   = openmeta::make_exif_tag_key(snapshot.store.arena(),
+                                                    "ifd0", 0x0112U);
+    orientation.value = openmeta::make_u16(6U);
+    orientation.origin.block = block;
+    ASSERT_EQ(snapshot.store.add_entry(orientation), 0U);
+    snapshot.store.finalize();
+
+    std::vector<std::byte> encoded;
+    ASSERT_EQ(
+        openmeta::serialize_transfer_source_snapshot(snapshot, &encoded).status,
+        openmeta::TransferStatus::Ok);
+    ASSERT_EQ(encoded.size(), golden.size());
+    for (size_t i = 0U; i < encoded.size(); ++i) {
+        EXPECT_EQ(encoded[i], golden[i]) << "wire byte " << i;
+    }
+
+    openmeta::TransferSourceSnapshot decoded;
+    ASSERT_EQ(
+        openmeta::deserialize_transfer_source_snapshot(golden, &decoded).status,
+        openmeta::TransferStatus::Ok);
+    ASSERT_EQ(decoded.store.entries().size(), 1U);
+    EXPECT_EQ(decoded.store.entry(0U).value.data.u64, 6U);
+    std::vector<std::byte> reencoded;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(decoded, &reencoded)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(reencoded, golden);
+
+    std::vector<std::byte> future = golden;
+    future[8U]                    = std::byte { 2U };
+    openmeta::TransferSourceSnapshot unchanged
+        = openmeta::build_transfer_source_snapshot(decoded.store);
+    const openmeta::TransferSourceSnapshotIoResult unsupported
+        = openmeta::deserialize_transfer_source_snapshot(future, &unchanged);
+    EXPECT_EQ(unsupported.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(unsupported.code,
+              openmeta::TransferSourceSnapshotIoCode::UnsupportedVersion);
+    EXPECT_EQ(unchanged.store.entries().size(), 1U);
+    EXPECT_EQ(unchanged.store.entry(0U).value.data.u64, 6U);
+}
+
+TEST(MetadataTransferApi,
+     SnapshotFlatHostReconciliationPreservesUntouchedMetadataAndLinks)
+{
+    openmeta::TransferSourceSnapshot source;
+    const openmeta::BlockId block = source.store.add_block(
+        openmeta::BlockInfo { 1U, 2U, 3U });
+
+    openmeta::Entry iso;
+    iso.key   = openmeta::make_exif_tag_key(source.store.arena(), "exififd",
+                                            0x8827U);
+    iso.value = openmeta::make_u16(100U);
+    iso.origin.block          = block;
+    iso.origin.order_in_block = 0U;
+    ASSERT_EQ(source.store.add_entry(iso), 0U);
+
+    openmeta::Entry rating;
+    rating.key          = openmeta::make_xmp_property_key(source.store.arena(),
+                                                          "http://ns.adobe.com/xap/1.0/",
+                                                          "Rating");
+    rating.value        = openmeta::make_u16(3U);
+    rating.origin.block = block;
+    rating.origin.order_in_block = 1U;
+    ASSERT_EQ(source.store.add_entry(rating), 1U);
+
+    openmeta::Entry untouched;
+    untouched.key = openmeta::make_xmp_property_key(
+        source.store.arena(), "http://ns.adobe.com/xap/1.0/", "CreatorTool");
+    untouched.value = openmeta::make_text(source.store.arena(), "keep-complex",
+                                          openmeta::TextEncoding::Utf8);
+    untouched.origin.block          = block;
+    untouched.origin.order_in_block = 2U;
+    ASSERT_EQ(source.store.add_entry(untouched), 2U);
+    source.store.finalize();
+
+    openmeta::TransferSourceRawCarrier carrier;
+    carrier.semantic_kind     = openmeta::TransferBlockKind::Xmp;
+    carrier.route             = "jpeg:app1-xmp";
+    carrier.payload_preserved = true;
+    carrier.payload           = { std::byte { 'x' }, std::byte { 'm' },
+                                  std::byte { 'p' } };
+    carrier.decoded_entry_ids = { 1U, 2U };
+    source.raw_carriers.push_back(carrier);
+    source.raw_carrier_bytes = carrier.payload.size();
+
+    std::vector<std::byte> persisted;
+    ASSERT_EQ(
+        openmeta::serialize_transfer_source_snapshot(source, &persisted).status,
+        openmeta::TransferStatus::Ok);
+    openmeta::TransferSourceSnapshot snapshot;
+    ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(persisted,
+                                                             &snapshot)
+                  .status,
+              openmeta::TransferStatus::Ok);
+
+    openmeta::FlatHostImportValue iso_value;
+    iso_value.kind       = openmeta::MetaValueKind::Scalar;
+    iso_value.elem_type  = openmeta::MetaElementType::U16;
+    iso_value.count      = 1U;
+    iso_value.scalar.u64 = 200U;
+    const std::array<std::byte, 3> custom_value
+        = { std::byte { 'n' }, std::byte { 'e' }, std::byte { 'w' } };
+    std::array<openmeta::FlatHostImportItem, 3> items;
+    items[0].name         = "Exif:ISOSpeedRatings";
+    items[0].target       = openmeta::FlatHostImportTarget::UniqueName;
+    items[0].value        = iso_value;
+    items[1].name         = "XMP:Rating";
+    items[1].target       = openmeta::FlatHostImportTarget::RemoveSourceEntry;
+    items[1].source_entry = 1U;
+    items[2].name         = "XMP:Label";
+    items[2].target       = openmeta::FlatHostImportTarget::ExplicitKey;
+    items[2].explicit_key.kind = openmeta::MetaKeyKind::XmpProperty;
+    items[2].explicit_key.data.xmp_property.schema_ns
+        = "http://ns.adobe.com/xap/1.0/";
+    items[2].explicit_key.data.xmp_property.property_path = "Label";
+    items[2].value.kind          = openmeta::MetaValueKind::Text;
+    items[2].value.elem_type     = openmeta::MetaElementType::U8;
+    items[2].value.text_encoding = openmeta::TextEncoding::Utf8;
+    items[2].value.count         = custom_value.size();
+    items[2].value.payload       = custom_value;
+
+    openmeta::FlatHostImportOptions import_options;
+    import_options.name_policy = openmeta::ExportNamePolicy::Spec;
+    openmeta::FlatHostImportResult imported
+        = openmeta::import_flat_host_metadata(snapshot.store, items,
+                                              import_options);
+    ASSERT_TRUE(imported.ok()) << imported.message;
+    snapshot.store = std::move(imported.store);
+
+    ASSERT_EQ(snapshot.store.entries().size(), 4U);
+    EXPECT_EQ(snapshot.store.entry(0U).value.data.u64, 200U);
+    EXPECT_TRUE(
+        any(snapshot.store.entry(1U).flags, openmeta::EntryFlags::Deleted));
+    const std::span<const std::byte> untouched_bytes
+        = snapshot.store.arena().span(snapshot.store.entry(2U).value.data.span);
+    EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                   untouched_bytes.data()),
+                               untouched_bytes.size()),
+              "keep-complex");
+    ASSERT_EQ(snapshot.raw_carriers.size(), 1U);
+    EXPECT_EQ(snapshot.raw_carriers[0].decoded_entry_ids,
+              (std::vector<openmeta::EntryId> { 1U, 2U }));
+
+    openmeta::PrepareTransferRequest request;
+    request.target_format = openmeta::TransferTargetFormat::Jpeg;
+    openmeta::PreparedTransferBundle bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(snapshot, request,
+                                                             &bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    bool saw_untouched = false;
+    bool saw_new       = false;
+    for (const openmeta::PreparedTransferBlock& prepared : bundle.blocks) {
+        const std::string_view bytes(reinterpret_cast<const char*>(
+                                         prepared.payload.data()),
+                                     prepared.payload.size());
+        saw_untouched = saw_untouched
+                        || bytes.find("keep-complex") != std::string_view::npos;
+        saw_new = saw_new || bytes.find("new") != std::string_view::npos;
+        EXPECT_EQ(bytes.find("xmp:Rating"), std::string_view::npos);
+    }
+    EXPECT_TRUE(saw_untouched);
+    EXPECT_TRUE(saw_new);
+
+    std::vector<std::byte> reconciled;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(snapshot, &reconciled)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::TransferSourceSnapshot restored;
+    ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(reconciled,
+                                                             &restored)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    ASSERT_EQ(restored.store.entries().size(), 4U);
+    EXPECT_TRUE(
+        any(restored.store.entry(1U).flags, openmeta::EntryFlags::Deleted));
+    EXPECT_EQ(restored.raw_carriers[0].decoded_entry_ids,
+              snapshot.raw_carriers[0].decoded_entry_ids);
 }
 
 }  // namespace

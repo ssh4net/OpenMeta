@@ -269,7 +269,10 @@ returns a detached finalized `MetaStore`. Existing values may be selected by the
 source `EntryId`, or by name only when that `FlatHost` name is unique. Duplicate
 names are intentionally ambiguous. New custom XMP, EXIF, IPTC, or other entries
 must include an explicit `MetaKeyView`; OpenMeta does not guess a namespace or
-numeric tag from a lossy flat name.
+numeric tag from a lossy flat name. `RemoveSourceEntry` and `RemoveUniqueName`
+requests use an empty value and retain a `Dirty | Deleted` tombstone. This keeps
+entry ids, provenance, and snapshot raw-carrier links stable while subsequent
+export and transfer omit the deleted metadata.
 
 ### Random-Access Source Foundation
 
@@ -367,13 +370,31 @@ openmeta::PrepareTransferFileResult prepared =
 openmeta::PreparedTransferAdapterView view;
 openmeta::build_prepared_transfer_adapter_view(
     prepared.bundle, &view, openmeta::EmitTransferOptions {});
+openmeta::validate_prepared_transfer_adapter_view(prepared.bundle, view);
 
 MySink sink;
 openmeta::emit_prepared_transfer_adapter_view(prepared.bundle, view, sink);
 ```
 
 This is a good fit when your host already has its own abstraction for
-"metadata op + bytes".
+"metadata op + bytes". `kPreparedTransferAdapterContractVersion` versions the
+codec-facing operation schema independently from internal route strings.
+
+| Operation kind | Insertion fields |
+| --- | --- |
+| `JpegMarker` | `jpeg_marker_code` and marker payload |
+| `TiffTagBytes` | `tiff_tag` and tag value bytes |
+| `JxlBox` / `JxlIccProfile` | `box_type`, `compress`, or direct ICC payload |
+| `WebpChunk` / `PngChunk` | `chunk_type` and chunk payload |
+| `Jp2Box` | `box_type` and box payload |
+| `BmffItem` / `BmffProperty` | item/property type, subtype, MIME-XMP flag, and payload |
+| `ExrAttribute` | call `get_prepared_transfer_adapter_exr_attribute_view(...)` for borrowed name, type, and value |
+
+`validate_prepared_transfer_adapter_view(...)` rebuilds the canonical operation
+list and compares every kind-specific field. Hosts should validate cached or
+cross-layer views before codec handoff. Payload spans passed to
+`TransferAdapterSink::emit_op(...)` are borrowed for that call. The typed EXR
+view borrows from the unchanged source bundle.
 
 ### Backend-Emitter Pattern
 
@@ -531,6 +552,45 @@ openmeta::deserialize_transfer_source_snapshot(persisted, &restored);
 The parser is transactional and bounded by `TransferSourceSnapshotIoOptions`.
 Serialization preserves raw carrier bytes only when they were captured in the
 snapshot; it does not make those bytes safe to relocate or rewrite.
+The canonical v1 wire representation is compatibility-locked. Current readers
+accept v1 and reject unknown versions without changing the output snapshot.
+
+### Reconcile Host Attributes After Deserialization
+
+The supported deferred-edit sequence is:
+
+1. Deserialize the source snapshot.
+2. Compare the host's current FlatHost attributes with its saved export.
+3. Import changed values, explicit additions, and removals.
+4. Replace only the snapshot store after a successful transaction.
+5. Prepare target-specific payloads from the reconciled snapshot.
+
+```cpp
+openmeta::TransferSourceSnapshot snapshot;
+openmeta::deserialize_transfer_source_snapshot(persisted, &snapshot);
+
+std::vector<openmeta::FlatHostImportItem> changes = host_changes();
+openmeta::FlatHostImportOptions import_options;
+import_options.name_policy = openmeta::ExportNamePolicy::Spec;
+
+openmeta::FlatHostImportResult imported =
+    openmeta::import_flat_host_metadata(snapshot.store, changes,
+                                        import_options);
+if (imported.ok()) {
+    snapshot.store = std::move(imported.store);
+}
+
+openmeta::PrepareTransferRequest request;
+request.target_format = openmeta::TransferTargetFormat::Webp;
+openmeta::PreparedTransferBundle bundle;
+openmeta::prepare_metadata_for_target_snapshot(snapshot, request, &bundle);
+```
+
+Import preserves every source entry position and appends additions, so raw
+carrier `decoded_entry_ids` remain valid. Tombstones preserve removed-entry
+identity. Untouched complex metadata and optional raw carriers remain in the
+snapshot; normal target safety and serialization policy still decides what is
+emitted.
 Snapshot execution supports the same existing-sidecar merge and destination
 carrier-precedence controls as the file helper; when loading an existing
 sidecar it defaults to `edit_target_path` unless

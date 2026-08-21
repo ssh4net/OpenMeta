@@ -105,8 +105,14 @@ projection.
 - `FlatHostImportTarget::ExplicitKey` appends a new entry from a caller-supplied
   `MetaKeyView`. This is the path for custom XMP and metadata that did not exist
   in the source store.
+- `FlatHostImportTarget::RemoveSourceEntry` and `RemoveUniqueName` retain the
+  matching source entry as a `Dirty | Deleted` tombstone. The request value must
+  be empty. Stable entry ids, provenance, and snapshot raw-carrier links are
+  preserved while export, lookup, and transfer omit the deleted value.
 - Values retain scalar/array/bytes/text kind, element type, count, and text
   encoding. Byte arrays are never converted to text implicitly.
+- One import cannot update and remove the same source entry twice. Duplicate
+  targets fail the complete transaction without changing the source.
 - Import uses local state and is safe to call concurrently against an immutable
   finalized source store.
 

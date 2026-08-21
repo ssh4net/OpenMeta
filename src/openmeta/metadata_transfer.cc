@@ -18699,6 +18699,13 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
         out.message = "out_jpeg is null";
         return out;
     }
+    if (bundle.contract_version != kMetadataTransferContractVersion) {
+        out.status  = TransferStatus::InvalidArgument;
+        out.code    = EmitTransferCode::PlanMismatch;
+        out.errors  = 1U;
+        out.message = "prepared bundle contract_version is unsupported";
+        return out;
+    }
     if (plan.status != TransferStatus::Ok) {
         out.status  = TransferStatus::InvalidArgument;
         out.code    = EmitTransferCode::InvalidArgument;
@@ -32059,7 +32066,7 @@ build_prepared_transfer_adapter_view(const PreparedTransferBundle& bundle,
     }
 
     PreparedTransferAdapterView view;
-    view.contract_version = bundle.contract_version;
+    view.contract_version = kPreparedTransferAdapterContractVersion;
     view.target_format    = bundle.target_format;
     view.emit             = options;
 
@@ -32196,17 +32203,45 @@ build_prepared_transfer_adapter_view(const PreparedTransferBundle& bundle,
     return out;
 }
 
+namespace {
+
+    static bool prepared_transfer_adapter_op_equal(
+        const PreparedTransferAdapterOp& a,
+        const PreparedTransferAdapterOp& b) noexcept
+    {
+        return a.kind == b.kind && a.block_index == b.block_index
+               && a.payload_size == b.payload_size
+               && a.serialized_size == b.serialized_size
+               && a.jpeg_marker_code == b.jpeg_marker_code
+               && a.tiff_tag == b.tiff_tag && a.box_type == b.box_type
+               && a.chunk_type == b.chunk_type
+               && a.bmff_item_type == b.bmff_item_type
+               && a.bmff_property_type == b.bmff_property_type
+               && a.bmff_property_subtype == b.bmff_property_subtype
+               && a.bmff_mime_xmp == b.bmff_mime_xmp
+               && a.compress == b.compress;
+    }
+
+}  // namespace
+
 EmitTransferResult
-emit_prepared_transfer_adapter_view(const PreparedTransferBundle& bundle,
-                                    const PreparedTransferAdapterView& view,
-                                    TransferAdapterSink& sink) noexcept
+validate_prepared_transfer_adapter_view(
+    const PreparedTransferBundle& bundle,
+    const PreparedTransferAdapterView& view) noexcept
 {
     EmitTransferResult out;
-    if (view.contract_version != bundle.contract_version) {
+    if (bundle.contract_version != kMetadataTransferContractVersion) {
         out.status  = TransferStatus::InvalidArgument;
         out.code    = EmitTransferCode::PlanMismatch;
         out.errors  = 1U;
-        out.message = "adapter view contract_version mismatch";
+        out.message = "prepared bundle contract_version is unsupported";
+        return out;
+    }
+    if (view.contract_version != kPreparedTransferAdapterContractVersion) {
+        out.status  = TransferStatus::InvalidArgument;
+        out.code    = EmitTransferCode::PlanMismatch;
+        out.errors  = 1U;
+        out.message = "adapter view contract_version is unsupported";
         return out;
     }
     if (view.target_format != bundle.target_format) {
@@ -32216,6 +32251,123 @@ emit_prepared_transfer_adapter_view(const PreparedTransferBundle& bundle,
         out.message = "adapter view target_format mismatch";
         return out;
     }
+
+    PreparedTransferAdapterView expected;
+    const EmitTransferResult built
+        = build_prepared_transfer_adapter_view(bundle, &expected, view.emit);
+    if (built.status != TransferStatus::Ok) {
+        return built;
+    }
+    if (view.ops.size() != expected.ops.size()) {
+        out.status  = TransferStatus::InvalidArgument;
+        out.code    = EmitTransferCode::PlanMismatch;
+        out.errors  = 1U;
+        out.message = "adapter view operation count mismatch";
+        return out;
+    }
+    for (size_t i = 0U; i < view.ops.size(); ++i) {
+        if (!prepared_transfer_adapter_op_equal(view.ops[i], expected.ops[i])) {
+            out.status             = TransferStatus::InvalidArgument;
+            out.code               = EmitTransferCode::PlanMismatch;
+            out.errors             = 1U;
+            out.failed_block_index = view.ops[i].block_index;
+            out.message            = "adapter view operation mismatch";
+            return out;
+        }
+    }
+
+    out.status  = TransferStatus::Ok;
+    out.code    = EmitTransferCode::None;
+    out.emitted = static_cast<uint32_t>(view.ops.size());
+    return out;
+}
+
+EmitTransferResult
+get_prepared_transfer_adapter_exr_attribute_view(
+    const PreparedTransferBundle& bundle, const PreparedTransferAdapterOp& op,
+    ExrPreparedAttributeView* out_attribute) noexcept
+{
+    EmitTransferResult out;
+    if (!out_attribute) {
+        out.status  = TransferStatus::InvalidArgument;
+        out.code    = EmitTransferCode::InvalidArgument;
+        out.errors  = 1U;
+        out.message = "out_attribute is null";
+        return out;
+    }
+    if (bundle.target_format != TransferTargetFormat::Exr
+        || bundle.contract_version != kMetadataTransferContractVersion) {
+        out.status  = TransferStatus::InvalidArgument;
+        out.code    = EmitTransferCode::PlanMismatch;
+        out.errors  = 1U;
+        out.message = "adapter EXR bundle is incompatible";
+        return out;
+    }
+
+    PreparedTransferAdapterView expected;
+    const EmitTransferResult built
+        = build_prepared_transfer_adapter_view(bundle, &expected,
+                                               EmitTransferOptions {});
+    if (built.status != TransferStatus::Ok) {
+        return built;
+    }
+    bool matched = false;
+    for (const PreparedTransferAdapterOp& candidate : expected.ops) {
+        if (candidate.block_index == op.block_index
+            && prepared_transfer_adapter_op_equal(candidate, op)) {
+            matched = true;
+            break;
+        }
+    }
+    if (!matched || op.kind != TransferAdapterOpKind::ExrAttribute
+        || op.block_index >= bundle.blocks.size()) {
+        out.status             = TransferStatus::InvalidArgument;
+        out.code               = EmitTransferCode::PlanMismatch;
+        out.errors             = 1U;
+        out.failed_block_index = op.block_index;
+        out.message            = "adapter EXR operation mismatch";
+        return out;
+    }
+
+    const PreparedTransferBlock& block = bundle.blocks[op.block_index];
+    std::string_view name;
+    std::span<const std::byte> value;
+    if (!exr_string_attribute_from_route(block.route)
+        || !parse_exr_string_attribute_payload_view(
+            std::span<const std::byte>(block.payload.data(),
+                                       block.payload.size()),
+            &name, &value)) {
+        out.status             = TransferStatus::Malformed;
+        out.code               = EmitTransferCode::InvalidPayload;
+        out.errors             = 1U;
+        out.failed_block_index = op.block_index;
+        out.message            = "adapter EXR attribute payload is malformed";
+        return out;
+    }
+
+    ExrPreparedAttributeView attribute;
+    attribute.name      = name;
+    attribute.type_name = "string";
+    attribute.value     = value;
+    attribute.is_opaque = false;
+    *out_attribute      = attribute;
+    out.status          = TransferStatus::Ok;
+    out.code            = EmitTransferCode::None;
+    out.emitted         = 1U;
+    return out;
+}
+
+EmitTransferResult
+emit_prepared_transfer_adapter_view(const PreparedTransferBundle& bundle,
+                                    const PreparedTransferAdapterView& view,
+                                    TransferAdapterSink& sink) noexcept
+{
+    EmitTransferResult out = validate_prepared_transfer_adapter_view(bundle,
+                                                                     view);
+    if (out.status != TransferStatus::Ok) {
+        return out;
+    }
+    out.emitted = 0U;
 
     for (size_t i = 0; i < view.ops.size(); ++i) {
         const PreparedTransferAdapterOp& op = view.ops[i];

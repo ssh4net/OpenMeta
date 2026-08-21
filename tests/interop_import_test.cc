@@ -168,4 +168,66 @@ TEST(InteropImport, RejectsIdentityNameMismatchAndInvalidArrayShape)
               FlatHostImportCode::InvalidValue);
 }
 
+TEST(InteropImport, TombstonesByUniqueNameAndSourceIdentity)
+{
+    const MetaStore source = make_import_source();
+    std::array<FlatHostImportItem, 2> items;
+    items[0].name         = "Exif:ISOSpeedRatings";
+    items[0].target       = FlatHostImportTarget::RemoveUniqueName;
+    items[1].name         = "XMP:Rating";
+    items[1].target       = FlatHostImportTarget::RemoveSourceEntry;
+    items[1].source_entry = 2U;
+
+    const FlatHostImportResult result = import_flat_host_metadata(source,
+                                                                  items);
+
+    ASSERT_TRUE(result.ok()) << result.message;
+    EXPECT_EQ(result.imported, 2U);
+    EXPECT_EQ(result.updated, 2U);
+    EXPECT_EQ(result.added, 0U);
+    ASSERT_EQ(result.store.entries().size(), source.entries().size());
+    for (EntryId id : std::array<EntryId, 2> { 0U, 2U }) {
+        const Entry& before = source.entry(id);
+        const Entry& after  = result.store.entry(id);
+        EXPECT_EQ(after.value.kind, before.value.kind);
+        EXPECT_EQ(after.value.data.u64, before.value.data.u64);
+        EXPECT_EQ(after.origin.block, before.origin.block);
+        EXPECT_EQ(after.origin.order_in_block, before.origin.order_in_block);
+        EXPECT_TRUE(any(after.flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(after.flags, EntryFlags::Deleted));
+    }
+    EXPECT_FALSE(any(result.store.entry(1U).flags, EntryFlags::Deleted));
+
+    MetaKeyView iso_key;
+    iso_key.kind                              = MetaKeyKind::ExifTag;
+    iso_key.data.exif_tag.ifd                 = "exififd";
+    iso_key.data.exif_tag.tag                 = 0x8827U;
+    const std::span<const EntryId> active_iso = result.store.find_all(iso_key);
+    EXPECT_TRUE(active_iso.empty());
+}
+
+TEST(InteropImport, RejectsAmbiguousOrValuedTombstonesAtomically)
+{
+    const MetaStore source = make_import_source();
+
+    FlatHostImportItem ambiguous;
+    ambiguous.name   = "XMP:Rating";
+    ambiguous.target = FlatHostImportTarget::RemoveUniqueName;
+    const FlatHostImportResult ambiguous_result = import_flat_host_metadata(
+        source, std::span<const FlatHostImportItem>(&ambiguous, 1U));
+    EXPECT_EQ(ambiguous_result.code, FlatHostImportCode::AmbiguousName);
+    EXPECT_TRUE(ambiguous_result.store.entries().empty());
+
+    FlatHostImportItem valued;
+    valued.name         = "Exif:ISOSpeedRatings";
+    valued.target       = FlatHostImportTarget::RemoveSourceEntry;
+    valued.source_entry = 0U;
+    valued.value        = scalar_u16(800U);
+    const FlatHostImportResult valued_result = import_flat_host_metadata(
+        source, std::span<const FlatHostImportItem>(&valued, 1U));
+    EXPECT_EQ(valued_result.code, FlatHostImportCode::InvalidValue);
+    EXPECT_TRUE(valued_result.store.entries().empty());
+    EXPECT_FALSE(any(source.entry(0U).flags, EntryFlags::Deleted));
+}
+
 }  // namespace openmeta

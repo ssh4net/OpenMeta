@@ -1,5 +1,38 @@
 # OpenMeta Changes
 
+## 0.4.110 - 2026-08-21
+
+Changes compared with `0.4.109`.
+
+### Added
+
+- Added transactional FlatHost remove-by-entry and remove-by-unique-name
+  operations that preserve stable `Dirty | Deleted` tombstones, provenance,
+  entry ids, and snapshot raw-carrier links.
+- Added canonical validation for the codec-facing typed adapter operation list
+  and a typed EXR name/type/value accessor that avoids route or payload-framing
+  parsing in host codecs.
+- Added a tested deferred reconciliation workflow for deserializing a snapshot,
+  importing changed/added/removed host attributes, preserving untouched complex
+  metadata, and preparing target payloads.
+
+### Changed
+
+- Split the stable v1 adapter operation schema from the broader experimental
+  transfer contract through `kPreparedTransferAdapterContractVersion`.
+- Compatibility-locked canonical source-snapshot v1 bytes while retaining
+  bounded transactional parsing and atomic unknown-version rejection.
+- Kept C++17 wrappers explicitly downstream-owned; OpenMeta remains a C++20
+  library and does not plan an in-repository C++17 bridge.
+
+### Tests And Validation
+
+- Added FlatHost tombstone identity, ambiguity, non-empty-value rejection, and
+  source-immutability coverage.
+- Added exact adapter field mutation detection, typed EXR resolution, snapshot
+  reconciliation, raw-carrier link retention, and canonical v1 byte-vector
+  regressions.
+
 ## 0.4.109 - 2026-08-20
 
 Changes compared with `0.4.108`.

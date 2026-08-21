@@ -1003,8 +1003,18 @@ writer-confidence slice above; it should be sequenced around it.
 - [x] provide transactional typed `FlatHost` import by exact source identity,
   unique exported name, or explicit `MetaKeyView`; reject ambiguous name-only
   inverse mapping
-- [ ] provide full prepared-bundle serialization if hosts need to prepare once
-  and apply later to encoded target bytes
+- [x] add FlatHost remove-by-identity and remove-by-unique-name operations that
+  preserve stable `Dirty | Deleted` tombstones and raw-carrier entry links
+- [x] document and test the deferred reconciliation sequence: deserialize
+  snapshot, import changed/add/remove FlatHost records, retain untouched
+  metadata, then prepare target payloads
+- [x] compatibility-lock the canonical snapshot v1 bytes with exact decode and
+  re-encode coverage plus atomic rejection of unknown versions
+- [x] define the typed adapter operation schema as a dedicated v1 contract,
+  validate every kind-specific field against a canonical rebuild, and expose
+  EXR name/type/value without route parsing
+- [ ] provide full prepared-bundle serialization only if a concrete host needs
+  more than the existing snapshot and prepared payload/package persistence
 
 #### Supporting Work
 
@@ -1020,8 +1030,8 @@ writer-confidence slice above; it should be sequenced around it.
   exact reads, short-read/I/O/source-change results, and caller-owned request
   and byte accounting; format support still requires the scanner and decoder
   work below and must not silently materialize the complete source
-- [ ] defer any C ABI or opaque-handle facade until the host-facing C++ API is
-  stable enough to freeze a narrow bridge
+- [x] keep OpenMeta C++20-only; C++17 consumers own any dedicated private
+  wrapper, and no C++17 bridge is planned in this repository
 
 #### Random-Access Read Work Packages
 

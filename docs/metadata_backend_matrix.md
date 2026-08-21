@@ -366,7 +366,8 @@ container call mapping.
       package batches.
     - `import_flat_host_metadata(...)` provides bounded typed writeback by exact
       source identity or unique exported name, with explicit keys required for
-      new custom metadata. Duplicate flat names are never collapsed implicitly.
+      new custom metadata. Remove-by-identity and remove-by-unique-name preserve
+      stable tombstones; duplicate flat names are never collapsed implicitly.
     - `collect_prepared_transfer_package_views(...)` is the target-neutral
       semantic package surface above that persisted batch.
     - `replay_prepared_transfer_package_batch(...)` is the target-neutral
@@ -374,8 +375,10 @@ container call mapping.
     - OpenMeta no longer ships an in-library host-specific payload/package
       bridge above these target-neutral package views and replay APIs.
     - `build_prepared_transfer_adapter_view(...)` now provides the parallel
-      target-neutral adapter view for JPEG/TIFF/JXL host integrations that
-      want explicit compiled operations without route parsing.
+      target-neutral adapter view for JPEG/TIFF/JXL/WebP/PNG/JP2/EXR/BMFF host
+      integrations that want explicit compiled operations without route
+      parsing. The v1 operation schema has a dedicated contract version and
+      canonical validation; EXR name/type/value uses a typed accessor.
     - `emit_prepared_transfer_adapter_view(...)` replays that compiled view
       through one generic host sink.
     - `replay_prepared_transfer_payload_batch(...)` now reuses that same

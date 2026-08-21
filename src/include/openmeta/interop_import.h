@@ -29,6 +29,10 @@ enum class FlatHostImportTarget : uint8_t {
     UniqueName,
     /// Append a new entry using the explicit typed key in the import item.
     ExplicitKey,
+    /// Tombstone one exact source entry exported earlier by the host.
+    RemoveSourceEntry,
+    /// Tombstone an existing source entry only when its exported name is unique.
+    RemoveUniqueName,
 };
 
 /// Stable result code for \ref import_flat_host_metadata.
@@ -99,9 +103,13 @@ struct FlatHostImportResult final {
  * \brief Import ordered typed flat-host records into a detached store.
  *
  * The finalized source is never modified. Existing entries may be selected by
- * exact entry id or by a unique FlatHost name under \p options. New entries
- * require an explicit typed key, because FlatHost names are intentionally
- * lossy and cannot safely reconstruct arbitrary metadata namespaces.
+ * exact entry id or by a unique FlatHost name under \p options. Remove targets
+ * retain the source entry as a `Dirty | Deleted` tombstone so entry ids,
+ * provenance, and snapshot raw-carrier links remain stable; their value must be
+ * the default empty value. New entries require an explicit typed key, because
+ * FlatHost names are intentionally lossy and cannot safely reconstruct
+ * arbitrary metadata namespaces. `FlatHostImportResult::updated` includes
+ * both value updates and tombstones.
  *
  * Calls use only local mutable state and are safe to run concurrently against
  * an immutable finalized source store.
