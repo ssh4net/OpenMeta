@@ -1100,6 +1100,12 @@ The CLI smoke and release gates use Python to create deterministic fixtures.
 Set `OPENMETA_PYTHON_EXECUTABLE` when the intended interpreter is not named
 `python3` or is outside `PATH`.
 
+`tests/public_metadata_fixtures.h` provides compact, source-built public
+integration fixtures for TIFF/DNG with a representative Nikon MakerNote,
+WebP, AVIF, JP2, JXL, RAF, X3F, and CRW. These fixtures contain no copied
+third-party files and are suitable for downstream smoke tests that need stable
+metadata carriers without external assets.
+
 Optional CLI integration test for preview index suffixing:
 ```bash
 cmake -S . -B build-tests -G Ninja -DCMAKE_BUILD_TYPE=Debug \

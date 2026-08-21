@@ -1,5 +1,37 @@
 # OpenMeta Changes
 
+## 0.4.111 - 2026-08-21
+
+Changes compared with `0.4.110`.
+
+### Added
+
+- Added bounded positional native metadata decoders for Fujifilm RAF, Sigma
+  X3F, and Canon CRW/CIFF with caller-owned structural/value scratch and
+  cumulative request/byte limits.
+- Added allocation-free structured positional-read diagnostics for source I/O,
+  malformed container/payload families, resource ceilings, scratch sizing,
+  incomplete requested MakerNote lanes, raw-carrier truncation, and residual
+  metadata paths.
+- Added compact source-built public integration fixtures for TIFF/DNG with a
+  representative Nikon MakerNote, WebP, AVIF, JP2, JXL, RAF, X3F, and CRW.
+
+### Changed
+
+- Positional source snapshot assembly now accepts explicitly typed RAF, X3F,
+  and CRW sources without whole-file buffering or reads through image payload
+  ranges.
+- Optional RAF/X3F embedded-preview recursion, unsupported nested MakerNote
+  paths, selected BMFF source-wide enrichment, and whole-file raw-carrier
+  preservation remain explicit residuals rather than hidden whole-file reads.
+
+### Tests And Validation
+
+- Added contiguous-versus-callback native RAW parity, denied pixel-range,
+  malformed offset, caller-scratch, and cumulative request-limit regressions.
+- Added portable fixture decode and structured diagnostic count/detail/message
+  coverage.
+
 ## 0.4.110 - 2026-08-21
 
 Changes compared with `0.4.109`.

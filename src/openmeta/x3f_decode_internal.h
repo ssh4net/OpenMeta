@@ -17,4 +17,10 @@ ExifDecodeResult
 decode_x3f_native(std::span<const std::byte> file_bytes, MetaStore& store,
                   const ExifDecodeLimits& limits) noexcept;
 
+ExifRandomAccessDecodeResult
+decode_x3f_native_random_access(
+    const RandomAccessSourceRange& source, MetaStore& store,
+    const ExifRandomAccessScratch& scratch, const ExifDecodeLimits& limits,
+    const RandomAccessReadLimits& read_limits) noexcept;
+
 }  // namespace openmeta::x3f_internal

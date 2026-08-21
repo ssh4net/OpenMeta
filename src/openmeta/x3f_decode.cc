@@ -82,6 +82,21 @@ namespace {
         return true;
     }
 
+    static void update_status(ExifDecodeResult* out,
+                              ExifDecodeStatus status) noexcept
+    {
+        if (!out || out->status == ExifDecodeStatus::LimitExceeded) {
+            return;
+        }
+        if (status == ExifDecodeStatus::LimitExceeded
+            || (status == ExifDecodeStatus::Malformed
+                && out->status != ExifDecodeStatus::Malformed)
+            || (status == ExifDecodeStatus::OutputTruncated
+                && out->status != ExifDecodeStatus::Malformed)) {
+            out->status = status;
+        }
+    }
+
     static bool can_emit(const ExifDecodeLimits& limits,
                          ExifDecodeResult* out) noexcept
     {
@@ -509,6 +524,155 @@ decode_x3f_native(std::span<const std::byte> file_bytes, MetaStore& store,
         out.status = ExifDecodeStatus::Unsupported;
     }
     return out;
+}
+
+ExifRandomAccessDecodeResult
+decode_x3f_native_random_access(
+    const RandomAccessSourceRange& source, MetaStore& store,
+    const ExifRandomAccessScratch& scratch, const ExifDecodeLimits& limits,
+    const RandomAccessReadLimits& read_limits) noexcept
+{
+    ExifRandomAccessDecodeResult result;
+    result.decode.status = ExifDecodeStatus::Unsupported;
+    if (!random_access_source_range_valid(source)) {
+        result.input.code = RandomAccessReadCode::InvalidArgument;
+        return result;
+    }
+    if (source.source.contiguous_data != nullptr) {
+        const std::byte* begin = source.source.contiguous_data
+                                 + static_cast<size_t>(source.source_offset);
+        result.decode = decode_x3f_native(
+            std::span<const std::byte>(begin, static_cast<size_t>(source.size)),
+            store, limits);
+        return result;
+    }
+    if (source.size < 4U) {
+        return result;
+    }
+
+    std::array<std::byte, 264U> header {};
+    const size_t header_size = static_cast<size_t>(
+        source.size < header.size() ? source.size : header.size());
+    if (random_access_read_exact(source, 0U,
+                                 std::span<std::byte>(header).first(header_size),
+                                 &result.input, read_limits)
+        != RandomAccessReadCode::Ok) {
+        return result;
+    }
+    const std::span<const std::byte> header_bytes(header.data(), header_size);
+    if (!looks_like_x3f(header_bytes)) {
+        return result;
+    }
+
+    result.decode.status = ExifDecodeStatus::Ok;
+    const BlockId block  = store.add_block(BlockInfo {});
+    if (block == kInvalidBlockId) {
+        result.decode.status = ExifDecodeStatus::LimitExceeded;
+        return result;
+    }
+    bool any = emit_header(header_bytes, store, block, limits, &result.decode);
+    if (source.size < 16U) {
+        if (!any) {
+            result.decode.status = ExifDecodeStatus::Unsupported;
+        }
+        return result;
+    }
+
+    std::array<std::byte, 4U> tail {};
+    if (random_access_read_exact(source, source.size - tail.size(), tail,
+                                 &result.input, read_limits)
+        != RandomAccessReadCode::Ok) {
+        return result;
+    }
+    uint32_t directory_offset = 0U;
+    if (!read_u32le(tail, 0U, &directory_offset)
+        || directory_offset > source.size - 16U) {
+        if (!any) {
+            result.decode.status = ExifDecodeStatus::Unsupported;
+        }
+        return result;
+    }
+
+    std::array<std::byte, 12U + 64U * 12U> directory {};
+    if (random_access_read_exact(source, directory_offset,
+                                 std::span<std::byte>(directory).first(12U),
+                                 &result.input, read_limits)
+        != RandomAccessReadCode::Ok) {
+        return result;
+    }
+    if (!match(directory, 0U, "SECd", 4U)) {
+        if (!any) {
+            result.decode.status = ExifDecodeStatus::Unsupported;
+        }
+        return result;
+    }
+    uint32_t section_count = 0U;
+    if (!read_u32le(directory, 8U, &section_count)) {
+        update_status(&result.decode, ExifDecodeStatus::Malformed);
+        return result;
+    }
+    if (section_count > 64U) {
+        result.decode.status       = ExifDecodeStatus::LimitExceeded;
+        result.decode.limit_reason = ExifLimitReason::MaxEntriesPerIfd;
+        section_count              = 64U;
+    }
+    const uint64_t directory_size
+        = 12ULL + static_cast<uint64_t>(section_count) * 12ULL;
+    if (directory_size > source.size - directory_offset) {
+        update_status(&result.decode, ExifDecodeStatus::Malformed);
+        return result;
+    }
+    if (directory_size > 12U
+        && random_access_read_exact(source, directory_offset + 12U,
+                                    std::span<std::byte>(directory).subspan(
+                                        12U, static_cast<size_t>(directory_size
+                                                                 - 12U)),
+                                    &result.input, read_limits)
+               != RandomAccessReadCode::Ok) {
+        return result;
+    }
+
+    for (uint32_t i = 0U; i < section_count; ++i) {
+        const uint64_t entry_offset = 12ULL + static_cast<uint64_t>(i) * 12ULL;
+        X3fSection section;
+        if (!read_u32le(directory, entry_offset + 0U, &section.offset)
+            || !read_u32le(directory, entry_offset + 4U, &section.size)
+            || !read_u32le(directory, entry_offset + 8U, &section.tag)) {
+            update_status(&result.decode, ExifDecodeStatus::Malformed);
+            return result;
+        }
+        if (section.offset > source.size
+            || section.size
+                   > source.size - static_cast<uint64_t>(section.offset)) {
+            update_status(&result.decode, ExifDecodeStatus::Malformed);
+            return result;
+        }
+        if (section.tag != x3f_tag('P', 'R', 'O', 'P')) {
+            continue;
+        }
+        if (section.size > scratch.value.size()) {
+            result.value_scratch_needed = section.size
+                                                  > result.value_scratch_needed
+                                              ? section.size
+                                              : result.value_scratch_needed;
+            update_status(&result.decode, ExifDecodeStatus::OutputTruncated);
+            continue;
+        }
+        const std::span<std::byte> property = scratch.value.first(
+            static_cast<size_t>(section.size));
+        if (random_access_read_exact(source, section.offset, property,
+                                     &result.input, read_limits)
+            != RandomAccessReadCode::Ok) {
+            return result;
+        }
+        any |= decode_properties(property, store, block, limits,
+                                 &result.decode);
+    }
+
+    if (!any && result.decode.status == ExifDecodeStatus::Ok) {
+        result.decode.status = ExifDecodeStatus::Unsupported;
+    }
+    return result;
 }
 
 }  // namespace openmeta::x3f_internal

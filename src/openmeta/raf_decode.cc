@@ -412,4 +412,92 @@ decode_raf_native(std::span<const std::byte> file_bytes, MetaStore& store,
     return out;
 }
 
+ExifRandomAccessDecodeResult
+decode_raf_native_random_access(
+    const RandomAccessSourceRange& source, MetaStore& store,
+    const ExifRandomAccessScratch& scratch, const ExifDecodeLimits& limits,
+    const RandomAccessReadLimits& read_limits) noexcept
+{
+    ExifRandomAccessDecodeResult result;
+    result.decode.status = ExifDecodeStatus::Unsupported;
+    if (!random_access_source_range_valid(source)) {
+        result.input.code = RandomAccessReadCode::InvalidArgument;
+        return result;
+    }
+    if (source.source.contiguous_data != nullptr) {
+        const std::byte* begin = source.source.contiguous_data
+                                 + static_cast<size_t>(source.source_offset);
+        result.decode = decode_raf_native(
+            std::span<const std::byte>(begin, static_cast<size_t>(source.size)),
+            store, limits);
+        return result;
+    }
+    if (source.size < 16U) {
+        return result;
+    }
+
+    std::array<std::byte, 0x88U> header {};
+    const size_t header_size = static_cast<size_t>(
+        source.size < header.size() ? source.size : header.size());
+    if (random_access_read_exact(source, 0U,
+                                 std::span<std::byte>(header).first(header_size),
+                                 &result.input, read_limits)
+        != RandomAccessReadCode::Ok) {
+        return result;
+    }
+    const std::span<const std::byte> header_bytes(header.data(), header_size);
+    if (!looks_like_raf(header_bytes)) {
+        return result;
+    }
+
+    result.decode.status = ExifDecodeStatus::Ok;
+    const BlockId block  = store.add_block(BlockInfo {});
+    if (block == kInvalidBlockId) {
+        result.decode.status = ExifDecodeStatus::LimitExceeded;
+        return result;
+    }
+    bool any = emit_header_fields(header_bytes, store, block, limits,
+                                  &result.decode);
+
+    static constexpr uint64_t kDirOffsetFields[] = { 0x5cU, 0x78U };
+    static constexpr uint64_t kDirLengthFields[] = { 0x60U, 0x7cU };
+    for (uint32_t i = 0U; i < std::size(kDirOffsetFields); ++i) {
+        uint32_t dir_offset = 0U;
+        uint32_t dir_size   = 0U;
+        if (!exif_internal::read_u32be(header_bytes, kDirOffsetFields[i],
+                                       &dir_offset)
+            || !exif_internal::read_u32be(header_bytes, kDirLengthFields[i],
+                                          &dir_size)
+            || dir_offset == 0U || dir_size == 0U) {
+            continue;
+        }
+        if (dir_offset > source.size
+            || dir_size > source.size - static_cast<uint64_t>(dir_offset)) {
+            update_status(&result.decode, ExifDecodeStatus::Malformed);
+            continue;
+        }
+        if (dir_size > scratch.value.size()) {
+            result.value_scratch_needed = dir_size > result.value_scratch_needed
+                                              ? dir_size
+                                              : result.value_scratch_needed;
+            update_status(&result.decode, ExifDecodeStatus::OutputTruncated);
+            continue;
+        }
+        const std::span<std::byte> directory = scratch.value.first(
+            static_cast<size_t>(dir_size));
+        if (random_access_read_exact(source, dir_offset, directory,
+                                     &result.input, read_limits)
+            != RandomAccessReadCode::Ok) {
+            return result;
+        }
+        any |= decode_raf_directory(directory, i, store, block, limits,
+                                    &result.decode);
+    }
+
+    if (!any && result.decode.status == ExifDecodeStatus::Ok) {
+        result.decode.status = ExifDecodeStatus::Unsupported;
+    }
+    return result;
+}
+
 }  // namespace openmeta::raf_internal

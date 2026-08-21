@@ -15,6 +15,12 @@
 #include <string_view>
 #include <vector>
 
+#if defined(_WIN32)
+#    include <process.h>
+#else
+#    include <unistd.h>
+#endif
+
 #if defined(OPENMETA_HAS_DNG_SDK) && OPENMETA_HAS_DNG_SDK
 #    include "dng_auto_ptr.h"
 #    include "dng_exif.h"
@@ -58,9 +64,15 @@ unique_temp_path(const char* suffix)
     const auto now = std::chrono::steady_clock::now().time_since_epoch();
     const auto ticks = static_cast<unsigned long long>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+    const unsigned long process_id
+#if defined(_WIN32)
+        = static_cast<unsigned long>(::_getpid());
+#else
+        = static_cast<unsigned long>(::getpid());
+#endif
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "/tmp/openmeta_dng_sdk_%llu%s", ticks,
-                  suffix ? suffix : "");
+    std::snprintf(buf, sizeof(buf), "openmeta_dng_sdk_%lu_%llu%s", process_id,
+                  ticks, suffix ? suffix : "");
     return std::string(buf);
 }
 

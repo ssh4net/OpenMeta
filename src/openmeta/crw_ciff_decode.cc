@@ -388,8 +388,7 @@ namespace {
         case 0x2804U: return tag_id == 0x0805U || tag_id == 0x0815U;
         case 0x2807U: return tag_id == 0x0810U;
         case 0x3004U:
-            return tag_id == 0x080BU || tag_id == 0x080CU
-                   || tag_id == 0x080DU;
+            return tag_id == 0x080BU || tag_id == 0x080CU || tag_id == 0x080DU;
         case 0x300AU: return tag_id == 0x0816U || tag_id == 0x0817U;
         default: return false;
         }
@@ -944,9 +943,106 @@ namespace {
                     break;
                 }
                 add_derived_ciff_entry(store, block, next_order++, ifd_token,
-                                       "whitesample", i, make_u16(value), tag_id,
-                                       limits, status_out);
+                                       "whitesample", i, make_u16(value),
+                                       tag_id, limits, status_out);
             }
+        }
+    }
+
+
+    static void decode_leaf_entry(
+        const CiffConfig& cfg, std::string_view ifd_token, ByteSpan ifd_span,
+        bool has_ifd_dir_id, uint16_t ifd_dir_id, uint16_t tag, uint16_t tag_id,
+        std::span<const std::byte> raw, uint64_t value_bytes,
+        bool value_available, MetaStore& store, BlockId block, uint32_t order,
+        const ExifDecodeLimits& limits, ExifDecodeResult* status_out) noexcept
+    {
+        Entry entry;
+        entry.key.kind              = MetaKeyKind::ExifTag;
+        entry.key.data.exif_tag.ifd = ifd_span;
+        entry.key.data.exif_tag.tag = tag_id;
+        entry.origin.block          = block;
+        entry.origin.order_in_block = order;
+        entry.origin.wire_type      = WireType { WireFamily::Other, tag };
+        entry.origin.wire_count     = value_bytes > UINT32_MAX
+                                          ? UINT32_MAX
+                                          : static_cast<uint32_t>(value_bytes);
+
+        if (!value_available) {
+            entry.flags |= EntryFlags::Truncated;
+            update_status(status_out, ExifDecodeStatus::OutputTruncated);
+        } else if (value_bytes > limits.max_value_bytes) {
+            entry.flags |= EntryFlags::Truncated;
+            update_status(status_out, ExifDecodeStatus::LimitExceeded);
+        } else if (has_ifd_dir_id
+                   && decode_known_ciff_native_scalar_value(cfg, ifd_dir_id,
+                                                            tag_id, raw,
+                                                            &entry.value)) {
+            (void)0;
+        } else {
+            switch (ciff_type_bits(tag)) {
+            case 0x0000: {
+                if (raw.size() == 1U) {
+                    entry.value = make_u8(u8(raw[0]));
+                } else {
+                    if (raw.size() > UINT32_MAX) {
+                        update_status(status_out,
+                                      ExifDecodeStatus::LimitExceeded);
+                        break;
+                    }
+                    MetaValue value;
+                    value.kind      = MetaValueKind::Array;
+                    value.elem_type = MetaElementType::U8;
+                    value.count     = static_cast<uint32_t>(raw.size());
+                    value.data.span = store.arena().append(raw);
+                    if (!raw.empty() && value.data.span.size != value.count) {
+                        update_status(status_out,
+                                      ExifDecodeStatus::LimitExceeded);
+                        break;
+                    }
+                    entry.value = value;
+                }
+                break;
+            }
+            case 0x0800:
+                entry.value
+                    = has_ifd_dir_id
+                              && ciff_tag_is_padded_ascii_text(ifd_dir_id,
+                                                               tag_id)
+                          ? decode_padded_ascii_text(store.arena(), raw)
+                          : decode_text_value(store.arena(), raw,
+                                              TextEncoding::Ascii);
+                break;
+            case 0x1000:
+                entry.value = decode_u16_array(cfg, store.arena(), raw,
+                                               status_out);
+                break;
+            case 0x1800:
+                entry.value = decode_u32_array(cfg, store.arena(), raw,
+                                               status_out);
+                break;
+            case 0x2000:
+                entry.value
+                    = has_ifd_dir_id
+                              && ciff_tag_is_padded_ascii_text(ifd_dir_id,
+                                                               tag_id)
+                          ? decode_padded_ascii_text(store.arena(), raw)
+                          : make_bytes(store.arena(), raw);
+                break;
+            default: entry.value = make_bytes(store.arena(), raw); break;
+            }
+        }
+
+        if (store.add_entry(entry) == kInvalidEntryId) {
+            update_status(status_out, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        if (status_out) {
+            status_out->entries_decoded += 1U;
+        }
+        if (value_available && value_bytes <= limits.max_value_bytes) {
+            add_crw_derived_entries(cfg, ifd_token, tag_id, raw, store, block,
+                                    order, limits, status_out);
         }
     }
 
@@ -1095,105 +1191,246 @@ namespace {
                 break;
             }
 
-            Entry entry;
-            entry.key.kind              = MetaKeyKind::ExifTag;
-            entry.key.data.exif_tag.ifd = ifd_span;
-            entry.key.data.exif_tag.tag = tag_id;
-            entry.origin.block          = block;
-            entry.origin.order_in_block = i;
-            entry.origin.wire_type      = WireType { WireFamily::Other, tag };
-            entry.origin.wire_count     = (value_bytes > UINT32_MAX)
-                                              ? UINT32_MAX
-                                              : static_cast<uint32_t>(value_bytes);
-
-            if (value_bytes > limits.max_value_bytes) {
-                entry.flags |= EntryFlags::Truncated;
-                update_status(status_out, ExifDecodeStatus::LimitExceeded);
-            } else {
-                const std::span<const std::byte> raw
-                    = dir_bytes.subspan(static_cast<size_t>(value_off),
-                                        static_cast<size_t>(value_bytes));
-
-                if (has_ifd_dir_id
-                    && decode_known_ciff_native_scalar_value(cfg, ifd_dir_id,
-                                                             tag_id, raw,
-                                                             &entry.value)) {
-                    (void)0;
-                } else {
-                    switch (ciff_type_bits(tag)) {
-                    case 0x0000: {  // unsignedByte
-                        if (raw.size() == 1) {
-                            entry.value = make_u8(u8(raw[0]));
-                        } else {
-                            if (raw.size() > UINT32_MAX) {
-                                update_status(status_out,
-                                              ExifDecodeStatus::LimitExceeded);
-                                break;
-                            }
-                            MetaValue v;
-                            v.kind      = MetaValueKind::Array;
-                            v.elem_type = MetaElementType::U8;
-                            v.count     = static_cast<uint32_t>(raw.size());
-                            v.data.span = store.arena().append(raw);
-                            if (!raw.empty() && v.data.span.size != v.count) {
-                                update_status(status_out,
-                                              ExifDecodeStatus::LimitExceeded);
-                                break;
-                            }
-                            entry.value = v;
-                        }
-                        break;
-                    }
-                    case 0x0800:  // asciiString
-                        if (has_ifd_dir_id
-                            && ciff_tag_is_padded_ascii_text(ifd_dir_id,
-                                                             tag_id)) {
-                            entry.value
-                                = decode_padded_ascii_text(store.arena(), raw);
-                        } else {
-                            entry.value = decode_text_value(store.arena(), raw,
-                                                            TextEncoding::Ascii);
-                        }
-                        break;
-                    case 0x1000:  // unsignedShort
-                        entry.value = decode_u16_array(cfg, store.arena(), raw,
-                                                       status_out);
-                        break;
-                    case 0x1800:  // unsignedLong
-                        entry.value = decode_u32_array(cfg, store.arena(), raw,
-                                                       status_out);
-                        break;
-                    case 0x2000:  // undefined
-                        if (has_ifd_dir_id
-                            && ciff_tag_is_padded_ascii_text(ifd_dir_id,
-                                                             tag_id)) {
-                            entry.value
-                                = decode_padded_ascii_text(store.arena(), raw);
-                            break;
-                        }
-                        entry.value = make_bytes(store.arena(), raw);
-                        break;
-                    default:
-                        entry.value = make_bytes(store.arena(), raw);
-                        break;
-                    }
-                }
-            }
-
-            (void)store.add_entry(entry);
-            if (status_out) {
-                status_out->entries_decoded += 1U;
-            }
-            if (value_bytes <= limits.max_value_bytes) {
-                const std::span<const std::byte> raw
-                    = dir_bytes.subspan(static_cast<size_t>(value_off),
-                                        static_cast<size_t>(value_bytes));
-                add_crw_derived_entries(cfg, ifd_token, tag_id, raw, store,
-                                        block, i, limits, status_out);
-            }
+            const std::span<const std::byte> raw
+                = value_bytes <= limits.max_value_bytes
+                      ? dir_bytes.subspan(static_cast<size_t>(value_off),
+                                          static_cast<size_t>(value_bytes))
+                      : std::span<const std::byte> {};
+            decode_leaf_entry(cfg, ifd_token, ifd_span, has_ifd_dir_id,
+                              ifd_dir_id, tag, tag_id, raw, value_bytes, true,
+                              store, block, i, limits, status_out);
             any = true;
         }
 
+        return any;
+    }
+
+
+    struct CiffSourceReader final {
+        const RandomAccessSourceRange* source = nullptr;
+        RandomAccessReadWindow window;
+        std::span<std::byte> value;
+        RandomAccessReadWindowOptions window_options;
+        RandomAccessReadLimits limits;
+        ExifRandomAccessDecodeResult* result = nullptr;
+    };
+
+
+    static bool ciff_source_view(CiffSourceReader* reader, uint64_t offset,
+                                 uint64_t size,
+                                 std::span<const std::byte>* out) noexcept
+    {
+        if (!reader || !reader->source || !reader->result || !out) {
+            return false;
+        }
+        const RandomAccessViewResult view
+            = random_access_read_view(*reader->source, offset, size,
+                                      &reader->window, &reader->result->input,
+                                      reader->limits, reader->window_options);
+        if (!view.ok()) {
+            return false;
+        }
+        *out = view.bytes;
+        return true;
+    }
+
+
+    static bool ciff_source_value_view(CiffSourceReader* reader,
+                                       uint64_t offset, uint64_t size,
+                                       std::span<const std::byte>* out) noexcept
+    {
+        if (!reader || !reader->result || !out) {
+            return false;
+        }
+        if (size == 0U) {
+            *out = {};
+            return true;
+        }
+        if (size <= reader->window.storage.size()) {
+            return ciff_source_view(reader, offset, size, out);
+        }
+        if (size > reader->value.size()) {
+            reader->result->value_scratch_needed
+                = size > reader->result->value_scratch_needed
+                      ? size
+                      : reader->result->value_scratch_needed;
+            update_status(&reader->result->decode,
+                          ExifDecodeStatus::OutputTruncated);
+            return false;
+        }
+        const std::span<std::byte> destination = reader->value.first(
+            static_cast<size_t>(size));
+        if (random_access_read_exact(*reader->source, offset, destination,
+                                     &reader->result->input, reader->limits)
+            != RandomAccessReadCode::Ok) {
+            return false;
+        }
+        *out = destination;
+        return true;
+    }
+
+
+    static bool
+    decode_source_directory(const CiffConfig& cfg, CiffSourceReader* reader,
+                            uint64_t directory_base, uint64_t directory_size,
+                            std::string_view ifd_token, MetaStore& store,
+                            const ExifDecodeLimits& limits,
+                            ExifDecodeResult* status_out, uint32_t depth,
+                            uint32_t* directory_index) noexcept
+    {
+        if (!reader || !reader->source || directory_size < 6U
+            || directory_base > reader->source->size
+            || directory_size > reader->source->size - directory_base) {
+            update_status(status_out, ExifDecodeStatus::Malformed);
+            return false;
+        }
+        if (depth > 32U) {
+            update_status(status_out, ExifDecodeStatus::LimitExceeded);
+            return false;
+        }
+        if (status_out && status_out->ifds_written >= limits.max_ifds) {
+            update_status(status_out, ExifDecodeStatus::LimitExceeded);
+            return false;
+        }
+
+        std::span<const std::byte> bytes;
+        if (!ciff_source_view(reader, directory_base + directory_size - 4U, 4U,
+                              &bytes)) {
+            return false;
+        }
+        uint32_t entry_offset32 = 0U;
+        if (!read_u32(cfg, bytes, 0U, &entry_offset32)) {
+            update_status(status_out, ExifDecodeStatus::Malformed);
+            return false;
+        }
+        const uint64_t entry_offset = entry_offset32;
+        if (entry_offset > directory_size - 2U
+            || !ciff_source_view(reader, directory_base + entry_offset, 2U,
+                                 &bytes)) {
+            if (reader->result->input.ok()) {
+                update_status(status_out, ExifDecodeStatus::Malformed);
+            }
+            return false;
+        }
+
+        uint16_t entry_count = 0U;
+        if (!read_u16(cfg, bytes, 0U, &entry_count)) {
+            update_status(status_out, ExifDecodeStatus::Malformed);
+            return false;
+        }
+        const uint64_t entries_start = entry_offset + 2U;
+        const uint64_t entry_bytes = static_cast<uint64_t>(entry_count) * 10ULL;
+        if (entries_start > directory_size
+            || entry_bytes > directory_size - entries_start) {
+            update_status(status_out, ExifDecodeStatus::Malformed);
+            return false;
+        }
+
+        const BlockId block = store.add_block(BlockInfo {});
+        if (block == kInvalidBlockId) {
+            update_status(status_out, ExifDecodeStatus::LimitExceeded);
+            return false;
+        }
+        const ByteSpan ifd_span   = store.arena().append_string(ifd_token);
+        uint16_t ifd_directory_id = 0U;
+        const bool has_ifd_directory_id = parse_ciff_dir_id(ifd_token,
+                                                            &ifd_directory_id);
+        if (status_out) {
+            status_out->ifds_written += 1U;
+        }
+
+        bool any = false;
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            const uint64_t entry_offset_in_directory
+                = entries_start + static_cast<uint64_t>(i) * 10ULL;
+            if (!ciff_source_view(reader,
+                                  directory_base + entry_offset_in_directory,
+                                  10U, &bytes)) {
+                return any;
+            }
+
+            uint16_t tag = 0U;
+            if (!read_u16(cfg, bytes, 0U, &tag)) {
+                update_status(status_out, ExifDecodeStatus::Malformed);
+                return any;
+            }
+            const uint16_t tag_id = ciff_tag_id(tag);
+            const uint16_t loc    = ciff_loc_bits(tag);
+            uint64_t value_offset = 0U;
+            uint64_t value_bytes  = 0U;
+            if (loc == 0x4000U) {
+                value_offset = entry_offset_in_directory + 2U;
+                value_bytes  = 8U;
+            } else if (loc == 0x0000U) {
+                uint32_t size32 = 0U;
+                uint32_t off32  = 0U;
+                if (!read_u32(cfg, bytes, 2U, &size32)
+                    || !read_u32(cfg, bytes, 6U, &off32)) {
+                    update_status(status_out, ExifDecodeStatus::Malformed);
+                    return any;
+                }
+                value_offset = off32;
+                value_bytes  = size32;
+                if ((value_offset < entry_offset_in_directory
+                     && value_bytes > entry_offset_in_directory - value_offset)
+                    || (value_offset >= entry_offset_in_directory
+                        && value_offset < entry_offset_in_directory + 10U)) {
+                    update_status(status_out, ExifDecodeStatus::Malformed);
+                    continue;
+                }
+            } else {
+                update_status(status_out, ExifDecodeStatus::Malformed);
+                continue;
+            }
+            if (value_offset > directory_size
+                || value_bytes > directory_size - value_offset) {
+                update_status(status_out, ExifDecodeStatus::Malformed);
+                continue;
+            }
+
+            if (ciff_is_directory(tag)) {
+                if (!directory_index) {
+                    continue;
+                }
+                const uint32_t index = (*directory_index)++;
+                std::array<char, 32> name {};
+                const int length = std::snprintf(name.data(), name.size(),
+                                                 "ciff_%04X_%u",
+                                                 static_cast<unsigned>(tag_id),
+                                                 static_cast<unsigned>(index));
+                if (length <= 0 || static_cast<size_t>(length) >= name.size()) {
+                    update_status(status_out, ExifDecodeStatus::LimitExceeded);
+                    continue;
+                }
+                (void)decode_source_directory(
+                    cfg, reader, directory_base + value_offset, value_bytes,
+                    std::string_view(name.data(), static_cast<size_t>(length)),
+                    store, limits, status_out, depth + 1U, directory_index);
+                any = true;
+                continue;
+            }
+
+            if (status_out
+                && status_out->entries_decoded + 1U
+                       > limits.max_total_entries) {
+                update_status(status_out, ExifDecodeStatus::LimitExceeded);
+                break;
+            }
+            std::span<const std::byte> raw;
+            bool value_available = value_bytes > limits.max_value_bytes;
+            if (value_bytes <= limits.max_value_bytes) {
+                value_available = ciff_source_value_view(
+                    reader, directory_base + value_offset, value_bytes, &raw);
+                if (!value_available && !reader->result->input.ok()) {
+                    return any;
+                }
+            }
+            decode_leaf_entry(cfg, ifd_token, ifd_span, has_ifd_directory_id,
+                              ifd_directory_id, tag, tag_id, raw, value_bytes,
+                              value_available, store, block, i, limits,
+                              status_out);
+            any = true;
+        }
         return any;
     }
 
@@ -1248,6 +1485,73 @@ decode_crw_ciff(std::span<const std::byte> file_bytes, MetaStore& store,
         update_status(status_out, ExifDecodeStatus::Ok);
     }
     return any;
+}
+
+ExifRandomAccessDecodeResult
+decode_crw_ciff_random_access(
+    const RandomAccessSourceRange& source, MetaStore& store,
+    const ExifRandomAccessScratch& scratch, const ExifDecodeLimits& limits,
+    const RandomAccessReadLimits& read_limits) noexcept
+{
+    ExifRandomAccessDecodeResult result;
+    result.decode.status = ExifDecodeStatus::Unsupported;
+    if (!random_access_source_range_valid(source)) {
+        result.input.code = RandomAccessReadCode::InvalidArgument;
+        return result;
+    }
+    if (source.source.contiguous_data != nullptr) {
+        const std::byte* begin = source.source.contiguous_data
+                                 + static_cast<size_t>(source.source_offset);
+        (void)decode_crw_ciff(
+            std::span<const std::byte>(begin, static_cast<size_t>(source.size)),
+            store, limits, &result.decode);
+        return result;
+    }
+    if (source.size < 14U) {
+        return result;
+    }
+
+    std::array<std::byte, 14U> header {};
+    if (random_access_read_exact(source, 0U, header, &result.input, read_limits)
+        != RandomAccessReadCode::Ok) {
+        return result;
+    }
+    const uint8_t b0 = u8(header[0U]);
+    const uint8_t b1 = u8(header[1U]);
+    const bool le    = b0 == 0x49U && b1 == 0x49U;
+    const bool be    = b0 == 0x4dU && b1 == 0x4dU;
+    if ((!le && !be) || std::memcmp(header.data() + 6U, "HEAPCCDR", 8U) != 0) {
+        return result;
+    }
+
+    CiffConfig cfg;
+    cfg.le               = le;
+    uint32_t root_offset = 0U;
+    if (!read_u32(cfg, header, 2U, &root_offset) || root_offset < 14U
+        || root_offset > source.size) {
+        result.decode.status = ExifDecodeStatus::Malformed;
+        return result;
+    }
+
+    result.decode.status = ExifDecodeStatus::Ok;
+    CiffSourceReader reader;
+    reader.source            = &source;
+    reader.window.storage    = scratch.read_window;
+    reader.value             = scratch.value;
+    reader.window_options    = scratch.window_options;
+    reader.limits            = read_limits;
+    reader.result            = &result;
+    uint32_t directory_index = 0U;
+    const bool any
+        = decode_source_directory(cfg, &reader, root_offset,
+                                  source.size - root_offset, "ciff_root", store,
+                                  limits, &result.decode, 0U, &directory_index);
+    if (any) {
+        update_status(&result.decode, ExifDecodeStatus::Ok);
+    } else if (result.decode.status == ExifDecodeStatus::Ok) {
+        result.decode.status = ExifDecodeStatus::Unsupported;
+    }
+    return result;
 }
 
 }  // namespace openmeta::ciff_internal

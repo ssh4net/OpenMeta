@@ -1011,6 +1011,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/phaseone_geometry_test.cc
     tests/preview_extract_test.cc
     tests/printim_decode_test.cc
+    tests/public_metadata_fixtures_test.cc
     tests/random_access_source_test.cc
     tests/read_lane_coverage_test.cc
     tests/resource_policy_test.cc

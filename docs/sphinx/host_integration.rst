@@ -226,12 +226,16 @@ payload fetching, and decoded snapshot assembly through
 ``read_transfer_source_snapshot_random_access(...)``. Scanner, decoder, and
 payload workspaces remain caller-owned; the returned snapshot owns its finalized
 store. Aggregate source limits cover every phase, and ordinary decoded assembly
-does not retain the whole file. Contiguous input retains the full existing
+does not retain the whole file. Version 0.4.111 adds native positional RAF,
+X3F, and CRW/CIFF metadata traversal and caller-buffered structured read
+diagnostics. Contiguous input retains the full existing
 decoder behavior. Canon derived subtables outside the declared payload and
 unknown vendor layouts remain explicit residuals, so hosts must check
 ``ExifRandomAccessDecodeResult::complete()`` before claiming full nested parity.
-Native RAF/X3F/CRW, requested embedded recursion, selected BMFF enrichment, and
-whole-file TIFF/EXR raw carriers also remain explicit positional residuals.
+Requested RAF/X3F embedded recursion, selected BMFF enrichment, and whole-file
+raw carriers also remain explicit positional residuals. Use
+``collect_read_transfer_source_diagnostics(...)`` to project severity, stable
+code, domain, source offset/size, MakerNote, and residual details.
 See :doc:`random_access_input` for buffer sizing, lifetime, short-read,
 concurrency, and performance requirements.
 

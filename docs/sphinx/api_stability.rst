@@ -41,14 +41,16 @@ Host-facing API map
      - Stable
      - v1 query contract for read, structured decode, transfer preparation,
        target edit, and raw-preservation status by format/family.
-   * - Bounded positional input, decode, payload, scan, and snapshot APIs:
+   * - Bounded positional input, decode, payload, scan, snapshot, and
+       diagnostic APIs:
        ``RandomAccessSource``, source ranges/read windows,
        ``random_access_read_exact(...)``,
        ``decode_exif_tiff_random_access(...)``,
        ``decode_exr_header_random_access(...)``,
        ``extract_payload_random_access(...)``,
        the ``scan_*_random_access(...)`` family, and
-       ``read_transfer_source_snapshot_random_access(...)``
+       ``read_transfer_source_snapshot_random_access(...)``, and
+       ``collect_read_transfer_source_diagnostics(...)``
      - ``openmeta/random_access_source.h``,
        ``openmeta/exif_tiff_decode.h``, ``openmeta/exr_decode.h``,
        ``openmeta/container_payload.h``, ``openmeta/container_scan.h``,
@@ -56,11 +58,12 @@ Host-facing API map
      - Experimental
      - Allocation-free callback traversal with exact reads, explicit
        short-read/I/O/source-change results, caller-owned accounting/scratch,
-       and an owned finalized snapshot result. Includes bounded TIFF-family and
-       EXR header decode plus JPEG, PNG, WebP, GIF, JP2, JXL, and ISO-BMFF
-       metadata discovery/fetch while skipping image/media payloads. Native
-       RAF/X3F/CRW and selected recursive or source-wide enrichment remain
-       explicit residuals. See :doc:`random_access_input`.
+       an owned finalized snapshot result, and caller-buffered structured
+       diagnostics. Includes bounded TIFF-family, EXR header, and native
+       RAF/X3F/CRW decode plus JPEG, PNG, WebP, GIF, JP2, JXL, and ISO-BMFF
+       metadata discovery/fetch while skipping image/media payloads. Requested
+       RAF/X3F embedded recursion and selected recursive or source-wide
+       enrichment remain explicit residuals. See :doc:`random_access_input`.
    * - Compatibility dumps: ``dump_metadata_compatibility(...)``,
        ``dump_transfer_compatibility(...)``
      - ``openmeta/compatibility_dump.h``

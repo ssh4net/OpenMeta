@@ -20,5 +20,10 @@ decode_crw_ciff(std::span<const std::byte> file_bytes, MetaStore& store,
                 const ExifDecodeLimits& limits,
                 ExifDecodeResult* status_out) noexcept;
 
-}  // namespace openmeta::ciff_internal
+ExifRandomAccessDecodeResult
+decode_crw_ciff_random_access(
+    const RandomAccessSourceRange& source, MetaStore& store,
+    const ExifRandomAccessScratch& scratch, const ExifDecodeLimits& limits,
+    const RandomAccessReadLimits& read_limits) noexcept;
 
+}  // namespace openmeta::ciff_internal

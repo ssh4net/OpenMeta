@@ -13,8 +13,11 @@
 #include "openmeta/vendor_raw_processing.h"
 #include "openmeta/xmp_dump.h"
 
+#include "crw_ciff_decode_internal.h"
 #include "interop_safety_internal.h"
 #include "interop_value_format_internal.h"
+#include "raf_decode_internal.h"
+#include "x3f_decode_internal.h"
 
 #include <algorithm>
 #include <array>
@@ -15674,11 +15677,73 @@ namespace {
             if (options.preserve_raw_carriers) {
                 out.residual_metadata_paths += 1U;
             }
+        } else if (format == ContainerFormat::Crw
+                   || format == ContainerFormat::Raf
+                   || format == ContainerFormat::X3f) {
+            ExifRandomAccessScratch native_scratch;
+            native_scratch.read_window    = scratch.read_window;
+            native_scratch.value          = scratch.value;
+            native_scratch.window_options = scratch.window_options;
+            ExifRandomAccessDecodeResult native;
+            if (format == ContainerFormat::Crw) {
+                native = ciff_internal::decode_crw_ciff_random_access(
+                    source, out.snapshot.store, native_scratch,
+                    decode_options.exif.limits,
+                    remaining_random_access_limits(read_limits, out.input));
+            } else if (format == ContainerFormat::Raf) {
+                native = raf_internal::decode_raf_native_random_access(
+                    source, out.snapshot.store, native_scratch,
+                    decode_options.exif.limits,
+                    remaining_random_access_limits(read_limits, out.input));
+            } else {
+                native = x3f_internal::decode_x3f_native_random_access(
+                    source, out.snapshot.store, native_scratch,
+                    decode_options.exif.limits,
+                    remaining_random_access_limits(read_limits, out.input));
+            }
+            merge_random_access_state(&out.input, native.input);
+            out.read.exif            = native.decode;
+            out.value_scratch_needed = native.value_scratch_needed;
+            out.residual_metadata_paths += native.nested_payloads_skipped;
+            if (!out.input.ok()) {
+                out.status = map_random_access_failure_status(out.input);
+                out.code   = map_random_access_failure_code(
+                    out.input,
+                    ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed);
+                return out;
+            }
+            if (native.decode.status == ExifDecodeStatus::Malformed) {
+                out.status = TransferStatus::Malformed;
+                out.code
+                    = ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
+                return out;
+            }
+            if (native.decode.status == ExifDecodeStatus::LimitExceeded
+                || native.decode.status == ExifDecodeStatus::OutputTruncated) {
+                out.status = TransferStatus::LimitExceeded;
+                out.code   = native.value_scratch_needed != 0U
+                                 ? ReadTransferSourceSnapshotRandomAccessCode::
+                                     ScratchTooSmall
+                                 : ReadTransferSourceSnapshotRandomAccessCode::
+                                     DecodeFailed;
+                return out;
+            }
+            if (native.decode.status == ExifDecodeStatus::Unsupported) {
+                out.status = TransferStatus::Unsupported;
+                out.code   = ReadTransferSourceSnapshotRandomAccessCode::
+                    UnsupportedFormat;
+                return out;
+            }
+            if ((format == ContainerFormat::Raf
+                 || format == ContainerFormat::X3f)
+                && options.decode_embedded_containers) {
+                out.residual_metadata_paths += 1U;
+            }
+            if (options.preserve_raw_carriers) {
+                out.residual_metadata_paths += 1U;
+            }
         } else {
-            if (format == ContainerFormat::Unknown
-                || format == ContainerFormat::Crw
-                || format == ContainerFormat::Raf
-                || format == ContainerFormat::X3f) {
+            if (format == ContainerFormat::Unknown) {
                 out.status = TransferStatus::Unsupported;
                 out.code   = ReadTransferSourceSnapshotRandomAccessCode::
                     UnsupportedFormat;
@@ -15874,6 +15939,7 @@ namespace {
     map_snapshot_decode_failure_status(const SimpleMetaResult& r) noexcept
     {
         if (r.payload.status == PayloadStatus::LimitExceeded
+            || r.exr.status == ExrDecodeStatus::LimitExceeded
             || r.exif.status == ExifDecodeStatus::LimitExceeded
             || r.xmp.status == XmpDecodeStatus::LimitExceeded
             || r.jumbf.status == JumbfDecodeStatus::LimitExceeded) {
@@ -15881,12 +15947,114 @@ namespace {
         }
         if (r.scan.status == ScanStatus::Malformed
             || r.payload.status == PayloadStatus::Malformed
+            || r.exr.status == ExrDecodeStatus::Malformed
             || r.exif.status == ExifDecodeStatus::Malformed
             || r.xmp.status == XmpDecodeStatus::Malformed
             || r.jumbf.status == JumbfDecodeStatus::Malformed) {
             return TransferStatus::Malformed;
         }
         return TransferStatus::InternalError;
+    }
+
+    struct ReadDiagnosticSink final {
+        std::span<ReadTransferSourceDiagnostic> output;
+        ReadTransferSourceDiagnosticsResult result;
+    };
+
+    static void emit_read_diagnostic(
+        ReadDiagnosticSink* sink,
+        const ReadTransferSourceDiagnostic& diagnostic) noexcept
+    {
+        if (!sink) {
+            return;
+        }
+        if (sink->result.written < sink->output.size()) {
+            sink->output[sink->result.written] = diagnostic;
+            sink->result.written += 1U;
+        }
+        if (sink->result.needed != UINT32_MAX) {
+            sink->result.needed += 1U;
+        }
+    }
+
+    static ReadTransferSourceDiagnostic make_read_diagnostic(
+        const ReadTransferSourceSnapshotRandomAccessResult& result,
+        ReadTransferSourceDiagnosticSeverity severity,
+        ReadTransferSourceDiagnosticDomain domain,
+        ReadTransferSourceDiagnosticCode code) noexcept
+    {
+        ReadTransferSourceDiagnostic out;
+        out.severity   = severity;
+        out.domain     = domain;
+        out.code       = code;
+        out.format     = result.format;
+        out.input_code = result.input.code;
+        return out;
+    }
+
+    static bool
+    random_access_code_is_resource_limit(RandomAccessReadCode code) noexcept
+    {
+        switch (code) {
+        case RandomAccessReadCode::RequestTooLarge:
+        case RandomAccessReadCode::RequestLimitExceeded:
+        case RandomAccessReadCode::ByteLimitExceeded: return true;
+        case RandomAccessReadCode::Ok:
+        case RandomAccessReadCode::InvalidArgument:
+        case RandomAccessReadCode::OutOfRange:
+        case RandomAccessReadCode::ShortRead:
+        case RandomAccessReadCode::IoError:
+        case RandomAccessReadCode::SourceChanged:
+        case RandomAccessReadCode::Cancelled:
+        case RandomAccessReadCode::ContractViolation:
+        case RandomAccessReadCode::ScratchTooSmall: return false;
+        }
+        return false;
+    }
+
+    static uint64_t read_snapshot_required_scratch(
+        const ReadTransferSourceSnapshotRandomAccessResult& result) noexcept
+    {
+        uint64_t required = result.payload_scratch_needed;
+        if (result.compressed_scratch_needed > required) {
+            required = result.compressed_scratch_needed;
+        }
+        if (result.value_scratch_needed > required) {
+            required = result.value_scratch_needed;
+        }
+        return required;
+    }
+
+    static ReadTransferSourceDiagnosticDomain read_snapshot_limit_domain(
+        const ReadTransferSourceSnapshotRandomAccessResult& result) noexcept
+    {
+        if (result.read.exr.status == ExrDecodeStatus::LimitExceeded) {
+            return ReadTransferSourceDiagnosticDomain::Exr;
+        }
+        if (result.read.payload.status == PayloadStatus::LimitExceeded) {
+            return ReadTransferSourceDiagnosticDomain::Payload;
+        }
+        if (result.read.xmp.status == XmpDecodeStatus::LimitExceeded) {
+            return ReadTransferSourceDiagnosticDomain::Xmp;
+        }
+        if (result.read.jumbf.status == JumbfDecodeStatus::LimitExceeded) {
+            return ReadTransferSourceDiagnosticDomain::Jumbf;
+        }
+        if (result.read.exif.status == ExifDecodeStatus::LimitExceeded) {
+            return ReadTransferSourceDiagnosticDomain::Exif;
+        }
+        return ReadTransferSourceDiagnosticDomain::Container;
+    }
+
+    static ReadTransferSourceDiagnosticDomain read_snapshot_scratch_domain(
+        const ReadTransferSourceSnapshotRandomAccessResult& result) noexcept
+    {
+        if (result.value_scratch_needed != 0U) {
+            return result.format == ContainerFormat::Exr
+                       ? ReadTransferSourceDiagnosticDomain::Exr
+                       : ReadTransferSourceDiagnosticDomain::Exif;
+        }
+        return ReadTransferSourceDiagnosticDomain::Payload;
     }
 
 }  // namespace
@@ -16001,6 +16169,223 @@ read_transfer_source_snapshot_random_access(
     return read_transfer_source_snapshot_random_access_common(source, format,
                                                               scratch, options,
                                                               read_limits);
+}
+
+ReadTransferSourceDiagnosticsResult
+collect_read_transfer_source_diagnostics(
+    const ReadTransferSourceSnapshotRandomAccessResult& result,
+    std::span<ReadTransferSourceDiagnostic> out,
+    const ReadTransferSourceDiagnosticOptions& options) noexcept
+{
+    ReadDiagnosticSink sink;
+    sink.output = out;
+
+    if (!result.input.ok()) {
+        const ReadTransferSourceDiagnosticCode code
+            = result.input.code == RandomAccessReadCode::ScratchTooSmall
+                  ? ReadTransferSourceDiagnosticCode::ScratchTooSmall
+              : random_access_code_is_resource_limit(result.input.code)
+                  ? ReadTransferSourceDiagnosticCode::ResourceLimit
+                  : ReadTransferSourceDiagnosticCode::InputFailure;
+        ReadTransferSourceDiagnostic diagnostic = make_read_diagnostic(
+            result, ReadTransferSourceDiagnosticSeverity::Error,
+            ReadTransferSourceDiagnosticDomain::Input, code);
+        diagnostic.offset         = result.input.failure_offset;
+        diagnostic.required_bytes = result.input.failure_request_bytes;
+        emit_read_diagnostic(&sink, diagnostic);
+    }
+
+    const uint64_t required_scratch = read_snapshot_required_scratch(result);
+    if (required_scratch != 0U
+        && result.input.code != RandomAccessReadCode::ScratchTooSmall) {
+        ReadTransferSourceDiagnostic diagnostic = make_read_diagnostic(
+            result, ReadTransferSourceDiagnosticSeverity::Error,
+            read_snapshot_scratch_domain(result),
+            ReadTransferSourceDiagnosticCode::ScratchTooSmall);
+        diagnostic.required_bytes = required_scratch;
+        emit_read_diagnostic(&sink, diagnostic);
+    }
+
+    if (result.status == TransferStatus::LimitExceeded && result.input.ok()
+        && required_scratch == 0U) {
+        ReadTransferSourceDiagnostic diagnostic = make_read_diagnostic(
+            result, ReadTransferSourceDiagnosticSeverity::Error,
+            read_snapshot_limit_domain(result),
+            ReadTransferSourceDiagnosticCode::ResourceLimit);
+        diagnostic.offset = result.read.exif.limit_ifd_offset;
+        diagnostic.tag    = result.read.exif.limit_tag;
+        emit_read_diagnostic(&sink, diagnostic);
+    }
+
+    if (result.read.scan.status == ScanStatus::Malformed) {
+        emit_read_diagnostic(
+            &sink, make_read_diagnostic(
+                       result, ReadTransferSourceDiagnosticSeverity::Error,
+                       ReadTransferSourceDiagnosticDomain::Container,
+                       ReadTransferSourceDiagnosticCode::MalformedContainer));
+    }
+    if (result.read.payload.status == PayloadStatus::Malformed) {
+        emit_read_diagnostic(
+            &sink, make_read_diagnostic(
+                       result, ReadTransferSourceDiagnosticSeverity::Error,
+                       ReadTransferSourceDiagnosticDomain::Payload,
+                       ReadTransferSourceDiagnosticCode::MalformedPayload));
+    }
+    if (result.read.exif.status == ExifDecodeStatus::Malformed) {
+        ReadTransferSourceDiagnostic diagnostic = make_read_diagnostic(
+            result, ReadTransferSourceDiagnosticSeverity::Error,
+            ReadTransferSourceDiagnosticDomain::Exif,
+            ReadTransferSourceDiagnosticCode::MalformedExif);
+        diagnostic.offset = result.read.exif.limit_ifd_offset;
+        diagnostic.tag    = result.read.exif.limit_tag;
+        emit_read_diagnostic(&sink, diagnostic);
+    }
+    if (result.read.xmp.status == XmpDecodeStatus::Malformed) {
+        emit_read_diagnostic(
+            &sink, make_read_diagnostic(
+                       result, ReadTransferSourceDiagnosticSeverity::Error,
+                       ReadTransferSourceDiagnosticDomain::Xmp,
+                       ReadTransferSourceDiagnosticCode::MalformedXmp));
+    }
+    if (result.read.jumbf.status == JumbfDecodeStatus::Malformed) {
+        emit_read_diagnostic(
+            &sink, make_read_diagnostic(
+                       result, ReadTransferSourceDiagnosticSeverity::Error,
+                       ReadTransferSourceDiagnosticDomain::Jumbf,
+                       ReadTransferSourceDiagnosticCode::MalformedJumbf));
+    }
+    if (result.read.exr.status == ExrDecodeStatus::Malformed) {
+        emit_read_diagnostic(
+            &sink, make_read_diagnostic(
+                       result, ReadTransferSourceDiagnosticSeverity::Error,
+                       ReadTransferSourceDiagnosticDomain::Exr,
+                       ReadTransferSourceDiagnosticCode::MalformedExr));
+    }
+
+    if (result.residual_metadata_paths != 0U) {
+        if (options.decode_makernote_requested
+            && (result.format == ContainerFormat::Tiff
+                || result.format == ContainerFormat::Raf
+                || result.format == ContainerFormat::X3f)) {
+            ReadTransferSourceDiagnostic diagnostic = make_read_diagnostic(
+                result, ReadTransferSourceDiagnosticSeverity::Warning,
+                ReadTransferSourceDiagnosticDomain::MakerNote,
+                ReadTransferSourceDiagnosticCode::IncompleteMakerNote);
+            diagnostic.count = result.residual_metadata_paths;
+            emit_read_diagnostic(&sink, diagnostic);
+        }
+        ReadTransferSourceDiagnostic diagnostic = make_read_diagnostic(
+            result, ReadTransferSourceDiagnosticSeverity::Warning,
+            ReadTransferSourceDiagnosticDomain::ResidualPath,
+            ReadTransferSourceDiagnosticCode::ResidualMetadataPath);
+        diagnostic.count = result.residual_metadata_paths;
+        if (options.decode_embedded_containers_requested) {
+            diagnostic.domain = ReadTransferSourceDiagnosticDomain::Container;
+        }
+        emit_read_diagnostic(&sink, diagnostic);
+    }
+
+    if (result.raw_carrier_bytes_truncated) {
+        emit_read_diagnostic(
+            &sink, make_read_diagnostic(
+                       result, ReadTransferSourceDiagnosticSeverity::Warning,
+                       ReadTransferSourceDiagnosticDomain::Payload,
+                       ReadTransferSourceDiagnosticCode::RawCarrierTruncated));
+    }
+    return sink.result;
+}
+
+const char*
+read_transfer_source_diagnostic_severity_name(
+    ReadTransferSourceDiagnosticSeverity severity) noexcept
+{
+    switch (severity) {
+    case ReadTransferSourceDiagnosticSeverity::Info: return "info";
+    case ReadTransferSourceDiagnosticSeverity::Warning: return "warning";
+    case ReadTransferSourceDiagnosticSeverity::Error: return "error";
+    }
+    return "error";
+}
+
+const char*
+read_transfer_source_diagnostic_domain_name(
+    ReadTransferSourceDiagnosticDomain domain) noexcept
+{
+    switch (domain) {
+    case ReadTransferSourceDiagnosticDomain::Input: return "input";
+    case ReadTransferSourceDiagnosticDomain::Container: return "container";
+    case ReadTransferSourceDiagnosticDomain::Payload: return "payload";
+    case ReadTransferSourceDiagnosticDomain::Exif: return "exif";
+    case ReadTransferSourceDiagnosticDomain::Xmp: return "xmp";
+    case ReadTransferSourceDiagnosticDomain::Jumbf: return "jumbf";
+    case ReadTransferSourceDiagnosticDomain::Exr: return "exr";
+    case ReadTransferSourceDiagnosticDomain::MakerNote: return "makernote";
+    case ReadTransferSourceDiagnosticDomain::ResidualPath: return "residual";
+    }
+    return "input";
+}
+
+const char*
+read_transfer_source_diagnostic_code_name(
+    ReadTransferSourceDiagnosticCode code) noexcept
+{
+    switch (code) {
+    case ReadTransferSourceDiagnosticCode::InputFailure: return "input_failure";
+    case ReadTransferSourceDiagnosticCode::MalformedContainer:
+        return "malformed_container";
+    case ReadTransferSourceDiagnosticCode::MalformedPayload:
+        return "malformed_payload";
+    case ReadTransferSourceDiagnosticCode::MalformedExif:
+        return "malformed_exif";
+    case ReadTransferSourceDiagnosticCode::MalformedXmp: return "malformed_xmp";
+    case ReadTransferSourceDiagnosticCode::MalformedJumbf:
+        return "malformed_jumbf";
+    case ReadTransferSourceDiagnosticCode::MalformedExr: return "malformed_exr";
+    case ReadTransferSourceDiagnosticCode::ResourceLimit:
+        return "resource_limit";
+    case ReadTransferSourceDiagnosticCode::ScratchTooSmall:
+        return "scratch_too_small";
+    case ReadTransferSourceDiagnosticCode::IncompleteMakerNote:
+        return "incomplete_makernote";
+    case ReadTransferSourceDiagnosticCode::ResidualMetadataPath:
+        return "residual_metadata_path";
+    case ReadTransferSourceDiagnosticCode::RawCarrierTruncated:
+        return "raw_carrier_truncated";
+    }
+    return "input_failure";
+}
+
+const char*
+read_transfer_source_diagnostic_message(
+    ReadTransferSourceDiagnosticCode code) noexcept
+{
+    switch (code) {
+    case ReadTransferSourceDiagnosticCode::InputFailure:
+        return "source read failed";
+    case ReadTransferSourceDiagnosticCode::MalformedContainer:
+        return "container metadata structure is malformed";
+    case ReadTransferSourceDiagnosticCode::MalformedPayload:
+        return "metadata payload is malformed";
+    case ReadTransferSourceDiagnosticCode::MalformedExif:
+        return "EXIF or native RAW metadata is malformed";
+    case ReadTransferSourceDiagnosticCode::MalformedXmp:
+        return "XMP metadata is malformed";
+    case ReadTransferSourceDiagnosticCode::MalformedJumbf:
+        return "JUMBF metadata is malformed";
+    case ReadTransferSourceDiagnosticCode::MalformedExr:
+        return "EXR metadata header is malformed";
+    case ReadTransferSourceDiagnosticCode::ResourceLimit:
+        return "metadata read resource limit was reached";
+    case ReadTransferSourceDiagnosticCode::ScratchTooSmall:
+        return "caller metadata scratch is too small";
+    case ReadTransferSourceDiagnosticCode::IncompleteMakerNote:
+        return "requested MakerNote decode has residual paths";
+    case ReadTransferSourceDiagnosticCode::ResidualMetadataPath:
+        return "metadata read has residual paths";
+    case ReadTransferSourceDiagnosticCode::RawCarrierTruncated:
+        return "raw carrier bytes were not fully preserved";
+    }
+    return "source read failed";
 }
 
 ReadTransferSourceSnapshotFileResult

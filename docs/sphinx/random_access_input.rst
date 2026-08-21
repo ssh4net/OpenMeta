@@ -20,7 +20,9 @@ and FLIR callback parity. Version 0.4.107 adds bounded JPEG segment scanning.
 Version 0.4.108 adds positional PNG/WebP chunk scanning and bounded JP2/JXL/
 ISO-BMFF box and metadata-item traversal. Version 0.4.109 adds positional GIF
 extension scanning, EXR header traversal, logical metadata payload extraction,
-and decoded source-snapshot assembly. It provides:
+and decoded source-snapshot assembly. Version 0.4.111 adds native RAF, X3F, and
+CRW/CIFF positional metadata traversal plus structured snapshot-read
+diagnostics. It provides:
 
 - a fixed source size and synchronous ``read_at(offset, destination)`` callback
 - a non-owning descriptor for caller-owned contiguous memory
@@ -77,6 +79,13 @@ fetching attribute bodies.
 stream. It supports direct ranges, GIF sub-blocks, multipart JPEG ICC and
 extended XMP, general multipart blocks, and bounded Deflate/Brotli
 decompression through caller-owned compressed and output storage.
+
+Explicitly typed RAF, X3F, and CRW sources use native positional readers. RAF
+reads its fixed header and declared native directories, X3F reads its header,
+section directory, and ``PROP`` sections, and CRW follows CIFF directory
+offsets and individual values. These paths do not read intervening image
+payload ranges. Optional RAF preview/FujiIFD enrichment and X3F section-JPEG
+enrichment remain explicit residuals when requested.
 
 Callback example
 ----------------
@@ -218,12 +227,32 @@ Request-count and byte ceilings are cumulative across scan, payload, decode,
 PNG text-prefix, and optional raw-carrier reads.
 
 The high-level positional path supports JPEG, PNG, WebP, GIF, JP2, JXL,
-HEIF/AVIF/CR3 BMFF containers, native TIFF/DNG-family input, and EXR headers.
-Native RAF, X3F, and CRW are not converted yet. Requested embedded recursion,
+HEIF/AVIF/CR3 BMFF containers, native TIFF/DNG-family input, EXR headers, and
+native RAF, X3F, and CRW metadata. Requested RAF/X3F embedded recursion,
 selected source-wide BMFF enrichment, unsupported MakerNote subpaths, and
-whole-file TIFF/EXR raw-carrier preservation increment
+whole-file raw-carrier preservation increment
 ``residual_metadata_paths``. The decoded snapshot remains usable, but
 ``complete()`` returns false.
+
+Project machine-readable diagnostics without allocation:
+
+.. code-block:: cpp
+
+   std::array<openmeta::ReadTransferSourceDiagnostic, 8> diagnostics;
+   openmeta::ReadTransferSourceDiagnosticOptions diagnostic_options;
+   diagnostic_options.decode_makernote_requested = options.decode_makernote;
+   diagnostic_options.decode_embedded_containers_requested =
+       options.decode_embedded_containers;
+
+   openmeta::ReadTransferSourceDiagnosticsResult diagnostic_result =
+       openmeta::collect_read_transfer_source_diagnostics(
+           result, diagnostics, diagnostic_options);
+
+Each record has severity, stable code, domain, format, source offset, required
+byte count, item count, EXIF/native tag, and original input failure code where
+available. Name and short-message helpers return static strings. If ``written``
+differs from ``needed``, resize the caller buffer and project again; the
+snapshot read itself is not repeated.
 
 Raw-carrier preservation is opt-in and copies only discovered carrier bytes
 within ``max_raw_carrier_bytes``. Ordinary decoded snapshot assembly does not

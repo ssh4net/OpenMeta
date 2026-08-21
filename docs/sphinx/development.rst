@@ -9,6 +9,11 @@ Repository layout (public):
 - ``src/python/``: Python bindings and helper scripts
 - ``tests/``: unit tests and fuzz targets
 
+``tests/public_metadata_fixtures.h`` provides compact, source-built public
+integration fixtures for TIFF/DNG with a representative Nikon MakerNote,
+WebP, AVIF, JP2, JXL, RAF, X3F, and CRW. They contain no copied third-party
+files and can be reused by downstream smoke tests without external assets.
+
 OpenMeta structure
 ------------------
 

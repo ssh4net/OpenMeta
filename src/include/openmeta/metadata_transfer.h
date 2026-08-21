@@ -148,6 +148,42 @@ enum class ReadTransferSourceSnapshotRandomAccessCode : uint16_t {
     ResidualMetadataPaths,
 };
 
+/// Severity of one structured positional snapshot read diagnostic.
+enum class ReadTransferSourceDiagnosticSeverity : uint8_t {
+    Info,
+    Warning,
+    Error,
+};
+
+/// Decode or input domain associated with a structured read diagnostic.
+enum class ReadTransferSourceDiagnosticDomain : uint8_t {
+    Input,
+    Container,
+    Payload,
+    Exif,
+    Xmp,
+    Jumbf,
+    Exr,
+    MakerNote,
+    ResidualPath,
+};
+
+/// Stable machine-readable positional snapshot read diagnostic code.
+enum class ReadTransferSourceDiagnosticCode : uint16_t {
+    InputFailure,
+    MalformedContainer,
+    MalformedPayload,
+    MalformedExif,
+    MalformedXmp,
+    MalformedJumbf,
+    MalformedExr,
+    ResourceLimit,
+    ScratchTooSmall,
+    IncompleteMakerNote,
+    ResidualMetadataPath,
+    RawCarrierTruncated,
+};
+
 /// Status for high-level file-to-bundle transfer preparation.
 enum class TransferFileStatus : uint8_t {
     Ok,
@@ -1487,6 +1523,36 @@ struct ReadTransferSourceSnapshotRandomAccessResult final {
     }
 };
 
+/// Requested optional lanes used to classify positional read residuals.
+struct ReadTransferSourceDiagnosticOptions final {
+    bool decode_makernote_requested           = false;
+    bool decode_embedded_containers_requested = false;
+};
+
+/// One allocation-free diagnostic projected from a positional read result.
+struct ReadTransferSourceDiagnostic final {
+    ReadTransferSourceDiagnosticSeverity severity
+        = ReadTransferSourceDiagnosticSeverity::Error;
+    ReadTransferSourceDiagnosticDomain domain
+        = ReadTransferSourceDiagnosticDomain::Input;
+    ReadTransferSourceDiagnosticCode code
+        = ReadTransferSourceDiagnosticCode::InputFailure;
+    ContainerFormat format          = ContainerFormat::Unknown;
+    uint64_t offset                 = 0U;
+    uint64_t required_bytes         = 0U;
+    uint32_t count                  = 0U;
+    uint16_t tag                    = 0U;
+    RandomAccessReadCode input_code = RandomAccessReadCode::Ok;
+};
+
+/// Caller-buffer result for structured positional read diagnostics.
+struct ReadTransferSourceDiagnosticsResult final {
+    uint32_t written = 0U;
+    uint32_t needed  = 0U;
+
+    bool complete() const noexcept { return written == needed; }
+};
+
 /// File-read + decode options for \ref prepare_metadata_for_target_file.
 struct PrepareTransferFileOptions final {
     bool include_pointer_tags       = true;
@@ -2659,6 +2725,37 @@ read_transfer_source_snapshot_random_access(
     = ReadTransferSourceSnapshotRandomAccessOptions {},
     const RandomAccessReadLimits& read_limits
     = RandomAccessReadLimits {}) noexcept;
+
+/**
+ * \brief Project structured diagnostics from a positional snapshot result.
+ *
+ * The function does not allocate. It reports the total required count in
+ * `needed` and writes the prefix that fits in \p out. Pass the same optional
+ * lane requests used for the read so residual paths can be classified as an
+ * incomplete requested MakerNote or embedded-container lane where applicable.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ReadTransferSourceDiagnosticsResult
+collect_read_transfer_source_diagnostics(
+    const ReadTransferSourceSnapshotRandomAccessResult& result,
+    std::span<ReadTransferSourceDiagnostic> out,
+    const ReadTransferSourceDiagnosticOptions& options
+    = ReadTransferSourceDiagnosticOptions {}) noexcept;
+
+const char*
+read_transfer_source_diagnostic_severity_name(
+    ReadTransferSourceDiagnosticSeverity severity) noexcept;
+const char*
+read_transfer_source_diagnostic_domain_name(
+    ReadTransferSourceDiagnosticDomain domain) noexcept;
+const char*
+read_transfer_source_diagnostic_code_name(
+    ReadTransferSourceDiagnosticCode code) noexcept;
+const char*
+read_transfer_source_diagnostic_message(
+    ReadTransferSourceDiagnosticCode code) noexcept;
 
 /**
  * \brief Serialize a target-neutral source snapshot into owned bytes.

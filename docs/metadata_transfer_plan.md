@@ -1018,11 +1018,11 @@ writer-confidence slice above; it should be sequenced around it.
 
 #### Supporting Work
 
-- [ ] improve structured diagnostics with severity, stable code, carrier/family,
+- [x] improve structured diagnostics with severity, stable code, carrier/family,
   offset or byte range where available, and short host-facing messages
 - [ ] extend resource accounting beyond current hard limits with preflight
   estimates for prepared transfers, sidecar output, and serialized snapshots
-- [ ] add clean-room public micro fixtures for host integration tests; do not
+- [x] add clean-room public micro fixtures for host integration tests; do not
   vendor large binary assets, third-party source drops, or scraped/spec text
 - [ ] add examples for `read bytes -> snapshot -> target bytes -> edited bytes`
   and `visit_metadata(...) -> flat host attribute list`
@@ -1067,16 +1067,20 @@ proxies without an OpenMeta dependency on any one host library.
    logical-payload fetching, and reusable decoded snapshot assembly are also
    positional. Snapshot assembly aggregates source limits across phases and
    reports unconverted enrichment paths as explicit residuals.
-4. Refactor native RAF, X3F, and CRW paths and any embedded-container recursion.
-   Preserve the current bytes/file behavior as adapters above the same reader,
-   not as a separate decoder implementation.
+4. [partial in 0.4.111] Refactor native RAF, X3F, and CRW paths and any
+   embedded-container recursion. Native RAF header/directories, X3F
+   header/section-directory/PROP, and CRW/CIFF directory/value traversal are
+   positional. Optional RAF preview/FujiIFD and X3F section-JPEG enrichment
+   remains explicit follow-up work.
 5. Gate each format on byte-span versus random-reader compatibility dumps,
    malformed/short-read tests, request/byte ceilings, and real-corpus parity
    before advertising that format as random-access capable. JPEG, PNG, WebP,
    GIF, JP2, JXL, ISO-BMFF, TIFF/DNG, and EXR positional decode/snapshot paths,
    malformed/I/O behavior, payload-skip checks, and cumulative request/byte
-   ceilings are covered through 0.4.109. Native RAF/X3F/CRW, requested embedded
-   recursion, and selected source-wide BMFF enrichment remain explicit work.
+   ceilings are covered through 0.4.109; native RAF/X3F/CRW parity, denied
+   image-payload ranges, malformed offsets, scratch sizing, and cumulative
+   request ceilings are covered in 0.4.111. Requested embedded recursion and
+   selected source-wide BMFF enrichment remain explicit work.
 
 #### Raw Snapshot Emission Policy
 
