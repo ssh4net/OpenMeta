@@ -2707,8 +2707,11 @@ read_transfer_source_snapshot_bytes(
  * \p format must identify the supplied source range. The function scans only
  * structural container data, fetches discovered metadata payloads into
  * caller-owned scratch, and never materializes the complete source. TIFF/DNG
- * and EXR use their native positional decoders. The returned snapshot owns its
- * finalized decoded store and any explicitly requested bounded raw carriers.
+ * and EXR use their native positional decoders. RAF and X3F can additionally
+ * follow declared preview/FujiIFD and section-JPEG metadata when embedded
+ * decoding is requested, without reading JPEG entropy or RAW image payloads.
+ * The returned snapshot owns its finalized decoded store and any explicitly
+ * requested bounded raw carriers.
  *
  * `residual_metadata_paths` reports requested or format-specific enrichment
  * paths that are not represented by discovered payload blocks. A nonzero value

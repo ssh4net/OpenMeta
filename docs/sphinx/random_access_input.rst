@@ -22,7 +22,8 @@ ISO-BMFF box and metadata-item traversal. Version 0.4.109 adds positional GIF
 extension scanning, EXR header traversal, logical metadata payload extraction,
 and decoded source-snapshot assembly. Version 0.4.111 adds native RAF, X3F, and
 CRW/CIFF positional metadata traversal plus structured snapshot-read
-diagnostics. It provides:
+diagnostics. Version 0.4.112 adds bounded RAF preview-JPEG and FujiIFD traversal
+plus X3F section-JPEG traversal. It provides:
 
 - a fixed source size and synchronous ``read_at(offset, destination)`` callback
 - a non-owning descriptor for caller-owned contiguous memory
@@ -84,8 +85,11 @@ Explicitly typed RAF, X3F, and CRW sources use native positional readers. RAF
 reads its fixed header and declared native directories, X3F reads its header,
 section directory, and ``PROP`` sections, and CRW follows CIFF directory
 offsets and individual values. These paths do not read intervening image
-payload ranges. Optional RAF preview/FujiIFD enrichment and X3F section-JPEG
-enrichment remain explicit residuals when requested.
+payload ranges. When embedded-container decoding is requested,
+``scan_raf_random_access(...)`` follows the header-declared preview JPEG and
+FujiIFD/TIFF range, while ``scan_x3f_random_access(...)`` follows declared
+``IMA2``/``IMAG`` ``SECi`` JPEG sections. Both stop at Start of Scan without
+fetching entropy-coded image data.
 
 Callback example
 ----------------
@@ -228,7 +232,9 @@ PNG text-prefix, and optional raw-carrier reads.
 
 The high-level positional path supports JPEG, PNG, WebP, GIF, JP2, JXL,
 HEIF/AVIF/CR3 BMFF containers, native TIFF/DNG-family input, EXR headers, and
-native RAF, X3F, and CRW metadata. Requested RAF/X3F embedded recursion,
+native RAF, X3F, and CRW metadata. RAF/X3F embedded decoding follows declared
+preview, FujiIFD, and section-JPEG ranges without searching arbitrary image
+bytes. A missing declared lane that would require fallback signature hunting,
 selected source-wide BMFF enrichment, unsupported MakerNote subpaths, and
 whole-file raw-carrier preservation increment
 ``residual_metadata_paths``. The decoded snapshot remains usable, but

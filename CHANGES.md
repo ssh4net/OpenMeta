@@ -1,5 +1,35 @@
 # OpenMeta Changes
 
+## 0.4.112 - 2026-08-21
+
+Changes compared with `0.4.111`.
+
+### Added
+
+- Added bounded positional RAF preview-JPEG and FujiIFD/TIFF metadata scanning
+  with range-relative block descriptors and no preview entropy reads.
+- Added bounded positional X3F `IMA2`/`IMAG` section-JPEG metadata scanning
+  through the declared `SECd`/`SECi` structure.
+- Added compact source-built RAF/X3F fixtures containing native metadata,
+  embedded EXIF/XMP, and denied synthetic entropy ranges.
+
+### Changed
+
+- Positional RAF/X3F snapshot assembly now decodes declared embedded EXIF,
+  XMP, MakerNote, FujiIFD, and native metadata without materializing preview or
+  image payloads.
+- Shared positional payload assembly now decodes RAF FujiIFD/TIFF directly from
+  a bounded source subrange and disables recursive embedded-container decoding
+  for inner preview EXIF.
+- Undeclared source-wide fallback signature searches remain explicit residuals
+  instead of forcing whole-file reads.
+
+### Tests And Validation
+
+- Added callback-versus-contiguous block parity, nonzero source-range offset,
+  measure-count, embedded snapshot, entropy-denial, malformed-range, and
+  cumulative request-limit coverage for RAF and X3F.
+
 ## 0.4.111 - 2026-08-21
 
 Changes compared with `0.4.110`.

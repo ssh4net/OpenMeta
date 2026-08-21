@@ -12,7 +12,9 @@ Repository layout (public):
 ``tests/public_metadata_fixtures.h`` provides compact, source-built public
 integration fixtures for TIFF/DNG with a representative Nikon MakerNote,
 WebP, AVIF, JP2, JXL, RAF, X3F, and CRW. They contain no copied third-party
-files and can be reused by downstream smoke tests without external assets.
+files and can be reused by downstream smoke tests without external assets. The
+RAF and X3F fixtures include declared embedded JPEG metadata and a synthetic
+entropy interval for proving that positional scans do not fetch image data.
 
 OpenMeta structure
 ------------------

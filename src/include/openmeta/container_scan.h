@@ -136,9 +136,10 @@ struct ScanResult final {
 
 /// Caller-owned storage for callback-backed container scanning.
 struct ContainerRandomAccessScratch final {
-    /// Reusable read-ahead cache. JPEG scanning requires up to 512 bytes to
-    /// preserve bare-XMP detection parity with the contiguous scanner. PNG,
-    /// WebP, GIF, JP2, JXL, and ISO-BMFF scanning require at least 32 bytes.
+    /// Reusable read-ahead cache. JPEG and RAF/X3F embedded-JPEG scanning
+    /// require up to 512 bytes to preserve bare-XMP detection parity with the
+    /// contiguous scanner. PNG, WebP, GIF, JP2, JXL, and ISO-BMFF scanning
+    /// require at least 32 bytes.
     std::span<std::byte> read_window;
     RandomAccessReadWindowOptions window_options;
 };
@@ -209,6 +210,58 @@ measure_scan_jpeg_random_access(const RandomAccessSourceRange& jpeg,
                                 const ContainerRandomAccessScratch& scratch,
                                 const RandomAccessReadLimits& read_limits
                                 = RandomAccessReadLimits {}) noexcept;
+
+/**
+ * \brief Scans declared RAF preview-JPEG and FujiIFD metadata ranges.
+ *
+ * Offsets are relative to \p raf. The scanner reads the fixed RAF header,
+ * JPEG metadata segments, and TIFF signatures only; it does not read preview
+ * entropy data or RAW image payloads. Source-wide signature searches are not
+ * performed by this bounded API. Callback input uses the same caller-owned
+ * read window as \ref scan_jpeg_random_access; 512 bytes preserve complete
+ * JPEG segment-classification parity.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ContainerRandomAccessScanResult
+scan_raf_random_access(const RandomAccessSourceRange& raf,
+                       std::span<ContainerBlockRef> out,
+                       const ContainerRandomAccessScratch& scratch,
+                       const RandomAccessReadLimits& read_limits
+                       = RandomAccessReadLimits {}) noexcept;
+
+ContainerRandomAccessScanResult
+measure_scan_raf_random_access(const RandomAccessSourceRange& raf,
+                               const ContainerRandomAccessScratch& scratch,
+                               const RandomAccessReadLimits& read_limits
+                               = RandomAccessReadLimits {}) noexcept;
+
+/**
+ * \brief Scans JPEG metadata in declared X3F IMA2/IMAG sections.
+ *
+ * Offsets are relative to \p x3f. The scanner traverses the bounded SECd
+ * section directory and reads JPEG metadata from SECi sections without
+ * reading entropy-coded image data. Source-wide Exif signature searches are
+ * not performed by this bounded API. Callback input uses the same caller-owned
+ * read window as \ref scan_jpeg_random_access; 512 bytes preserve complete
+ * JPEG segment-classification parity.
+ *
+ * \par API Stability
+ * Experimental host-facing API.
+ */
+ContainerRandomAccessScanResult
+scan_x3f_random_access(const RandomAccessSourceRange& x3f,
+                       std::span<ContainerBlockRef> out,
+                       const ContainerRandomAccessScratch& scratch,
+                       const RandomAccessReadLimits& read_limits
+                       = RandomAccessReadLimits {}) noexcept;
+
+ContainerRandomAccessScanResult
+measure_scan_x3f_random_access(const RandomAccessSourceRange& x3f,
+                               const ContainerRandomAccessScratch& scratch,
+                               const RandomAccessReadLimits& read_limits
+                               = RandomAccessReadLimits {}) noexcept;
 /// Scans a PNG byte stream and returns all metadata chunks found.
 ScanResult
 scan_png(std::span<const std::byte> bytes,

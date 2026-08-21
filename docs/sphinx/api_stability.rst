@@ -59,11 +59,12 @@ Host-facing API map
      - Allocation-free callback traversal with exact reads, explicit
        short-read/I/O/source-change results, caller-owned accounting/scratch,
        an owned finalized snapshot result, and caller-buffered structured
-       diagnostics. Includes bounded TIFF-family, EXR header, and native
-       RAF/X3F/CRW decode plus JPEG, PNG, WebP, GIF, JP2, JXL, and ISO-BMFF
-       metadata discovery/fetch while skipping image/media payloads. Requested
-       RAF/X3F embedded recursion and selected recursive or source-wide
-       enrichment remain explicit residuals. See :doc:`random_access_input`.
+       diagnostics. Includes bounded TIFF-family, EXR header, native
+       RAF/X3F/CRW decode, RAF preview/FujiIFD and X3F section-JPEG enrichment,
+       plus JPEG, PNG, WebP, GIF, JP2, JXL, and ISO-BMFF metadata
+       discovery/fetch while skipping image/media payloads. Undeclared
+       source-wide fallback searches and selected recursive enrichment remain
+       explicit residuals. See :doc:`random_access_input`.
    * - Compatibility dumps: ``dump_metadata_compatibility(...)``,
        ``dump_transfer_compatibility(...)``
      - ``openmeta/compatibility_dump.h``

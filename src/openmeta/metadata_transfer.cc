@@ -15200,11 +15200,13 @@ namespace {
         case ContainerFormat::Avif:
         case ContainerFormat::Cr3:
             return scan_bmff_random_access(source, blocks, scratch, limits);
+        case ContainerFormat::Raf:
+            return scan_raf_random_access(source, blocks, scratch, limits);
+        case ContainerFormat::X3f:
+            return scan_x3f_random_access(source, blocks, scratch, limits);
         case ContainerFormat::Unknown:
         case ContainerFormat::Tiff:
         case ContainerFormat::Crw:
-        case ContainerFormat::Raf:
-        case ContainerFormat::X3f:
         case ContainerFormat::Exr: break;
         }
         ContainerRandomAccessScanResult out;
@@ -15569,6 +15571,251 @@ namespace {
     }
 
 
+    static bool
+    make_snapshot_source_subrange(const RandomAccessSourceRange& source,
+                                  uint64_t offset, uint64_t size,
+                                  RandomAccessSourceRange* out) noexcept
+    {
+        if (!out || offset > source.size || size > source.size - offset
+            || source.source_offset > UINT64_MAX - offset) {
+            return false;
+        }
+        *out = make_random_access_source_range(source.source,
+                                               source.source_offset + offset,
+                                               size);
+        return random_access_source_range_valid(*out);
+    }
+
+
+    static bool decode_snapshot_source_tiff_block(
+        const RandomAccessSourceRange& source, const ContainerBlockRef& block,
+        const ReadTransferSourceSnapshotRandomAccessScratch& scratch,
+        const SimpleMetaDecodeOptions& decode_options,
+        const RandomAccessReadLimits& read_limits, uint32_t* ifd_write_pos,
+        ReadTransferSourceSnapshotRandomAccessResult* out) noexcept
+    {
+        if (!ifd_write_pos || !out) {
+            return false;
+        }
+        if (!require_random_access_budget(read_limits, &out->input)) {
+            out->status = TransferStatus::LimitExceeded;
+            out->code = ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
+            return false;
+        }
+        RandomAccessSourceRange tiff;
+        if (!make_snapshot_source_subrange(source, block.data_offset,
+                                           block.data_size, &tiff)) {
+            out->status = TransferStatus::Malformed;
+            out->code = ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
+            return false;
+        }
+
+        std::span<ExifIfdRef> ifd_slice;
+        if (*ifd_write_pos < scratch.ifds.size()) {
+            ifd_slice = scratch.ifds.subspan(*ifd_write_pos);
+        }
+        ExifRandomAccessScratch exif_scratch;
+        exif_scratch.read_window    = scratch.read_window;
+        exif_scratch.value          = scratch.value;
+        exif_scratch.window_options = scratch.window_options;
+        const ExifRandomAccessDecodeResult decoded
+            = decode_exif_tiff_random_access(
+                tiff, out->snapshot.store, ifd_slice, exif_scratch,
+                decode_options.exif,
+                remaining_random_access_limits(read_limits, out->input));
+        merge_random_access_state(&out->input, decoded.input);
+        merge_exif_decode_result(&out->read.exif, decoded.decode);
+        if (decoded.value_scratch_needed > out->value_scratch_needed) {
+            out->value_scratch_needed = decoded.value_scratch_needed;
+        }
+        out->residual_metadata_paths += decoded.nested_payloads_skipped;
+
+        const uint32_t room = *ifd_write_pos < scratch.ifds.size()
+                                  ? static_cast<uint32_t>(scratch.ifds.size()
+                                                          - *ifd_write_pos)
+                                  : 0U;
+        *ifd_write_pos += decoded.decode.ifds_written < room
+                              ? decoded.decode.ifds_written
+                              : room;
+
+        if (!out->input.ok()) {
+            out->status = map_random_access_failure_status(out->input);
+            out->code   = map_random_access_failure_code(
+                out->input,
+                ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed);
+            return false;
+        }
+        if (decoded.decode.status == ExifDecodeStatus::Malformed) {
+            out->status = TransferStatus::Malformed;
+            out->code = ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
+            return false;
+        }
+        if (decoded.decode.status == ExifDecodeStatus::LimitExceeded
+            || decoded.decode.status == ExifDecodeStatus::OutputTruncated) {
+            out->status = TransferStatus::LimitExceeded;
+            out->code
+                = decoded.value_scratch_needed != 0U
+                      ? ReadTransferSourceSnapshotRandomAccessCode::ScratchTooSmall
+                      : ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
+            return false;
+        }
+        return true;
+    }
+
+
+    static bool decode_snapshot_random_access_blocks(
+        const RandomAccessSourceRange& source,
+        std::span<const ContainerBlockRef> blocks,
+        const ReadTransferSourceSnapshotRandomAccessScratch& scratch,
+        const ReadTransferSourceSnapshotRandomAccessOptions& options,
+        const SimpleMetaDecodeOptions& decode_options,
+        const RandomAccessReadLimits& read_limits, bool preserve_carriers,
+        ReadTransferSourceSnapshotRandomAccessResult* out) noexcept
+    {
+        if (!out) {
+            return false;
+        }
+        uint32_t ifd_write_pos         = 0U;
+        PayloadOptions payload_options = decode_options.payload;
+        PayloadRandomAccessScratch payload_scratch;
+        payload_scratch.read_window    = scratch.read_window;
+        payload_scratch.compressed     = scratch.compressed_payload;
+        payload_scratch.window_options = scratch.window_options;
+        for (uint32_t i = 0U; i < blocks.size(); ++i) {
+            const ContainerBlockRef& block = blocks[i];
+            if (block.part_count > 1U && block.part_index != 0U) {
+                continue;
+            }
+            if (block.format == ContainerFormat::Raf
+                && block.kind == ContainerBlockKind::Exif && block.id == 0U) {
+                if (!decode_snapshot_source_tiff_block(source, block, scratch,
+                                                       decode_options,
+                                                       read_limits,
+                                                       &ifd_write_pos, out)) {
+                    return false;
+                }
+                continue;
+            }
+            if (!require_random_access_budget(read_limits, &out->input)) {
+                out->status = TransferStatus::LimitExceeded;
+                out->code
+                    = ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
+                return false;
+            }
+            const PayloadRandomAccessResult payload
+                = extract_payload_random_access(
+                    source, blocks, i, scratch.payload, scratch.payload_indices,
+                    payload_scratch, payload_options,
+                    remaining_random_access_limits(read_limits, out->input));
+            merge_random_access_state(&out->input, payload.input);
+            out->read.payload = payload.payload;
+            out->payload_scratch_needed
+                = payload.payload.status == PayloadStatus::OutputTruncated
+                          && payload.compressed_scratch_needed == 0U
+                      ? payload.payload.needed
+                      : out->payload_scratch_needed;
+            out->compressed_scratch_needed = payload.compressed_scratch_needed;
+            if (!out->input.ok()) {
+                out->status = map_random_access_failure_status(out->input);
+                out->code   = map_random_access_failure_code(
+                    out->input,
+                    ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed);
+                return false;
+            }
+            if (payload.payload.status != PayloadStatus::Ok) {
+                out->status = payload.payload.status == PayloadStatus::Malformed
+                                  ? TransferStatus::Malformed
+                                  : TransferStatus::LimitExceeded;
+                out->code   = payload.payload.status
+                                    == PayloadStatus::OutputTruncated
+                                  ? ReadTransferSourceSnapshotRandomAccessCode::
+                                      ScratchTooSmall
+                                  : ReadTransferSourceSnapshotRandomAccessCode::
+                                      DecodeFailed;
+                return false;
+            }
+            const std::span<const std::byte> bytes = scratch.payload.first(
+                static_cast<size_t>(payload.payload.written));
+            std::span<const std::byte> outer_prefix;
+            if (block.kind == ContainerBlockKind::Text) {
+                if (block.data_offset < block.outer_offset) {
+                    out->status = TransferStatus::Malformed;
+                    out->code
+                        = ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
+                    return false;
+                }
+                const uint64_t prefix_size = block.data_offset
+                                             - block.outer_offset;
+                if (prefix_size > scratch.value.size()) {
+                    out->value_scratch_needed = prefix_size;
+                    out->status               = TransferStatus::LimitExceeded;
+                    out->code = ReadTransferSourceSnapshotRandomAccessCode::
+                        ScratchTooSmall;
+                    return false;
+                }
+                if (prefix_size != 0U) {
+                    if (!require_random_access_budget(read_limits, &out->input,
+                                                      prefix_size)) {
+                        out->status = TransferStatus::LimitExceeded;
+                        out->code = ReadTransferSourceSnapshotRandomAccessCode::
+                            DecodeFailed;
+                        return false;
+                    }
+                    RandomAccessReadState prefix_input;
+                    const std::span<std::byte> destination
+                        = scratch.value.first(static_cast<size_t>(prefix_size));
+                    const RandomAccessReadCode prefix_code
+                        = random_access_read_exact(
+                            source, block.outer_offset, destination,
+                            &prefix_input,
+                            remaining_random_access_limits(read_limits,
+                                                           out->input));
+                    merge_random_access_state(&out->input, prefix_input);
+                    if (prefix_code != RandomAccessReadCode::Ok) {
+                        out->status = map_random_access_failure_status(
+                            out->input);
+                        out->code = map_random_access_failure_code(
+                            out->input,
+                            ReadTransferSourceSnapshotRandomAccessCode::
+                                DecodeFailed);
+                        return false;
+                    }
+                    outer_prefix = destination;
+                }
+            }
+
+            SimpleMetaDecodeOptions block_options = decode_options;
+            if ((block.format == ContainerFormat::Raf
+                 || block.format == ContainerFormat::X3f)
+                && block.id != 0U) {
+                block_options.exif.decode_embedded_containers = false;
+            }
+            if (!decode_snapshot_payload_block(block, bytes, outer_prefix,
+                                               &out->snapshot.store,
+                                               scratch.ifds, &ifd_write_pos,
+                                               block_options, &out->read,
+                                               &out->residual_metadata_paths)) {
+                out->status = TransferStatus::Malformed;
+                out->code
+                    = ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
+                return false;
+            }
+        }
+
+        if (preserve_carriers
+            && !preserve_random_access_raw_carriers(source, blocks, options,
+                                                    read_limits, &out->input,
+                                                    &out->snapshot)) {
+            out->status = map_random_access_failure_status(out->input);
+            out->code   = map_random_access_failure_code(
+                out->input,
+                ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed);
+            return false;
+        }
+        return true;
+    }
+
+
     static ReadTransferSourceSnapshotRandomAccessResult
     read_transfer_source_snapshot_random_access_common(
         const RandomAccessSourceRange& source, ContainerFormat format,
@@ -15737,7 +15984,66 @@ namespace {
             if ((format == ContainerFormat::Raf
                  || format == ContainerFormat::X3f)
                 && options.decode_embedded_containers) {
-                out.residual_metadata_paths += 1U;
+                ContainerRandomAccessScratch scan_scratch;
+                scan_scratch.read_window    = scratch.read_window;
+                scan_scratch.window_options = scratch.window_options;
+                const ContainerRandomAccessScanResult scan
+                    = scan_snapshot_random_access(
+                        source, format, scratch.blocks, scan_scratch,
+                        remaining_random_access_limits(read_limits, out.input));
+                merge_random_access_state(&out.input, scan.input);
+                out.read.scan = scan.scan;
+                if (!out.input.ok()) {
+                    out.status = map_random_access_failure_status(out.input);
+                    out.code   = map_random_access_failure_code(
+                        out.input,
+                        ReadTransferSourceSnapshotRandomAccessCode::ScanFailed);
+                    return out;
+                }
+                if (scan.scan.status == ScanStatus::Malformed) {
+                    out.status = TransferStatus::Malformed;
+                    out.code
+                        = ReadTransferSourceSnapshotRandomAccessCode::ScanFailed;
+                    return out;
+                }
+                if (scan.scan.status == ScanStatus::OutputTruncated) {
+                    out.status = TransferStatus::LimitExceeded;
+                    out.code   = ReadTransferSourceSnapshotRandomAccessCode::
+                        ScratchTooSmall;
+                    return out;
+                }
+                if (scan.scan.status == ScanStatus::Ok) {
+                    const uint32_t block_count
+                        = scan.scan.written < scratch.blocks.size()
+                              ? scan.scan.written
+                              : static_cast<uint32_t>(scratch.blocks.size());
+                    const std::span<const ContainerBlockRef> blocks
+                        = scratch.blocks.first(block_count);
+                    if (!decode_snapshot_random_access_blocks(
+                            source, blocks, scratch, options, decode_options,
+                            read_limits, false, &out)) {
+                        return out;
+                    }
+
+                    if (format == ContainerFormat::Raf
+                        && source.source.contiguous_data == nullptr) {
+                        bool have_xmp = false;
+                        for (const ContainerBlockRef& block : blocks) {
+                            have_xmp
+                                |= block.kind == ContainerBlockKind::Xmp
+                                   || block.kind
+                                          == ContainerBlockKind::XmpExtended;
+                        }
+                        if (!have_xmp) {
+                            out.residual_metadata_paths += 1U;
+                        }
+                    }
+                } else {
+                    // Callback-backed bounded traversal does not perform the
+                    // contiguous compatibility scanner's source-wide Exif/XMP
+                    // signature search through arbitrary image bytes.
+                    out.residual_metadata_paths += 1U;
+                }
             }
             if (options.preserve_raw_carriers) {
                 out.residual_metadata_paths += 1U;
@@ -15792,129 +16098,10 @@ namespace {
                       : static_cast<uint32_t>(scratch.blocks.size());
             const std::span<const ContainerBlockRef> blocks
                 = scratch.blocks.first(block_count);
-            uint32_t ifd_write_pos         = 0U;
-            PayloadOptions payload_options = decode_options.payload;
-            PayloadRandomAccessScratch payload_scratch;
-            payload_scratch.read_window    = scratch.read_window;
-            payload_scratch.compressed     = scratch.compressed_payload;
-            payload_scratch.window_options = scratch.window_options;
-            for (uint32_t i = 0U; i < block_count; ++i) {
-                const ContainerBlockRef& block = blocks[i];
-                if (block.part_count > 1U && block.part_index != 0U) {
-                    continue;
-                }
-                if (!require_random_access_budget(read_limits, &out.input)) {
-                    out.status = TransferStatus::LimitExceeded;
-                    out.code
-                        = ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
-                    return out;
-                }
-                const PayloadRandomAccessResult payload
-                    = extract_payload_random_access(
-                        source, blocks, i, scratch.payload,
-                        scratch.payload_indices, payload_scratch,
-                        payload_options,
-                        remaining_random_access_limits(read_limits, out.input));
-                merge_random_access_state(&out.input, payload.input);
-                out.read.payload = payload.payload;
-                out.payload_scratch_needed
-                    = payload.payload.status == PayloadStatus::OutputTruncated
-                              && payload.compressed_scratch_needed == 0U
-                          ? payload.payload.needed
-                          : out.payload_scratch_needed;
-                out.compressed_scratch_needed
-                    = payload.compressed_scratch_needed;
-                if (!out.input.ok()) {
-                    out.status = map_random_access_failure_status(out.input);
-                    out.code   = map_random_access_failure_code(
-                        out.input,
-                        ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed);
-                    return out;
-                }
-                if (payload.payload.status != PayloadStatus::Ok) {
-                    out.status = payload.payload.status
-                                         == PayloadStatus::Malformed
-                                     ? TransferStatus::Malformed
-                                     : TransferStatus::LimitExceeded;
-                    out.code
-                        = payload.payload.status
-                                  == PayloadStatus::OutputTruncated
-                              ? ReadTransferSourceSnapshotRandomAccessCode::
-                                    ScratchTooSmall
-                              : ReadTransferSourceSnapshotRandomAccessCode::
-                                    DecodeFailed;
-                    return out;
-                }
-                const std::span<const std::byte> bytes = scratch.payload.first(
-                    static_cast<size_t>(payload.payload.written));
-                std::span<const std::byte> outer_prefix;
-                if (block.kind == ContainerBlockKind::Text) {
-                    if (block.data_offset < block.outer_offset) {
-                        out.status = TransferStatus::Malformed;
-                        out.code = ReadTransferSourceSnapshotRandomAccessCode::
-                            DecodeFailed;
-                        return out;
-                    }
-                    const uint64_t prefix_size = block.data_offset
-                                                 - block.outer_offset;
-                    if (prefix_size > scratch.value.size()) {
-                        out.value_scratch_needed = prefix_size;
-                        out.status = TransferStatus::LimitExceeded;
-                        out.code = ReadTransferSourceSnapshotRandomAccessCode::
-                            ScratchTooSmall;
-                        return out;
-                    }
-                    if (prefix_size != 0U) {
-                        if (!require_random_access_budget(read_limits,
-                                                          &out.input,
-                                                          prefix_size)) {
-                            out.status = TransferStatus::LimitExceeded;
-                            out.code
-                                = ReadTransferSourceSnapshotRandomAccessCode::
-                                    DecodeFailed;
-                            return out;
-                        }
-                        RandomAccessReadState prefix_input;
-                        const std::span<std::byte> destination
-                            = scratch.value.first(
-                                static_cast<size_t>(prefix_size));
-                        const RandomAccessReadCode prefix_code
-                            = random_access_read_exact(
-                                source, block.outer_offset, destination,
-                                &prefix_input,
-                                remaining_random_access_limits(read_limits,
-                                                               out.input));
-                        merge_random_access_state(&out.input, prefix_input);
-                        if (prefix_code != RandomAccessReadCode::Ok) {
-                            out.status = map_random_access_failure_status(
-                                out.input);
-                            out.code = map_random_access_failure_code(
-                                out.input,
-                                ReadTransferSourceSnapshotRandomAccessCode::
-                                    DecodeFailed);
-                            return out;
-                        }
-                        outer_prefix = destination;
-                    }
-                }
-                if (!decode_snapshot_payload_block(
-                        block, bytes, outer_prefix, &out.snapshot.store,
-                        scratch.ifds, &ifd_write_pos, decode_options, &out.read,
-                        &out.residual_metadata_paths)) {
-                    out.status = TransferStatus::Malformed;
-                    out.code
-                        = ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
-                    return out;
-                }
-            }
-
-            if (!preserve_random_access_raw_carriers(source, blocks, options,
-                                                     read_limits, &out.input,
-                                                     &out.snapshot)) {
-                out.status = map_random_access_failure_status(out.input);
-                out.code   = map_random_access_failure_code(
-                    out.input,
-                    ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed);
+            if (!decode_snapshot_random_access_blocks(source, blocks, scratch,
+                                                      options, decode_options,
+                                                      read_limits, true,
+                                                      &out)) {
                 return out;
             }
         }

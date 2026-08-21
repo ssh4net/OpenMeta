@@ -1104,7 +1104,9 @@ Set `OPENMETA_PYTHON_EXECUTABLE` when the intended interpreter is not named
 integration fixtures for TIFF/DNG with a representative Nikon MakerNote,
 WebP, AVIF, JP2, JXL, RAF, X3F, and CRW. These fixtures contain no copied
 third-party files and are suitable for downstream smoke tests that need stable
-metadata carriers without external assets.
+metadata carriers without external assets. The RAF and X3F fixtures include
+declared embedded JPEG metadata and a synthetic entropy interval for proving
+that positional scans do not fetch image data.
 
 Optional CLI integration test for preview index suffixing:
 ```bash

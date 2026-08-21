@@ -1751,6 +1751,470 @@ measure_scan_jpeg_random_access(
 
 namespace {
 
+    static RandomAccessReadLimits
+    remaining_scan_limits(const RandomAccessReadLimits& limits,
+                          const RandomAccessReadState& used) noexcept
+    {
+        RandomAccessReadLimits out = limits;
+        if (out.max_requests != 0U) {
+            out.max_requests = used.requests_issued < out.max_requests
+                                   ? out.max_requests - used.requests_issued
+                                   : 0U;
+        }
+        if (out.max_total_bytes != 0U) {
+            out.max_total_bytes = used.bytes_requested < out.max_total_bytes
+                                      ? out.max_total_bytes
+                                            - used.bytes_requested
+                                      : 0U;
+        }
+        return out;
+    }
+
+    static bool require_scan_budget(const RandomAccessReadLimits& limits,
+                                    RandomAccessReadState* state,
+                                    uint64_t minimum_bytes = 1U) noexcept
+    {
+        if (!state || !state->ok()) {
+            return false;
+        }
+        if (limits.max_requests != 0U
+            && state->requests_issued >= limits.max_requests) {
+            state->code = RandomAccessReadCode::RequestLimitExceeded;
+            state->failure_request_bytes = minimum_bytes;
+            return false;
+        }
+        if (limits.max_total_bytes != 0U
+            && (state->bytes_requested >= limits.max_total_bytes
+                || minimum_bytes
+                       > limits.max_total_bytes - state->bytes_requested)) {
+            state->code = RandomAccessReadCode::ByteLimitExceeded;
+            state->failure_request_bytes = minimum_bytes;
+            return false;
+        }
+        return true;
+    }
+
+    static void merge_scan_input(RandomAccessReadState* out,
+                                 const RandomAccessReadState& in) noexcept
+    {
+        if (!out) {
+            return;
+        }
+        const uint64_t requests = static_cast<uint64_t>(out->requests_issued)
+                                  + in.requests_issued;
+        out->requests_issued = requests > UINT32_MAX
+                                   ? UINT32_MAX
+                                   : static_cast<uint32_t>(requests);
+        out->bytes_requested = out->bytes_requested
+                                       > UINT64_MAX - in.bytes_requested
+                                   ? UINT64_MAX
+                                   : out->bytes_requested + in.bytes_requested;
+        out->bytes_completed = out->bytes_completed
+                                       > UINT64_MAX - in.bytes_completed
+                                   ? UINT64_MAX
+                                   : out->bytes_completed + in.bytes_completed;
+        if (out->code == RandomAccessReadCode::Ok
+            && in.code != RandomAccessReadCode::Ok) {
+            out->code                  = in.code;
+            out->io_code               = in.io_code;
+            out->failure_offset        = in.failure_offset;
+            out->failure_request_bytes = in.failure_request_bytes;
+            out->failure_bytes_read    = in.failure_bytes_read;
+        }
+    }
+
+    static bool make_scan_subrange(const RandomAccessSourceRange& parent,
+                                   uint64_t offset, uint64_t size,
+                                   RandomAccessSourceRange* out) noexcept
+    {
+        if (!out || offset > parent.size || size > parent.size - offset
+            || parent.source_offset > UINT64_MAX - offset) {
+            return false;
+        }
+        *out = make_random_access_source_range(parent.source,
+                                               parent.source_offset + offset,
+                                               size);
+        return random_access_source_range_valid(*out);
+    }
+
+    static bool shifted_block(ContainerBlockRef* block, ContainerFormat format,
+                              uint64_t base) noexcept
+    {
+        if (!block || block->outer_offset > UINT64_MAX - base
+            || block->data_offset > UINT64_MAX - base) {
+            return false;
+        }
+        block->format = format;
+        block->outer_offset += base;
+        block->data_offset += base;
+        return true;
+    }
+
+    static void merge_nested_scan(const ContainerRandomAccessScanResult& nested,
+                                  ContainerFormat format, uint64_t base,
+                                  std::span<ContainerBlockRef> local,
+                                  BlockSink* sink,
+                                  RandomAccessReadState* input) noexcept
+    {
+        if (!sink || !input) {
+            return;
+        }
+        merge_scan_input(input, nested.input);
+        const uint32_t written = nested.scan.written < local.size()
+                                     ? nested.scan.written
+                                     : static_cast<uint32_t>(local.size());
+        for (uint32_t i = 0U; i < written; ++i) {
+            ContainerBlockRef block = local[i];
+            if (!shifted_block(&block, format, base)) {
+                sink->result.status = ScanStatus::Malformed;
+                return;
+            }
+            sink_emit(sink, block);
+        }
+        if (nested.scan.status == ScanStatus::Malformed) {
+            sink->result.status = ScanStatus::Malformed;
+        } else if (nested.scan.status == ScanStatus::OutputTruncated
+                   && sink->result.status == ScanStatus::Ok) {
+            sink->result.status = ScanStatus::OutputTruncated;
+        }
+    }
+
+    static bool tiff_signature(std::span<const std::byte> bytes) noexcept
+    {
+        return bytes.size() >= 4U
+               && ((u8(bytes[0]) == 'I' && u8(bytes[1]) == 'I'
+                    && u8(bytes[2]) == 0x2aU && u8(bytes[3]) == 0U)
+                   || (u8(bytes[0]) == 'M' && u8(bytes[1]) == 'M'
+                       && u8(bytes[2]) == 0U && u8(bytes[3]) == 0x2aU));
+    }
+
+    static bool scan_raf_tiff_range(const RandomAccessSourceRange& raf,
+                                    uint64_t offset, uint64_t size,
+                                    const RandomAccessReadLimits& limits,
+                                    BlockSink* sink,
+                                    RandomAccessReadState* input) noexcept
+    {
+        if (!sink || !input || offset == 0U || offset > raf.size) {
+            return false;
+        }
+        if (size == 0U) {
+            size = raf.size - offset;
+        }
+        if (size < 8U || size > raf.size - offset) {
+            sink->result.status = ScanStatus::Malformed;
+            return false;
+        }
+        std::array<std::byte, 4U> signature {};
+        if (random_access_read_exact(raf, offset, signature, input, limits)
+            != RandomAccessReadCode::Ok) {
+            return false;
+        }
+        if (!tiff_signature(signature)) {
+            return false;
+        }
+        ContainerBlockRef block;
+        block.format       = ContainerFormat::Raf;
+        block.kind         = ContainerBlockKind::Exif;
+        block.outer_offset = offset;
+        block.outer_size   = size;
+        block.data_offset  = offset;
+        block.data_size    = size;
+        sink_emit(sink, block);
+        return true;
+    }
+
+}  // namespace
+
+
+ContainerRandomAccessScanResult
+scan_raf_random_access(const RandomAccessSourceRange& raf,
+                       std::span<ContainerBlockRef> out,
+                       const ContainerRandomAccessScratch& scratch,
+                       const RandomAccessReadLimits& read_limits) noexcept
+{
+    ContainerRandomAccessScanResult result;
+    if (!random_access_source_range_valid(raf)) {
+        result.input.code = RandomAccessReadCode::InvalidArgument;
+        return result;
+    }
+    if (raf.source.contiguous_data != nullptr) {
+        const std::byte* begin = raf.source.contiguous_data
+                                 + static_cast<size_t>(raf.source_offset);
+        result.scan = scan_auto(
+            std::span<const std::byte>(begin, static_cast<size_t>(raf.size)),
+            out);
+        return result;
+    }
+
+    BlockSink sink;
+    sink.out = out.data();
+    sink.cap = static_cast<uint32_t>(out.size());
+    if (raf.size < 16U) {
+        sink.result.status = ScanStatus::Unsupported;
+        result.scan        = sink.result;
+        return result;
+    }
+
+    std::array<std::byte, 0x88U> header {};
+    const size_t header_size = static_cast<size_t>(
+        raf.size < header.size() ? raf.size : header.size());
+    if (random_access_read_exact(raf, 0U,
+                                 std::span<std::byte>(header).first(header_size),
+                                 &result.input, read_limits)
+        != RandomAccessReadCode::Ok) {
+        result.scan = sink.result;
+        return result;
+    }
+    const std::span<const std::byte> header_bytes(header.data(), header_size);
+    if (!match(header_bytes, 0U, "FUJIFILMCCD-RAW ", 16U)) {
+        sink.result.status = ScanStatus::Unsupported;
+        result.scan        = sink.result;
+        return result;
+    }
+
+    uint32_t preview_offset = 0U;
+    uint32_t preview_size   = 0U;
+    if (read_u32be(header_bytes, 0x54U, &preview_offset)
+        && read_u32be(header_bytes, 0x58U, &preview_size)
+        && (preview_offset != 0U || preview_size != 0U)) {
+        if (preview_offset > raf.size
+            || preview_size > raf.size - preview_offset || preview_size < 2U) {
+            sink.result.status = ScanStatus::Malformed;
+        } else {
+            RandomAccessSourceRange preview;
+            if (!make_scan_subrange(raf, preview_offset, preview_size,
+                                    &preview)) {
+                sink.result.status = ScanStatus::Malformed;
+            } else {
+                std::array<ContainerBlockRef, 32U> local {};
+                if (require_scan_budget(read_limits, &result.input)) {
+                    const ContainerRandomAccessScanResult nested
+                        = scan_jpeg_random_access(
+                            preview, local, scratch,
+                            remaining_scan_limits(read_limits, result.input));
+                    merge_nested_scan(nested, ContainerFormat::Raf,
+                                      preview_offset, local, &sink,
+                                      &result.input);
+                }
+            }
+        }
+    }
+
+    std::array<uint32_t, 2U> seen_offsets {};
+    uint32_t seen_count                  = 0U;
+    static constexpr uint64_t kOffsets[] = { 0x64U, 0x80U };
+    static constexpr uint64_t kLengths[] = { 0x68U, 0x84U };
+    for (uint32_t i = 0U; i < 2U && result.input.ok(); ++i) {
+        uint32_t offset = 0U;
+        uint32_t size   = 0U;
+        if (!read_u32be(header_bytes, kOffsets[i], &offset)
+            || !read_u32be(header_bytes, kLengths[i], &size) || offset == 0U) {
+            continue;
+        }
+        bool duplicate = false;
+        for (uint32_t j = 0U; j < seen_count; ++j) {
+            duplicate |= seen_offsets[j] == offset;
+        }
+        if (duplicate) {
+            continue;
+        }
+        seen_offsets[seen_count++] = offset;
+        (void)scan_raf_tiff_range(raf, offset, size, read_limits, &sink,
+                                  &result.input);
+    }
+
+    if (seen_count == 0U && result.input.ok() && raf.size > 168U) {
+        (void)scan_raf_tiff_range(raf, 160U, raf.size - 160U, read_limits,
+                                  &sink, &result.input);
+    }
+    if (sink.result.needed == 0U && sink.result.status == ScanStatus::Ok) {
+        sink.result.status = ScanStatus::Unsupported;
+    }
+    result.scan = sink.result;
+    return result;
+}
+
+
+ContainerRandomAccessScanResult
+measure_scan_raf_random_access(const RandomAccessSourceRange& raf,
+                               const ContainerRandomAccessScratch& scratch,
+                               const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_raf_random_access(raf, {}, scratch, read_limits);
+}
+
+
+ContainerRandomAccessScanResult
+scan_x3f_random_access(const RandomAccessSourceRange& x3f,
+                       std::span<ContainerBlockRef> out,
+                       const ContainerRandomAccessScratch& scratch,
+                       const RandomAccessReadLimits& read_limits) noexcept
+{
+    ContainerRandomAccessScanResult result;
+    if (!random_access_source_range_valid(x3f)) {
+        result.input.code = RandomAccessReadCode::InvalidArgument;
+        return result;
+    }
+    if (x3f.source.contiguous_data != nullptr) {
+        const std::byte* begin = x3f.source.contiguous_data
+                                 + static_cast<size_t>(x3f.source_offset);
+        result.scan = scan_auto(
+            std::span<const std::byte>(begin, static_cast<size_t>(x3f.size)),
+            out);
+        return result;
+    }
+
+    BlockSink sink;
+    sink.out = out.data();
+    sink.cap = static_cast<uint32_t>(out.size());
+    if (x3f.size < 16U) {
+        sink.result.status = ScanStatus::Unsupported;
+        result.scan        = sink.result;
+        return result;
+    }
+
+    std::array<std::byte, 4U> signature {};
+    if (random_access_read_exact(x3f, 0U, signature, &result.input, read_limits)
+            != RandomAccessReadCode::Ok
+        || !match(signature, 0U, "FOVb", 4U)) {
+        if (result.input.ok()) {
+            sink.result.status = ScanStatus::Unsupported;
+        }
+        result.scan = sink.result;
+        return result;
+    }
+
+    std::array<std::byte, 4U> tail {};
+    if (random_access_read_exact(x3f, x3f.size - tail.size(), tail,
+                                 &result.input, read_limits)
+        != RandomAccessReadCode::Ok) {
+        result.scan = sink.result;
+        return result;
+    }
+    uint32_t directory_offset = 0U;
+    if (!read_u32le(tail, 0U, &directory_offset)
+        || directory_offset > x3f.size - 16U) {
+        sink.result.status = ScanStatus::Unsupported;
+        result.scan        = sink.result;
+        return result;
+    }
+
+    std::array<std::byte, 12U + 128U * 12U> directory {};
+    if (random_access_read_exact(x3f, directory_offset,
+                                 std::span<std::byte>(directory).first(12U),
+                                 &result.input, read_limits)
+        != RandomAccessReadCode::Ok) {
+        result.scan = sink.result;
+        return result;
+    }
+    if (!match(directory, 0U, "SECd", 4U)) {
+        sink.result.status = ScanStatus::Unsupported;
+        result.scan        = sink.result;
+        return result;
+    }
+    uint32_t section_count = 0U;
+    if (!read_u32le(directory, 8U, &section_count)) {
+        sink.result.status = ScanStatus::Malformed;
+        result.scan        = sink.result;
+        return result;
+    }
+    if (section_count > 128U) {
+        sink.result.status = ScanStatus::OutputTruncated;
+        section_count      = 128U;
+    }
+    const uint64_t directory_size
+        = 12ULL + static_cast<uint64_t>(section_count) * 12ULL;
+    if (directory_size > x3f.size - directory_offset) {
+        sink.result.status = ScanStatus::Malformed;
+        result.scan        = sink.result;
+        return result;
+    }
+    if (directory_size > 12U
+        && random_access_read_exact(x3f, directory_offset + 12U,
+                                    std::span<std::byte>(directory).subspan(
+                                        12U, static_cast<size_t>(directory_size
+                                                                 - 12U)),
+                                    &result.input, read_limits)
+               != RandomAccessReadCode::Ok) {
+        result.scan = sink.result;
+        return result;
+    }
+
+    for (uint32_t i = 0U; i < section_count && result.input.ok(); ++i) {
+        const uint64_t entry_offset = 12ULL + static_cast<uint64_t>(i) * 12ULL;
+        uint32_t section_offset     = 0U;
+        uint32_t section_size       = 0U;
+        uint32_t section_tag        = 0U;
+        if (!read_u32le(directory, entry_offset + 0U, &section_offset)
+            || !read_u32le(directory, entry_offset + 4U, &section_size)
+            || !read_u32le(directory, entry_offset + 8U, &section_tag)) {
+            sink.result.status = ScanStatus::Malformed;
+            break;
+        }
+        if (section_tag != x3f_tag('I', 'M', 'A', '2')
+            && section_tag != x3f_tag('I', 'M', 'A', 'G')) {
+            continue;
+        }
+        if (section_offset > x3f.size
+            || section_size > x3f.size - section_offset) {
+            sink.result.status = ScanStatus::Malformed;
+            break;
+        }
+        if (section_size <= 28U) {
+            continue;
+        }
+
+        std::array<std::byte, 30U> section_prefix {};
+        if (random_access_read_exact(x3f, section_offset, section_prefix,
+                                     &result.input, read_limits)
+            != RandomAccessReadCode::Ok) {
+            break;
+        }
+        if (!match(section_prefix, 0U, "SECi", 4U)
+            || u8(section_prefix[28U]) != 0xffU
+            || u8(section_prefix[29U]) != 0xd8U) {
+            continue;
+        }
+
+        const uint64_t jpeg_offset = static_cast<uint64_t>(section_offset)
+                                     + 28U;
+        const uint64_t jpeg_size = static_cast<uint64_t>(section_size) - 28U;
+        RandomAccessSourceRange jpeg;
+        if (!make_scan_subrange(x3f, jpeg_offset, jpeg_size, &jpeg)) {
+            sink.result.status = ScanStatus::Malformed;
+            break;
+        }
+        std::array<ContainerBlockRef, 32U> local {};
+        if (!require_scan_budget(read_limits, &result.input)) {
+            break;
+        }
+        const ContainerRandomAccessScanResult nested
+            = scan_jpeg_random_access(jpeg, local, scratch,
+                                      remaining_scan_limits(read_limits,
+                                                            result.input));
+        merge_nested_scan(nested, ContainerFormat::X3f, jpeg_offset, local,
+                          &sink, &result.input);
+    }
+
+    if (sink.result.needed == 0U && sink.result.status == ScanStatus::Ok) {
+        sink.result.status = ScanStatus::Unsupported;
+    }
+    result.scan = sink.result;
+    return result;
+}
+
+
+ContainerRandomAccessScanResult
+measure_scan_x3f_random_access(const RandomAccessSourceRange& x3f,
+                               const ContainerRandomAccessScratch& scratch,
+                               const RandomAccessReadLimits& read_limits) noexcept
+{
+    return scan_x3f_random_access(x3f, {}, scratch, read_limits);
+}
+
+
+namespace {
+
     template<class Bytes>
     static bool
     looks_like_bmff_box_header_fragment(const Bytes& bytes,

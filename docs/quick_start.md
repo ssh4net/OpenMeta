@@ -485,9 +485,10 @@ For large assets exposed through a host positional-read callback, use
 `read_transfer_source_snapshot_random_access(...)`. It fetches structural and
 metadata ranges into caller-owned scratch without buffering the whole file and
 returns an owned finalized snapshot. Check both `complete()` and
-`residual_metadata_paths`. Native RAF/X3F/CRW metadata is positional; requested
-RAF/X3F embedded recursion and selected recursive or source-wide enrichment
-paths remain explicit residuals. Use
+`residual_metadata_paths`. Native RAF/X3F/CRW metadata is positional;
+RAF/X3F embedded decoding follows declared preview, FujiIFD, and section-JPEG
+ranges without reading image data. Undeclared source-wide searches and selected
+recursive enrichment paths remain explicit residuals. Use
 `collect_read_transfer_source_diagnostics(...)` for machine-readable failure,
 scratch, MakerNote, and residual details.
 In Python, if the host already has `doc = openmeta.read(...)`, call

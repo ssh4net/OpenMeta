@@ -1067,11 +1067,12 @@ proxies without an OpenMeta dependency on any one host library.
    logical-payload fetching, and reusable decoded snapshot assembly are also
    positional. Snapshot assembly aggregates source limits across phases and
    reports unconverted enrichment paths as explicit residuals.
-4. [partial in 0.4.111] Refactor native RAF, X3F, and CRW paths and any
+4. [complete in 0.4.112] Refactor native RAF, X3F, and CRW paths and declared
    embedded-container recursion. Native RAF header/directories, X3F
    header/section-directory/PROP, and CRW/CIFF directory/value traversal are
-   positional. Optional RAF preview/FujiIFD and X3F section-JPEG enrichment
-   remains explicit follow-up work.
+   positional. RAF preview-JPEG/FujiIFD and X3F section-JPEG enrichment now
+   follows declared ranges without reading JPEG entropy or RAW image payloads.
+   Undeclared source-wide compatibility searches remain bounded residual work.
 5. Gate each format on byte-span versus random-reader compatibility dumps,
    malformed/short-read tests, request/byte ceilings, and real-corpus parity
    before advertising that format as random-access capable. JPEG, PNG, WebP,
@@ -1079,8 +1080,11 @@ proxies without an OpenMeta dependency on any one host library.
    malformed/I/O behavior, payload-skip checks, and cumulative request/byte
    ceilings are covered through 0.4.109; native RAF/X3F/CRW parity, denied
    image-payload ranges, malformed offsets, scratch sizing, and cumulative
-   request ceilings are covered in 0.4.111. Requested embedded recursion and
-   selected source-wide BMFF enrichment remain explicit work.
+   request ceilings are covered in 0.4.111. RAF preview/FujiIFD and X3F
+   section-JPEG callback/span discovery parity, nonzero range offsets,
+   entropy-denied reads, decode assembly, malformed ranges, and request limits
+   are covered in 0.4.112. Undeclared source-wide searches and selected
+   source-wide BMFF enrichment remain explicit work.
 
 #### Raw Snapshot Emission Policy
 

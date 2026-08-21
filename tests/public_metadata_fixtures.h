@@ -58,6 +58,17 @@ namespace detail {
         out->push_back(std::byte { static_cast<uint8_t>(value & 0xffU) });
     }
 
+    inline void append_jpeg_segment(std::vector<std::byte>* out,
+                                    uint16_t marker,
+                                    std::span<const std::byte> payload)
+    {
+        out->push_back(
+            std::byte { static_cast<uint8_t>((marker >> 8U) & 0xffU) });
+        out->push_back(std::byte { static_cast<uint8_t>(marker & 0xffU) });
+        append_u16be(out, static_cast<uint16_t>(payload.size() + 2U));
+        out->insert(out->end(), payload.begin(), payload.end());
+    }
+
     inline void write_u32le(std::vector<std::byte>* out, size_t offset,
                             uint32_t value)
     {
@@ -169,6 +180,67 @@ namespace detail {
         return out;
     }
 
+    inline std::vector<std::byte> make_short_tiff(uint16_t tag, uint16_t value)
+    {
+        std::vector<std::byte> out;
+        append_ascii(&out, "II");
+        append_u16le(&out, 42U);
+        append_u32le(&out, 8U);
+        append_u16le(&out, 1U);
+        append_u16le(&out, tag);
+        append_u16le(&out, 3U);
+        append_u32le(&out, 1U);
+        append_u16le(&out, value);
+        append_u16le(&out, 0U);
+        append_u32le(&out, 0U);
+        return out;
+    }
+
+    struct JpegMetadataFixture final {
+        std::vector<std::byte> bytes;
+        uint64_t entropy_offset = 0U;
+        uint64_t entropy_size   = 0U;
+    };
+
+    inline JpegMetadataFixture make_jpeg_with_exif_xmp()
+    {
+        JpegMetadataFixture out;
+        out.bytes.push_back(std::byte { 0xffU });
+        out.bytes.push_back(std::byte { 0xd8U });
+
+        std::vector<std::byte> exif;
+        append_ascii(&exif, "Exif");
+        exif.push_back(std::byte { 0U });
+        exif.push_back(std::byte { 0U });
+        const std::vector<std::byte> tiff = make_tiff(false);
+        exif.insert(exif.end(), tiff.begin(), tiff.end());
+        append_jpeg_segment(&out.bytes, 0xffe1U, exif);
+
+        std::vector<std::byte> xmp;
+        append_ascii(&xmp, "http://ns.adobe.com/xap/1.0/");
+        xmp.push_back(std::byte { 0U });
+        append_ascii(
+            &xmp, "<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF "
+                  "xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>"
+                  "<rdf:Description xmlns:xmp='http://ns.adobe.com/xap/1.0/' "
+                  "xmp:CreatorTool='OpenMeta fixture'/></rdf:RDF></x:xmpmeta>");
+        append_jpeg_segment(&out.bytes, 0xffe1U, xmp);
+
+        out.bytes.insert(out.bytes.end(),
+                         { std::byte { 0xffU }, std::byte { 0xdaU },
+                           std::byte { 0x00U }, std::byte { 0x08U },
+                           std::byte { 0x01U }, std::byte { 0x01U },
+                           std::byte { 0x00U }, std::byte { 0x00U },
+                           std::byte { 0x3fU }, std::byte { 0x00U } });
+        out.entropy_offset = out.bytes.size();
+        out.entropy_size   = 8192U;
+        out.bytes.insert(out.bytes.end(), static_cast<size_t>(out.entropy_size),
+                         std::byte { 0x5aU });
+        out.bytes.push_back(std::byte { 0xffU });
+        out.bytes.push_back(std::byte { 0xd9U });
+        return out;
+    }
+
     inline std::vector<std::byte>
     exif_box_payload(std::span<const std::byte> tiff)
     {
@@ -223,6 +295,12 @@ namespace detail {
     }
 
 }  // namespace detail
+
+struct RawEmbeddedMetadataFixture final {
+    std::vector<std::byte> bytes;
+    uint64_t entropy_offset = 0U;
+    uint64_t entropy_size   = 0U;
+};
 
 inline std::vector<std::byte>
 tiff_with_nikon_makernote()
@@ -369,6 +447,56 @@ raf_with_native_directory()
     return out;
 }
 
+inline RawEmbeddedMetadataFixture
+raf_with_embedded_metadata()
+{
+    const detail::JpegMetadataFixture jpeg = detail::make_jpeg_with_exif_xmp();
+    const std::vector<std::byte> tiff = detail::make_short_tiff(0x0106U, 2U);
+
+    std::vector<std::byte> directory;
+    detail::append_u32be(&directory, 1U);
+    detail::append_u16be(&directory, 0x0100U);
+    detail::append_u16be(&directory, 4U);
+    detail::append_u16be(&directory, 6048U);
+    detail::append_u16be(&directory, 4032U);
+
+    constexpr uint32_t preview_offset = 256U;
+    const uint32_t tiff_offset        = static_cast<uint32_t>(
+        (preview_offset + jpeg.bytes.size() + 255U) & ~size_t { 255U });
+    const uint32_t directory_offset = static_cast<uint32_t>(
+        (tiff_offset + tiff.size() + 255U) & ~size_t { 255U });
+
+    RawEmbeddedMetadataFixture fixture;
+    fixture.bytes.resize(preview_offset, std::byte { 0U });
+    for (size_t i = 0U; i < 16U; ++i) {
+        fixture.bytes[i] = std::byte { static_cast<uint8_t>(
+            std::string_view("FUJIFILMCCD-RAW ")[i]) };
+    }
+    fixture.bytes[0x3cU] = std::byte { '0' };
+    fixture.bytes[0x3dU] = std::byte { '2' };
+    fixture.bytes[0x3eU] = std::byte { '0' };
+    fixture.bytes[0x3fU] = std::byte { '0' };
+    detail::write_u32be(&fixture.bytes, 0x54U, preview_offset);
+    detail::write_u32be(&fixture.bytes, 0x58U,
+                        static_cast<uint32_t>(jpeg.bytes.size()));
+    detail::write_u32be(&fixture.bytes, 0x5cU, directory_offset);
+    detail::write_u32be(&fixture.bytes, 0x60U,
+                        static_cast<uint32_t>(directory.size()));
+    detail::write_u32be(&fixture.bytes, 0x64U, tiff_offset);
+    detail::write_u32be(&fixture.bytes, 0x68U,
+                        static_cast<uint32_t>(tiff.size()));
+    fixture.bytes.insert(fixture.bytes.end(), jpeg.bytes.begin(),
+                         jpeg.bytes.end());
+    fixture.bytes.resize(tiff_offset, std::byte { 0x35U });
+    fixture.bytes.insert(fixture.bytes.end(), tiff.begin(), tiff.end());
+    fixture.bytes.resize(directory_offset, std::byte { 0x6bU });
+    fixture.bytes.insert(fixture.bytes.end(), directory.begin(),
+                         directory.end());
+    fixture.entropy_offset = preview_offset + jpeg.entropy_offset;
+    fixture.entropy_size   = jpeg.entropy_size;
+    return fixture;
+}
+
 inline std::vector<std::byte>
 x3f_with_native_properties()
 {
@@ -394,6 +522,55 @@ x3f_with_native_properties()
     detail::append_ascii(&out, "PROP");
     detail::append_u32le(&out, directory_offset);
     return out;
+}
+
+inline RawEmbeddedMetadataFixture
+x3f_with_embedded_metadata()
+{
+    const detail::JpegMetadataFixture jpeg = detail::make_jpeg_with_exif_xmp();
+    const std::vector<std::byte> property = detail::make_x3f_property_section();
+    constexpr uint32_t property_offset    = 512U;
+    const uint32_t section_offset         = static_cast<uint32_t>(
+        (property_offset + property.size() + 255U) & ~size_t { 255U });
+
+    RawEmbeddedMetadataFixture fixture;
+    fixture.bytes.resize(property_offset, std::byte { 0x5aU });
+    std::fill(fixture.bytes.begin(), fixture.bytes.begin() + 264U,
+              std::byte { 0U });
+    fixture.bytes[0U] = std::byte { 'F' };
+    fixture.bytes[1U] = std::byte { 'O' };
+    fixture.bytes[2U] = std::byte { 'V' };
+    fixture.bytes[3U] = std::byte { 'b' };
+    detail::write_u32le(&fixture.bytes, 4U, (2U << 16U) | 3U);
+    detail::write_u32le(&fixture.bytes, 28U, 2640U);
+    detail::write_u32le(&fixture.bytes, 32U, 1760U);
+    fixture.bytes.insert(fixture.bytes.end(), property.begin(), property.end());
+    fixture.bytes.resize(section_offset, std::byte { 0x45U });
+
+    detail::append_ascii(&fixture.bytes, "SECi");
+    fixture.bytes.resize(fixture.bytes.size() + 24U, std::byte { 0U });
+    fixture.bytes.insert(fixture.bytes.end(), jpeg.bytes.begin(),
+                         jpeg.bytes.end());
+    const uint32_t section_size = static_cast<uint32_t>(fixture.bytes.size())
+                                  - section_offset;
+
+    const uint32_t directory_offset = static_cast<uint32_t>(
+        fixture.bytes.size());
+    detail::append_ascii(&fixture.bytes, "SECd");
+    detail::append_u32le(&fixture.bytes, 1U);
+    detail::append_u32le(&fixture.bytes, 2U);
+    detail::append_u32le(&fixture.bytes, property_offset);
+    detail::append_u32le(&fixture.bytes,
+                         static_cast<uint32_t>(property.size()));
+    detail::append_ascii(&fixture.bytes, "PROP");
+    detail::append_u32le(&fixture.bytes, section_offset);
+    detail::append_u32le(&fixture.bytes, section_size);
+    detail::append_ascii(&fixture.bytes, "IMA2");
+    detail::append_u32le(&fixture.bytes, directory_offset);
+
+    fixture.entropy_offset = section_offset + 28U + jpeg.entropy_offset;
+    fixture.entropy_size   = jpeg.entropy_size;
+    return fixture;
 }
 
 inline std::vector<std::byte>

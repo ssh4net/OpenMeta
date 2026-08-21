@@ -20,7 +20,8 @@ JP2/JXL/ISO-BMFF box and metadata-item traversal. Version 0.4.109 adds
 positional GIF extension scanning, EXR header traversal, logical metadata
 payload extraction, and decoded source-snapshot assembly. Version 0.4.111 adds
 native RAF, X3F, and CRW/CIFF positional metadata traversal plus structured
-snapshot-read diagnostics. The contract now defines:
+snapshot-read diagnostics. Version 0.4.112 adds bounded RAF preview-JPEG and
+FujiIFD traversal plus X3F section-JPEG traversal. The contract now defines:
 
 - a fixed source size and synchronous `read_at(offset, destination)` callback
 - a non-owning descriptor for caller-owned contiguous memory
@@ -95,9 +96,11 @@ Explicitly typed RAF, X3F, and CRW sources now use native positional readers.
 RAF reads its fixed header and declared native directories, X3F reads its
 header, section directory, and `PROP` sections, and CRW follows CIFF directory
 offsets and individual values. These paths do not read intervening image
-payload ranges. Optional RAF preview/FujiIFD enrichment and X3F section-JPEG
-enrichment are separate embedded-container work and remain explicit residuals
-when requested.
+payload ranges. When embedded-container decoding is requested,
+`scan_raf_random_access(...)` follows the header-declared preview JPEG and
+FujiIFD/TIFF range, while `scan_x3f_random_access(...)` follows declared
+`IMA2`/`IMAG` `SECi` JPEG sections. Both reuse bounded JPEG metadata scanning
+and stop at Start of Scan without fetching entropy-coded image data.
 
 ## Callback Example
 
@@ -245,11 +248,13 @@ phase boundaries.
 The current high-level positional path supports JPEG, PNG, WebP, GIF, JP2,
 JXL, HEIF/AVIF/CR3 BMFF containers, native TIFF/DNG-family input, EXR headers,
 and native RAF, X3F, and CRW metadata. Requested RAF/X3F embedded-container
-recursion, selected source-wide BMFF enrichment, unsupported MakerNote subpaths,
-and whole-file raw-carrier preservation increment `residual_metadata_paths`.
-The decoded snapshot remains usable, but `complete()` returns false. Hosts must
-inspect the result rather than treating a usable partial snapshot as full
-positional parity.
+decoding follows declared preview, FujiIFD, and section-JPEG ranges. It does
+not search arbitrary image bytes for undeclared fallback signatures. A missing
+declared lane that would require such a fallback, selected source-wide BMFF
+enrichment, unsupported MakerNote subpaths, and whole-file raw-carrier
+preservation increment `residual_metadata_paths`. The decoded snapshot remains
+usable, but `complete()` returns false. Hosts must inspect the result rather
+than treating a usable partial snapshot as full positional parity.
 
 Project machine-readable diagnostics without allocation:
 
