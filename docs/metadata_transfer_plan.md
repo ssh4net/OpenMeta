@@ -94,6 +94,7 @@ These support the public transfer flow:
 - `SpanTransferByteWriter`
 - prepared payload and package batch persistence
 - adapter views for host integrations
+- stable opaque prepared handoffs with allocation-free typed operation replay
 - explicit time-patch support for fixed-width EXIF date/time fields
 - transfer-policy decisions for MakerNote, JUMBF, C2PA, EXIF-to-XMP
   projection, and IPTC-to-XMP projection

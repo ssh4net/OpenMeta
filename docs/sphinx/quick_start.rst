@@ -17,6 +17,8 @@ If you already own the encoder or output container, continue with
 :doc:`host_integration`.
 For the narrow stable high-throughput integration boundary, see
 :doc:`host_adoption_profile`.
+For stable prepare-once codec operations, see
+:doc:`prepared_transfer_handoff`.
 For public API adoption status, see :doc:`api_stability`.
 For the stable flat host naming contract, see :doc:`flat_host_mapping`.
 For deterministic host compatibility baselines, see :doc:`compatibility_dump`.
@@ -432,8 +434,10 @@ deliberately narrow: it can reuse eligible non-C2PA JUMBF and OpenMeta draft
 unsigned C2PA invalidation carriers for JPEG, JXL, and BMFF targets, plus
 draft unsigned C2PA invalidation carriers for WebP. EXIF/XMP/ICC/IPTC still
 use decoded re-emission.
-If the host still owns the bundle/execution split, the lower-level
-``prepare_metadata_for_target_snapshot(...)`` entry point remains available.
+If the host owns the encoder, use stable ``prepare_transfer_handoff(...)`` for
+decoded re-emission. The lower-level experimental
+``prepare_metadata_for_target_snapshot(...)`` entry point remains available
+when direct bundle access or experimental raw-carrier reuse is required.
 If the host already has a decoded ``MetaStore``, build a reusable snapshot with
 ``build_transfer_source_snapshot(store)``. If it already owns the source bytes
 in memory, use ``read_transfer_source_snapshot_bytes(bytes)`` instead of the

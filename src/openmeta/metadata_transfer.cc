@@ -32876,23 +32876,7 @@ get_prepared_transfer_adapter_exr_attribute_view(
         return out;
     }
 
-    PreparedTransferAdapterView expected;
-    const EmitTransferResult built
-        = build_prepared_transfer_adapter_view(bundle, &expected,
-                                               EmitTransferOptions {});
-    if (built.status != TransferStatus::Ok) {
-        return built;
-    }
-    bool matched = false;
-    for (const PreparedTransferAdapterOp& candidate : expected.ops) {
-        if (candidate.block_index == op.block_index
-            && prepared_transfer_adapter_op_equal(candidate, op)) {
-            matched = true;
-            break;
-        }
-    }
-    if (!matched || op.kind != TransferAdapterOpKind::ExrAttribute
-        || op.block_index >= bundle.blocks.size()) {
+    if (op.block_index >= bundle.blocks.size()) {
         out.status             = TransferStatus::InvalidArgument;
         out.code               = EmitTransferCode::PlanMismatch;
         out.errors             = 1U;
@@ -32902,6 +32886,20 @@ get_prepared_transfer_adapter_exr_attribute_view(
     }
 
     const PreparedTransferBlock& block = bundle.blocks[op.block_index];
+    PreparedTransferAdapterOp expected;
+    expected.kind            = TransferAdapterOpKind::ExrAttribute;
+    expected.block_index     = op.block_index;
+    expected.payload_size    = static_cast<uint64_t>(block.payload.size());
+    expected.serialized_size = expected.payload_size;
+    if (!prepared_transfer_adapter_op_equal(expected, op)) {
+        out.status             = TransferStatus::InvalidArgument;
+        out.code               = EmitTransferCode::PlanMismatch;
+        out.errors             = 1U;
+        out.failed_block_index = op.block_index;
+        out.message            = "adapter EXR operation mismatch";
+        return out;
+    }
+
     std::string_view name;
     std::span<const std::byte> value;
     if (!exr_string_attribute_from_route(block.route)

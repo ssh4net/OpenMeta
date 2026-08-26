@@ -15,6 +15,8 @@ If you want the shortest end-to-end examples first, start with
 For public API adoption status, see :doc:`api_stability`.
 For the narrow stable realtime/transcoding boundary, see
 :doc:`host_adoption_profile`.
+For stable target preparation and typed operation replay, see
+:doc:`prepared_transfer_handoff`.
 For the stable flat host naming contract, see :doc:`flat_host_mapping`.
 For deterministic host compatibility baselines, see :doc:`compatibility_dump`.
 For generated XMP merge and writeback precedence, see
@@ -27,24 +29,37 @@ Pick the integration path
 
 Use the narrowest public API that matches your host:
 
-=============================== ===========================================================
-Host owns                       Use
-=============================== ===========================================================
-Existing target file/template   ``execute_prepared_transfer_file(...)`` +
-                                ``persist_prepared_transfer_file_result(...)``
-EXR writer                      ``build_exr_attribute_batch_from_file(...)``
-Host-owned metadata object      ``visit_metadata(...)``
-Host inspection/search UI       ``openmeta/metadata_query.h`` focused query
-                                helpers
-Structured interpreted records  ``openmeta/metadata_interpretation.h``
-Cross-family concept conflicts  ``openmeta/metadata_concepts.h``
-User-facing orientation display ``openmeta/orientation.h``
-Common EXIF/TIFF/DNG and        ``openmeta/exif_value_names.h``
-selected MakerNote value labels
-JPEG/JXL/WebP/PNG/JP2/BMFF      ``prepare_metadata_for_target_file(...)`` +
-encoder path                    adapter view or backend emitter
-Adobe DNG SDK objects/files     ``dng_sdk_adapter.h``
-=============================== ===========================================================
+.. list-table::
+   :header-rows: 1
+   :widths: 35 65
+
+   * - Host owns
+     - Use
+   * - Existing target file/template
+     - ``execute_prepared_transfer_file(...)`` +
+       ``persist_prepared_transfer_file_result(...)``
+   * - EXR writer
+     - ``build_exr_attribute_batch_from_file(...)``
+   * - Host-owned metadata object
+     - ``visit_metadata(...)``
+   * - Host inspection/search UI
+     - ``openmeta/metadata_query.h`` focused query helpers
+   * - Structured interpreted records
+     - ``openmeta/metadata_interpretation.h``
+   * - Cross-family concept conflicts
+     - ``openmeta/metadata_concepts.h``
+   * - User-facing orientation display
+     - ``openmeta/orientation.h``
+   * - Common EXIF/TIFF/DNG and selected MakerNote value labels
+     - ``openmeta/exif_value_names.h``
+   * - Snapshot + host encoder
+     - ``prepare_transfer_handoff(...)`` + indexed operation views or callback
+       replay
+   * - Experimental file preparation
+     - ``prepare_metadata_for_target_file(...)`` + adapter view or backend
+       emitter
+   * - Adobe DNG SDK objects/files
+     - ``dng_sdk_adapter.h``
 
 For inspection/search UI, prefer the experimental semantic query helpers before
 building a separate fuzzy layer. They report source entries, confidence, value
@@ -308,12 +323,47 @@ Host-owned JPEG or JXL output
 
 There are two public patterns for encoder-owned output:
 
+- prepare a stable opaque handoff and replay typed operations
 - implement a backend emitter such as ``JpegTransferEmitter`` or
   ``JxlTransferEmitter``
-- build an adapter view and consume one normalized list of operations
+- use the lower-level experimental bundle/adapter view APIs
 
-Adapter-view pattern
-~~~~~~~~~~~~~~~~~~~~
+Stable handoff pattern
+~~~~~~~~~~~~~~~~~~~~~~
+
+Use this when the host has a decoded ``TransferSourceSnapshot`` and owns the
+target encoder:
+
+.. code-block:: cpp
+
+   #include "openmeta/prepared_transfer_handoff.h"
+
+   openmeta::TransferStatus emit_to_codec(
+       void* codec,
+       const openmeta::PreparedTransferHandoffOperationView* view) noexcept
+   {
+       // Dispatch on view->operation.kind and explicit target fields.
+       return openmeta::TransferStatus::Ok;
+   }
+
+   openmeta::PrepareTransferRequest request;
+   request.target_format = openmeta::TransferTargetFormat::Jxl;
+
+   openmeta::PreparedTransferHandoff handoff;
+   openmeta::PreparedTransferHandoffResult prepared =
+       openmeta::prepare_transfer_handoff(
+           snapshot, request, openmeta::EmitTransferOptions {}, &handoff);
+   if (prepared.ok()) {
+       openmeta::replay_prepared_transfer_handoff(
+           handoff, emit_to_codec, codec);
+   }
+
+Preparation owns allocation and route compilation. Successful operation access
+and replay are allocation-free and repeat without rebuilding the operation
+vector. See :doc:`prepared_transfer_handoff` for lifetime and concurrency.
+
+Experimental adapter-view pattern
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Use this when you want one target-neutral operation list.
 
@@ -541,8 +591,9 @@ snapshot store, and then prepare target payloads.
 
    openmeta::PrepareTransferRequest request;
    request.target_format = openmeta::TransferTargetFormat::Webp;
-   openmeta::PreparedTransferBundle bundle;
-   openmeta::prepare_metadata_for_target_snapshot(snapshot, request, &bundle);
+   openmeta::PreparedTransferHandoff handoff;
+   openmeta::prepare_transfer_handoff(
+       snapshot, request, openmeta::EmitTransferOptions {}, &handoff);
 
 Import preserves source entry positions and appends additions, so raw-carrier
 ``decoded_entry_ids`` remain valid. Tombstones retain removed-entry identity;

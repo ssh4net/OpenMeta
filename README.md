@@ -88,7 +88,9 @@ If you already own the encoder, SDK objects, or output container, follow
 [docs/host_integration.md](docs/host_integration.md) next.
 High-throughput and realtime hosts should also use
 [docs/host_adoption_profile.md](docs/host_adoption_profile.md) as the narrow
-versioned compatibility boundary.
+versioned read/state compatibility boundary and
+[docs/prepared_transfer_handoff.md](docs/prepared_transfer_handoff.md) for
+stable prepare-once typed codec handoff.
 
 ## Documentation
 
@@ -98,6 +100,8 @@ versioned compatibility boundary.
   integration patterns
 - [docs/host_adoption_profile.md](docs/host_adoption_profile.md): stable
   positional read, snapshot persistence, reconciliation, and diagnostic profile
+- [docs/prepared_transfer_handoff.md](docs/prepared_transfer_handoff.md): stable
+  target preparation and allocation-free typed operation replay
 - [docs/metadata_support.md](docs/metadata_support.md): metadata support matrix
 - [docs/metadata_transfer_plan.md](docs/metadata_transfer_plan.md): transfer
   status and roadmap

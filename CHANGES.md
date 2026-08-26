@@ -1,5 +1,38 @@
 # OpenMeta Changes
 
+## 0.4.114 - 2026-08-21
+
+Changes compared with `0.4.113`.
+
+### Added
+
+- Added stable Prepared Transfer Handoff v1 with a move-only opaque owner for
+  target-specific metadata payloads and typed codec operations.
+- Added transactional snapshot preparation, allocation-free indexed operation
+  views, allocation-free callback replay, semantic-family classification, and
+  typed EXR name/type/value views without exposing route strings.
+- Added runtime handoff contract-version checks and stable structured result
+  code names/messages.
+
+### Changed
+
+- Repeated handoff replay now uses operations compiled once during preparation
+  instead of rebuilding and validating an adapter vector for every replay.
+- EXR typed operation resolution now validates and resolves one operation in
+  constant time instead of rebuilding the complete adapter view.
+- Kept raw-carrier passthrough, mutable time patches, prepared-bundle fields,
+  prepared artifact persistence, and destination editing outside stable
+  Handoff v1.
+
+### Tests And Validation
+
+- Added opaque-layout, move ownership, transactional failure, repeated replay,
+  callback failure, EXR typed-view, and result-contract tests.
+- Added typed handoff coverage for JPEG, TIFF, DNG, JXL, WebP, PNG, JP2, HEIF,
+  AVIF, CR3, and EXR targets.
+- Extended the installed shared-library consumer with handoff contract and
+  lifecycle checks.
+
 ## 0.4.113 - 2026-08-21
 
 Changes compared with `0.4.112`.

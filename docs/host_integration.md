@@ -14,6 +14,8 @@ If you want the shortest end-to-end examples first, start with
 For public API adoption status, see [api_stability.md](api_stability.md).
 For the narrow stable realtime/transcoding boundary, see
 [host_adoption_profile.md](host_adoption_profile.md).
+For stable target preparation and typed operation replay, see
+[prepared_transfer_handoff.md](prepared_transfer_handoff.md).
 For the stable flat host naming contract, see
 [flat_host_mapping.md](flat_host_mapping.md).
 For deterministic host compatibility baselines, see
@@ -37,7 +39,8 @@ Use the narrowest public API that matches your host:
 | Cross-family concept conflicts | `openmeta/metadata_concepts.h` |
 | User-facing orientation display | `openmeta/orientation.h` |
 | Common EXIF/TIFF/DNG and selected MakerNote value labels | `openmeta/exif_value_names.h` |
-| JPEG/JXL/WebP/PNG/JP2/BMFF encoder path | `prepare_metadata_for_target_file(...)` + adapter view or backend emitter |
+| JPEG/TIFF/DNG/JXL/WebP/PNG/JP2/BMFF/EXR encoder path from a snapshot | `prepare_transfer_handoff(...)` + indexed operation views or callback replay |
+| Experimental file-based encoder preparation | `prepare_metadata_for_target_file(...)` + adapter view or backend emitter |
 | Adobe DNG SDK objects/files | `dng_sdk_adapter.h` |
 
 For inspection/search UI, prefer the experimental semantic query helpers before
@@ -345,13 +348,49 @@ own EXR writer.
 
 ## 5. Feed A Host-Owned JPEG Or JXL Encoder
 
-There are two public patterns for encoder-owned output:
+There are three public patterns for encoder-owned output:
 
+- prepare a stable opaque handoff and replay typed operations
 - implement a backend emitter such as `JpegTransferEmitter` or
   `JxlTransferEmitter`
-- build an adapter view and consume one normalized list of operations
+- use the lower-level experimental bundle/adapter view APIs
 
-### Adapter-View Pattern
+### Stable Handoff Pattern
+
+Use this when the host already has a decoded `TransferSourceSnapshot` and owns
+the target encoder:
+
+```cpp
+#include "openmeta/prepared_transfer_handoff.h"
+
+openmeta::TransferStatus emit_to_codec(
+    void* codec,
+    const openmeta::PreparedTransferHandoffOperationView* view) noexcept
+{
+    // Dispatch on view->operation.kind and use the explicit target fields.
+    // EXR uses view->exr_name/type/value; other targets use view->payload.
+    return openmeta::TransferStatus::Ok;
+}
+
+openmeta::PrepareTransferRequest request;
+request.target_format = openmeta::TransferTargetFormat::Jxl;
+
+openmeta::PreparedTransferHandoff handoff;
+openmeta::PreparedTransferHandoffResult prepared =
+    openmeta::prepare_transfer_handoff(
+        snapshot, request, openmeta::EmitTransferOptions {}, &handoff);
+if (prepared.ok()) {
+    openmeta::replay_prepared_transfer_handoff(
+        handoff, emit_to_codec, codec);
+}
+```
+
+Preparation owns allocation and route compilation. Successful operation access
+and replay are allocation-free and can be repeated without rebuilding the
+operation vector. See [prepared_transfer_handoff.md](prepared_transfer_handoff.md)
+for lifetime, concurrency, and deliberate-boundary details.
+
+### Experimental Adapter-View Pattern
 
 Use this when you want one target-neutral operation list.
 
@@ -592,8 +631,9 @@ if (imported.ok()) {
 
 openmeta::PrepareTransferRequest request;
 request.target_format = openmeta::TransferTargetFormat::Webp;
-openmeta::PreparedTransferBundle bundle;
-openmeta::prepare_metadata_for_target_snapshot(snapshot, request, &bundle);
+openmeta::PreparedTransferHandoff handoff;
+openmeta::prepare_transfer_handoff(
+    snapshot, request, openmeta::EmitTransferOptions {}, &handoff);
 ```
 
 Import preserves every source entry position and appends additions, so raw

@@ -77,7 +77,8 @@ Supported reconciliation sequence
    entry identities.
 6. Import changed values, explicit typed additions, and removals. Replace the
    snapshot store only after ``FlatHostImportResult::ok()``.
-7. Pass the reconciled snapshot to target preparation.
+7. Pass the reconciled snapshot to ``prepare_transfer_handoff(...)`` for stable
+   target-specific typed operations.
 
 Import preserves entry positions, represents removals as ``Dirty | Deleted``
 tombstones, and appends additions. Untouched complex metadata, provenance,
@@ -95,10 +96,19 @@ Profile v1 does not stabilize:
 - prepared payload/package serialization;
 - raw-carrier passthrough policy or broad byte-preserving carrier transfer.
 
-The typed operation schema is stable so codecs do not parse route strings, but
-its current builders remain coupled to the experimental prepared-bundle model.
-Hosts using target preparation should pin and test an OpenMeta release until
-that construction boundary is stabilized separately.
+The typed operation schema is stable so codecs do not parse route strings. The
+underlying bundle/view builders remain experimental; use
+:doc:`prepared_transfer_handoff` to keep those internals behind a stable opaque
+owner and allocation-free replay contract.
+
+Companion target handoff
+------------------------
+
+Prepared Transfer Handoff v1 is a separate versioned contract because it was
+added after the fixed Host Adoption Profile v1 descriptor. Check
+``prepared_transfer_handoff_contract_version()`` independently. Together, the
+two contracts cover positional read, persisted/reconciled snapshot state, and
+prepare-once typed encoder operations without changing the Profile v1 ABI.
 
 Performance and concurrency
 ---------------------------
@@ -111,4 +121,6 @@ snapshot owns its finalized metadata state.
 Independent operations may share an immutable source only when
 ``concurrent_reads`` is true and the backing supports concurrent exact reads.
 Do not share mutable scratch, accounting, import results, prepared bundles, or
-writers between concurrent operations.
+writers between concurrent operations. An immutable
+``PreparedTransferHandoff`` supports concurrent const access with independent
+callback state.

@@ -415,6 +415,7 @@ set(OPENMETA_SOURCES
   src/openmeta/metadata_query.cc
   src/openmeta/metadata_snapshot_io.cc
   src/openmeta/metadata_transfer.cc
+  src/openmeta/prepared_transfer_handoff.cc
   src/openmeta/metadata_logical_field_internal.cc
   src/openmeta/meta_store.cc
   src/openmeta/meta_edit.cc
@@ -1004,6 +1005,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/metadata_interpretation_test.cc
     tests/metadata_query_test.cc
     tests/metadata_transfer_api_test.cc
+    tests/prepared_transfer_handoff_test.cc
     tests/flir_fff_decode_test.cc
     tests/meta_store_test.cc
     tests/mpf_decode_test.cc

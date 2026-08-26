@@ -44,6 +44,14 @@ Host-facing API map
      - Exact compile-time/runtime contract descriptor for the narrow positional
        read, persistence, reconciliation, diagnostics, and typed codec-operation
        schema. See :doc:`host_adoption_profile`.
+   * - Prepared Transfer Handoff v1:
+       ``prepare_transfer_handoff(...)``, indexed operation views, callback
+       replay, and runtime contract query
+     - ``openmeta/prepared_transfer_handoff.h``
+     - Stable v1
+     - Move-only opaque owner that prepares and compiles typed operations once.
+       Successful access and replay allocate nothing and expose no routes or
+       bundle state. See :doc:`prepared_transfer_handoff`.
    * - Runtime capability query: ``metadata_capability(...)``
      - ``openmeta/metadata_capabilities.h``
      - Stable
@@ -507,8 +515,9 @@ Host-facing API map
      - ``openmeta/metadata_transfer.h``
      - Stable v1 schema
      - Enum-based insertion operations with explicit marker, tag, box, chunk,
-       item, property, and payload sizing fields. Codecs do not parse route
-       strings.
+       item, property, and payload sizing fields. Stable hosts obtain payload
+       and EXR name/type/value views through ``PreparedTransferHandoff``;
+       codecs do not parse route strings.
    * - Adapter-view execution:
        ``build_prepared_transfer_adapter_view(...)``,
        ``validate_prepared_transfer_adapter_view(...)``,
@@ -576,5 +585,6 @@ they match a real workflow and the integration can track OpenMeta releases.
 Avoid internal surfaces unless you are contributing to OpenMeta itself or
 writing a test that is intentionally tied to implementation details.
 
-High-throughput hosts should use :doc:`host_adoption_profile` as the
-compatibility boundary and query format capabilities separately.
+High-throughput hosts should use :doc:`host_adoption_profile` for read/state
+compatibility and :doc:`prepared_transfer_handoff` for stable target
+preparation, then query format capabilities separately.
