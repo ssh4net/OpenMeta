@@ -18,6 +18,10 @@ if (openmeta::prepared_transfer_handoff_contract_version()
     != openmeta::kPreparedTransferHandoffContractVersion) {
     // Reject an incompatible linked OpenMeta library.
 }
+if (openmeta::prepared_transfer_handoff_instance_contract_version()
+    != openmeta::kPreparedTransferHandoffInstanceContractVersion) {
+    // Disable the mutable per-worker path.
+}
 ```
 
 `PreparedTransferHandoff` is move-only and has a fixed opaque-pointer public
@@ -84,6 +88,66 @@ The same immutable handoff can be replayed repeatedly. Concurrent const access
 is supported when every replay uses independent callback state and the host
 does not reset, move, destroy, or prepare the handoff concurrently.
 
+## Per-Worker Mutable Instances
+
+Use `PreparedTransferHandoffInstance` when frame or output metadata has
+fixed-width time fields that change for each encoded image. Prepare one
+immutable template, create one independently owned instance per worker, then
+patch and replay that worker's instance:
+
+```cpp
+openmeta::PreparedTransferHandoffInstance worker;
+openmeta::PreparedTransferHandoffResult created =
+    openmeta::create_prepared_transfer_handoff_instance(handoff, &worker);
+
+openmeta::PreparedTransferHandoffTimePatchFieldView field;
+const openmeta::PreparedTransferHandoffPatchResult described =
+    openmeta::prepared_transfer_handoff_instance_time_patch_field(
+        worker, openmeta::TimePatchField::DateTime, &field);
+
+constexpr char encoded_time[] = "2030:12:31 23:59:59";
+static_assert(sizeof(encoded_time) == 20U); // EXIF ASCII including NUL
+const openmeta::TimePatchView patch {
+    openmeta::TimePatchField::DateTime,
+    std::as_bytes(std::span<const char>(encoded_time, sizeof(encoded_time)))
+};
+const std::array<openmeta::TimePatchView, 1> patches = { patch };
+
+if (created.ok() && described.ok() && field.width == sizeof(encoded_time)
+    && openmeta::patch_prepared_transfer_handoff_instance(&worker, patches)
+           .ok()) {
+    openmeta::replay_prepared_transfer_handoff_instance(
+        worker, emit_to_codec, codec);
+}
+```
+
+Instance creation may allocate. It copies one contiguous payload buffer and
+the compact operation, semantic, EXR-view, block-range, and patch-slot state.
+It does not copy route strings, transfer-policy diagnostics, or generated
+sidecars, and it does not recompile operations. The instance owns all copied
+state and remains valid if the template is reset, moved, prepared again, or
+destroyed.
+
+`prepared_transfer_handoff_instance_time_patch_field(...)` reports the exact
+serialized width and number of matching slots without exposing payload offsets.
+This lets generic hosts size patch buffers for `SubSec*` and other fields whose
+width is source-dependent. An absent field or non-uniform/invalid slot layout
+is reported before patching.
+
+Patching and replay allocate nothing. Stable instance v1 requires every patch
+field to be valid, unique, and present in the prepared slot map. Values are
+serialized bytes and must exactly match every corresponding slot width; for
+EXIF ASCII date/time fields that normally includes the terminating NUL. Inputs
+that alias mutable instance payload storage are rejected. The complete batch
+is validated before any byte changes, so every failure leaves the instance
+unchanged.
+
+Each worker must own a separate instance. Independent instances may patch and
+replay concurrently. A single instance requires exclusive ownership while it
+is patched; indexed views or replay must not run concurrently with patch,
+reset, move, or destruction. A borrowed operation view keeps its address but
+its payload contents may change after a successful patch.
+
 ## Target Coverage
 
 Handoff v1 exposes typed operations for:
@@ -109,8 +173,8 @@ Stable Handoff v1 does not include:
 
 - source reading or snapshot persistence;
 - raw-carrier passthrough;
-- mutable fixed-width time patches;
 - direct access to prepared bundles, blocks, routes, or execution plans;
+- variable-width or structural metadata mutation;
 - prepared payload/package persistence;
 - editing or rewriting destination container bytes;
 - encoder-specific object ownership or scheduling.

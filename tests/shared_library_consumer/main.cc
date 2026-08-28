@@ -4,6 +4,7 @@
 #include <openmeta/host_adoption.h>
 #include <openmeta/prepared_transfer_handoff.h>
 
+#include <span>
 #include <string>
 
 int
@@ -17,9 +18,41 @@ main()
     const bool handoff_contract_matches
         = openmeta::prepared_transfer_handoff_contract_version()
           == openmeta::kPreparedTransferHandoffContractVersion;
+    const bool instance_contract_matches
+        = openmeta::prepared_transfer_handoff_instance_contract_version()
+          == openmeta::kPreparedTransferHandoffInstanceContractVersion;
     openmeta::PreparedTransferHandoff handoff;
+    openmeta::PreparedTransferHandoffInstance instance;
+    openmeta::PreparedTransferHandoffTimePatchFieldView field;
+    const openmeta::PreparedTransferHandoffResult created
+        = openmeta::create_prepared_transfer_handoff_instance(handoff,
+                                                              &instance);
+    const openmeta::PreparedTransferHandoffPatchResult described
+        = openmeta::prepared_transfer_handoff_instance_time_patch_field(
+            instance, openmeta::TimePatchField::DateTime, &field);
+    const openmeta::PreparedTransferHandoffPatchResult patched
+        = openmeta::patch_prepared_transfer_handoff_instance(
+            &instance, std::span<const openmeta::TimePatchView> {});
+    openmeta::PreparedTransferHandoffOperationView operation;
+    const openmeta::PreparedTransferHandoffResult resolved
+        = openmeta::prepared_transfer_handoff_instance_operation(instance, 0U,
+                                                                 &operation);
+    const openmeta::PreparedTransferHandoffResult replayed
+        = openmeta::replay_prepared_transfer_handoff_instance(instance, nullptr,
+                                                              nullptr);
     return line1.empty() || line2.empty() || !profile_matches
-                   || !handoff_contract_matches || handoff.valid()
+                   || !handoff_contract_matches || !instance_contract_matches
+                   || handoff.valid() || instance.valid()
+                   || created.code
+                          != openmeta::PreparedTransferHandoffCode::InvalidState
+                   || described.code
+                          != openmeta::PreparedTransferHandoffPatchCode::InvalidState
+                   || patched.code
+                          != openmeta::PreparedTransferHandoffPatchCode::InvalidState
+                   || resolved.code
+                          != openmeta::PreparedTransferHandoffCode::InvalidState
+                   || replayed.code
+                          != openmeta::PreparedTransferHandoffCode::NullReplayCallback
                ? 1
                : 0;
 }

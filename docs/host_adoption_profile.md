@@ -91,6 +91,8 @@ added after the fixed Host Adoption Profile v1 descriptor. Check
 `prepared_transfer_handoff_contract_version()` independently. Together, the
 two contracts cover positional read, persisted/reconciled snapshot state, and
 prepare-once typed encoder operations without changing the Profile v1 ABI.
+Hosts using per-worker fixed-width updates must also check
+`prepared_transfer_handoff_instance_contract_version()`.
 
 ## Performance And Concurrency
 
@@ -104,4 +106,6 @@ Independent operations may share an immutable source only when the host sets
 concurrent exact reads. Do not share mutable scratch, accounting, import
 results, prepared bundles, or writers between concurrent operations. An
 immutable `PreparedTransferHandoff` supports concurrent const access with
-independent callback state.
+independent callback state. Independently owned
+`PreparedTransferHandoffInstance` objects may patch and replay concurrently;
+one instance requires exclusive access while patching.

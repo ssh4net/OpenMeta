@@ -362,6 +362,33 @@ Preparation owns allocation and route compilation. Successful operation access
 and replay are allocation-free and repeat without rebuilding the operation
 vector. See :doc:`prepared_transfer_handoff` for lifetime and concurrency.
 
+For realtime outputs with changing fixed-width time fields, create one
+``PreparedTransferHandoffInstance`` per worker. Worker creation may allocate;
+strict transactional patching and replay do not:
+
+.. code-block:: cpp
+
+   openmeta::PreparedTransferHandoffInstance worker;
+   openmeta::create_prepared_transfer_handoff_instance(handoff, &worker);
+
+   constexpr char encoded_time[] = "2030:12:31 23:59:59";
+   const openmeta::TimePatchView patch {
+       openmeta::TimePatchField::DateTime,
+       std::as_bytes(
+           std::span<const char>(encoded_time, sizeof(encoded_time)))
+   };
+   openmeta::patch_prepared_transfer_handoff_instance(
+       &worker, std::span<const openmeta::TimePatchView>(&patch, 1U));
+   openmeta::replay_prepared_transfer_handoff_instance(
+       worker, emit_to_codec, codec);
+
+Patch values are serialized bytes. EXIF ASCII date/time values include the
+terminating NUL, so ``encoded_time`` above has the required 20-byte width. Do
+not share one mutable instance across workers; independent instances own
+separate payload storage. Generic hosts can call
+``prepared_transfer_handoff_instance_time_patch_field(...)`` during setup to
+obtain the exact width and slot count without exposing payload offsets.
+
 Experimental adapter-view pattern
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

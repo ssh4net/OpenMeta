@@ -1610,6 +1610,10 @@ Draft C++ transfer entry points (prepare/emit scaffold):
     one generic host sink without route parsing.
   - `apply_time_patches_view(...)` accepts non-owning patch spans for
     per-frame patching without owned update buffers.
+  - Stable `PreparedTransferHandoffInstance` clones compact payload and typed
+    operation state once per worker. Its strict fixed-width patch batches fully
+    validate before mutation and perform no allocation, route parsing, or
+    operation recompilation during field-query/patch/index/replay.
   - `execute_prepared_transfer_compiled(...)` runs the same shared
     `time_patch -> emit -> optional edit` flow using a precompiled execution
     plan.

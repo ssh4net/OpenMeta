@@ -390,6 +390,32 @@ and replay are allocation-free and can be repeated without rebuilding the
 operation vector. See [prepared_transfer_handoff.md](prepared_transfer_handoff.md)
 for lifetime, concurrency, and deliberate-boundary details.
 
+For realtime outputs with changing fixed-width time fields, create one
+`PreparedTransferHandoffInstance` per worker from the immutable handoff. Worker
+creation may allocate; strict transactional patching and replay do not:
+
+```cpp
+openmeta::PreparedTransferHandoffInstance worker;
+openmeta::create_prepared_transfer_handoff_instance(handoff, &worker);
+
+constexpr char encoded_time[] = "2030:12:31 23:59:59";
+const openmeta::TimePatchView patch {
+    openmeta::TimePatchField::DateTime,
+    std::as_bytes(std::span<const char>(encoded_time, sizeof(encoded_time)))
+};
+openmeta::patch_prepared_transfer_handoff_instance(
+    &worker, std::span<const openmeta::TimePatchView>(&patch, 1U));
+openmeta::replay_prepared_transfer_handoff_instance(
+    worker, emit_to_codec, codec);
+```
+
+Patch values are serialized bytes. EXIF ASCII date/time values include the
+terminating NUL, so `encoded_time` above has the required 20-byte width. Do not
+share one mutable instance across workers; independent instances own separate
+payload storage. Generic hosts can call
+`prepared_transfer_handoff_instance_time_patch_field(...)` during setup to
+obtain the exact width and slot count without exposing payload offsets.
+
 ### Experimental Adapter-View Pattern
 
 Use this when you want one target-neutral operation list.

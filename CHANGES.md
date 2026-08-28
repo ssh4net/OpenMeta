@@ -1,5 +1,39 @@
 # OpenMeta Changes
 
+## 0.4.115 - 2026-08-28
+
+Changes compared with `0.4.114`.
+
+### Added
+
+- Added stable Prepared Transfer Handoff Instance v1 with a move-only opaque
+  per-worker owner cloned from an immutable prepared handoff.
+- Added strict fixed-width time patch batches with POD result codes, complete
+  prevalidation, failure atomicity, required slots, exact serialized widths,
+  duplicate/invalid-field rejection, and aliased-input rejection.
+- Added independent runtime contract-version checks, patch code names/messages,
+  exact-width/slot-count field descriptors, indexed operation views, and
+  callback replay for mutable worker instances.
+
+### Changed
+
+- Worker creation copies only one contiguous payload buffer plus block ranges,
+  typed operations, semantic kinds, EXR subviews, and patch slots. It does not
+  copy routes, policy strings, generated sidecars, or rebuild operation plans.
+- Immutable handoffs can now serve as concurrently shareable templates for
+  independently mutable realtime workers. An instance owns its state and does
+  not borrow the source handoff.
+
+### Tests And Validation
+
+- Added opaque-layout, move ownership, source-lifetime independence,
+  cross-worker isolation, all-target cloning, EXR view, strict-width,
+  transactional failure, alias rejection, and callback replay tests.
+- Added concurrent regression coverage with independent workers repeatedly
+  patching and replaying their own prepared payloads.
+- Extended the installed shared-library consumer with the mutable-instance
+  runtime contract and default lifecycle checks.
+
 ## 0.4.114 - 2026-08-21
 
 Changes compared with `0.4.113`.

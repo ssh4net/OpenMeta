@@ -45,13 +45,18 @@ Host-facing API map
        read, persistence, reconciliation, diagnostics, and typed codec-operation
        schema. See :doc:`host_adoption_profile`.
    * - Prepared Transfer Handoff v1:
-       ``prepare_transfer_handoff(...)``, indexed operation views, callback
-       replay, and runtime contract query
+       immutable template preparation/replay plus
+       ``PreparedTransferHandoffInstance`` creation, exact-width/slot-count
+       field queries, strict fixed-width patches, indexed views, replay, and
+       runtime contract queries
      - ``openmeta/prepared_transfer_handoff.h``
      - Stable v1
-     - Move-only opaque owner that prepares and compiles typed operations once.
-       Successful access and replay allocate nothing and expose no routes or
-       bundle state. See :doc:`prepared_transfer_handoff`.
+     - Move-only opaque owners hide routes and bundle state. Template
+       preparation and worker creation may allocate. Instance query, patch,
+       access, and replay allocate nothing; patch batches are exact-width,
+       required-slot, alias-rejecting, and transactional. Independent
+       instances own their payloads and may run concurrently. See
+       :doc:`prepared_transfer_handoff`.
    * - Runtime capability query: ``metadata_capability(...)``
      - ``openmeta/metadata_capabilities.h``
      - Stable
