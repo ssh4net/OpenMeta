@@ -1,5 +1,31 @@
 # OpenMeta Changes
 
+## 0.4.117 - 2026-08-29
+
+Changes compared with `0.4.116`.
+
+### Added
+
+- Added strict paired IPTC-IIM creation-date projection to portable XMP:
+  `DateCreated` plus `TimeCreated` emits `photoshop:DateCreated`, while
+  `DigitalCreationDate` plus `DigitalCreationTime` emits `xmp:CreateDate`.
+
+### Changed
+
+- Valid IPTC dates now remain usable as date-only XMP values when their
+  optional time companion is missing or malformed. Invalid Gregorian dates
+  and time-only values are not projected.
+- Added `photoshop:DateCreated` to managed standard-property reconciliation so
+  canonical writeback replaces stale existing XMP only when a valid generated
+  value is available.
+
+### Tests And Validation
+
+- Added date-only, timezone, leap-date, malformed-input, conflict-policy, and
+  canonicalization regressions.
+- Added JPEG and TIFF write/decode round trips for both generated creation-date
+  properties.
+
 ## 0.4.116 - 2026-08-29
 
 Changes compared with `0.4.115`.

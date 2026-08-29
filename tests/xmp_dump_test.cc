@@ -2431,6 +2431,186 @@ TEST(XmpDump, PortableMapsIptcToDcProperties)
     EXPECT_NE(s.find("<rdf:li>sunset</rdf:li>"), std::string_view::npos);
 }
 
+TEST(XmpDump, PortableComposesIptcCreationDateTimes)
+{
+    MetaStore store;
+    const BlockId block = store.add_block(BlockInfo {});
+    ASSERT_NE(block, kInvalidBlockId);
+
+    const auto add_iptc = [&](uint16_t dataset, std::string_view value,
+                              uint32_t order) {
+        Entry entry;
+        entry.key = make_iptc_dataset_key(2U, dataset);
+        entry.value
+            = make_bytes(store.arena(),
+                         std::span<const std::byte>(
+                             reinterpret_cast<const std::byte*>(value.data()),
+                             value.size()));
+        entry.origin.block          = block;
+        entry.origin.order_in_block = order;
+        EXPECT_NE(store.add_entry(entry), kInvalidEntryId);
+    };
+
+    add_iptc(55U, "20240229", 0U);     // DateCreated
+    add_iptc(60U, "123501+0900", 1U);  // TimeCreated
+    add_iptc(62U, "20240830", 2U);     // DigitalCreationDate
+    add_iptc(63U, "010203-0230", 3U);  // DigitalCreationTime
+    store.finalize();
+
+    XmpPortableOptions opts;
+    opts.include_exif         = false;
+    opts.include_iptc         = true;
+    opts.include_existing_xmp = false;
+
+    std::vector<std::byte> out(4096);
+    const XmpDumpResult result
+        = dump_xmp_portable(store, std::span<std::byte>(out.data(), out.size()),
+                            opts);
+    ASSERT_EQ(result.status, XmpDumpStatus::Ok);
+
+    const std::string_view packet(reinterpret_cast<const char*>(out.data()),
+                                  static_cast<size_t>(result.written));
+    EXPECT_NE(packet.find("<photoshop:DateCreated>2024-02-29T12:35:01+09:00"
+                          "</photoshop:DateCreated>"),
+              std::string_view::npos);
+    EXPECT_NE(packet.find("<xmp:CreateDate>2024-08-30T01:02:03-02:30"
+                          "</xmp:CreateDate>"),
+              std::string_view::npos);
+}
+
+TEST(XmpDump, PortableIptcCreationDatesHandlePartialAndMalformedFields)
+{
+    MetaStore store;
+    const BlockId block = store.add_block(BlockInfo {});
+    ASSERT_NE(block, kInvalidBlockId);
+
+    const auto add_iptc = [&](uint16_t dataset, std::string_view value,
+                              uint32_t order) {
+        Entry entry;
+        entry.key   = make_iptc_dataset_key(2U, dataset);
+        entry.value = make_text(store.arena(), value, TextEncoding::Ascii);
+        entry.origin.block          = block;
+        entry.origin.order_in_block = order;
+        EXPECT_NE(store.add_entry(entry), kInvalidEntryId);
+    };
+
+    add_iptc(55U, "20240506", 0U);
+    add_iptc(60U, "246000+0900", 1U);
+    add_iptc(62U, "20230229", 2U);
+    add_iptc(63U, "010203+0000", 3U);
+    store.finalize();
+
+    XmpPortableOptions opts;
+    opts.include_exif         = false;
+    opts.include_iptc         = true;
+    opts.include_existing_xmp = false;
+
+    std::vector<std::byte> out(4096);
+    const XmpDumpResult result
+        = dump_xmp_portable(store, std::span<std::byte>(out.data(), out.size()),
+                            opts);
+    ASSERT_EQ(result.status, XmpDumpStatus::Ok);
+
+    const std::string_view packet(reinterpret_cast<const char*>(out.data()),
+                                  static_cast<size_t>(result.written));
+    EXPECT_NE(packet.find(
+                  "<photoshop:DateCreated>2024-05-06</photoshop:DateCreated>"),
+              std::string_view::npos);
+    EXPECT_EQ(packet.find("<photoshop:DateCreated>2024-05-06T"),
+              std::string_view::npos);
+    EXPECT_EQ(packet.find("<xmp:CreateDate>"), std::string_view::npos);
+}
+
+TEST(XmpDump, PortableIptcCreationDatesFollowConflictAndCanonicalizePolicies)
+{
+    MetaStore store;
+    const BlockId block = store.add_block(BlockInfo {});
+    ASSERT_NE(block, kInvalidBlockId);
+
+    const auto add_iptc = [&](uint16_t dataset, std::string_view value,
+                              uint32_t order) {
+        Entry entry;
+        entry.key   = make_iptc_dataset_key(2U, dataset);
+        entry.value = make_text(store.arena(), value, TextEncoding::Ascii);
+        entry.origin.block          = block;
+        entry.origin.order_in_block = order;
+        EXPECT_NE(store.add_entry(entry), kInvalidEntryId);
+    };
+    add_iptc(55U, "20240829", 0U);
+    add_iptc(60U, "123501+0900", 1U);
+    add_iptc(62U, "20240830", 2U);
+    add_iptc(63U, "010203-0230", 3U);
+
+    Entry existing_date_created;
+    existing_date_created.key = make_xmp_property_key(
+        store.arena(), "http://ns.adobe.com/photoshop/1.0/", "DateCreated");
+    existing_date_created.value        = make_text(store.arena(), "2001-02-03",
+                                                   TextEncoding::Utf8);
+    existing_date_created.origin.block = block;
+    existing_date_created.origin.order_in_block = 4U;
+    ASSERT_NE(store.add_entry(existing_date_created), kInvalidEntryId);
+
+    Entry existing_create_date;
+    existing_create_date.key
+        = make_xmp_property_key(store.arena(), "http://ns.adobe.com/xap/1.0/",
+                                "CreateDate");
+    existing_create_date.value = make_text(store.arena(), "2002-03-04T05:06:07",
+                                           TextEncoding::Utf8);
+    existing_create_date.origin.block          = block;
+    existing_create_date.origin.order_in_block = 5U;
+    ASSERT_NE(store.add_entry(existing_create_date), kInvalidEntryId);
+    store.finalize();
+
+    const auto dump = [&](XmpConflictPolicy conflict,
+                          XmpExistingStandardNamespacePolicy namespace_policy) {
+        XmpPortableOptions opts;
+        opts.include_exif                       = false;
+        opts.include_iptc                       = true;
+        opts.include_existing_xmp               = true;
+        opts.conflict_policy                    = conflict;
+        opts.existing_standard_namespace_policy = namespace_policy;
+
+        std::vector<std::byte> out(4096);
+        const XmpDumpResult result = dump_xmp_portable(
+            store, std::span<std::byte>(out.data(), out.size()), opts);
+        EXPECT_EQ(result.status, XmpDumpStatus::Ok);
+        return std::string(reinterpret_cast<const char*>(out.data()),
+                           static_cast<size_t>(result.written));
+    };
+
+    const std::string existing
+        = dump(XmpConflictPolicy::ExistingWins,
+               XmpExistingStandardNamespacePolicy::PreserveAll);
+    EXPECT_NE(existing.find(
+                  "<photoshop:DateCreated>2001-02-03</photoshop:DateCreated>"),
+              std::string::npos);
+    EXPECT_NE(existing.find(
+                  "<xmp:CreateDate>2002-03-04T05:06:07</xmp:CreateDate>"),
+              std::string::npos);
+
+    const std::string generated
+        = dump(XmpConflictPolicy::GeneratedWins,
+               XmpExistingStandardNamespacePolicy::PreserveAll);
+    EXPECT_NE(generated.find("<photoshop:DateCreated>2024-08-29T12:35:01+09:00"
+                             "</photoshop:DateCreated>"),
+              std::string::npos);
+    EXPECT_NE(generated.find("<xmp:CreateDate>2024-08-30T01:02:03-02:30"
+                             "</xmp:CreateDate>"),
+              std::string::npos);
+
+    const std::string canonical
+        = dump(XmpConflictPolicy::ExistingWins,
+               XmpExistingStandardNamespacePolicy::CanonicalizeManaged);
+    EXPECT_NE(canonical.find("<photoshop:DateCreated>2024-08-29T12:35:01+09:00"
+                             "</photoshop:DateCreated>"),
+              std::string::npos);
+    EXPECT_NE(canonical.find("<xmp:CreateDate>2024-08-30T01:02:03-02:30"
+                             "</xmp:CreateDate>"),
+              std::string::npos);
+    EXPECT_EQ(canonical.find("2001-02-03"), std::string::npos);
+    EXPECT_EQ(canonical.find("2002-03-04T05:06:07"), std::string::npos);
+}
+
 TEST(XmpDump, PortableIptcDoesNotOverrideExistingXmpWhenIncluded)
 {
     MetaStore store;

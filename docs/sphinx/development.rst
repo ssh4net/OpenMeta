@@ -130,7 +130,7 @@ model should stay compact:
        handoff, and TIFF/DNG baseline are complete.
    * - Translation
      - Project metadata between families, mainly bounded EXIF/IPTC/XMP portable
-       mappings.
+       mappings, including strict paired IPTC creation-date projection.
      - Medium, about 60-70%.
    * - Writing
      - Serialize metadata and write or rewrite it into target containers.

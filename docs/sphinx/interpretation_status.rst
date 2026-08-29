@@ -99,8 +99,10 @@ Coverage matrix
        profile metadata, not rendered color transforms.
    * - IPTC-IIM and portable XMP
      - IPTC datasets and XMP properties decode into typed entries, bounded
-       EXIF/IPTC-to-XMP projection exists for transfer/writeback, and common
-       descriptive EXIF/IPTC/XMP concepts such as title/headline,
+       EXIF/IPTC-to-XMP projection exists for transfer/writeback, paired IPTC
+       created and digital-creation date/time datasets project to strict
+       standard XMP date properties, and common descriptive EXIF/IPTC/XMP
+       concepts such as title/headline,
        description/caption, creator/author, keywords/subject,
        rights/license, credit/source, and IPTC date/time promoted into
        cross-family created-date candidates are

@@ -1961,9 +1961,10 @@ namespace {
         }
 
         if (prefix == "photoshop") {
-            return name == "Category" || name == "SupplementalCategories"
-                   || name == "Instructions" || name == "AuthorsPosition"
-                   || name == "City" || name == "State" || name == "Country"
+            return name == "DateCreated" || name == "Category"
+                   || name == "SupplementalCategories" || name == "Instructions"
+                   || name == "AuthorsPosition" || name == "City"
+                   || name == "State" || name == "Country"
                    || name == "TransmissionReference" || name == "Headline"
                    || name == "Credit" || name == "Source"
                    || name == "CaptionWriter";
@@ -9989,6 +9990,217 @@ namespace {
                                               claims);
     }
 
+    static bool iptc_portable_text_value(const ByteArena& arena,
+                                         const MetaValue& value,
+                                         std::string_view* out) noexcept
+    {
+        if (!out) {
+            return false;
+        }
+        *out = {};
+
+        if (value.kind != MetaValueKind::Text
+            && value.kind != MetaValueKind::Bytes) {
+            return false;
+        }
+        if (value.kind == MetaValueKind::Text
+            && (value.text_encoding == TextEncoding::Utf16LE
+                || value.text_encoding == TextEncoding::Utf16BE)) {
+            return false;
+        }
+
+        const std::span<const std::byte> raw = arena.span(value.data.span);
+        if (!bytes_are_ascii_text(raw)) {
+            return false;
+        }
+        const std::string_view text(reinterpret_cast<const char*>(raw.data()),
+                                    raw.size());
+        return trim_ascii_nuls_and_spaces(text, out) && !out->empty();
+    }
+
+    static uint32_t iptc_decimal_digits(std::string_view text, size_t offset,
+                                        size_t count) noexcept
+    {
+        uint32_t value = 0U;
+        for (size_t i = 0U; i < count; ++i) {
+            value = value * 10U + static_cast<uint32_t>(text[offset + i] - '0');
+        }
+        return value;
+    }
+
+    static bool iptc_date_is_valid(uint32_t year, uint32_t month,
+                                   uint32_t day) noexcept
+    {
+        if (year == 0U || year > 9999U || month == 0U || month > 12U) {
+            return false;
+        }
+        static constexpr std::array<uint8_t, 12> kDaysInMonth = {
+            31U, 28U, 31U, 30U, 31U, 30U, 31U, 31U, 30U, 31U, 30U, 31U,
+        };
+        uint32_t max_day = kDaysInMonth[month - 1U];
+        const bool leap  = (year % 4U == 0U)
+                          && ((year % 100U) != 0U || (year % 400U) == 0U);
+        if (month == 2U && leap) {
+            max_day = 29U;
+        }
+        return day > 0U && day <= max_day;
+    }
+
+    static bool iptc_date_to_xmp(std::string_view text,
+                                 std::string* out) noexcept
+    {
+        if (!out) {
+            return false;
+        }
+        out->clear();
+        if (text.size() != 8U) {
+            return false;
+        }
+        for (const char c : text) {
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+
+        const uint32_t year  = iptc_decimal_digits(text, 0U, 4U);
+        const uint32_t month = iptc_decimal_digits(text, 4U, 2U);
+        const uint32_t day   = iptc_decimal_digits(text, 6U, 2U);
+        if (!iptc_date_is_valid(year, month, day)) {
+            return false;
+        }
+
+        out->reserve(25U);
+        out->append(text.substr(0U, 4U));
+        out->push_back('-');
+        out->append(text.substr(4U, 2U));
+        out->push_back('-');
+        out->append(text.substr(6U, 2U));
+        return true;
+    }
+
+    static bool append_iptc_time_to_xmp(std::string_view text,
+                                        std::string* out) noexcept
+    {
+        if (!out || (text.size() != 6U && text.size() != 11U)) {
+            return false;
+        }
+        for (size_t i = 0U; i < 6U; ++i) {
+            if (text[i] < '0' || text[i] > '9') {
+                return false;
+            }
+        }
+        const uint32_t hour   = iptc_decimal_digits(text, 0U, 2U);
+        const uint32_t minute = iptc_decimal_digits(text, 2U, 2U);
+        const uint32_t second = iptc_decimal_digits(text, 4U, 2U);
+        if (hour > 23U || minute > 59U || second > 60U) {
+            return false;
+        }
+
+        uint32_t offset_hour   = 0U;
+        uint32_t offset_minute = 0U;
+        if (text.size() == 11U) {
+            if ((text[6] != '+' && text[6] != '-') || text[7] < '0'
+                || text[7] > '9' || text[8] < '0' || text[8] > '9'
+                || text[9] < '0' || text[9] > '9' || text[10] < '0'
+                || text[10] > '9') {
+                return false;
+            }
+            offset_hour   = iptc_decimal_digits(text, 7U, 2U);
+            offset_minute = iptc_decimal_digits(text, 9U, 2U);
+            if (offset_hour > 23U || offset_minute > 59U) {
+                return false;
+            }
+        }
+
+        out->push_back('T');
+        out->append(text.substr(0U, 2U));
+        out->push_back(':');
+        out->append(text.substr(2U, 2U));
+        out->push_back(':');
+        out->append(text.substr(4U, 2U));
+        if (text.size() == 11U) {
+            out->push_back(text[6]);
+            out->append(text.substr(7U, 2U));
+            out->push_back(':');
+            out->append(text.substr(9U, 2U));
+        }
+        return true;
+    }
+
+    static bool build_portable_iptc_datetime(const ByteArena& arena,
+                                             std::span<const Entry> entries,
+                                             uint16_t date_dataset,
+                                             uint16_t time_dataset,
+                                             std::string* out) noexcept
+    {
+        if (!out) {
+            return false;
+        }
+        out->clear();
+
+        for (const Entry& entry : entries) {
+            if (any(entry.flags, EntryFlags::Deleted)
+                || entry.key.kind != MetaKeyKind::IptcDataset
+                || entry.key.data.iptc_dataset.record != 2U
+                || entry.key.data.iptc_dataset.dataset != date_dataset) {
+                continue;
+            }
+            std::string_view text;
+            if (iptc_portable_text_value(arena, entry.value, &text)
+                && iptc_date_to_xmp(text, out)) {
+                break;
+            }
+        }
+        if (out->empty()) {
+            return false;
+        }
+
+        for (const Entry& entry : entries) {
+            if (any(entry.flags, EntryFlags::Deleted)
+                || entry.key.kind != MetaKeyKind::IptcDataset
+                || entry.key.data.iptc_dataset.record != 2U
+                || entry.key.data.iptc_dataset.dataset != time_dataset) {
+                continue;
+            }
+            std::string_view text;
+            if (!iptc_portable_text_value(arena, entry.value, &text)) {
+                continue;
+            }
+            const size_t date_size = out->size();
+            if (append_iptc_time_to_xmp(text, out)) {
+                break;
+            }
+            out->resize(date_size);
+        }
+        return true;
+    }
+
+    static bool emit_portable_iptc_datetime_property(
+        const ByteArena& arena, std::span<const Entry> entries,
+        uint16_t date_dataset, uint16_t time_dataset, std::string_view prefix,
+        std::string_view name, SpanWriter* w,
+        PortablePropertyClaimMap* claims) noexcept
+    {
+        if (!w || !claims) {
+            return false;
+        }
+        std::string value;
+        if (!build_portable_iptc_datetime(arena, entries, date_dataset,
+                                          time_dataset, &value)) {
+            return false;
+        }
+
+        bool new_claim = false;
+        if (!claim_portable_property_key(claims, prefix, name,
+                                         PortablePropertyOwner::Iptc,
+                                         PortablePropertyShape::Scalar,
+                                         &new_claim)
+            || !new_claim) {
+            return false;
+        }
+        return emit_portable_property_text(w, prefix, name, value);
+    }
+
     static bool map_iptc_dataset_to_portable(
         uint16_t record, uint16_t dataset, std::string_view* out_prefix,
         std::string_view* out_name, bool* out_indexed,
@@ -10293,6 +10505,20 @@ namespace {
         }
         out->clear();
         out_lang_alt->clear();
+
+        if (options.include_iptc) {
+            std::string value;
+            if (build_portable_iptc_datetime(arena, entries, 55U, 60U, &value)) {
+                (void)out->insert(PortablePropertyGeneratedShape {
+                    PortablePropertyKey { "photoshop", "DateCreated" },
+                    PortablePropertyShape::Scalar });
+            }
+            if (build_portable_iptc_datetime(arena, entries, 62U, 63U, &value)) {
+                (void)out->insert(PortablePropertyGeneratedShape {
+                    PortablePropertyKey { "xmp", "CreateDate" },
+                    PortablePropertyShape::Scalar });
+            }
+        }
 
         for (size_t i = 0; i < entries.size(); ++i) {
             const Entry& e = entries[i];
@@ -13437,6 +13663,30 @@ namespace {
             || !indexed_structured_indexed_nested || !indexed_structured_indexed
             || !emitted || !iptc_order || w->limit_hit) {
             return;
+        }
+
+        if (pass == PortablePassKind::Iptc && options.include_iptc) {
+            if (options.limits.max_entries != 0U
+                && *emitted >= options.limits.max_entries) {
+                w->limit_hit = true;
+                return;
+            }
+            if (emit_portable_iptc_datetime_property(arena, entries, 55U, 60U,
+                                                     "photoshop", "DateCreated",
+                                                     w, claims)) {
+                *emitted += 1U;
+            }
+
+            if (options.limits.max_entries != 0U
+                && *emitted >= options.limits.max_entries) {
+                w->limit_hit = true;
+                return;
+            }
+            if (emit_portable_iptc_datetime_property(arena, entries, 62U, 63U,
+                                                     "xmp", "CreateDate", w,
+                                                     claims)) {
+                *emitted += 1U;
+            }
         }
 
         for (size_t i = 0; i < entries.size(); ++i) {

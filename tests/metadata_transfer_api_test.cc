@@ -11439,6 +11439,90 @@ TEST(MetadataTransferApi, PreparePortableXmpGeneratesXmpDateAliasesFromExif)
 }
 
 TEST(MetadataTransferApi,
+     IptcCreationDatesSurvivePortableXmpJpegAndTiffRoundTrip)
+{
+    openmeta::MetaStore store;
+    const openmeta::BlockId block = store.add_block(openmeta::BlockInfo {});
+    ASSERT_NE(block, openmeta::kInvalidBlockId);
+
+    const auto add_iptc = [&](uint16_t dataset, std::string_view value,
+                              uint32_t order) {
+        openmeta::Entry entry;
+        entry.key   = openmeta::make_iptc_dataset_key(2U, dataset);
+        entry.value = openmeta::make_bytes(
+            store.arena(),
+            std::span<const std::byte>(reinterpret_cast<const std::byte*>(
+                                           value.data()),
+                                       value.size()));
+        entry.origin.block          = block;
+        entry.origin.order_in_block = order;
+        EXPECT_NE(store.add_entry(entry), openmeta::kInvalidEntryId);
+    };
+    add_iptc(55U, "20240829", 0U);
+    add_iptc(60U, "123501+0900", 1U);
+    add_iptc(62U, "20240830", 2U);
+    add_iptc(63U, "010203-0230", 3U);
+    store.finalize();
+
+    struct Case final {
+        const char* label;
+        openmeta::TransferTargetFormat format;
+    };
+    static constexpr Case kCases[] = {
+        { "jpeg", openmeta::TransferTargetFormat::Jpeg },
+        { "tiff", openmeta::TransferTargetFormat::Tiff },
+    };
+
+    for (const Case& test_case : kCases) {
+        SCOPED_TRACE(test_case.label);
+        openmeta::PrepareTransferRequest request;
+        request.target_format        = test_case.format;
+        request.include_exif_app1    = false;
+        request.include_icc_app2     = false;
+        request.include_iptc_app13   = false;
+        request.xmp_portable         = true;
+        request.xmp_project_exif     = false;
+        request.xmp_project_iptc     = true;
+        request.xmp_include_existing = false;
+
+        openmeta::PreparedTransferBundle bundle;
+        const openmeta::PrepareTransferResult prepared
+            = openmeta::prepare_metadata_for_target(store, request, &bundle);
+        ASSERT_EQ(prepared.status, openmeta::TransferStatus::Ok);
+        ASSERT_EQ(bundle.blocks.size(), 1U);
+        EXPECT_EQ(bundle.blocks[0].kind, openmeta::TransferBlockKind::Xmp);
+
+        const std::vector<std::byte> input
+            = test_case.format == openmeta::TransferTargetFormat::Jpeg
+                  ? make_jpeg_with_segments({})
+                  : make_minimal_tiff_little_endian();
+        openmeta::ExecutePreparedTransferOptions options;
+        options.edit_requested = true;
+        options.edit_apply     = true;
+        const openmeta::ExecutePreparedTransferResult executed
+            = openmeta::execute_prepared_transfer(
+                &bundle, std::span<const std::byte>(input.data(), input.size()),
+                options);
+        ASSERT_EQ(executed.edit_plan_status, openmeta::TransferStatus::Ok);
+        ASSERT_EQ(executed.edit_apply.status, openmeta::TransferStatus::Ok);
+        ASSERT_FALSE(executed.edited_output.empty());
+
+        openmeta::MetaStore decoded;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(
+            std::span<const std::byte>(executed.edited_output.data(),
+                                       executed.edited_output.size()),
+            &decoded));
+        EXPECT_TRUE(store_has_text_entry(
+            decoded,
+            xmp_key_view("http://ns.adobe.com/photoshop/1.0/", "DateCreated"),
+            "2024-08-29T12:35:01+09:00"));
+        EXPECT_TRUE(store_has_text_entry(
+            decoded, xmp_key_view("http://ns.adobe.com/xap/1.0/", "CreateDate"),
+            "2024-08-30T01:02:03-02:30"));
+    }
+}
+
+TEST(MetadataTransferApi,
      PreparePortableXmpCanonicalizesManagedXmpDateAliasesOnlyWhenAvailable)
 {
     openmeta::MetaStore store;

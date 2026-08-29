@@ -611,9 +611,9 @@ This remains one of the biggest product gaps for writer adoption, even though
 the first public projection controls now exist.
 
 Missing pieces include:
-- conflict resolution rules
-- broader sidecar vs embedded policy beyond the current bounded writeback mode
-- canonical writeback policy
+- broader portable mappings beyond the current bounded generated set
+- reverse and direct-family projection for arbitrary user edits
+- semantic reconciliation beyond explicit property-order conflict handling
 - broader namespace reconciliation behavior beyond the current bounded
   custom-namespace preservation control
 
@@ -925,10 +925,12 @@ safely.
 
 Evidence: `docs/xmp_sync_policy.md` now defines the bounded public policy,
 including carrier precedence, generated-vs-existing conflict behavior,
-writeback modes, namespace handling, and non-goals. The release-facing transfer
-tests cover source/destination carrier precedence, generated EXIF/IPTC versus
-existing XMP conflicts, canonical managed namespace replacement, and persisted
-embedded/sidecar writeback across the primary writer target family.
+writeback modes, namespace handling, strict paired IPTC creation-date
+projection, and non-goals. The release-facing transfer tests cover
+source/destination carrier precedence, generated EXIF/IPTC versus existing XMP
+conflicts, canonical managed namespace replacement, paired IPTC date/time
+composition, JPEG/TIFF read-back, and persisted embedded/sidecar writeback
+across the primary writer target family.
 
 #### 3. Compare-Backed Release Validation
 

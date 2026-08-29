@@ -156,6 +156,36 @@ pass:
 - ``PreserveCustom`` also preserves safe simple or indexed properties from
   custom namespaces.
 
+Paired IPTC Creation Dates
+--------------------------
+
+Portable IPTC projection composes these record-2 dataset pairs before applying
+the conflict policy:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 58 42
+
+   * - IPTC-IIM datasets
+     - Portable XMP property
+   * - ``DateCreated`` (2:55) plus optional ``TimeCreated`` (2:60)
+     - ``photoshop:DateCreated``
+   * - ``DigitalCreationDate`` (2:62) plus optional
+       ``DigitalCreationTime`` (2:63)
+     - ``xmp:CreateDate``
+
+Dates must use the IPTC ``YYYYMMDD`` form and pass Gregorian calendar
+validation. Times must use ``HHMMSS`` with an optional ``+HHMM`` or ``-HHMM``
+offset. OpenMeta normalizes accepted values to XMP date/date-time syntax,
+including a colon in the UTC offset.
+
+The first valid non-deleted date and time occurrence in each pair is used. A
+valid date emits as date-only when its time companion is absent or malformed.
+A time without a valid date emits nothing. Existing-XMP conflict behavior is
+the same as for other generated IPTC properties. ``CanonicalizeManaged``
+removes an existing managed date only when strict composition produced a valid
+replacement.
+
 Writeback Modes
 ---------------
 
