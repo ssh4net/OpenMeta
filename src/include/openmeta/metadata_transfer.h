@@ -523,10 +523,11 @@ struct TransferMakerNoteAudit final {
     bool raw_carrier_passthrough_available       = false;
 };
 
-/// Vendor identified from a raw MakerNote payload layout.
+/// Vendor identified from raw MakerNote layout and source-make evidence.
 enum class TransferMakerNoteVendor : uint8_t {
     Unknown,
     Nikon,
+    Canon,
 };
 
 /// Raw MakerNote layout relevant to offset-safe transfer.
@@ -534,6 +535,7 @@ enum class TransferMakerNoteLayout : uint8_t {
     UnknownOrMixed,
     NikonType1OuterTiff,
     NikonType3EmbeddedTiff,
+    CanonSourceDependentIfd,
 };
 
 /// Structural trust established for a raw MakerNote layout.
@@ -541,6 +543,7 @@ enum class TransferMakerNoteLayoutTrust : uint8_t {
     NotPresent,
     UnrecognizedOrMixed,
     OuterTiffOffsetsUnsafe,
+    SourceOffsetBasisAmbiguous,
     EmbeddedTiffStructureUnverified,
     EmbeddedTiffStructureVerified,
 };
@@ -559,6 +562,7 @@ struct TransferMakerNoteLayoutAudit final {
     bool embedded_tiff_validation_passed         = false;
     bool embedded_tiff_offsets_self_contained    = false;
     bool outer_tiff_offset_relocation_required   = false;
+    bool source_offset_context_required          = false;
     bool vendor_private_offsets_verified         = false;
     bool vendor_checksum_validation_available    = false;
     bool semantic_roundtrip_validation_available = false;
@@ -2250,11 +2254,14 @@ makernote_transfer_audit_from_store(const MetaStore& store) noexcept;
 /**
  * \brief Classify raw MakerNote layouts that affect offset-safe transfer.
  *
- * The first bounded implementation recognizes canonical Nikon type 1 notes,
- * whose offsets depend on the outer TIFF, and Nikon type 3 notes containing an
- * embedded TIFF at byte 10. A valid embedded TIFF proves only that standard
- * TIFF directory/value offsets remain inside that payload. Vendor-private
- * binary offsets, checksums, and semantic readability are not validated.
+ * The bounded implementation recognizes canonical Nikon type 1 notes, whose
+ * offsets depend on the outer TIFF, Nikon type 3 notes containing an embedded
+ * TIFF at byte 10, and Canon raw-IFD notes when Canon source-make evidence is
+ * present. Canon offset selection depends on original source-container context
+ * and therefore remains ambiguous after extraction. A valid embedded TIFF
+ * proves only that standard TIFF directory/value offsets remain inside that
+ * payload. Vendor-private binary offsets, checksums, and semantic readability
+ * are not validated.
  *
  * \par API Stability
  * Experimental host-facing API for diagnostics, UI, and preflight decisions.

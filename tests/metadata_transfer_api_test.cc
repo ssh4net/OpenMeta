@@ -880,6 +880,15 @@ append_u32be(std::vector<std::byte>* out, uint32_t v)
     out->push_back(static_cast<std::byte>((v >> 0U) & 0xFFU));
 }
 
+static void
+append_test_u_nbe(std::vector<std::byte>* out, size_t width, uint64_t value)
+{
+    for (size_t i = 0; i < width; ++i) {
+        const size_t shift = (width - 1U - i) * 8U;
+        out->push_back(static_cast<std::byte>((value >> shift) & 0xFFULL));
+    }
+}
+
 static bool
 write_test_u32be(std::vector<std::byte>* out, size_t off, uint32_t v) noexcept
 {
@@ -1453,7 +1462,8 @@ make_bmff_foreign_meta_iloc_method_target(
     uint16_t construction_method, uint16_t data_reference_index,
     bool include_idat, bool include_dref = false,
     bool dref_self_contained = false,
-    uint32_t major_brand     = openmeta::fourcc('h', 'e', 'i', 'c'))
+    uint32_t major_brand     = openmeta::fourcc('h', 'e', 'i', 'c'),
+    uint8_t offset_size = 4U, uint8_t length_size = 4U)
 {
     const std::array<uint32_t, 2> compatible_brands = {
         openmeta::fourcc('m', 'i', 'f', '1'),
@@ -1494,7 +1504,8 @@ make_bmff_foreign_meta_iloc_method_target(
 
     std::vector<std::byte> iloc_payload;
     append_bmff_fullbox_header(&iloc_payload, 1U);
-    iloc_payload.push_back(std::byte { 0x44 });
+    iloc_payload.push_back(static_cast<std::byte>(((offset_size & 0x0FU) << 4U)
+                                                  | (length_size & 0x0FU)));
     iloc_payload.push_back(std::byte { 0x40 });
     append_u16be(&iloc_payload, 1U);
     append_u16be(&iloc_payload, 1U);
@@ -1502,8 +1513,8 @@ make_bmff_foreign_meta_iloc_method_target(
     append_u16be(&iloc_payload, data_reference_index);
     append_u32be(&iloc_payload, 0U);
     append_u16be(&iloc_payload, 1U);
-    append_u32be(&iloc_payload, 0U);
-    append_u32be(&iloc_payload, 1U);
+    append_test_u_nbe(&iloc_payload, offset_size, 0U);
+    append_test_u_nbe(&iloc_payload, length_size, 1U);
     std::vector<std::byte> iloc_box;
     append_bmff_box(&iloc_box, openmeta::fourcc('i', 'l', 'o', 'c'),
                     std::span<const std::byte>(iloc_payload.data(),
@@ -2900,6 +2911,27 @@ read_test_bmff_iloc_version(std::span<const std::byte> bytes,
         return false;
     }
     *out_version = std::to_integer<uint8_t>(bytes[iloc_off + 8U]);
+    return true;
+}
+
+static bool
+read_test_bmff_iloc_field_sizes(std::span<const std::byte> bytes,
+                                uint8_t* out_offset_size,
+                                uint8_t* out_length_size) noexcept
+{
+    if (!out_offset_size || !out_length_size) {
+        return false;
+    }
+    size_t iloc_off  = 0U;
+    size_t iloc_size = 0U;
+    if (!find_top_level_bmff_meta_child_box(
+            bytes, openmeta::fourcc('i', 'l', 'o', 'c'), &iloc_off, &iloc_size)
+        || iloc_size < 14U || iloc_off + 12U >= bytes.size()) {
+        return false;
+    }
+    const uint8_t sizes0 = std::to_integer<uint8_t>(bytes[iloc_off + 12U]);
+    *out_offset_size     = static_cast<uint8_t>((sizes0 >> 4U) & 0x0FU);
+    *out_length_size     = static_cast<uint8_t>(sizes0 & 0x0FU);
     return true;
 }
 
@@ -23750,8 +23782,9 @@ make_nikon_type1_transfer_makernote()
 }
 
 static bool
-build_nikon_makernote_transfer_store(std::span<const std::byte> note,
-                                     openmeta::MetaStore* out) noexcept
+build_makernote_transfer_store(std::span<const std::byte> note,
+                               std::string_view camera_make,
+                               openmeta::MetaStore* out) noexcept
 {
     if (!out) {
         return false;
@@ -23764,7 +23797,7 @@ build_nikon_makernote_transfer_store(std::span<const std::byte> note,
 
     openmeta::Entry make;
     make.key   = openmeta::make_exif_tag_key(out->arena(), "ifd0", 0x010FU);
-    make.value = openmeta::make_text(out->arena(), "Nikon",
+    make.value = openmeta::make_text(out->arena(), camera_make,
                                      openmeta::TextEncoding::Ascii);
     make.origin.block          = block;
     make.origin.order_in_block = 0U;
@@ -23788,7 +23821,7 @@ TEST(MetadataTransferApi, AuditsNikonMakerNoteOffsetLayoutsConservatively)
 {
     const std::vector<std::byte> type3 = make_nikon_type3_transfer_makernote();
     openmeta::MetaStore type3_store;
-    ASSERT_TRUE(build_nikon_makernote_transfer_store(type3, &type3_store));
+    ASSERT_TRUE(build_makernote_transfer_store(type3, "Nikon", &type3_store));
 
     const openmeta::TransferMakerNoteLayoutAudit type3_audit
         = openmeta::makernote_layout_transfer_audit_from_store(type3_store);
@@ -23817,7 +23850,7 @@ TEST(MetadataTransferApi, AuditsNikonMakerNoteOffsetLayoutsConservatively)
 
     const std::vector<std::byte> type1 = make_nikon_type1_transfer_makernote();
     openmeta::MetaStore type1_store;
-    ASSERT_TRUE(build_nikon_makernote_transfer_store(type1, &type1_store));
+    ASSERT_TRUE(build_makernote_transfer_store(type1, "Nikon", &type1_store));
     const openmeta::TransferMakerNoteLayoutAudit type1_audit
         = openmeta::makernote_layout_transfer_audit_from_store(type1_store);
     EXPECT_EQ(type1_audit.trust,
@@ -23834,8 +23867,8 @@ TEST(MetadataTransferApi, AuditsNikonMakerNoteOffsetLayoutsConservatively)
     ASSERT_FALSE(truncated_type3.empty());
     truncated_type3.pop_back();
     openmeta::MetaStore truncated_store;
-    ASSERT_TRUE(build_nikon_makernote_transfer_store(truncated_type3,
-                                                     &truncated_store));
+    ASSERT_TRUE(build_makernote_transfer_store(truncated_type3, "Nikon",
+                                               &truncated_store));
     const openmeta::TransferMakerNoteLayoutAudit truncated_audit
         = openmeta::makernote_layout_transfer_audit_from_store(truncated_store);
     EXPECT_EQ(
@@ -23848,12 +23881,59 @@ TEST(MetadataTransferApi, AuditsNikonMakerNoteOffsetLayoutsConservatively)
     EXPECT_FALSE(truncated_audit.embedded_tiff_offsets_self_contained);
 }
 
+TEST(MetadataTransferApi, AuditsCanonMakerNoteSourceLayoutConservatively)
+{
+    std::vector<std::byte> note;
+    append_u16le(&note, 1U);
+    append_u16le(&note, 0x0001U);
+    append_u16le(&note, 3U);
+    append_u32le(&note, 1U);
+    append_u16le(&note, 7U);
+    append_u16le(&note, 0U);
+    append_u32le(&note, 0U);
+
+    openmeta::MetaStore store;
+    ASSERT_TRUE(build_makernote_transfer_store(note, "Canon Inc.", &store));
+    const openmeta::TransferMakerNoteLayoutAudit audit
+        = openmeta::makernote_layout_transfer_audit_from_store(store);
+    EXPECT_EQ(
+        audit.trust,
+        openmeta::TransferMakerNoteLayoutTrust::SourceOffsetBasisAmbiguous);
+    EXPECT_EQ(audit.vendor, openmeta::TransferMakerNoteVendor::Canon);
+    EXPECT_EQ(audit.layout,
+              openmeta::TransferMakerNoteLayout::CanonSourceDependentIfd);
+    EXPECT_EQ(audit.raw_payload_count, 1U);
+    EXPECT_EQ(audit.recognized_payload_count, 1U);
+    EXPECT_EQ(audit.structurally_valid_payload_count, 0U);
+    EXPECT_FALSE(audit.offset_basis_known);
+    EXPECT_TRUE(audit.source_offset_context_required);
+    EXPECT_FALSE(audit.embedded_tiff_validation_available);
+    EXPECT_FALSE(audit.embedded_tiff_offsets_self_contained);
+    EXPECT_FALSE(audit.outer_tiff_offset_relocation_required);
+    EXPECT_FALSE(audit.vendor_private_offsets_verified);
+    EXPECT_FALSE(audit.vendor_checksum_validation_available);
+    EXPECT_FALSE(audit.semantic_roundtrip_validation_available);
+
+    const std::array<std::byte, 3> malformed
+        = { std::byte { 1U }, std::byte { 0U }, std::byte { 0U } };
+    openmeta::MetaStore malformed_store;
+    ASSERT_TRUE(build_makernote_transfer_store(
+        std::span<const std::byte>(malformed.data(), malformed.size()), "Canon",
+        &malformed_store));
+    const openmeta::TransferMakerNoteLayoutAudit malformed_audit
+        = openmeta::makernote_layout_transfer_audit_from_store(malformed_store);
+    EXPECT_EQ(malformed_audit.trust,
+              openmeta::TransferMakerNoteLayoutTrust::UnrecognizedOrMixed);
+    EXPECT_EQ(malformed_audit.recognized_payload_count, 0U);
+    EXPECT_FALSE(malformed_audit.source_offset_context_required);
+}
+
 TEST(MetadataTransferApi,
      NikonType3MakerNoteSurvivesJpegAndTiffTransferRoundTrip)
 {
     const std::vector<std::byte> note = make_nikon_type3_transfer_makernote();
     openmeta::MetaStore store;
-    ASSERT_TRUE(build_nikon_makernote_transfer_store(note, &store));
+    ASSERT_TRUE(build_makernote_transfer_store(note, "Nikon", &store));
 
     struct Case final {
         const char* label;
@@ -44349,6 +44429,130 @@ TEST(MetadataTransferApi,
             EXPECT_EQ(blocks[0].kind, openmeta::ContainerBlockKind::Exif);
         }
     }
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditNormalizesCompactIlocWidths)
+{
+    struct Case final {
+        openmeta::TransferTargetFormat format;
+        uint32_t major_brand;
+    };
+    static constexpr Case kCases[] = {
+        { openmeta::TransferTargetFormat::Heif,
+          openmeta::fourcc('h', 'e', 'i', 'c') },
+        { openmeta::TransferTargetFormat::Avif,
+          openmeta::fourcc('a', 'v', 'i', 'f') },
+        { openmeta::TransferTargetFormat::Cr3,
+          openmeta::fourcc('c', 'r', 'x', ' ') },
+    };
+
+    const std::vector<std::byte> exif_payload
+        = make_test_bmff_exif_item_payload();
+    ASSERT_FALSE(exif_payload.empty());
+
+    for (const Case& one : kCases) {
+        SCOPED_TRACE(static_cast<int>(one.format));
+        openmeta::PreparedTransferBundle bundle;
+        bundle.target_format = one.format;
+
+        openmeta::PreparedTransferBlock exif;
+        exif.route   = "bmff:item-exif";
+        exif.payload = exif_payload;
+        bundle.blocks.push_back(exif);
+
+        const std::vector<std::byte> input
+            = make_bmff_foreign_meta_iloc_method_target(0x0001U, 0U, true,
+                                                        false, false,
+                                                        one.major_brand, 0U,
+                                                        1U);
+
+        openmeta::ExecutePreparedTransferOptions options;
+        options.edit_requested = true;
+        options.edit_apply     = true;
+        const openmeta::ExecutePreparedTransferResult result
+            = openmeta::execute_prepared_transfer(
+                &bundle, std::span<const std::byte>(input.data(), input.size()),
+                options);
+
+        ASSERT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok);
+        ASSERT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+        ASSERT_FALSE(result.edited_output.empty());
+        const std::span<const std::byte> edited(result.edited_output.data(),
+                                                result.edited_output.size());
+
+        uint8_t offset_size = 0U;
+        uint8_t length_size = 0U;
+        ASSERT_TRUE(read_test_bmff_iloc_field_sizes(edited, &offset_size,
+                                                    &length_size));
+        EXPECT_EQ(offset_size, 4U);
+        EXPECT_EQ(length_size, 4U);
+
+        TestBmffIlocRecordInfo primary;
+        ASSERT_TRUE(read_test_bmff_iloc_record(edited, 1U, &primary));
+        EXPECT_EQ(primary.construction_method, 1U);
+        EXPECT_EQ(primary.extent_offset, 0U);
+        EXPECT_EQ(primary.extent_length, 1U);
+
+        TestBmffIlocRecordInfo inserted;
+        ASSERT_TRUE(read_test_bmff_iloc_record(edited, 2U, &inserted));
+        EXPECT_EQ(inserted.construction_method, 0U);
+        EXPECT_EQ(inserted.data_reference_index, 0U);
+        EXPECT_EQ(inserted.extent_length, exif_payload.size());
+        ASSERT_LE(inserted.extent_offset + inserted.extent_length,
+                  edited.size());
+        EXPECT_EQ(std::memcmp(edited.data()
+                                  + static_cast<size_t>(inserted.extent_offset),
+                              exif_payload.data(), exif_payload.size()),
+                  0);
+
+        size_t idat_off  = 0U;
+        size_t idat_size = 0U;
+        ASSERT_TRUE(find_top_level_bmff_meta_child_box(
+            edited, openmeta::fourcc('i', 'd', 'a', 't'), &idat_off,
+            &idat_size));
+        ASSERT_GT(idat_size, 8U);
+        EXPECT_EQ(edited[idat_off + 8U], std::byte { 0xAA });
+
+        std::array<openmeta::ContainerBlockRef, 16> blocks {};
+        const openmeta::ScanResult scan = openmeta::scan_bmff(
+            edited, std::span<openmeta::ContainerBlockRef>(blocks.data(),
+                                                           blocks.size()));
+        ASSERT_EQ(scan.status, openmeta::ScanStatus::Ok);
+        ASSERT_EQ(scan.written, 1U);
+        EXPECT_EQ(blocks[0].kind, openmeta::ContainerBlockKind::Exif);
+    }
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditRejectsOmittedIlocExtentLengths)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+    openmeta::PreparedTransferBlock exif;
+    exif.route   = "bmff:item-exif";
+    exif.payload = make_test_bmff_exif_item_payload();
+    bundle.blocks.push_back(exif);
+
+    const std::vector<std::byte> input
+        = make_bmff_foreign_meta_iloc_method_target(
+            0x0001U, 0U, true, false, false,
+            openmeta::fourcc('h', 'e', 'i', 'c'), 0U, 0U);
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested = true;
+    options.edit_apply     = true;
+    const openmeta::ExecutePreparedTransferResult result
+        = openmeta::execute_prepared_transfer(
+            &bundle, std::span<const std::byte>(input.data(), input.size()),
+            options);
+
+    EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::Unsupported);
+    EXPECT_NE(result.edit_plan_message.find(
+                  "iloc omitted extent lengths are not supported"),
+              std::string::npos);
+    EXPECT_EQ(result.edit_apply.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(result.edited_output.empty());
 }
 
 TEST(MetadataTransferApi,

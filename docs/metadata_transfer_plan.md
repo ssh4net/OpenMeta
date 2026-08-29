@@ -28,7 +28,7 @@ The core rule is:
 
 ## Current Status
 
-Current planning estimate for this lane: about `80-85%`.
+Current planning estimate for this lane: about `85-90%`.
 
 Source-side readiness is already strong:
 - tracked EXIF read gates are green on `HEIC/HEIF`, `CR3`, and mixed RAW corpora
@@ -68,8 +68,8 @@ XMP-capable targets.
 | WebP | Bounded but real | Prepared bundle, compiled emit, bounded chunk rewrite/edit, file-helper roundtrip | Not a general WebP chunk editor |
 | JP2 | Bounded but real | Prepared bundle, compiled emit, bounded box rewrite/edit, file-helper roundtrip | `jp2h` synthesis is still out of scope |
 | JXL | Bounded but real | Prepared bundle, compiled emit, bounded box rewrite/edit, file-helper roundtrip | Still narrower than JPEG/TIFF |
-| HEIF / AVIF / CR3 | Bounded but real | Prepared bundle, compiled emit, direct prepared item/property payload byte-writer handoff, OpenMeta-managed BMFF item/property edit, constrained foreign-`meta` item merge/replacement/strip, managed item-ID remapping across `iref`/version-0 `grpl`/`ipma`, plus bounded ICC property merge, file-helper roundtrip | Direct payload output is a host handoff rather than a standalone BMFF file; arbitrary foreign `meta` scene/property-graph rewrite is still unsupported |
-| EXR | Bounded but real | Prepared bundle, compiled emit, direct backend attribute emit, prepared-bundle to `ExrAdapterBatch` bridge, CLI/Python transfer surface | No file rewrite/edit path yet; current transfer payload is safe string attributes only |
+| HEIF / AVIF / CR3 | Bounded but real | Prepared bundle, compiled emit, direct prepared item/property payload byte-writer handoff, OpenMeta-managed BMFF item/property edit, constrained foreign-`meta` item merge/replacement/strip, compact `iloc` field normalization, managed item-ID remapping across `iref`/version-0 `grpl`/`ipma`, plus bounded ICC property merge, file-helper roundtrip | Direct payload output is a host handoff rather than a standalone BMFF file; arbitrary foreign `meta` scene/property-graph rewrite is still unsupported |
+| EXR | Stable bounded host target | Prepared bundle, compiled emit, direct backend attribute emit, prepared-bundle to `ExrAdapterBatch` bridge, CLI/Python transfer surface | Host-emission only for the current roadmap; no OpenMeta file rewrite/edit path |
 
 ## What Is Already Implemented
 
@@ -359,6 +359,11 @@ Implemented as a bounded BMFF target family:
   version 0/1 graph exhausts the 16-bit item-id space
 - inserted metadata item records keep `iloc` construction method 0 and use
   absolute file-offset extents for broad reader compatibility
+- compact valid `iloc` graphs with an omitted zero extent-offset field or
+  narrow offset/length fields are normalized to explicit 32-bit fields when
+  metadata insertion requires representable absolute offsets and lengths;
+  omitted extent lengths remain unsupported because their source-to-end
+  semantics cannot be preserved safely while the graph grows
 - retained foreign item locations support construction method 0 file offsets
   and construction method 1 `idat` extents with data reference index 0 or an
   explicitly self-contained version-0 `dinf`/`dref` `url ` or `urn ` entry
@@ -413,10 +418,11 @@ That keeps EXR host integrations on the transfer path: callers can prepare one
 `TransferTargetFormat::Exr` bundle, then materialize a native
 `ExrAdapterBatch` without re-projecting from the source `MetaStore`.
 
-Current EXR transfer scope is intentionally conservative:
+Current EXR transfer scope is intentionally conservative and final for the
+current roadmap:
 - safe flattened `string` header attributes
 - backend emission through `ExrTransferEmitter`
-- no general file-based EXR metadata rewrite/edit path yet
+- no OpenMeta file-based EXR metadata rewrite/edit path
 - no typed EXR attribute synthesis beyond the current safe string projection
 
 Important user use case to keep visible:
@@ -427,10 +433,10 @@ Important user use case to keep visible:
   fixed-width attribute, such as a `double`, before opening the EXR writer,
   write pixel chunks normally, then patch only the reserved value bytes after
   close.
-- OpenMeta does not expose that late-bound EXR patch plan yet. If EXR depth is
-  expanded, the first useful scope should be a bounded fixed-size patch API
-  with offset discovery, type/size validation, and a decode-after-patch
-  verification gate.
+- OpenMeta does not expose that late-bound EXR patch plan. The current product
+  decision keeps EXR file ownership in the host writer; a future bounded
+  fixed-size patch helper requires a concrete host contract and remains
+  separate from general OpenMeta file rewriting.
 
 ## Transfer Policies
 
@@ -619,11 +625,14 @@ explicit: decoded-only fields are not serialized, `Keep` means unverified
 opaque byte carry-forward, and unavailable `Rewrite` fails closed to `Drop`.
 The generic public audit reports that nested-offset relocation, vendor checksum
 repair, semantic validation, and raw-carrier passthrough are unavailable. The
-first vendor-layout audit now distinguishes canonical Nikon type 1 notes, whose
-offsets depend on the outer TIFF, from type 3 notes with an embedded TIFF at
-byte 10. Bounded validation can prove that a type 3 embedded TIFF's standard
-directory/value offsets remain inside the opaque payload; it does not prove
-vendor-private binary offsets, checksum validity, or semantic readability.
+vendor-layout audit distinguishes canonical Nikon type 1 notes, whose offsets
+depend on the outer TIFF, from type 3 notes with an embedded TIFF at byte 10.
+It also recognizes bounded Canon raw-IFD payloads when Canon source-make
+evidence is present and reports that their offset basis requires the original
+source-container context. Bounded Nikon validation can prove that a type 3
+embedded TIFF's standard directory/value offsets remain inside the opaque
+payload; it does not prove vendor-private binary offsets, checksum validity, or
+semantic readability.
 
 Preserving a destination MakerNote while editing unrelated target metadata is a
 different operation from moving a source MakerNote into newly serialized EXIF.
@@ -634,12 +643,12 @@ preservation and selected Nikon field readability after repacking. Remaining
 work is the broader vendor/version-specific offset-base and integrity inventory,
 followed by rewrite lanes only where relocation rules are fully understood.
 
-### 4. EXR depth
+### 4. EXR scope
 
-The architectural question is now how far to deepen the current bounded EXR
-target:
-- keep EXR as a backend-emitter target plus bridge helpers, or
-- add a broader EXR file rewrite/edit path
+The architectural decision is complete for the current roadmap: EXR remains a
+stable bounded host-emission target plus bridge helpers. OpenMeta will not add
+a general EXR file rewrite path. Late-bound fixed-width values remain a
+host-writer concern unless a concrete reusable patch contract is proposed.
 
 ## Recommended Next Priorities
 
@@ -755,7 +764,7 @@ Exit criteria:
 | JP2 | Lock top-level managed-box rewrite rules and `colr` replacement behavior; add compare-backed roundtrip gates | Promote bounded box rewrite into a stable JP2 metadata contract with explicit preserve/replace guarantees for unmanaged boxes | Revisit `jp2h` synthesis only if it becomes necessary for common export parity |
 | JXL | Lock current box rewrite rules for `Exif`, `xml `, `jumb`, bounded `c2pa`, and encoder-side ICC handoff; add compare-backed roundtrip gates for edit/apply paths | Promote JXL from bounded but real to a stable first-class metadata target with explicit unmanaged-box preservation rules and clearer encoder/file-edit split | Add more `brob` realtype coverage only after the current direct and bounded compressed routes are stable |
 | HEIF / AVIF / CR3 | Lock the bounded metadata-only `meta` edit contract, item/property preservation rules, and compare-backed roundtrip gates | Stabilize the bounded BMFF writer contract for metadata items, ICC property handling, and existing OpenMeta-authored `meta` replacement | Deepen BMFF scene semantics and relation modeling where current bounded fields are too small for parity workflows |
-| EXR | Decide whether the public target remains an attribute-emitter contract or grows into a file rewrite/edit path; add compare-backed gates for the chosen contract | If EXR stays bounded, make that contract final and explicit across C++, CLI, and Python; if it grows, define one narrow first-class rewrite scope and gate it | Add depth only after the architectural choice is settled; avoid half-bounded expansion |
+| EXR | Keep the public target as a stable attribute-emitter contract across C++, CLI, and Python, with compare-backed gates | Keep existing-file preservation and late-bound value patching owned by the host EXR writer | Revisit only if a concrete host-neutral contract can avoid general EXR file rewriting |
 | RAF / X3F | Keep RAF header-declared preview-JPEG EXIF/XMP discovery, FujiIFD/TIFF follow path, RAF header/directory geometry decode, RAFData geometry projection, standalone XMP fallback, rendered-transfer dropping of native RAF source fields, and X3F header/PROP/section-JPEG reads stable with focused compare coverage | Only add read depth that directly improves downstream transfer/export confidence | Deepen remaining RAF model-specific tables and X3F image-processing sections if parity evidence shows real user-facing gaps |
 | CRW / CIFF | Keep the current bounded native CIFF projection stable and well-gated | Improve only the parts that materially affect interop or transfer workflows | Revisit deeper native legacy coverage if it becomes a recurring parity blocker |
 | Photoshop IRB | Keep raw preservation stable and add compare coverage for the current interpreted subset | Expand interpreted subset only where it improves practical writer parity | Revisit broader Photoshop-resource parity after the first-class writer set is stable |
@@ -793,15 +802,15 @@ Status legend:
 
 | Work package | Why it matters for parity | Status | Remaining package count | Main target families |
 | --- | --- | --- | --- | --- |
-| Public writer contract for primary targets | Competitors feel predictable on preserve/replace behavior; OpenMeta still needs that same trust level across all first-class targets | `Partial` | `1` | `TIFF`, `DNG`, `PNG`, `WebP`, `JP2`, `JXL`, `HEIF/AVIF/CR3` |
+| Public writer contract for primary targets | The bounded preserve/replace behavior is explicit and release-gated across the first-class target family | `Done` | `0` | `TIFF`, `DNG`, `PNG`, `WebP`, `JP2`, `JXL`, `HEIF/AVIF/CR3` |
 | General EXIF / IPTC / XMP sync engine | One of the biggest remaining gaps for general editing adoption | `Partial` | `1-2` | Cross-cutting |
-| Compare-backed release validation | Needed to defend parity claims with repeatable read-back and compare gates | `Partial` | `1` | Cross-cutting |
-| MakerNote rewrite trust | Generic preserve/rewrite/drop trust is explicit; Nikon type 1/type 3 layout evidence and type 3 JPEG/TIFF preservation regressions are present, but vendor-private relocation, checksum repair, and semantic guarantees still trail mature tools | `Partial` | `1` | `JPEG`, `TIFF`, `DNG`, RAW-derived lanes |
-| TIFF / DNG deeper rewrite guarantees | Important for serious export/edit trust on camera-originated files | `Partial` | `1` | `TIFF`, `DNG` |
+| Compare-backed release validation | Repeatable release-facing read-back and compare gates cover the primary writer family and writeback modes | `Done` | `0` | Cross-cutting |
+| MakerNote rewrite trust | Generic preserve/rewrite/drop trust is explicit; Nikon type 1/type 3 and Canon source-dependent layout evidence are present, but vendor-private relocation, checksum repair, and semantic guarantees still trail mature tools | `Partial` | `1` | `JPEG`, `TIFF`, `DNG`, RAW-derived lanes |
+| TIFF / DNG deeper rewrite guarantees | The bounded root/ExifIFD/preview/SubIFD contract and compare-backed target modes are complete for the current scope | `Done` | `0` | `TIFF`, `DNG` |
 | BMFF writer depth beyond current bounded contract | Needed for stronger `HEIF/AVIF/CR3` parity beyond the current metadata-only `meta` model | `Partial` | `1` | `HEIF`, `AVIF`, `CR3` |
 | Modern container read-depth follow-through | Remaining visible read gaps are mostly here | `Partial` | `1` | `HEIF/AVIF`, `JXL` |
 | Long-tail native format semantics | Matters more against `ExifTool` than against `Exiv2` | `Partial` | `2-3` | `RAF`, `X3F`, `CRW/CIFF`, `Photoshop IRB` |
-| EXR target decision | Current EXR target is real but still architecturally bounded | `Partial` | `1` | `EXR` |
+| EXR target decision | EXR is a stable bounded host-emission target for the current roadmap; file rewrite remains out of scope | `Done` | `0` | `EXR` |
 | JUMBF / C2PA deeper semantics | Current support is bounded and useful, but not full trust-policy parity | `Partial` | `1-2` | `JPEG`, `PNG`, `WebP`, `JXL`, `BMFF` |
 | Full arbitrary metadata editing parity | Mature competitors expose a broader open-ended editor surface | `Missing` | Strategic / out of scope | Cross-cutting |
 
@@ -820,7 +829,7 @@ still sits after the current public regression and writer-contract work.
 | `JP2` | `Strong` | `Partial` | stronger managed-box preservation guarantees and more roundtrip validation |
 | `JXL` | `Strong` on current lanes | `Partial` | more explicit box-preservation guarantees and deeper `brob` realtype follow-through |
 | `HEIF / AVIF / CR3` | `Strong` on tracked lanes | `Partial` | BMFF writer depth and deeper scene/relation semantics beyond the bounded current model |
-| `EXR` | `Bounded but real` | `Bounded but real` | still needs an explicit long-term decision between stable bounded target vs rewrite/edit path |
+| `EXR` | `Bounded but real` | `Stable bounded host emission` | file-level rewrite is out of scope; late-bound patching remains host-owned |
 | `RAF / X3F` | `Partial` | not a main writer lane | deeper RAF model-specific native tables and X3F image-processing sections beyond current carrier/header/property lanes |
 | `CRW / CIFF` | `Partial` | bounded | legacy native depth still trails mature tools |
 | `Photoshop IRB` | `Partial` | bounded preservation | interpreted subset still smaller than mature tools |
@@ -846,7 +855,7 @@ To get materially closer to `ExifTool`, OpenMeta also needs:
 - more long-tail native format depth
 - broader general editing behavior
 - deeper `JUMBF/C2PA` semantics
-- a clearer answer for `EXR`
+- broader host-side EXR attribute typing only when demanded by a concrete writer
 
 ### Execution Order
 
@@ -859,14 +868,14 @@ Priority legend:
 
 | Work package | Priority | Why this order |
 | --- | --- | --- |
-| Public writer contract for primary targets | `Now` | This is the core trust gap that still keeps OpenMeta below mature writer parity |
+| Public writer contract for primary targets | `Done` | The bounded contract and release gates are complete |
 | General EXIF / IPTC / XMP sync engine | `Now` | This is still one of the biggest adoption blockers for general edit workflows |
-| Compare-backed release validation | `Now` | Parity claims remain weaker until compare-backed gates are release-facing instead of mostly API-facing |
-| TIFF / DNG deeper rewrite guarantees | `Now` | This is the highest-risk writer lane for serious still-image export confidence |
-| BMFF writer depth beyond current bounded contract | `Next` | `HEIF/AVIF/CR3` are already real targets, but the bounded writer model still needs more depth for stronger parity |
-| MakerNote rewrite trust | `In progress` | Generic behavior fails closed; the Nikon layout inventory has started with type 1/type 3 evidence, while vendor-private relocation and integrity lanes remain |
+| Compare-backed release validation | `Done` | Primary targets and writeback modes have release-facing compare gates |
+| TIFF / DNG deeper rewrite guarantees | `Done` | The bounded target modes and graph-preservation contract are release-gated |
+| BMFF writer depth beyond current bounded contract | `Now` | `HEIF/AVIF/CR3` are real targets; compact `iloc` normalization is complete and broader bounded graph depth remains |
+| MakerNote rewrite trust | `In progress` | Generic behavior fails closed; Nikon type 1/type 3 and Canon source-dependent layouts are classified, while vendor-private relocation and integrity lanes remain |
 | Modern container read-depth follow-through | `Next` | Visible gap, but less urgent than finishing the current writer baseline |
-| EXR target decision | `Next` | Needs an explicit product choice, but should follow the main writer-contract stabilization work |
+| EXR target decision | `Done` | EXR remains a stable bounded host-emission target; file rewrite is out of scope |
 | RAW curve/data applicability model | `In progress` | Coarse descriptor-backed rendered-source filtering is now available in prepare; precise RAW interpretation still needs curve/LUT metadata tied to the actual raw data storage path before it is called active |
 | Long-tail native format semantics | `Later` | Matters more for broad `ExifTool` parity than for the first still-image writer milestone |
 | JUMBF / C2PA deeper semantics | `Later` | Current bounded behavior is already useful; deeper trust semantics should wait until the core writer contract is stable |

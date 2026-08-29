@@ -453,11 +453,14 @@ Host-facing API map
        counts plus current rewrite trust capabilities. The layout audit
        recognizes canonical Nikon type 1 outer-TIFF-relative notes and type 3
        notes with an embedded TIFF at byte 10; bounded embedded-TIFF validation
-       covers standard directory/value offsets only. The writer still cannot
-       reconstruct decoded fields, relocate vendor-private offsets, repair
-       checksums, prove semantic readability, or pass MakerNotes through as raw
-       carriers. Python ``Document`` and ``TransferSourceSnapshot`` expose
-       matching thin dictionary wrappers.
+       covers standard directory/value offsets only. It also recognizes
+       plausible Canon source-dependent IFD notes when the EXIF camera make is
+       Canon, but reports their source offset basis as ambiguous and does not
+       mark them rewritable. The writer still cannot reconstruct decoded
+       fields, relocate vendor-private offsets, repair checksums, prove semantic
+       readability, or pass MakerNotes through as raw carriers. Python
+       ``Document`` and ``TransferSourceSnapshot`` expose matching thin
+       dictionary wrappers.
    * - Raw-carrier passthrough audit:
        ``raw_carrier_passthrough_audit_from_snapshot(...)``
      - ``openmeta/metadata_transfer.h``

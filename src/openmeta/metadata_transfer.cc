@@ -3407,10 +3407,11 @@ namespace {
         return count;
     }
 
-    enum class NikonMakerNoteLayout : uint8_t {
+    enum class AuditedMakerNoteLayout : uint8_t {
         Unknown,
-        Type1OuterTiff,
-        Type3EmbeddedTiff,
+        NikonType1OuterTiff,
+        NikonType3EmbeddedTiff,
+        CanonSourceDependentIfd,
     };
 
     static std::span<const std::byte>
@@ -3435,19 +3436,19 @@ namespace {
                              payload.begin());
     }
 
-    static NikonMakerNoteLayout
+    static AuditedMakerNoteLayout
     classify_nikon_makernote_layout(std::span<const std::byte> payload) noexcept
     {
         if (!has_nikon_signature(payload) || payload.size() < 8U
             || payload[7] != std::byte { 0 }) {
-            return NikonMakerNoteLayout::Unknown;
+            return AuditedMakerNoteLayout::Unknown;
         }
         if (payload[6] == std::byte { 1 }) {
-            return NikonMakerNoteLayout::Type1OuterTiff;
+            return AuditedMakerNoteLayout::NikonType1OuterTiff;
         }
         if (payload[6] != std::byte { 2 } || payload.size() < 18U
             || payload[8] != std::byte { 0 } || payload[9] != std::byte { 0 }) {
-            return NikonMakerNoteLayout::Unknown;
+            return AuditedMakerNoteLayout::Unknown;
         }
 
         const bool little_endian = payload[10] == std::byte { 'I' }
@@ -3459,8 +3460,94 @@ namespace {
                && payload[13] == std::byte { 0 })
               || (big_endian && payload[12] == std::byte { 0 }
                   && payload[13] == std::byte { 42 });
-        return valid_magic ? NikonMakerNoteLayout::Type3EmbeddedTiff
-                           : NikonMakerNoteLayout::Unknown;
+        return valid_magic ? AuditedMakerNoteLayout::NikonType3EmbeddedTiff
+                           : AuditedMakerNoteLayout::Unknown;
+    }
+
+    static bool
+    ascii_starts_with_case_insensitive(std::string_view value,
+                                       std::string_view prefix) noexcept
+    {
+        if (value.size() < prefix.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < prefix.size(); ++i) {
+            uint8_t a = static_cast<uint8_t>(value[i]);
+            uint8_t b = static_cast<uint8_t>(prefix[i]);
+            if (a >= static_cast<uint8_t>('A')
+                && a <= static_cast<uint8_t>('Z')) {
+                a = static_cast<uint8_t>(a - static_cast<uint8_t>('A')
+                                         + static_cast<uint8_t>('a'));
+            }
+            if (b >= static_cast<uint8_t>('A')
+                && b <= static_cast<uint8_t>('Z')) {
+                b = static_cast<uint8_t>(b - static_cast<uint8_t>('A')
+                                         + static_cast<uint8_t>('a'));
+            }
+            if (a != b) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool store_camera_make_is_canon(const MetaStore& store) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (any(entry.flags, EntryFlags::Deleted)
+                || entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != 0x010FU
+                || entry.value.kind != MetaValueKind::Text) {
+                continue;
+            }
+            if (ascii_starts_with_case_insensitive(
+                    arena_string(store.arena(), entry.value.data.span),
+                    "Canon")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool
+    looks_like_canon_source_ifd(std::span<const std::byte> payload) noexcept
+    {
+        if (payload.size() < 6U) {
+            return false;
+        }
+        const uint16_t little_endian_count = static_cast<uint16_t>(
+            static_cast<uint16_t>(std::to_integer<uint8_t>(payload[0]))
+            | (static_cast<uint16_t>(std::to_integer<uint8_t>(payload[1]))
+               << 8U));
+        const uint16_t counts[]                   = { little_endian_count,
+                                                      read_u16be(payload, 0U) };
+        static constexpr uint16_t kMaximumEntries = 4096U;
+        for (size_t i = 0; i < 2U; ++i) {
+            if (counts[i] == 0U || counts[i] > kMaximumEntries) {
+                continue;
+            }
+            const uint64_t needed
+                = 2ULL + static_cast<uint64_t>(counts[i]) * 12ULL + 4ULL;
+            if (needed <= payload.size()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static AuditedMakerNoteLayout
+    classify_audited_makernote_layout(std::span<const std::byte> payload,
+                                      bool canon_make) noexcept
+    {
+        const AuditedMakerNoteLayout nikon = classify_nikon_makernote_layout(
+            payload);
+        if (nikon != AuditedMakerNoteLayout::Unknown) {
+            return nikon;
+        }
+        if (canon_make && looks_like_canon_source_ifd(payload)) {
+            return AuditedMakerNoteLayout::CanonSourceDependentIfd;
+        }
+        return AuditedMakerNoteLayout::Unknown;
     }
 
     static bool validate_nikon_type3_embedded_tiff(
@@ -13690,8 +13777,9 @@ TransferMakerNoteLayoutAudit
 makernote_layout_transfer_audit_from_store(const MetaStore& store) noexcept
 {
     TransferMakerNoteLayoutAudit out;
-    NikonMakerNoteLayout common_layout = NikonMakerNoteLayout::Unknown;
-    bool mixed_layout                  = false;
+    AuditedMakerNoteLayout common_layout = AuditedMakerNoteLayout::Unknown;
+    bool mixed_layout                    = false;
+    const bool canon_make                = store_camera_make_is_canon(store);
 
     for (const Entry& entry : store.entries()) {
         if (any(entry.flags, EntryFlags::Deleted)
@@ -13703,19 +13791,19 @@ makernote_layout_transfer_audit_from_store(const MetaStore& store) noexcept
         out.raw_payload_count += 1U;
         const std::span<const std::byte> payload = makernote_payload(store,
                                                                      entry);
-        const NikonMakerNoteLayout layout = classify_nikon_makernote_layout(
-            payload);
-        if (layout == NikonMakerNoteLayout::Unknown) {
+        const AuditedMakerNoteLayout layout
+            = classify_audited_makernote_layout(payload, canon_make);
+        if (layout == AuditedMakerNoteLayout::Unknown) {
             continue;
         }
 
         out.recognized_payload_count += 1U;
-        if (common_layout == NikonMakerNoteLayout::Unknown) {
+        if (common_layout == AuditedMakerNoteLayout::Unknown) {
             common_layout = layout;
         } else if (common_layout != layout) {
             mixed_layout = true;
         }
-        if (layout == NikonMakerNoteLayout::Type3EmbeddedTiff
+        if (layout == AuditedMakerNoteLayout::NikonType3EmbeddedTiff
             && validate_nikon_type3_embedded_tiff(payload)) {
             out.structurally_valid_payload_count += 1U;
         }
@@ -13729,9 +13817,17 @@ makernote_layout_transfer_audit_from_store(const MetaStore& store) noexcept
         return out;
     }
 
+    if (common_layout == AuditedMakerNoteLayout::CanonSourceDependentIfd) {
+        out.vendor = TransferMakerNoteVendor::Canon;
+        out.layout = TransferMakerNoteLayout::CanonSourceDependentIfd;
+        out.trust  = TransferMakerNoteLayoutTrust::SourceOffsetBasisAmbiguous;
+        out.source_offset_context_required = true;
+        return out;
+    }
+
     out.vendor             = TransferMakerNoteVendor::Nikon;
     out.offset_basis_known = true;
-    if (common_layout == NikonMakerNoteLayout::Type1OuterTiff) {
+    if (common_layout == AuditedMakerNoteLayout::NikonType1OuterTiff) {
         out.layout = TransferMakerNoteLayout::NikonType1OuterTiff;
         out.trust  = TransferMakerNoteLayoutTrust::OuterTiffOffsetsUnsafe;
         out.outer_tiff_offset_relocation_required = true;
@@ -26769,11 +26865,17 @@ namespace {
             (ctx->iloc_sizes1 >> 4U) & 0x0FU);
         const size_t index_size = static_cast<size_t>(ctx->iloc_sizes1 & 0x0FU);
         if (offset_size > 8U || length_size > 8U || base_offset_size > 8U
-            || index_size > 8U || offset_size == 0U || length_size == 0U) {
+            || index_size > 8U) {
             return fail_bmff_foreign_meta_merge(
                 out, TransferStatus::Unsupported,
                 EmitTransferCode::InvalidArgument,
                 "iloc offset/length field widths are not supported");
+        }
+        if (length_size == 0U) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::Unsupported,
+                EmitTransferCode::InvalidArgument,
+                "iloc omitted extent lengths are not supported");
         }
         if (ctx->iloc_version == 0U && index_size != 0U) {
             return fail_bmff_foreign_meta_merge(
@@ -27606,14 +27708,14 @@ namespace {
         const std::vector<BmffRewriteItemSource>& items,
         const std::vector<uint64_t>& item_offsets, uint64_t shifted_range_begin,
         int64_t file_offset_delta, uint64_t new_item_payload_file_offset,
+        size_t output_offset_size, size_t output_length_size,
         std::vector<std::byte>* out_box, EmitTransferResult* out) noexcept
     {
-        if (!out_box || items.size() != item_offsets.size()) {
+        if (!out_box || items.size() != item_offsets.size()
+            || output_offset_size > 8U || output_length_size == 0U
+            || output_length_size > 8U) {
             return false;
         }
-        const size_t offset_size = static_cast<size_t>((ctx.iloc_sizes0 >> 4U)
-                                                       & 0x0FU);
-        const size_t length_size = static_cast<size_t>(ctx.iloc_sizes0 & 0x0FU);
         const size_t input_base_offset_size = static_cast<size_t>(
             (ctx.iloc_sizes1 >> 4U) & 0x0FU);
         const size_t index_size = static_cast<size_t>(ctx.iloc_sizes1 & 0x0FU);
@@ -27675,7 +27777,8 @@ namespace {
                                                      shifted_range_begin,
                                                      file_offset_delta,
                                                      &adjusted_file_offset)
-                    || !bmff_u_nbe_fits(offset_size, adjusted_file_offset)) {
+                    || !bmff_u_nbe_fits(output_offset_size,
+                                        adjusted_file_offset)) {
                     can_compact_base_offsets = false;
                     break;
                 }
@@ -27703,6 +27806,8 @@ namespace {
                        bytes.begin()
                            + static_cast<std::ptrdiff_t>(payload_begin + 6U));
         payload[0] = static_cast<std::byte>(output_version);
+        payload[4] = static_cast<std::byte>(((output_offset_size & 0x0FU) << 4U)
+                                            | (output_length_size & 0x0FU));
         payload[5] = static_cast<std::byte>(
             ((output_base_offset_size & 0x0FU) << 4U) | (index_size & 0x0FU));
         if (output_version == 2U) {
@@ -27802,10 +27907,10 @@ namespace {
                 }
                 if (!append_bmff_u_nbe_checked(&payload, index_size,
                                                records[i].extents[j].index)
-                    || !append_bmff_u_nbe_checked(&payload, offset_size,
+                    || !append_bmff_u_nbe_checked(&payload, output_offset_size,
                                                   extent_offset)
-                    || !append_bmff_u_nbe_checked(
-                        &payload, length_size, records[i].extents[j].length)) {
+                    || !append_bmff_u_nbe_checked(&payload, output_length_size,
+                                                  records[i].extents[j].length)) {
                     return fail_bmff_foreign_meta_merge(
                         out, TransferStatus::LimitExceeded,
                         EmitTransferCode::InvalidPayload,
@@ -27834,15 +27939,15 @@ namespace {
                                               0U)
                 || !append_bmff_u_nbe_checked(&payload, 2U, 1U)
                 || !append_bmff_u_nbe_checked(&payload, index_size, 0U)
-                || !append_bmff_u_nbe_checked(&payload, offset_size,
+                || !append_bmff_u_nbe_checked(&payload, output_offset_size,
                                               new_extent_offset)
-                || !append_bmff_u_nbe_checked(&payload, length_size,
+                || !append_bmff_u_nbe_checked(&payload, output_length_size,
                                               static_cast<uint64_t>(
                                                   block.payload.size()))) {
                 return fail_bmff_foreign_meta_merge(
                     out, TransferStatus::LimitExceeded,
                     EmitTransferCode::InvalidPayload,
-                    "new iloc item extent does not fit existing field widths");
+                    "new iloc item extent does not fit output field widths");
             }
         }
 
@@ -29082,6 +29187,30 @@ namespace {
         const bool write_iprp_box
             = !props.empty() || (ctx.has_iprp && !removed_item_ids.empty());
 
+        const size_t input_offset_size = static_cast<size_t>(
+            (ctx.iloc_sizes0 >> 4U) & 0x0FU);
+        const size_t input_length_size = static_cast<size_t>(ctx.iloc_sizes0
+                                                             & 0x0FU);
+        size_t output_offset_size      = input_offset_size;
+        size_t output_length_size      = input_length_size;
+        if (!items.empty()) {
+            const size_t minimum_offset_size
+                = bytes.size() > static_cast<size_t>(0xFFFFFFFFULL) ? 8U : 4U;
+            output_offset_size            = std::max(output_offset_size,
+                                                     minimum_offset_size);
+            uint64_t maximum_payload_size = 0U;
+            for (size_t i = 0; i < items.size(); ++i) {
+                const uint64_t payload_size = static_cast<uint64_t>(
+                    bundle.blocks[items[i].block_index].payload.size());
+                maximum_payload_size = std::max(maximum_payload_size,
+                                                payload_size);
+            }
+            const size_t minimum_length_size
+                = maximum_payload_size > 0xFFFFFFFFULL ? 8U : 4U;
+            output_length_size = std::max(output_length_size,
+                                          minimum_length_size);
+        }
+
         std::vector<uint64_t> item_offsets;
         std::vector<std::byte> idat_box;
         if (write_idat_box) {
@@ -29133,7 +29262,8 @@ namespace {
         std::vector<std::byte> iloc_box;
         if (!build_bmff_foreign_merge_iloc_box(
                 bytes, ctx, records, removed_item_ids, bundle, items,
-                item_offsets, meta.offset + meta.size, 0, 0U, &iloc_box, out)) {
+                item_offsets, meta.offset + meta.size, 0, 0U,
+                output_offset_size, output_length_size, &iloc_box, out)) {
             return false;
         }
 
@@ -29241,7 +29371,8 @@ namespace {
         if (!build_bmff_foreign_merge_iloc_box(
                 bytes, ctx, records, removed_item_ids, bundle, items,
                 item_offsets, meta.offset + meta.size, file_offset_delta,
-                new_item_payload_file_offset, &iloc_box, out)) {
+                new_item_payload_file_offset, output_offset_size,
+                output_length_size, &iloc_box, out)) {
             return false;
         }
 

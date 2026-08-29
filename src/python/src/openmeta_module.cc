@@ -1453,6 +1453,7 @@ namespace {
         switch (vendor) {
         case TransferMakerNoteVendor::Unknown: return "unknown";
         case TransferMakerNoteVendor::Nikon: return "nikon";
+        case TransferMakerNoteVendor::Canon: return "canon";
         }
         return "unknown";
     }
@@ -1466,6 +1467,8 @@ namespace {
             return "nikon_type1_outer_tiff";
         case TransferMakerNoteLayout::NikonType3EmbeddedTiff:
             return "nikon_type3_embedded_tiff";
+        case TransferMakerNoteLayout::CanonSourceDependentIfd:
+            return "canon_source_dependent_ifd";
         }
         return "unknown";
     }
@@ -1479,6 +1482,8 @@ namespace {
             return "unrecognized_or_mixed";
         case TransferMakerNoteLayoutTrust::OuterTiffOffsetsUnsafe:
             return "outer_tiff_offsets_unsafe";
+        case TransferMakerNoteLayoutTrust::SourceOffsetBasisAmbiguous:
+            return "source_offset_basis_ambiguous";
         case TransferMakerNoteLayoutTrust::EmbeddedTiffStructureUnverified:
             return "embedded_tiff_structure_unverified";
         case TransferMakerNoteLayoutTrust::EmbeddedTiffStructureVerified:
@@ -1514,6 +1519,8 @@ namespace {
             audit.embedded_tiff_offsets_self_contained);
         out["outer_tiff_offset_relocation_required"] = nb::bool_(
             audit.outer_tiff_offset_relocation_required);
+        out["source_offset_context_required"] = nb::bool_(
+            audit.source_offset_context_required);
         out["vendor_private_offsets_verified"] = nb::bool_(
             audit.vendor_private_offsets_verified);
         out["vendor_checksum_validation_available"] = nb::bool_(
@@ -7885,14 +7892,17 @@ NB_MODULE(_openmeta, m)
 
     nb::enum_<TransferMakerNoteVendor>(m, "TransferMakerNoteVendor")
         .value("Unknown", TransferMakerNoteVendor::Unknown)
-        .value("Nikon", TransferMakerNoteVendor::Nikon);
+        .value("Nikon", TransferMakerNoteVendor::Nikon)
+        .value("Canon", TransferMakerNoteVendor::Canon);
 
     nb::enum_<TransferMakerNoteLayout>(m, "TransferMakerNoteLayout")
         .value("UnknownOrMixed", TransferMakerNoteLayout::UnknownOrMixed)
         .value("NikonType1OuterTiff",
                TransferMakerNoteLayout::NikonType1OuterTiff)
         .value("NikonType3EmbeddedTiff",
-               TransferMakerNoteLayout::NikonType3EmbeddedTiff);
+               TransferMakerNoteLayout::NikonType3EmbeddedTiff)
+        .value("CanonSourceDependentIfd",
+               TransferMakerNoteLayout::CanonSourceDependentIfd);
 
     nb::enum_<TransferMakerNoteLayoutTrust>(m, "TransferMakerNoteLayoutTrust")
         .value("NotPresent", TransferMakerNoteLayoutTrust::NotPresent)
@@ -7900,6 +7910,8 @@ NB_MODULE(_openmeta, m)
                TransferMakerNoteLayoutTrust::UnrecognizedOrMixed)
         .value("OuterTiffOffsetsUnsafe",
                TransferMakerNoteLayoutTrust::OuterTiffOffsetsUnsafe)
+        .value("SourceOffsetBasisAmbiguous",
+               TransferMakerNoteLayoutTrust::SourceOffsetBasisAmbiguous)
         .value("EmbeddedTiffStructureUnverified",
                TransferMakerNoteLayoutTrust::EmbeddedTiffStructureUnverified)
         .value("EmbeddedTiffStructureVerified",

@@ -248,9 +248,12 @@ when the active plane is unknown.
        ``makernote_transfer_audit_from_store(...)`` for generic trust and
        ``makernote_layout_transfer_audit_from_store(...)`` for bounded layout
        evidence. The layout audit identifies Nikon type 1 notes as
-       outer-TIFF-dependent and can validate standard embedded-TIFF offsets in
-       canonical Nikon type 3 notes, but it does not validate vendor-private
-       binary offsets or checksums.
+       outer-TIFF-dependent, can validate standard embedded-TIFF offsets in
+       canonical Nikon type 3 notes, and conservatively identifies plausible
+       Canon source-dependent IFD notes when the EXIF camera make is Canon.
+       Canon recognition explicitly reports an ambiguous source offset basis
+       and does not make the note rewritable. The audit does not validate
+       vendor-private binary offsets or checksums.
        Preserving an existing destination MakerNote during an unrelated target
        edit is safer than transferring a source note into a new EXIF layout
        because the destination's established offset relationships can remain
@@ -495,9 +498,12 @@ contract, the edit fails instead of truncating IDs.
 
 Newly inserted metadata item payloads are appended to the rebuilt ``idat``
 payload. To preserve broad reader compatibility, their ``iloc`` records keep
-construction method 0 and use absolute file-offset extents within the existing
-field widths. When all retained self-contained item locations can be
-represented as absolute extents, OpenMeta compacts the rebuilt ``iloc``
+construction method 0 and use absolute file-offset extents. Compact valid
+graphs with an omitted offset field or offset/length fields too narrow for the
+inserted payloads are normalized to explicit 32-bit fields. Omitted extent
+lengths are rejected because their source-to-end semantics cannot be preserved
+safely when the graph grows. When all retained self-contained item locations
+can be represented as absolute extents, OpenMeta compacts the rebuilt ``iloc``
 base-offset field width to zero for simpler reader compatibility.
 
 Retained foreign item locations are supported when they use construction
@@ -545,14 +551,15 @@ the EXR attribute batch helpers for host-owned EXR writers. Existing EXR file
 metadata preservation is therefore owned by the host writer, not by an
 OpenMeta file edit helper.
 
-One important pending use case is late-bound EXR metadata. Streaming tile or
+One important host use case is late-bound EXR metadata. Streaming tile or
 scanline writers sometimes only know a value after pixel data is finished,
 for example ``total_compute_time``. The safe fast design is a fixed-size
 reservation/patch contract: reserve a typed attribute, such as a ``double``,
 before writer construction, then patch exactly those value bytes after close.
-OpenMeta does not provide this patch API yet; it should remain separate from
-general EXR file rewrite because variable-length header changes would require
-moving later file structures.
+That operation remains owned by the host EXR writer for the current roadmap.
+OpenMeta supplies the prepared attribute value but does not patch an existing
+EXR file; variable-length header changes could otherwise require moving later
+file structures.
 
 Non-Goals
 ---------

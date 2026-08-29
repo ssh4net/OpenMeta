@@ -1,5 +1,32 @@
 # OpenMeta Changes
 
+## 0.4.116 - 2026-08-29
+
+Changes compared with `0.4.115`.
+
+### Added
+
+- Added bounded BMFF foreign-graph normalization for compact `iloc` offset and
+  length fields used by HEIF, AVIF, and CR3 metadata insertion.
+- Added conservative Canon MakerNote source-layout recognition with an explicit
+  ambiguous source-offset-basis trust result and matching Python exposure.
+
+### Changed
+
+- Compact BMFF `iloc` graphs now grow offset and length fields to explicit
+  32-bit widths when required. Omitted extent lengths fail safely because their
+  source-to-end semantics cannot be preserved while the graph grows.
+- Finalized EXR as a stable host-emission target for the current roadmap;
+  existing-file rewrite and late-bound header patching remain host-owned.
+- Reconciled the transfer and writing readiness estimates with completed writer
+  contracts and compare-backed release gates.
+
+### Tests And Validation
+
+- Added HEIF, AVIF, and CR3 write/read-back tests for compact `iloc` graphs and
+  malformed omitted-length rejection.
+- Added Canon and Nikon MakerNote layout-trust regressions.
+
 ## 0.4.115 - 2026-08-28
 
 Changes compared with `0.4.114`.

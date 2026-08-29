@@ -125,14 +125,19 @@ model should stay compact:
    * - Transfer
      - Move metadata between files using explicit compatible-file or
        rendered-image safety policies.
-     - Medium-high, about 80-85%.
+     - High, about 85-90%; the primary writer contract, bounded EXIF/IPTC/XMP
+       synchronization policy, compare-backed release gates, stable prepared
+       handoff, and TIFF/DNG baseline are complete.
    * - Translation
      - Project metadata between families, mainly bounded EXIF/IPTC/XMP portable
        mappings.
      - Medium, about 60-70%.
    * - Writing
      - Serialize metadata and write or rewrite it into target containers.
-     - Medium, about 65-75%.
+     - Medium-high, about 70-80%; JPEG is strong, TIFF/DNG have a completed
+       bounded rewrite contract, and compact BMFF ``iloc`` fields can be
+       normalized for metadata insertion, while broader BMFF/JXL/EXR behavior
+       remains intentionally bounded.
    * - Adapters
      - Thin integration layers for host APIs or format-specific ecosystems such
        as EXR, DNG SDK, LibRaw orientation mapping, and flat host exports.

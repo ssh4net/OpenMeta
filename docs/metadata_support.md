@@ -53,8 +53,10 @@ Current tracked-gate status:
   are unavailable. Hosts can inspect this boundary with
   `makernote_transfer_audit_from_store(...)`. The separate
   `makernote_layout_transfer_audit_from_store(...)` recognizes canonical Nikon
-  type 1/type 3 offset layouts and validates standard embedded-TIFF structure
-  for type 3 without claiming vendor-private offset or checksum validation.
+  type 1/type 3 offset layouts, validates standard embedded-TIFF structure for
+  type 3, and reports plausible Canon source-dependent IFD notes with an
+  explicitly ambiguous source offset basis. It does not claim Canon rewrite
+  safety or vendor-private offset/checksum validation.
 - Metadata-family presence gates for XMP, ICC, IPTC-IIM, Photoshop IRB, and
   JUMBF/C2PA are clean on the tracked still-image corpus. Current read coverage
   includes EXIF/TIFF-carried ICC/IPTC payloads, bare JPEG APP1 XMP packets, and

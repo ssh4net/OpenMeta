@@ -136,7 +136,15 @@ Focused synthetic regressions also transfer a canonical Nikon type 3
 MakerNote through JPEG and TIFF writers, require byte-identical raw ``0x927C``
 payloads, and decode selected Nikon fields from the emitted files. This proves
 the tested embedded-TIFF path, not general vendor-private offset or checksum
-correctness.
+correctness. A separate Canon audit regression recognizes only a plausible raw
+IFD with Canon camera-make evidence and requires the result to remain
+source-offset-basis ambiguous and non-rewritable.
+
+HEIF, AVIF, and CR3 synthetic writer regressions cover foreign ``meta`` graphs
+whose compact ``iloc`` omits the extent-offset field and uses a one-byte extent
+length. The edited output must normalize those fields to 32-bit widths,
+preserve the existing primary item, expose the inserted Exif payload through a
+read-back scan, and reject omitted extent lengths atomically.
 
 ExifTool is an optional external validation tool in these tests, not an
 OpenMeta runtime dependency. Keep it patched when running validation against

@@ -291,7 +291,7 @@ format conformance, direct competitor parity, or overall product completion.
 | Milestone | Status |
 | --- | --- |
 | Decoding/read milestone for the current target scope | About `98-100%` |
-| Transfer / export milestone | About `80-85%` |
+| Transfer / export milestone | About `85-90%` |
 
 Creation, Editing, Translation, Writing, Adapters, and Utilities have separate
 readiness levels. See [docs/development.md](docs/development.md) for the full
