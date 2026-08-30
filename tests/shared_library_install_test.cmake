@@ -39,8 +39,11 @@ set(_openmeta_consumer_configure
   -S "${_openmeta_consumer_source}"
   -B "${_openmeta_consumer_build_dir}"
   "-DOpenMeta_DIR=${_openmeta_install_dir}/${OPENMETA_INSTALL_LIBDIR}/cmake/OpenMeta"
-  "-DCMAKE_BUILD_TYPE=${OPENMETA_CONFIG}"
 )
+if(NOT OPENMETA_GENERATOR_IS_MULTI_CONFIG)
+  list(APPEND _openmeta_consumer_configure
+    "-DCMAKE_BUILD_TYPE=${OPENMETA_CONFIG}")
+endif()
 if(DEFINED OPENMETA_GENERATOR AND NOT OPENMETA_GENERATOR STREQUAL "")
   list(APPEND _openmeta_consumer_configure -G "${OPENMETA_GENERATOR}")
 endif()
@@ -50,8 +53,10 @@ if(DEFINED OPENMETA_CXX_COMPILER AND NOT OPENMETA_CXX_COMPILER STREQUAL "")
 endif()
 if(DEFINED OPENMETA_DEPENDENCY_PREFIX_PATH
    AND NOT OPENMETA_DEPENDENCY_PREFIX_PATH STREQUAL "")
+  string(REPLACE ";" "\\;" _openmeta_dependency_prefix_path_arg
+    "${OPENMETA_DEPENDENCY_PREFIX_PATH}")
   list(APPEND _openmeta_consumer_configure
-    "-DCMAKE_PREFIX_PATH=${OPENMETA_DEPENDENCY_PREFIX_PATH}")
+    "-DCMAKE_PREFIX_PATH=${_openmeta_dependency_prefix_path_arg}")
 endif()
 execute_process(
   COMMAND ${_openmeta_consumer_configure}
@@ -86,7 +91,19 @@ if(NOT EXISTS "${_openmeta_consumer_executable}")
 endif()
 
 if(WIN32)
-  set(ENV{PATH} "${_openmeta_install_dir}/bin;$ENV{PATH}")
+  set(_openmeta_consumer_runtime_dirs "${_openmeta_install_dir}/bin")
+  foreach(_openmeta_dependency_prefix IN LISTS OPENMETA_DEPENDENCY_PREFIX_PATH)
+    if(IS_DIRECTORY "${_openmeta_dependency_prefix}/bin")
+      list(APPEND _openmeta_consumer_runtime_dirs
+        "${_openmeta_dependency_prefix}/bin")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _openmeta_consumer_runtime_dirs)
+  list(JOIN _openmeta_consumer_runtime_dirs ";"
+    _openmeta_consumer_runtime_path)
+  message(STATUS
+    "OpenMeta shared consumer runtime path: ${_openmeta_consumer_runtime_path}")
+  set(ENV{PATH} "${_openmeta_consumer_runtime_path};$ENV{PATH}")
 endif()
 
 execute_process(

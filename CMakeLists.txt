@@ -595,6 +595,9 @@ else()
   set(OPENMETA_LIB_TARGET openmeta_shared)
 endif()
 
+get_property(_openmeta_generator_is_multi_config GLOBAL
+  PROPERTY GENERATOR_IS_MULTI_CONFIG)
+
 if(TARGET openmeta_shared)
   add_custom_target(openmeta_gate_shared_install
     DEPENDS openmeta_shared
@@ -605,6 +608,7 @@ if(TARGET openmeta_shared)
       "-DOPENMETA_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
       "-DOPENMETA_CONFIG=$<CONFIG>"
       "-DOPENMETA_GENERATOR=${CMAKE_GENERATOR}"
+      "-DOPENMETA_GENERATOR_IS_MULTI_CONFIG=${_openmeta_generator_is_multi_config}"
       "-DOPENMETA_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
       "-DOPENMETA_DEPENDENCY_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/shared_library_install_test.cmake"
@@ -966,6 +970,7 @@ if(OPENMETA_BUILD_TESTS)
         "-DOPENMETA_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
         "-DOPENMETA_CONFIG=$<CONFIG>"
         "-DOPENMETA_GENERATOR=${CMAKE_GENERATOR}"
+        "-DOPENMETA_GENERATOR_IS_MULTI_CONFIG=${_openmeta_generator_is_multi_config}"
         "-DOPENMETA_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
         "-DOPENMETA_DEPENDENCY_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/shared_library_install_test.cmake"
