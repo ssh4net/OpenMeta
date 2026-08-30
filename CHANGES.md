@@ -1,5 +1,15 @@
 # OpenMeta Changes
 
+## 0.4.120 - 2026-08-30
+
+Changes compared with `0.4.119`.
+
+### Fixed
+
+- Pinned the Windows shared-library CI job to the Windows Server 2022 runner so
+  its installed Visual Studio version matches the explicitly selected Visual
+  Studio 17 2022 generator.
+
 ## 0.4.119 - 2026-08-30
 
 Changes compared with `0.4.118`.
