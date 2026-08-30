@@ -2,6 +2,7 @@
 
 #include <openmeta/build_info.h>
 #include <openmeta/host_adoption.h>
+#include <openmeta/metadata_translation.h>
 #include <openmeta/prepared_transfer_handoff.h>
 
 #include <span>
@@ -21,6 +22,17 @@ main()
     const bool instance_contract_matches
         = openmeta::prepared_transfer_handoff_instance_contract_version()
           == openmeta::kPreparedTransferHandoffInstanceContractVersion;
+    openmeta::MetaStore translation_source;
+    translation_source.finalize();
+    openmeta::MetaStore translated;
+    const openmeta::MetadataDateTranslationResult translation
+        = openmeta::translate_xmp_creation_dates(
+            translation_source, openmeta::MetadataDateTranslationOptions {},
+            &translated);
+    const bool translation_contract_matches
+        = openmeta::kMetadataDateTranslationContractVersion == 1U
+          && translation.status == openmeta::MetadataDateTranslationStatus::Ok
+          && translated.is_finalized();
     openmeta::PreparedTransferHandoff handoff;
     openmeta::PreparedTransferHandoffInstance instance;
     openmeta::PreparedTransferHandoffTimePatchFieldView field;
@@ -42,7 +54,8 @@ main()
                                                               nullptr);
     return line1.empty() || line2.empty() || !profile_matches
                    || !handoff_contract_matches || !instance_contract_matches
-                   || handoff.valid() || instance.valid()
+                   || !translation_contract_matches || handoff.valid()
+                   || instance.valid()
                    || created.code
                           != openmeta::PreparedTransferHandoffCode::InvalidState
                    || described.code

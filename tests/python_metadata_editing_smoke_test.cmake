@@ -81,6 +81,42 @@ replaced_packet, _ = replaced.dump_xmp_portable(
 assert b'Replacement' in replaced_packet
 assert b'Before' not in replaced_packet
 
+dates = openmeta.create_metadata([
+    openmeta.metadata_creation_text(
+        K.CreateDate, '2024-08-30T01:02:03-02:30'),
+    openmeta.metadata_creation_text(
+        K.DateTimeOriginal, '2024-08-28T10:11:12.500Z'),
+])
+translated_dates = dates.translate_creation_dates(
+    date_created_to_iptc_created=False)
+assert openmeta.METADATA_DATE_TRANSLATION_CONTRACT_VERSION == 1
+assert translated_dates.entry_count == dates.entry_count + 7
+assert dates.entry_count == 2
+translated_packet, _ = translated_dates.dump_xmp_portable(
+    include_existing_xmp=True,
+    conflict_policy=openmeta.XmpConflictPolicy.ExistingWins,
+)
+assert b'2024-08-30T01:02:03-02:30' in translated_packet
+assert b'2024-08-28T10:11:12.500Z' in translated_packet
+
+fractional = openmeta.create_metadata([
+    openmeta.metadata_creation_text(
+        K.CreateDate, '2024-08-30T01:02:03.125Z'),
+])
+try:
+    fractional.translate_creation_dates(
+        date_created_to_iptc_created=False)
+except ValueError as exc:
+    assert 'unsupported_precision for xmp_create_date' in str(exc)
+else:
+    raise AssertionError('lossy IPTC date translation was accepted')
+fractional_exif = fractional.translate_creation_dates(
+    create_date_to_iptc_digital_creation=False,
+    date_created_to_iptc_created=False,
+    date_time_original_to_exif_original=False,
+)
+assert fractional_exif.entry_count == fractional.entry_count + 3
+
 print('openmeta metadata editing smoke ok')
 ")
 

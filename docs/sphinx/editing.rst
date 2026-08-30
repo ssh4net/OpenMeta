@@ -105,5 +105,7 @@ Current scope
 This milestone covers the 24 logical fields documented by Creation. It does
 not yet provide high-level arbitrary wire/custom keys, non-default language
 selection, structural block editing, full cross-family synchronization, or
-direct in-place file patching. Lower-level ``MetaEdit`` remains available for
-entry-ID-based host code; transfer and writer APIs handle persistence.
+direct in-place file patching. Supported edited creation dates can be projected
+explicitly into native EXIF/IPTC groups before persistence; see
+:doc:`translation`. Lower-level ``MetaEdit`` remains available for entry-ID-
+based host code; transfer and writer APIs handle persistence.

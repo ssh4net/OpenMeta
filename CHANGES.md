@@ -1,5 +1,35 @@
 # OpenMeta Changes
 
+## 0.4.118 - 2026-08-30
+
+Changes compared with `0.4.117`.
+
+### Added
+
+- Added bounded transactional reverse creation-date translation from edited
+  `xmp:CreateDate`, `photoshop:DateCreated`, and XMP
+  `exif:DateTimeOriginal` into native EXIF and IPTC date groups.
+- Added explicit source-selection and native conflict policies, caller-lowered
+  entry and operation limits, dirty tombstone propagation, and a thin Python
+  `Document.translate_creation_dates(...)` wrapper.
+
+### Changed
+
+- Reverse date translation now rejects malformed dates and any projection that
+  would discard time or subsecond precision. EXIF timezone/subsecond companion
+  tags, lexical negative-zero timezones, and owned source provenance are
+  preserved.
+- Documented the explicit `create/edit -> translate -> prepare/write` workflow;
+  transfer and writing do not synchronize edited XMP into native families
+  implicitly.
+
+### Tests And Validation
+
+- Added conflict, ambiguity, operation-limit, malformed-input, precision,
+  date-only, timezone, negative-zero, and removal regressions.
+- Added native JPEG and TIFF write/decode round trips for translated EXIF and
+  IPTC creation dates, plus Python thin-wrapper coverage.
+
 ## 0.4.117 - 2026-08-29
 
 Changes compared with `0.4.116`.

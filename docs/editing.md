@@ -119,6 +119,8 @@ This milestone edits the 24 logical fields listed in
 [creation.md](creation.md). It does not yet provide high-level arbitrary
 EXIF/IPTC/XMP/custom-key operations, language-alternative selection beyond
 `x-default`, structural block editing, a full EXIF/IPTC/XMP synchronization
-engine, or direct in-place file patching. Lower-level `MetaEdit` remains
-available for entry-ID-based host code, while transfer and writer APIs handle
-container persistence.
+engine, or direct in-place file patching. Supported edited creation dates can
+be projected explicitly into native EXIF/IPTC groups before persistence; see
+[translation.md](translation.md). Lower-level `MetaEdit` remains available for
+entry-ID-based host code, while transfer and writer APIs handle container
+persistence.

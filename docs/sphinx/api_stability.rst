@@ -142,6 +142,16 @@ Host-facing API map
        and tombstones; add handles deterministic repeated fields and explicit
        singleton conflicts. Python returns a detached edited ``Document``
        without mutating its source. See :doc:`editing`.
+   * - Reverse creation-date translation:
+       ``translate_xmp_creation_dates(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Transactional v1 projection of eligible edited XMP creation dates into
+       exact native EXIF/IPTC date groups. The caller selects mappings, source
+       mode, conflict behavior, and lowered resource limits; lossy precision,
+       malformed dates, duplicate sources, and unresolved conflicts fail
+       without replacing the output. Python exposes the same C++ transaction
+       through a detached ``Document``. See :doc:`translation`.
    * - EXIF/TIFF orientation helpers: ``interpret_exif_orientation(...)``,
        ``exif_orientation_name(...)``,
        ``exif_orientation_rotation_degrees_cw(...)``,

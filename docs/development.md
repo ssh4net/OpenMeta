@@ -23,7 +23,7 @@ model should stay compact:
 | Creation | Build fresh metadata entries from host-provided values through a transactional, bounded logical-field request that produces a finalized canonical portable-XMP store. | Medium-high, about 70-75%; the v1 C++ contract, common descriptive/capture fields, UTF-8/XML and typed-value validation, resource limits, deterministic collection ordering, portable serialization, semantic-query visibility, and thin Python wrapper are implemented. |
 | Editing | Modify existing logical metadata entries while preserving valid surrounding structure. | Medium-high, about 75-80%; the v1 logical add/set/remove transaction, deterministic occurrence handling, singleton conflict repair, dirty/tombstone behavior, provenance preservation, portable serialization, transfer visibility, and immutable thin Python wrapper are implemented. |
 | Transfer | Move metadata between files using explicit compatible-file or rendered-image safety policies. | High, about 85-90%; the primary writer contract, bounded EXIF/IPTC/XMP synchronization policy, compare-backed release gates, stable prepared handoff, and TIFF/DNG baseline are complete. |
-| Translation | Project metadata between families, mainly bounded EXIF/IPTC/XMP portable mappings, including strict paired IPTC creation-date projection. | Medium, about 60-70%. |
+| Translation | Project metadata between families through explicit bounded mappings, including strict paired IPTC creation-date projection to XMP and transactional reverse projection of edited XMP creation dates into native EXIF/IPTC groups. | Medium-high, about 65-75%; exact date parsing, lossless precision policy, conflict reconciliation, tombstone propagation, resource limits, JPEG/TIFF round trips, and thin Python exposure are implemented. |
 | Writing | Serialize metadata and write or rewrite it into target containers. | Medium-high, about 70-80%; JPEG is strong, TIFF/DNG have a completed bounded rewrite contract, and compact BMFF `iloc` fields can be normalized for metadata insertion, while broader BMFF/JXL/EXR behavior remains intentionally bounded. |
 | Adapters | Thin integration layers for host APIs or format-specific ecosystems such as EXR, DNG SDK, LibRaw orientation mapping, and flat host exports. | Medium, about 60-70%. |
 | Utilities | Small standalone helpers such as capability queries, compatibility dumps, safety audits, tag-name lookup, version-value formatting, and orientation conversion. | Medium, about 65-75%. |
@@ -38,14 +38,16 @@ retains a `98-100%` range because not every declared container lane has an
 independent conformance sample set, even though tracked inputs have explicit
 read outcomes.
 
-The first Creation and Editing milestones are implemented in
+The first Creation, Editing, and reverse-date Translation milestones are implemented in
 [`metadata_creation.h`](../src/include/openmeta/metadata_creation.h) and
-[`metadata_editing.h`](../src/include/openmeta/metadata_editing.h), with their
-contracts documented in [`creation.md`](creation.md) and
-[`editing.md`](editing.md). The active implementation sequence now advances to
-Transfer, Translation, and Writing. Creation and Editing resume for
+[`metadata_editing.h`](../src/include/openmeta/metadata_editing.h), and
+[`metadata_translation.h`](../src/include/openmeta/metadata_translation.h),
+with their contracts documented in [`creation.md`](creation.md),
+[`editing.md`](editing.md), and [`translation.md`](translation.md). The active
+implementation sequence continues through Transfer, Translation, and Writing.
+Creation and Editing resume for
 arbitrary/custom properties, multilingual alternatives, structured values,
-direct family projection, structural block operations, and broader
+broader direct family projection, structural block operations, and broader
 cross-family synchronization. Adapters and Utilities remain deferred. Fuzzy
 Search resumes before those final two stages for independently sourced quality
 expansion, designed Unicode/transliteration behavior, multilingual gates, and

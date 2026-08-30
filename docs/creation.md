@@ -127,8 +127,9 @@ existing finalized store. See [editing.md](editing.md).
 
 Creation writes canonical portable-XMP entries because that representation can
 flow through the existing sidecar and transfer writers without requiring an
-original file layout. Direct EXIF/IPTC projection is a Translation concern and
-is not implied by this API.
+original file layout. Direct EXIF/IPTC projection is not implied by this API.
+Use the explicit reverse-date Translation step for supported creation dates;
+see [translation.md](translation.md).
 
 Image-dependent values such as dimensions, orientation, and color space must
 describe the destination pixels. OpenMeta cannot infer them from an encoder

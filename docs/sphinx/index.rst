@@ -49,6 +49,7 @@ and must not be used as an asset-authenticity or trust gate.
    fuzzy_search
    creation
    editing
+   translation
    raw_read_parity_plan
    build
    shared_library

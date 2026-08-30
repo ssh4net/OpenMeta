@@ -410,6 +410,7 @@ set(OPENMETA_SOURCES
   src/openmeta/metadata_concepts.cc
   src/openmeta/metadata_creation.cc
   src/openmeta/metadata_editing.cc
+  src/openmeta/metadata_translation.cc
   src/openmeta/metadata_fuzzy_search.cc
   src/openmeta/metadata_interpretation.cc
   src/openmeta/metadata_query.cc
@@ -1001,6 +1002,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/metadata_creation_test.cc
     tests/metadata_editing_test.cc
     tests/metadata_editing_transfer_test.cc
+    tests/metadata_translation_test.cc
     tests/metadata_fuzzy_search_test.cc
     tests/metadata_interpretation_test.cc
     tests/metadata_query_test.cc
