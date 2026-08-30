@@ -164,8 +164,8 @@ Scope and safety
 Creation emits canonical portable-XMP entries so existing sidecar and transfer
 writers can consume the result without original file-layout information.
 Direct EXIF/IPTC projection is not implied by this API. Use the explicit
-reverse-date Translation step for supported creation dates; see
-:doc:`translation`.
+Translation steps for supported creation dates and common descriptive IPTC
+fields; see :doc:`translation`.
 
 Dimensions, orientation, and color space must describe destination pixels.
 They must not be copied from a differently sized, rotated, converted, or

@@ -342,6 +342,11 @@ Target Summary
        through its own EXR writer.
      - Attribute-emitter target, not a file edit path.
 
+When any decoded IPTC dataset is dirty, JPEG APP13 and TIFF tag 33723 payloads
+are rebuilt from the active decoded datasets. A preserved raw Photoshop IPTC
+resource is used only while those datasets remain untouched, so translated or
+edited native IPTC cannot be shadowed by stale raw bytes.
+
 JPEG
 ----
 

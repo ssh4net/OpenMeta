@@ -152,6 +152,16 @@ Host-facing API map
        malformed dates, duplicate sources, and unresolved conflicts fail
        without replacing the output. Python exposes the same C++ transaction
        through a detached ``Document``. See :doc:`translation`.
+   * - Reverse descriptive translation:
+       ``translate_xmp_descriptive_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Transactional v1 projection of exact default-language
+       title/description/rights, indexed creators/keywords, credit, and source
+       into bounded IPTC-IIM datasets. Repeated cardinality, dirty tombstones,
+       byte limits, conflicts, and UTF-8 charset declaration are explicit;
+       unsafe legacy charset reinterpretation fails atomically. Python remains
+       a thin detached-document wrapper. See :doc:`translation`.
    * - EXIF/TIFF orientation helpers: ``interpret_exif_orientation(...)``,
        ``exif_orientation_name(...)``,
        ``exif_orientation_rotation_degrees_cw(...)``,

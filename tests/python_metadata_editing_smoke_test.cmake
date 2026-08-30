@@ -117,6 +117,27 @@ fractional_exif = fractional.translate_creation_dates(
 )
 assert fractional_exif.entry_count == fractional.entry_count + 3
 
+descriptive = openmeta.create_metadata([
+    openmeta.metadata_creation_text(K.Title, 'Night ' + chr(0x666f)),
+    openmeta.metadata_creation_text(K.Creator, 'Alice'),
+    openmeta.metadata_creation_text(K.Creator, 'Bob'),
+    openmeta.metadata_creation_text(K.Keyword, 'night'),
+])
+translated_descriptive = descriptive.translate_descriptive_metadata()
+assert openmeta.METADATA_DESCRIPTIVE_TRANSLATION_CONTRACT_VERSION == 1
+assert translated_descriptive.entry_count == descriptive.entry_count + 5
+assert descriptive.entry_count == 4
+
+oversized = openmeta.create_metadata([
+    openmeta.metadata_creation_text(K.Title, 'x' * 65),
+])
+try:
+    oversized.translate_descriptive_metadata()
+except ValueError as exc:
+    assert 'value_too_long for dc_title' in str(exc)
+else:
+    raise AssertionError('oversized IPTC title translation was accepted')
+
 print('openmeta metadata editing smoke ok')
 ")
 

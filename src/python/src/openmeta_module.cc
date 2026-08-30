@@ -21,8 +21,8 @@
 #include "openmeta/metadata_fuzzy_search.h"
 #include "openmeta/metadata_interpretation.h"
 #include "openmeta/metadata_query.h"
-#include "openmeta/metadata_translation.h"
 #include "openmeta/metadata_transfer.h"
+#include "openmeta/metadata_translation.h"
 #include "openmeta/ocio_adapter.h"
 #include "openmeta/orientation.h"
 #include "openmeta/phaseone_geometry.h"
@@ -6004,19 +6004,19 @@ edit_metadata_document(std::shared_ptr<PyDocument> source,
     return document;
 }
 
-static std::shared_ptr<PyDocument> translate_creation_dates_document(
+static std::shared_ptr<PyDocument>
+translate_creation_dates_document(
     std::shared_ptr<PyDocument> source,
     MetadataDateTranslationSourceMode source_mode,
     MetadataDateTranslationConflictPolicy conflict_policy,
     bool create_date_to_exif_digitized,
     bool create_date_to_iptc_digital_creation,
-    bool date_created_to_iptc_created,
-    bool date_time_original_to_exif_original, uint32_t max_added_entries,
-    uint32_t max_operations)
+    bool date_created_to_iptc_created, bool date_time_original_to_exif_original,
+    uint32_t max_added_entries, uint32_t max_operations)
 {
     MetadataDateTranslationOptions options;
-    options.source_mode = source_mode;
-    options.conflict_policy = conflict_policy;
+    options.source_mode                   = source_mode;
+    options.conflict_policy               = conflict_policy;
     options.create_date_to_exif_digitized = create_date_to_exif_digitized;
     options.create_date_to_iptc_digital_creation
         = create_date_to_iptc_digital_creation;
@@ -6039,6 +6039,63 @@ static std::shared_ptr<PyDocument> translate_creation_dates_document(
         if (result.failed_mapping != MetadataDateTranslationMapping::None) {
             message += " for ";
             message += metadata_date_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
+translate_descriptive_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataDescriptiveTranslationSourceMode source_mode,
+    MetadataDescriptiveTranslationConflictPolicy conflict_policy,
+    bool title_to_iptc_object_name, bool description_to_iptc_caption,
+    bool creators_to_iptc_bylines, bool keywords_to_iptc_keywords,
+    bool copyright_to_iptc_copyright, bool credit_to_iptc_credit,
+    bool source_to_iptc_source, uint32_t max_source_properties,
+    uint32_t max_added_entries, uint32_t max_operations,
+    uint64_t max_total_text_bytes)
+{
+    MetadataDescriptiveTranslationOptions options;
+    options.source_mode                 = source_mode;
+    options.conflict_policy             = conflict_policy;
+    options.title_to_iptc_object_name   = title_to_iptc_object_name;
+    options.description_to_iptc_caption = description_to_iptc_caption;
+    options.creators_to_iptc_bylines    = creators_to_iptc_bylines;
+    options.keywords_to_iptc_keywords   = keywords_to_iptc_keywords;
+    options.copyright_to_iptc_copyright = copyright_to_iptc_copyright;
+    options.credit_to_iptc_credit       = credit_to_iptc_credit;
+    options.source_to_iptc_source       = source_to_iptc_source;
+    options.max_source_properties       = max_source_properties;
+    options.max_added_entries           = max_added_entries;
+    options.max_operations              = max_operations;
+    options.max_total_text_bytes        = max_total_text_bytes;
+
+    MetaStore translated;
+    MetadataDescriptiveTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_descriptive_metadata(source->store, options,
+                                                    &translated);
+    }
+    if (result.status != MetadataDescriptiveTranslationStatus::Ok) {
+        std::string message = "metadata descriptive translation failed: ";
+        message += metadata_descriptive_translation_status_name(result.status);
+        if (result.failed_mapping
+            != MetadataDescriptiveTranslationMapping::None) {
+            message += " for ";
+            message += metadata_descriptive_translation_mapping_name(
                 result.failed_mapping);
         }
         if (result.failed_source_entry != kInvalidEntryId) {
@@ -6625,6 +6682,8 @@ NB_MODULE(_openmeta, m)
         kMetadataEditingContractVersion);
     m.attr("METADATA_DATE_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataDateTranslationContractVersion);
+    m.attr("METADATA_DESCRIPTIVE_TRANSLATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataDescriptiveTranslationContractVersion);
 
     nb::enum_<ScanStatus>(m, "ScanStatus")
         .value("Ok", ScanStatus::Ok)
@@ -7825,24 +7884,21 @@ NB_MODULE(_openmeta, m)
         .value("ReplaceExisting",
                MetadataDateTranslationConflictPolicy::ReplaceExisting);
 
-    nb::enum_<MetadataDateTranslationMapping>(
-        m, "MetadataDateTranslationMapping")
+    nb::enum_<MetadataDateTranslationMapping>(m,
+                                              "MetadataDateTranslationMapping")
         .value("None", MetadataDateTranslationMapping::None)
-        .value("XmpCreateDate",
-               MetadataDateTranslationMapping::XmpCreateDate)
+        .value("XmpCreateDate", MetadataDateTranslationMapping::XmpCreateDate)
         .value("PhotoshopDateCreated",
                MetadataDateTranslationMapping::PhotoshopDateCreated)
         .value("XmpDateTimeOriginal",
                MetadataDateTranslationMapping::XmpDateTimeOriginal);
 
-    nb::enum_<MetadataDateTranslationStatus>(
-        m, "MetadataDateTranslationStatus")
+    nb::enum_<MetadataDateTranslationStatus>(m, "MetadataDateTranslationStatus")
         .value("Ok", MetadataDateTranslationStatus::Ok)
         .value("NullOutput", MetadataDateTranslationStatus::NullOutput)
         .value("SourceNotFinalized",
                MetadataDateTranslationStatus::SourceNotFinalized)
-        .value("InvalidOptions",
-               MetadataDateTranslationStatus::InvalidOptions)
+        .value("InvalidOptions", MetadataDateTranslationStatus::InvalidOptions)
         .value("AmbiguousSource",
                MetadataDateTranslationStatus::AmbiguousSource)
         .value("InvalidSourceValue",
@@ -7851,14 +7907,12 @@ NB_MODULE(_openmeta, m)
                MetadataDateTranslationStatus::InvalidDateTime)
         .value("UnsupportedPrecision",
                MetadataDateTranslationStatus::UnsupportedPrecision)
-        .value("NativeConflict",
-               MetadataDateTranslationStatus::NativeConflict)
+        .value("NativeConflict", MetadataDateTranslationStatus::NativeConflict)
         .value("EntryLimitExceeded",
                MetadataDateTranslationStatus::EntryLimitExceeded)
         .value("OperationLimitExceeded",
                MetadataDateTranslationStatus::OperationLimitExceeded)
-        .value("InternalError",
-               MetadataDateTranslationStatus::InternalError);
+        .value("InternalError", MetadataDateTranslationStatus::InternalError);
 
     m.attr("METADATA_DATE_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
         kMetadataDateTranslationMaxAddedEntries);
@@ -7868,6 +7922,74 @@ NB_MODULE(_openmeta, m)
           &metadata_date_translation_status_name, "status"_a);
     m.def("metadata_date_translation_mapping_name",
           &metadata_date_translation_mapping_name, "mapping"_a);
+
+    nb::enum_<MetadataDescriptiveTranslationSourceMode>(
+        m, "MetadataDescriptiveTranslationSourceMode")
+        .value("DirtyOnly", MetadataDescriptiveTranslationSourceMode::DirtyOnly)
+        .value("All", MetadataDescriptiveTranslationSourceMode::All);
+
+    nb::enum_<MetadataDescriptiveTranslationConflictPolicy>(
+        m, "MetadataDescriptiveTranslationConflictPolicy")
+        .value("PreserveExisting",
+               MetadataDescriptiveTranslationConflictPolicy::PreserveExisting)
+        .value("FailOnConflict",
+               MetadataDescriptiveTranslationConflictPolicy::FailOnConflict)
+        .value("ReplaceExisting",
+               MetadataDescriptiveTranslationConflictPolicy::ReplaceExisting);
+
+    nb::enum_<MetadataDescriptiveTranslationMapping>(
+        m, "MetadataDescriptiveTranslationMapping")
+        .value("None", MetadataDescriptiveTranslationMapping::None)
+        .value("DcTitle", MetadataDescriptiveTranslationMapping::DcTitle)
+        .value("DcDescription",
+               MetadataDescriptiveTranslationMapping::DcDescription)
+        .value("DcCreator", MetadataDescriptiveTranslationMapping::DcCreator)
+        .value("DcSubject", MetadataDescriptiveTranslationMapping::DcSubject)
+        .value("DcRights", MetadataDescriptiveTranslationMapping::DcRights)
+        .value("PhotoshopCredit",
+               MetadataDescriptiveTranslationMapping::PhotoshopCredit)
+        .value("PhotoshopSource",
+               MetadataDescriptiveTranslationMapping::PhotoshopSource);
+
+    nb::enum_<MetadataDescriptiveTranslationStatus>(
+        m, "MetadataDescriptiveTranslationStatus")
+        .value("Ok", MetadataDescriptiveTranslationStatus::Ok)
+        .value("NullOutput", MetadataDescriptiveTranslationStatus::NullOutput)
+        .value("SourceNotFinalized",
+               MetadataDescriptiveTranslationStatus::SourceNotFinalized)
+        .value("InvalidOptions",
+               MetadataDescriptiveTranslationStatus::InvalidOptions)
+        .value("SourceLimitExceeded",
+               MetadataDescriptiveTranslationStatus::SourceLimitExceeded)
+        .value("AmbiguousSource",
+               MetadataDescriptiveTranslationStatus::AmbiguousSource)
+        .value("InvalidSourceValue",
+               MetadataDescriptiveTranslationStatus::InvalidSourceValue)
+        .value("ValueTooLong",
+               MetadataDescriptiveTranslationStatus::ValueTooLong)
+        .value("NativeConflict",
+               MetadataDescriptiveTranslationStatus::NativeConflict)
+        .value("NativeEncodingConflict",
+               MetadataDescriptiveTranslationStatus::NativeEncodingConflict)
+        .value("EntryLimitExceeded",
+               MetadataDescriptiveTranslationStatus::EntryLimitExceeded)
+        .value("OperationLimitExceeded",
+               MetadataDescriptiveTranslationStatus::OperationLimitExceeded)
+        .value("InternalError",
+               MetadataDescriptiveTranslationStatus::InternalError);
+
+    m.attr("METADATA_DESCRIPTIVE_TRANSLATION_MAX_SOURCE_PROPERTIES") = nb::int_(
+        kMetadataDescriptiveTranslationMaxSourceProperties);
+    m.attr("METADATA_DESCRIPTIVE_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
+        kMetadataDescriptiveTranslationMaxAddedEntries);
+    m.attr("METADATA_DESCRIPTIVE_TRANSLATION_MAX_OPERATIONS") = nb::int_(
+        kMetadataDescriptiveTranslationMaxOperations);
+    m.attr("METADATA_DESCRIPTIVE_TRANSLATION_MAX_TOTAL_TEXT_BYTES") = nb::int_(
+        kMetadataDescriptiveTranslationMaxTotalTextBytes);
+    m.def("metadata_descriptive_translation_status_name",
+          &metadata_descriptive_translation_status_name, "status"_a);
+    m.def("metadata_descriptive_translation_mapping_name",
+          &metadata_descriptive_translation_mapping_name, "mapping"_a);
 
     nb::enum_<MetadataFuzzySearchStatus>(m, "MetadataFuzzySearchStatus")
         .value("Ok", MetadataFuzzySearchStatus::Ok)
@@ -8527,13 +8649,31 @@ NB_MODULE(_openmeta, m)
              "source_mode"_a = MetadataDateTranslationSourceMode::DirtyOnly,
              "conflict_policy"_a
              = MetadataDateTranslationConflictPolicy::FailOnConflict,
-             "create_date_to_exif_digitized"_a = true,
+             "create_date_to_exif_digitized"_a        = true,
              "create_date_to_iptc_digital_creation"_a = true,
-             "date_created_to_iptc_created"_a = true,
-             "date_time_original_to_exif_original"_a = true,
+             "date_created_to_iptc_created"_a         = true,
+             "date_time_original_to_exif_original"_a  = true,
+             "max_added_entries"_a = kMetadataDateTranslationMaxAddedEntries,
+             "max_operations"_a    = kMetadataDateTranslationMaxOperations)
+        .def("translate_descriptive_metadata",
+             &translate_descriptive_metadata_document,
+             "source_mode"_a
+             = MetadataDescriptiveTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataDescriptiveTranslationConflictPolicy::FailOnConflict,
+             "title_to_iptc_object_name"_a   = true,
+             "description_to_iptc_caption"_a = true,
+             "creators_to_iptc_bylines"_a    = true,
+             "keywords_to_iptc_keywords"_a   = true,
+             "copyright_to_iptc_copyright"_a = true,
+             "credit_to_iptc_credit"_a = true, "source_to_iptc_source"_a = true,
+             "max_source_properties"_a
+             = kMetadataDescriptiveTranslationMaxSourceProperties,
              "max_added_entries"_a
-             = kMetadataDateTranslationMaxAddedEntries,
-             "max_operations"_a = kMetadataDateTranslationMaxOperations)
+             = kMetadataDescriptiveTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataDescriptiveTranslationMaxOperations,
+             "max_total_text_bytes"_a
+             = kMetadataDescriptiveTranslationMaxTotalTextBytes)
         .def("phaseone_raw_geometry", &document_phaseone_raw_geometry)
         .def("phaseone_raw_processing", &document_phaseone_raw_processing)
         .def("vendor_raw_processing", &document_vendor_raw_processing)

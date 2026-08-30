@@ -1,5 +1,33 @@
 # OpenMeta Changes
 
+## 0.4.119 - 2026-08-30
+
+Changes compared with `0.4.118`.
+
+### Added
+
+- Added bounded transactional reverse translation from exact descriptive XMP
+  properties into native IPTC-IIM title, caption, byline, keyword, copyright,
+  credit, and source datasets.
+- Added repeated creator/keyword reconciliation, explicit source and conflict
+  policies, dirty tombstone propagation, IPTC byte limits, resource ceilings,
+  and a thin Python `Document.translate_descriptive_metadata(...)` wrapper.
+
+### Changed
+
+- Non-ASCII descriptive translation now declares IPTC UTF-8 only when existing
+  datasets can be preserved or replaced without reinterpreting unrelated
+  legacy high-bit bytes; incompatible charset state fails transactionally.
+- JPEG APP13 and TIFF tag 33723 preparation now rebuild dirty decoded IPTC
+  datasets instead of replaying a stale preserved Photoshop IPTC resource.
+
+### Tests And Validation
+
+- Added singleton, repeated-value, conflict, ambiguity, operation-limit,
+  byte-limit, UTF-8 declaration, legacy-encoding, and removal regressions.
+- Added native JPEG and TIFF write/decode round trips for translated
+  descriptive IPTC plus a stale raw-resource rebuild regression.
+
 ## 0.4.118 - 2026-08-30
 
 Changes compared with `0.4.117`.

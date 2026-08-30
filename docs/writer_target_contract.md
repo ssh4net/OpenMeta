@@ -136,6 +136,11 @@ when the active plane is unknown.
 | `HEIF` / `AVIF` / `CR3` | BMFF metadata items (`Exif`, XMP `mime`, JUMBF/C2PA), bounded `colr/prof` ICC properties, plus OpenMeta-authored metadata-only `meta` boxes | Preserve non-`meta` top-level boxes; replace prior OpenMeta-authored metadata `meta`; merge/replace/strip item metadata in parseable foreign top-level `meta` graphs by extending `iinf`/`iloc`/`idat`/`iref`; remap unambiguous managed item replacements across `iref`/version-0 `grpl`/`ipma`; replace prior ICC `colr` properties and remap `iprp`/`ipco`/`ipma` for bounded ICC | Does not rewrite arbitrary BMFF scene/property graphs |
 | `EXR` | safe string header attributes through the EXR transfer emitter or adapter batch | No file rewrite contract today; host applies prepared attributes through its own EXR writer | Attribute-emitter target, not a file edit path |
 
+When any decoded IPTC dataset is dirty, JPEG APP13 and TIFF tag 33723 payloads
+are rebuilt from the active decoded datasets. A preserved raw Photoshop IPTC
+resource is used only while those datasets remain untouched, so translated or
+edited native IPTC cannot be shadowed by stale raw bytes.
+
 ## JPEG
 
 The JPEG edit path scans leading metadata marker segments before image scan

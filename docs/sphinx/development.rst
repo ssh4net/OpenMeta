@@ -131,11 +131,12 @@ model should stay compact:
    * - Translation
      - Project metadata between families through explicit bounded mappings,
        including strict paired IPTC creation-date projection to XMP and
-       transactional reverse projection of edited XMP creation dates into
-       native EXIF/IPTC groups.
-     - Medium-high, about 65-75%; exact date parsing, lossless precision policy,
-       conflict reconciliation, tombstone propagation, resource limits,
-       JPEG/TIFF round trips, and thin Python exposure are implemented.
+       transactional reverse projection of edited XMP dates and common
+       descriptive properties into native EXIF/IPTC groups.
+     - Medium-high, about 70-80%; exact date parsing, seven bounded descriptive
+       IPTC mappings, repeated-value reconciliation, safe UTF-8 declaration,
+       tombstone propagation, resource limits, JPEG/TIFF round trips, and thin
+       Python exposure are implemented.
    * - Writing
      - Serialize metadata and write or rewrite it into target containers.
      - Medium-high, about 70-80%; JPEG is strong, TIFF/DNG have a completed
@@ -162,8 +163,9 @@ retains a ``98-100%`` range because not every declared container lane has an
 independent conformance sample set, even though tracked inputs have explicit
 read outcomes.
 
-The first Creation, Editing, and reverse-date Translation milestones are
-implemented in ``openmeta/metadata_creation.h``,
+The first Creation, Editing, reverse-date Translation, and
+reverse-descriptive Translation milestones are implemented in
+``openmeta/metadata_creation.h``,
 ``openmeta/metadata_editing.h``, and ``openmeta/metadata_translation.h``, with
 their contracts documented in :doc:`creation`, :doc:`editing`, and
 :doc:`translation`. The active implementation sequence continues through

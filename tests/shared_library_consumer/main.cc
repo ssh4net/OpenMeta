@@ -33,6 +33,17 @@ main()
         = openmeta::kMetadataDateTranslationContractVersion == 1U
           && translation.status == openmeta::MetadataDateTranslationStatus::Ok
           && translated.is_finalized();
+    openmeta::MetaStore descriptive_translated;
+    const openmeta::MetadataDescriptiveTranslationResult descriptive_translation
+        = openmeta::translate_xmp_descriptive_metadata(
+            translation_source,
+            openmeta::MetadataDescriptiveTranslationOptions {},
+            &descriptive_translated);
+    const bool descriptive_translation_contract_matches
+        = openmeta::kMetadataDescriptiveTranslationContractVersion == 1U
+          && descriptive_translation.status
+                 == openmeta::MetadataDescriptiveTranslationStatus::Ok
+          && descriptive_translated.is_finalized();
     openmeta::PreparedTransferHandoff handoff;
     openmeta::PreparedTransferHandoffInstance instance;
     openmeta::PreparedTransferHandoffTimePatchFieldView field;
@@ -54,8 +65,9 @@ main()
                                                               nullptr);
     return line1.empty() || line2.empty() || !profile_matches
                    || !handoff_contract_matches || !instance_contract_matches
-                   || !translation_contract_matches || handoff.valid()
-                   || instance.valid()
+                   || !translation_contract_matches
+                   || !descriptive_translation_contract_matches
+                   || handoff.valid() || instance.valid()
                    || created.code
                           != openmeta::PreparedTransferHandoffCode::InvalidState
                    || described.code

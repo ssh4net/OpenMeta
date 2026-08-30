@@ -5,8 +5,9 @@
 #include "openmeta/interop_import.h"
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_value.h"
-#include "openmeta/metadata_translation.h"
+#include "openmeta/metadata_creation.h"
 #include "openmeta/metadata_transfer.h"
+#include "openmeta/metadata_translation.h"
 #include "openmeta/simple_meta.h"
 
 #include <gtest/gtest.h>
@@ -1200,9 +1201,9 @@ static openmeta::MetaKeyView
 iptc_key_view(uint16_t record, uint16_t dataset) noexcept
 {
     openmeta::MetaKeyView key;
-    key.kind                            = openmeta::MetaKeyKind::IptcDataset;
-    key.data.iptc_dataset.record        = record;
-    key.data.iptc_dataset.dataset       = dataset;
+    key.kind                      = openmeta::MetaKeyKind::IptcDataset;
+    key.data.iptc_dataset.record  = record;
+    key.data.iptc_dataset.dataset = dataset;
     return key;
 }
 
@@ -11557,9 +11558,9 @@ TEST(MetadataTransferApi,
     openmeta::Entry create_date;
     create_date.key = openmeta::make_xmp_property_key(
         source.arena(), "http://ns.adobe.com/xap/1.0/", "CreateDate");
-    create_date.value = openmeta::make_text(
-        source.arena(), "2024-08-30T01:02:03-02:30",
-        openmeta::TextEncoding::Utf8);
+    create_date.value                 = openmeta::make_text(source.arena(),
+                                                            "2024-08-30T01:02:03-02:30",
+                                                            openmeta::TextEncoding::Utf8);
     create_date.origin.block          = block;
     create_date.origin.order_in_block = 0U;
     create_date.flags                 = openmeta::EntryFlags::Dirty;
@@ -11568,9 +11569,9 @@ TEST(MetadataTransferApi,
     openmeta::Entry date_created;
     date_created.key = openmeta::make_xmp_property_key(
         source.arena(), "http://ns.adobe.com/photoshop/1.0/", "DateCreated");
-    date_created.value = openmeta::make_text(
-        source.arena(), "2024-08-29T12:35:01+09:00",
-        openmeta::TextEncoding::Utf8);
+    date_created.value                 = openmeta::make_text(source.arena(),
+                                                             "2024-08-29T12:35:01+09:00",
+                                                             openmeta::TextEncoding::Utf8);
     date_created.origin.block          = block;
     date_created.origin.order_in_block = 1U;
     date_created.flags                 = openmeta::EntryFlags::Dirty;
@@ -11578,11 +11579,10 @@ TEST(MetadataTransferApi,
 
     openmeta::Entry original;
     original.key = openmeta::make_xmp_property_key(
-        source.arena(), "http://ns.adobe.com/exif/1.0/",
-        "DateTimeOriginal");
-    original.value = openmeta::make_text(
-        source.arena(), "2024-08-28T10:11:12.500Z",
-        openmeta::TextEncoding::Utf8);
+        source.arena(), "http://ns.adobe.com/exif/1.0/", "DateTimeOriginal");
+    original.value                 = openmeta::make_text(source.arena(),
+                                                         "2024-08-28T10:11:12.500Z",
+                                                         openmeta::TextEncoding::Utf8);
     original.origin.block          = block;
     original.origin.order_in_block = 2U;
     original.flags                 = openmeta::EntryFlags::Dirty;
@@ -11593,8 +11593,7 @@ TEST(MetadataTransferApi,
     const openmeta::MetadataDateTranslationResult translation
         = openmeta::translate_xmp_creation_dates(
             source, openmeta::MetadataDateTranslationOptions {}, &translated);
-    ASSERT_EQ(translation.status,
-              openmeta::MetadataDateTranslationStatus::Ok);
+    ASSERT_EQ(translation.status, openmeta::MetadataDateTranslationStatus::Ok);
 
     struct Case final {
         const char* label;
@@ -11617,8 +11616,7 @@ TEST(MetadataTransferApi,
         request.xmp_project_exif     = true;
         request.xmp_project_iptc     = true;
         request.xmp_include_existing = true;
-        request.xmp_conflict_policy
-            = openmeta::XmpConflictPolicy::ExistingWins;
+        request.xmp_conflict_policy = openmeta::XmpConflictPolicy::ExistingWins;
 
         openmeta::PreparedTransferBundle bundle;
         const openmeta::PrepareTransferResult prepared
@@ -11646,15 +11644,15 @@ TEST(MetadataTransferApi,
             std::span<const std::byte>(executed.edited_output.data(),
                                        executed.edited_output.size()),
             &decoded));
-        EXPECT_TRUE(store_has_text_entry(
-            decoded, exif_key_view("exififd", 0x9004U),
-            "2024:08:30 01:02:03"));
+        EXPECT_TRUE(store_has_text_entry(decoded,
+                                         exif_key_view("exififd", 0x9004U),
+                                         "2024:08:30 01:02:03"));
         EXPECT_TRUE(store_has_text_entry(decoded,
                                          exif_key_view("exififd", 0x9012U),
                                          "-02:30"));
-        EXPECT_TRUE(store_has_text_entry(
-            decoded, exif_key_view("exififd", 0x9003U),
-            "2024:08:28 10:11:12"));
+        EXPECT_TRUE(store_has_text_entry(decoded,
+                                         exif_key_view("exififd", 0x9003U),
+                                         "2024:08:28 10:11:12"));
         EXPECT_TRUE(store_has_text_entry(decoded,
                                          exif_key_view("exififd", 0x9011U),
                                          "+00:00"));
@@ -11674,9 +11672,97 @@ TEST(MetadataTransferApi,
         EXPECT_TRUE(store_has_any_text_entry(decoded, iptc_key_view(2U, 63U),
                                              "010203-0230"));
         EXPECT_TRUE(store_has_text_entry(
-            decoded,
-            xmp_key_view("http://ns.adobe.com/xap/1.0/", "CreateDate"),
+            decoded, xmp_key_view("http://ns.adobe.com/xap/1.0/", "CreateDate"),
             "2024-08-30T01:02:03-02:30"));
+    }
+}
+
+TEST(MetadataTransferApi,
+     TranslatedXmpDescriptionsSurviveNativeJpegAndTiffRoundTrip)
+{
+    const std::array fields = {
+        openmeta::make_metadata_creation_text(
+            openmeta::MetadataCreationFieldKind::Title, "Night \xe6\x99\xaf"),
+        openmeta::make_metadata_creation_text(
+            openmeta::MetadataCreationFieldKind::Description,
+            "Rendered city lights"),
+        openmeta::make_metadata_creation_text(
+            openmeta::MetadataCreationFieldKind::Creator, "Alice"),
+        openmeta::make_metadata_creation_text(
+            openmeta::MetadataCreationFieldKind::Creator, "Bob"),
+        openmeta::make_metadata_creation_text(
+            openmeta::MetadataCreationFieldKind::Keyword, "night"),
+    };
+    openmeta::MetadataCreationRequest creation_request;
+    creation_request.fields = fields;
+    openmeta::MetaStore source;
+    ASSERT_EQ(openmeta::create_metadata(creation_request, &source).status,
+              openmeta::MetadataCreationStatus::Ok);
+
+    openmeta::MetaStore translated;
+    const openmeta::MetadataDescriptiveTranslationResult translation
+        = openmeta::translate_xmp_descriptive_metadata(
+            source, openmeta::MetadataDescriptiveTranslationOptions {},
+            &translated);
+    ASSERT_EQ(translation.status,
+              openmeta::MetadataDescriptiveTranslationStatus::Ok);
+    ASSERT_TRUE(translation.utf8_charset_added);
+
+    struct Case final {
+        const char* label;
+        openmeta::TransferTargetFormat format;
+    };
+    static constexpr Case kCases[] = {
+        { "jpeg", openmeta::TransferTargetFormat::Jpeg },
+        { "tiff", openmeta::TransferTargetFormat::Tiff },
+    };
+
+    for (const Case& test_case : kCases) {
+        SCOPED_TRACE(test_case.label);
+        openmeta::PrepareTransferRequest request;
+        request.target_format      = test_case.format;
+        request.include_exif_app1  = false;
+        request.include_xmp_app1   = false;
+        request.include_icc_app2   = false;
+        request.include_iptc_app13 = true;
+
+        openmeta::PreparedTransferBundle bundle;
+        const openmeta::PrepareTransferResult prepared
+            = openmeta::prepare_metadata_for_target(translated, request,
+                                                    &bundle);
+        ASSERT_EQ(prepared.status, openmeta::TransferStatus::Ok);
+
+        const std::vector<std::byte> input
+            = test_case.format == openmeta::TransferTargetFormat::Jpeg
+                  ? make_jpeg_with_segments({})
+                  : make_minimal_tiff_little_endian();
+        openmeta::ExecutePreparedTransferOptions execute_options;
+        execute_options.edit_requested = true;
+        execute_options.edit_apply     = true;
+        const openmeta::ExecutePreparedTransferResult executed
+            = openmeta::execute_prepared_transfer(
+                &bundle, std::span<const std::byte>(input.data(), input.size()),
+                execute_options);
+        ASSERT_EQ(executed.edit_plan_status, openmeta::TransferStatus::Ok);
+        ASSERT_EQ(executed.edit_apply.status, openmeta::TransferStatus::Ok);
+
+        openmeta::MetaStore decoded;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(
+            std::span<const std::byte>(executed.edited_output.data(),
+                                       executed.edited_output.size()),
+            &decoded));
+        EXPECT_TRUE(store_has_any_text_entry(decoded, iptc_key_view(1U, 90U),
+                                             std::string_view("\x1b%G", 3U)));
+        EXPECT_TRUE(store_has_any_text_entry(decoded, iptc_key_view(2U, 5U),
+                                             "Night \xe6\x99\xaf"));
+        EXPECT_TRUE(store_has_any_text_entry(decoded, iptc_key_view(2U, 120U),
+                                             "Rendered city lights"));
+        EXPECT_TRUE(
+            store_has_any_text_entry(decoded, iptc_key_view(2U, 80U), "Alice"));
+        EXPECT_TRUE(
+            store_has_any_text_entry(decoded, iptc_key_view(2U, 80U), "Bob"));
+        EXPECT_TRUE(
+            store_has_any_text_entry(decoded, iptc_key_view(2U, 25U), "night"));
     }
 }
 
@@ -38840,6 +38926,62 @@ TEST(MetadataTransferApi, PrepareBuildsJpegIptcApp13FromPhotoshopIrb)
         }
     }
     EXPECT_TRUE(found);
+}
+
+TEST(MetadataTransferApi, PrepareRebuildsDirtyIptcInsteadOfStalePhotoshopIrb)
+{
+    openmeta::MetaStore store;
+    const openmeta::BlockId block = store.add_block(openmeta::BlockInfo {});
+    ASSERT_NE(block, openmeta::kInvalidBlockId);
+
+    const std::array<std::byte, 8U> stale_iim = {
+        std::byte { 0x1cU }, std::byte { 0x02U }, std::byte { 0x05U },
+        std::byte { 0x00U }, std::byte { 0x03U }, std::byte { 'O' },
+        std::byte { 'L' },   std::byte { 'D' },
+    };
+    openmeta::Entry raw;
+    raw.key                   = openmeta::make_photoshop_irb_key(0x0404U);
+    raw.value                 = openmeta::make_bytes(store.arena(), stale_iim);
+    raw.origin.block          = block;
+    raw.origin.order_in_block = 0U;
+    ASSERT_NE(store.add_entry(raw), openmeta::kInvalidEntryId);
+
+    const std::array<std::byte, 3U> replacement
+        = { std::byte { 'N' }, std::byte { 'E' }, std::byte { 'W' } };
+    openmeta::Entry decoded;
+    decoded.key          = openmeta::make_iptc_dataset_key(2U, 5U);
+    decoded.value        = openmeta::make_bytes(store.arena(), replacement);
+    decoded.origin.block = block;
+    decoded.origin.order_in_block = 1U;
+    decoded.flags                 = openmeta::EntryFlags::Dirty;
+    ASSERT_NE(store.add_entry(decoded), openmeta::kInvalidEntryId);
+    store.finalize();
+
+    static constexpr std::array<openmeta::TransferTargetFormat, 2U> kTargets = {
+        openmeta::TransferTargetFormat::Jpeg,
+        openmeta::TransferTargetFormat::Tiff,
+    };
+    for (const openmeta::TransferTargetFormat target : kTargets) {
+        openmeta::PrepareTransferRequest request;
+        request.target_format      = target;
+        request.include_exif_app1  = false;
+        request.include_xmp_app1   = false;
+        request.include_icc_app2   = false;
+        request.include_iptc_app13 = true;
+
+        openmeta::PreparedTransferBundle bundle;
+        const openmeta::PrepareTransferResult result
+            = openmeta::prepare_metadata_for_target(store, request, &bundle);
+        ASSERT_EQ(result.status, openmeta::TransferStatus::Ok);
+        ASSERT_EQ(bundle.blocks.size(), 1U);
+        const std::span<const std::byte> payload(bundle.blocks[0].payload);
+        EXPECT_NE(std::search(payload.begin(), payload.end(),
+                              replacement.begin(), replacement.end()),
+                  payload.end());
+        EXPECT_EQ(std::search(payload.begin(), payload.end(), stale_iim.begin(),
+                              stale_iim.end()),
+                  payload.end());
+    }
 }
 
 TEST(MetadataTransferApi, PrepareBuildsJxlXmlFromIptcWhenXmpDisabled)

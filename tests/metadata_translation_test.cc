@@ -8,10 +8,15 @@
 #include <array>
 #include <cstddef>
 #include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace openmeta {
 namespace {
+
+    static constexpr std::string_view kXmpNsDc
+        = "http://purl.org/dc/elements/1.1/";
 
     static EntryId add_xmp_text(MetaStore* store, BlockId block,
                                 std::string_view schema_ns,
@@ -116,6 +121,43 @@ namespace {
             }
         }
         return false;
+    }
+
+    static bool active_iptc_record_text(const MetaStore& store, uint16_t record,
+                                        uint16_t dataset,
+                                        std::string_view expected) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (!any(entry.flags, EntryFlags::Deleted)
+                && entry.key.kind == MetaKeyKind::IptcDataset
+                && entry.key.data.iptc_dataset.record == record
+                && entry.key.data.iptc_dataset.dataset == dataset
+                && entry_matches_text(store, entry, expected)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static std::vector<std::string_view>
+    active_iptc_values(const MetaStore& store, uint16_t dataset)
+    {
+        std::vector<std::string_view> values;
+        for (const Entry& entry : store.entries()) {
+            if (any(entry.flags, EntryFlags::Deleted)
+                || entry.key.kind != MetaKeyKind::IptcDataset
+                || entry.key.data.iptc_dataset.record != 2U
+                || entry.key.data.iptc_dataset.dataset != dataset
+                || (entry.value.kind != MetaValueKind::Text
+                    && entry.value.kind != MetaValueKind::Bytes)) {
+                continue;
+            }
+            const std::span<const std::byte> bytes = store.arena().span(
+                entry.value.data.span);
+            values.emplace_back(reinterpret_cast<const char*>(bytes.data()),
+                                bytes.size());
+        }
+        return values;
     }
 
     static uint32_t active_exif_count(const MetaStore& store,
@@ -460,6 +502,202 @@ namespace {
         EXPECT_EQ(active_exif_count(translated, 0x9012U), 0U);
         EXPECT_EQ(active_iptc_count(translated, 62U), 0U);
         EXPECT_EQ(active_iptc_count(translated, 63U), 0U);
+    }
+
+    TEST(MetadataTranslation, TranslatesDescriptiveXmpToBoundedIptcGroups)
+    {
+        const std::array fields = {
+            make_metadata_creation_text(MetadataCreationFieldKind::Title,
+                                        "Evening frame"),
+            make_metadata_creation_text(MetadataCreationFieldKind::Description,
+                                        "City lights"),
+            make_metadata_creation_text(MetadataCreationFieldKind::Creator,
+                                        "Alice"),
+            make_metadata_creation_text(MetadataCreationFieldKind::Creator,
+                                        "Bob"),
+            make_metadata_creation_text(MetadataCreationFieldKind::Keyword,
+                                        "night"),
+            make_metadata_creation_text(MetadataCreationFieldKind::Keyword,
+                                        "street"),
+            make_metadata_creation_text(MetadataCreationFieldKind::Copyright,
+                                        "Copyright 2026"),
+            make_metadata_creation_text(MetadataCreationFieldKind::Credit,
+                                        "OpenMeta News"),
+            make_metadata_creation_text(MetadataCreationFieldKind::Source,
+                                        "Agency"),
+        };
+        MetadataCreationRequest request;
+        request.fields = fields;
+        MetaStore source;
+        ASSERT_EQ(create_metadata(request, &source).status,
+                  MetadataCreationStatus::Ok);
+
+        MetaStore translated;
+        const MetadataDescriptiveTranslationResult result
+            = translate_xmp_descriptive_metadata(
+                source, MetadataDescriptiveTranslationOptions {}, &translated);
+        ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+        EXPECT_EQ(result.source_properties, fields.size());
+        EXPECT_EQ(result.groups_translated, 7U);
+        EXPECT_EQ(result.entries_added, fields.size());
+        EXPECT_FALSE(result.utf8_charset_added);
+        EXPECT_TRUE(active_iptc_text(translated, 5U, "Evening frame"));
+        EXPECT_TRUE(active_iptc_text(translated, 120U, "City lights"));
+        EXPECT_TRUE(active_iptc_text(translated, 116U, "Copyright 2026"));
+        EXPECT_TRUE(active_iptc_text(translated, 110U, "OpenMeta News"));
+        EXPECT_TRUE(active_iptc_text(translated, 115U, "Agency"));
+        EXPECT_EQ(active_iptc_values(translated, 80U),
+                  (std::vector<std::string_view> { "Alice", "Bob" }));
+        EXPECT_EQ(active_iptc_values(translated, 25U),
+                  (std::vector<std::string_view> { "night", "street" }));
+    }
+
+    TEST(MetadataTranslation, DeclaresUtf8OnlyWhenExistingIptcIsSafe)
+    {
+        const std::array fields = {
+            make_metadata_creation_text(MetadataCreationFieldKind::Title,
+                                        "Night \xe6\x99\xaf"),
+        };
+        MetadataCreationRequest request;
+        request.fields = fields;
+        MetaStore source;
+        ASSERT_EQ(create_metadata(request, &source).status,
+                  MetadataCreationStatus::Ok);
+
+        MetaStore translated;
+        MetadataDescriptiveTranslationResult result
+            = translate_xmp_descriptive_metadata(
+                source, MetadataDescriptiveTranslationOptions {}, &translated);
+        ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+        EXPECT_TRUE(result.utf8_charset_added);
+        EXPECT_EQ(result.entries_added, 2U);
+        EXPECT_TRUE(active_iptc_record_text(translated, 1U, 90U,
+                                            std::string_view("\x1b%G", 3U)));
+        EXPECT_TRUE(active_iptc_text(translated, 5U, "Night \xe6\x99\xaf"));
+
+        MetaStore conflict;
+        const BlockId block = conflict.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&conflict, block, kXmpNsDc,
+                               "title[@xml:lang=x-default]",
+                               "Night \xe6\x99\xaf", EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        const std::array<std::byte, 1U> legacy = { std::byte { 0xe9U } };
+        Entry native;
+        native.key                   = make_iptc_dataset_key(2U, 115U);
+        native.value                 = make_bytes(conflict.arena(), legacy);
+        native.origin.block          = block;
+        native.origin.order_in_block = 1U;
+        ASSERT_NE(conflict.add_entry(native), kInvalidEntryId);
+        conflict.finalize();
+
+        MetaStore unchanged            = std::move(translated);
+        const size_t unchanged_entries = unchanged.entries().size();
+        result                         = translate_xmp_descriptive_metadata(
+            conflict, MetadataDescriptiveTranslationOptions {}, &unchanged);
+        EXPECT_EQ(result.status,
+                  MetadataDescriptiveTranslationStatus::NativeEncodingConflict);
+        EXPECT_EQ(unchanged.entries().size(), unchanged_entries);
+        EXPECT_TRUE(active_iptc_text(unchanged, 5U, "Night \xe6\x99\xaf"));
+    }
+
+    TEST(MetadataTranslation,
+         DescriptiveConflictLimitsAndRemovalAreTransactional)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block, kXmpNsDc,
+                               "title[@xml:lang=x-default]", "Replacement",
+                               EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_iptc_bytes(&source, block, 5U, "Old one", 1U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_iptc_bytes(&source, block, 5U, "Old two", 2U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        MetadataDescriptiveTranslationOptions options;
+        options.conflict_policy
+            = MetadataDescriptiveTranslationConflictPolicy::PreserveExisting;
+        MetaStore output;
+        MetadataDescriptiveTranslationResult result
+            = translate_xmp_descriptive_metadata(source, options, &output);
+        ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+        EXPECT_EQ(result.groups_preserved, 1U);
+        EXPECT_TRUE(active_iptc_text(output, 5U, "Old one"));
+
+        options.conflict_policy
+            = MetadataDescriptiveTranslationConflictPolicy::FailOnConflict;
+        result = translate_xmp_descriptive_metadata(source, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataDescriptiveTranslationStatus::NativeConflict);
+
+        options.conflict_policy
+            = MetadataDescriptiveTranslationConflictPolicy::ReplaceExisting;
+        options.max_operations = 1U;
+        result = translate_xmp_descriptive_metadata(source, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataDescriptiveTranslationStatus::OperationLimitExceeded);
+
+        options.max_operations = kMetadataDescriptiveTranslationMaxOperations;
+        result = translate_xmp_descriptive_metadata(source, options, &output);
+        ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+        EXPECT_EQ(result.entries_updated, 1U);
+        EXPECT_EQ(result.entries_removed, 1U);
+        EXPECT_EQ(active_iptc_count(output, 5U), 1U);
+        EXPECT_TRUE(active_iptc_text(output, 5U, "Replacement"));
+
+        const MetadataEditingOperation remove = make_metadata_edit_remove(
+            MetadataCreationFieldKind::Title);
+        MetadataEditingRequest edit_request;
+        edit_request.operations
+            = std::span<const MetadataEditingOperation>(&remove, 1U);
+        MetaStore edited;
+        ASSERT_EQ(edit_metadata(output, edit_request, &edited).status,
+                  MetadataEditingStatus::Ok);
+        result = translate_xmp_descriptive_metadata(edited, options, &output);
+        ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+        EXPECT_EQ(active_iptc_count(output, 5U), 0U);
+    }
+
+    TEST(MetadataTranslation, RejectsAmbiguousOrOversizedDescriptiveSources)
+    {
+        MetaStore ambiguous;
+        const BlockId block = ambiguous.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&ambiguous, block, kXmpNsDc, "subject[1]", "one",
+                               EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&ambiguous, block, kXmpNsDc, "subject[1]", "two",
+                               EntryFlags::Dirty, 1U),
+                  kInvalidEntryId);
+        ambiguous.finalize();
+        MetaStore output;
+        MetadataDescriptiveTranslationResult result
+            = translate_xmp_descriptive_metadata(
+                ambiguous, MetadataDescriptiveTranslationOptions {}, &output);
+        EXPECT_EQ(result.status,
+                  MetadataDescriptiveTranslationStatus::AmbiguousSource);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataDescriptiveTranslationMapping::DcSubject);
+
+        const std::string long_title(65U, 'x');
+        const std::array fields = {
+            make_metadata_creation_text(MetadataCreationFieldKind::Title,
+                                        long_title),
+        };
+        MetadataCreationRequest request;
+        request.fields = fields;
+        MetaStore oversized;
+        ASSERT_EQ(create_metadata(request, &oversized).status,
+                  MetadataCreationStatus::Ok);
+        result = translate_xmp_descriptive_metadata(
+            oversized, MetadataDescriptiveTranslationOptions {}, &output);
+        EXPECT_EQ(result.status,
+                  MetadataDescriptiveTranslationStatus::ValueTooLong);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataDescriptiveTranslationMapping::DcTitle);
     }
 
 }  // namespace

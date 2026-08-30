@@ -8053,6 +8053,11 @@ namespace {
         bool operator()(const IptcDatasetItem& a,
                         const IptcDatasetItem& b) const noexcept
         {
+            const bool a_charset = a.record == 1U && a.dataset == 90U;
+            const bool b_charset = b.record == 1U && b.dataset == 90U;
+            if (a_charset != b_charset) {
+                return a_charset;
+            }
             if (a.source_order != b.source_order) {
                 return a.source_order < b.source_order;
             }
@@ -8143,6 +8148,17 @@ namespace {
         return out;
     }
 
+    static bool has_dirty_iptc_dataset(const MetaStore& store) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (entry.key.kind == MetaKeyKind::IptcDataset
+                && any(entry.flags, EntryFlags::Dirty)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static bool
     first_photoshop_iptc_payload(const MetaStore& store,
                                  std::vector<std::byte>* out) noexcept
@@ -8196,7 +8212,8 @@ namespace {
         IptcPackBuild out;
 
         std::vector<std::byte> iptc_iim;
-        if (!first_photoshop_iptc_payload(store, &iptc_iim)) {
+        if (has_dirty_iptc_dataset(store)
+            || !first_photoshop_iptc_payload(store, &iptc_iim)) {
             iptc_iim = build_iptc_iim_stream_from_datasets(store,
                                                            &out.skipped_count);
         }
@@ -13036,7 +13053,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         } else if (transfer_target_is_tiff_family(request.target_format)) {
             std::vector<std::byte> iptc_iim;
             uint32_t skipped_iptc = 0U;
-            if (!first_photoshop_iptc_payload(prepared_store, &iptc_iim)) {
+            if (has_dirty_iptc_dataset(prepared_store)
+                || !first_photoshop_iptc_payload(prepared_store, &iptc_iim)) {
                 iptc_iim = build_iptc_iim_stream_from_datasets(prepared_store,
                                                                &skipped_iptc);
             }
