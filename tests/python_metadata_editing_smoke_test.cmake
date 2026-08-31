@@ -139,6 +139,27 @@ except ValueError as exc:
 else:
     raise AssertionError('non-ASCII EXIF technical translation was accepted')
 
+capture = openmeta.create_metadata([
+    openmeta.metadata_creation_urational(K.ExposureTime, 1, 125),
+    openmeta.metadata_creation_urational(K.FNumber, 28, 10),
+    openmeta.metadata_creation_u32(K.IsoSensitivity, 400),
+    openmeta.metadata_creation_urational(K.FocalLength, 50, 1),
+])
+translated_capture = capture.translate_capture_metadata()
+assert openmeta.METADATA_CAPTURE_TRANSLATION_CONTRACT_VERSION == 1
+assert translated_capture.entry_count == capture.entry_count + 4
+assert capture.entry_count == 4
+
+oversized_iso = openmeta.create_metadata([
+    openmeta.metadata_creation_u32(K.IsoSensitivity, 70000),
+])
+try:
+    oversized_iso.translate_capture_metadata()
+except ValueError as exc:
+    assert 'value_out_of_range for xmp_iso' in str(exc)
+else:
+    raise AssertionError('out-of-range native EXIF ISO was accepted')
+
 descriptive = openmeta.create_metadata([
     openmeta.metadata_creation_text(K.Title, 'Night ' + chr(0x666f)),
     openmeta.metadata_creation_text(K.Creator, 'Alice'),

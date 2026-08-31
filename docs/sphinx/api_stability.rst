@@ -162,6 +162,17 @@ Host-facing API map
        singleton conflicts, dirty tombstones, ASCII validity, duplicates, and
        resource limits are explicit. Python remains a thin detached-document
        wrapper. See :doc:`translation`.
+   * - Reverse capture EXIF translation:
+       ``translate_xmp_capture_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Transactional v1 projection of exposure time, F-number, ISO, focal
+       length, and exposure compensation XMP properties into tag-specific
+       native ``RATIONAL``, ``SHORT``, and ``SRATIONAL`` scalars. Exact integer
+       conversion, portable/standard alias ambiguity, dirty tombstones,
+       conflicts, and resource limits are explicit; unrepresentable decimals
+       fail instead of being approximated. Python remains a thin
+       detached-document wrapper. See :doc:`translation`.
    * - Reverse descriptive translation:
        ``translate_xmp_descriptive_metadata(...)``
      - ``openmeta/metadata_translation.h``

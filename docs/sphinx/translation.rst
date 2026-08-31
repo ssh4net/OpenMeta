@@ -4,12 +4,14 @@ Metadata Translation
 ``openmeta/metadata_translation.h`` provides bounded explicit projection
 between metadata families. Current contracts translate edited XMP creation
 dates into native EXIF/IPTC date groups, exact technical XMP/TIFF properties
-into native EXIF fields, and exact descriptive XMP properties into native
-IPTC-IIM datasets before transfer or writing.
+into native EXIF fields, typed capture properties into native EXIF scalars,
+and exact descriptive XMP properties into native IPTC-IIM datasets before
+transfer or writing.
 
 The APIs are experimental and versioned by
 ``kMetadataDateTranslationContractVersion == 1`` and
 ``kMetadataTechnicalTranslationContractVersion == 1`` and
+``kMetadataCaptureTranslationContractVersion == 1`` and
 ``kMetadataDescriptiveTranslationContractVersion == 1``.
 
 Workflow
@@ -21,6 +23,7 @@ invoke it implicitly:
 1. Read, create, or edit a finalized ``MetaStore``.
 2. Call ``translate_xmp_creation_dates(...)``,
    ``translate_xmp_technical_metadata(...)``,
+   ``translate_xmp_capture_metadata(...)``,
    ``translate_xmp_descriptive_metadata(...)``, or the required combination
    with explicit mapping and conflict options.
 3. Pass the returned finalized store to transfer preparation or a writer.
@@ -98,6 +101,52 @@ processing data. Each singleton and the complete ``ModifyDate`` companion
 group reconcile independently, so a conflict in ``Make`` does not silently
 change ``Model``.
 
+Capture EXIF mappings
+---------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 38 28
+
+   * - XMP source
+     - Native EXIF destination
+     - Required native type
+   * - ``exif:ExposureTime``
+     - ExifIFD ``ExposureTime``
+     - One unsigned ``RATIONAL``, greater than zero
+   * - ``exif:FNumber``
+     - ExifIFD ``FNumber``
+     - One unsigned ``RATIONAL``, greater than zero
+   * - ``exif:ISO``, ``exif:ISOSpeedRatings``, or
+       ``exif:ISOSpeedRatings[1]``
+     - ExifIFD ``ISOSpeedRatings``
+     - One ``SHORT`` in ``1..65535``
+   * - ``exif:FocalLength``
+     - ExifIFD ``FocalLength``
+     - One unsigned ``RATIONAL``, greater than zero
+   * - ``exif:ExposureCompensation`` or ``exif:ExposureBiasValue``
+     - ExifIFD ``ExposureBiasValue``
+     - One signed ``SRATIONAL``
+
+Rational sources may be typed scalar XMP values or full text integers,
+decimals, scientific decimals, and ``numerator/denominator`` values. Focal
+length also accepts the OpenMeta portable `` mm`` suffix. Conversion uses
+integer arithmetic and reduces the exact source value before checking the
+32-bit EXIF numerator and denominator limits. It never uses a floating-point
+approximation. For example, ``2.8`` becomes ``14/5`` and ``8e-3`` becomes
+``1/125``.
+
+This exactness is intentionally strict. A bounded repeating decimal such as
+``0.333333333333333`` does not fit native ``SRATIONAL`` exactly and returns
+``ValueOutOfRange``; provide ``1/3`` or a typed signed rational when exact
+thirds are required. ISO rejects multi-value arrays, decimals, zero, and values
+above ``65535`` instead of selecting, truncating, or changing the native TIFF
+type.
+
+Portable and standard aliases target the same native singleton. If more than
+one eligible alias is present, the source is ambiguous and translation fails
+rather than selecting one.
+
 Descriptive mappings
 --------------------
 
@@ -144,8 +193,8 @@ incompatible charset marker or unrelated legacy high-bit data returns
 Conflict and removal policy
 ---------------------------
 
-The date, technical, and descriptive conflict-policy enums apply the same
-three behaviors to each complete native group:
+The date, technical, capture, and descriptive conflict-policy enums apply the
+same three behaviors to each complete native group:
 
 .. list-table::
    :header-rows: 1
@@ -175,6 +224,12 @@ limits of 16 added entries and 1024 native operations. Technical translation
 has separate hard limits of 6 added entries, 1024 operations, 4096 bytes per
 text property, and 16 KiB total source text. Calls keep no global state and are
 safe when each concurrent call owns its output store.
+
+Capture translation separately permits at most 5 added entries, 1024
+operations, 128 bytes per text property, and 640 total source text bytes. Its
+tag-specific conversion always emits scalar ``RATIONAL``, ``SHORT``, or
+``SRATIONAL`` values, so generic writer type inference cannot select a
+different TIFF type.
 
 Descriptive translation separately bounds matched source properties, added
 entries, operations, and total text bytes. In ``DirtyOnly`` mode, one dirty
@@ -207,13 +262,20 @@ C++ example
    const auto technical_result = openmeta::translate_xmp_technical_metadata(
        translated, technical_options, &technical);
 
+   openmeta::MetadataCaptureTranslationOptions capture_options;
+   capture_options.conflict_policy
+       = openmeta::MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+   openmeta::MetaStore capture;
+   const auto capture_result = openmeta::translate_xmp_capture_metadata(
+       technical, capture_options, &capture);
+
    openmeta::MetadataDescriptiveTranslationOptions descriptive_options;
    descriptive_options.conflict_policy
        = openmeta::MetadataDescriptiveTranslationConflictPolicy::ReplaceExisting;
    openmeta::MetaStore descriptive;
    const auto descriptive_result
        = openmeta::translate_xmp_descriptive_metadata(
-           technical, descriptive_options, &descriptive);
+           capture, descriptive_options, &descriptive);
 
 Python
 ------
@@ -228,6 +290,9 @@ Python calls the same C++ transaction and returns a detached ``Document``:
    translated = translated.translate_technical_metadata(
        conflict_policy=openmeta.MetadataTechnicalTranslationConflictPolicy.ReplaceExisting,
    )
+   translated = translated.translate_capture_metadata(
+       conflict_policy=openmeta.MetadataCaptureTranslationConflictPolicy.ReplaceExisting,
+   )
    translated = translated.translate_descriptive_metadata(
        conflict_policy=openmeta.MetadataDescriptiveTranslationConflictPolicy.ReplaceExisting,
    )
@@ -239,7 +304,7 @@ Scope
 -----
 
 This milestone is intentionally limited to exact creation-date, common
-technical EXIF, and common descriptive mappings. It does not yet provide
-arbitrary EXIF/IPTC/XMP translation, multilingual-alternative selection,
-timezone inference, value repair, or automatic synchronization during
-transfer.
+technical and capture EXIF, and common descriptive mappings. It does not yet
+provide arbitrary EXIF/IPTC/XMP translation, multilingual-alternative
+selection, timezone inference, numeric approximation or value repair, or
+automatic synchronization during transfer.

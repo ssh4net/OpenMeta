@@ -248,6 +248,128 @@ const char*
 metadata_technical_translation_mapping_name(
     MetadataTechnicalTranslationMapping mapping) noexcept;
 
+/// Experimental reverse capture-EXIF translation contract version.
+inline constexpr uint32_t kMetadataCaptureTranslationContractVersion = 1U;
+
+inline constexpr uint32_t kMetadataCaptureTranslationMaxAddedEntries = 5U;
+inline constexpr uint32_t kMetadataCaptureTranslationMaxOperations   = 1024U;
+inline constexpr uint32_t kMetadataCaptureTranslationMaxTextBytesPerProperty
+    = 128U;
+inline constexpr uint64_t kMetadataCaptureTranslationMaxTotalTextBytes = 640U;
+
+/// Which exact XMP properties are eligible as reverse capture sources.
+enum class MetadataCaptureTranslationSourceMode : uint8_t {
+    /// Translate only entries marked Dirty, including dirty tombstones.
+    DirtyOnly,
+    /// Translate active clean or dirty entries; tombstones still require Dirty.
+    All,
+};
+
+/// How an existing native EXIF capture field is reconciled.
+enum class MetadataCaptureTranslationConflictPolicy : uint8_t {
+    PreserveExisting,
+    FailOnConflict,
+    ReplaceExisting,
+};
+
+/// Exact capture source mapping associated with a result or failure.
+enum class MetadataCaptureTranslationMapping : uint8_t {
+    None,
+    XmpExposureTime,
+    XmpFNumber,
+    XmpIso,
+    XmpFocalLength,
+    XmpExposureCompensation,
+};
+
+/// Caller-selected bounded reverse capture mappings.
+struct MetadataCaptureTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+
+    /// exif:ExposureTime -> ExifIFD ExposureTime RATIONAL.
+    bool exposure_time_to_exif = true;
+    /// exif:FNumber -> ExifIFD FNumber RATIONAL.
+    bool f_number_to_exif = true;
+    /// exif:ISO or standard ISOSpeedRatings -> ExifIFD SHORT.
+    bool iso_to_exif = true;
+    /// exif:FocalLength -> ExifIFD FocalLength RATIONAL.
+    bool focal_length_to_exif = true;
+    /// exif:ExposureCompensation or ExposureBiasValue -> SRATIONAL.
+    bool exposure_compensation_to_exif = true;
+
+    uint32_t max_added_entries = kMetadataCaptureTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes = kMetadataCaptureTranslationMaxTotalTextBytes;
+};
+
+enum class MetadataCaptureTranslationStatus : uint8_t {
+    Ok,
+    NullOutput,
+    SourceNotFinalized,
+    InvalidOptions,
+    AmbiguousSource,
+    InvalidSourceValue,
+    InvalidNumericValue,
+    ValueOutOfRange,
+    ValueTooLong,
+    SourceLimitExceeded,
+    NativeConflict,
+    EntryLimitExceeded,
+    OperationLimitExceeded,
+    InternalError,
+};
+
+/// Transactional result details for one reverse capture translation.
+struct MetadataCaptureTranslationResult final {
+    MetadataCaptureTranslationStatus status
+        = MetadataCaptureTranslationStatus::Ok;
+    MetadataCaptureTranslationMapping failed_mapping
+        = MetadataCaptureTranslationMapping::None;
+    EntryId failed_source_entry = kInvalidEntryId;
+    uint32_t source_properties  = 0U;
+    uint32_t groups_translated  = 0U;
+    uint32_t groups_preserved   = 0U;
+    uint32_t groups_unchanged   = 0U;
+    uint32_t entries_added      = 0U;
+    uint32_t entries_updated    = 0U;
+    uint32_t entries_removed    = 0U;
+};
+
+/**
+ * \brief Translate exact standard or OpenMeta-portable XMP capture properties
+ * into native EXIF scalar fields.
+ *
+ * Unsigned rational sources accept typed scalar values or full decimal,
+ * scientific-decimal, integer, and `numerator/denominator` text. Focal length
+ * additionally accepts the portable ` mm` suffix. Exposure compensation uses
+ * a signed rational. ISO is restricted to one integer in the EXIF SHORT range.
+ * Text conversion is exact after rational reduction; values that cannot fit
+ * the native EXIF representation fail rather than being approximated.
+ *
+ * Portable `ISO` and `ExposureCompensation` aliases and standard
+ * `ISOSpeedRatings` and `ExposureBiasValue` paths target the same singleton;
+ * multiple eligible aliases are ambiguous. Each mapping reconciles
+ * independently and the output is replaced only after every selected mapping
+ * and resource limit succeeds.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_capture_metadata(const MetaStore& source,
+                               const MetadataCaptureTranslationOptions& options,
+                               MetaStore* out_store);
+
+const char*
+metadata_capture_translation_status_name(
+    MetadataCaptureTranslationStatus status) noexcept;
+
+const char*
+metadata_capture_translation_mapping_name(
+    MetadataCaptureTranslationMapping mapping) noexcept;
+
 /// Experimental reverse descriptive-metadata translation contract version.
 inline constexpr uint32_t kMetadataDescriptiveTranslationContractVersion = 1U;
 

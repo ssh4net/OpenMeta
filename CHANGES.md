@@ -1,5 +1,34 @@
 # OpenMeta Changes
 
+## 0.4.123 - 2026-08-31
+
+Changes compared with `0.4.122`.
+
+### Added
+
+- Added bounded transactional reverse translation from XMP exposure time,
+  F-number, ISO, focal length, and exposure compensation into tag-specific
+  native EXIF scalar fields.
+- Added exact integer parsing for typed, fractional, decimal, and scientific
+  rational sources, OpenMeta portable aliases and focal-length units, explicit
+  source/conflict policies, dirty tombstone removal, and thin Python parity.
+
+### Changed
+
+- Capture translation now enforces native `RATIONAL`, `SHORT`, and `SRATIONAL`
+  types and rejects ambiguous aliases, arrays, invalid denominators,
+  out-of-range ISO values, and unrepresentable decimals instead of truncating
+  or approximating them.
+- Translation readiness is now documented at about 80-85% for the declared
+  scope after adding five common capture mappings.
+
+### Tests And Validation
+
+- Added exact conversion, source mode, alias ambiguity, conflict, duplicate,
+  tombstone, range, resource-limit, and transactional regressions.
+- Added native JPEG and TIFF write/decode round trips for all five capture
+  fields and extended the Python metadata-editing smoke gate.
+
 ## 0.4.122 - 2026-08-31
 
 Changes compared with `0.4.121`.

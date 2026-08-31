@@ -39,6 +39,22 @@ namespace {
         return store->add_entry(entry);
     }
 
+    static EntryId add_xmp_value(MetaStore* store, BlockId block,
+                                 std::string_view schema_ns,
+                                 std::string_view property_path,
+                                 const MetaValue& value, EntryFlags flags,
+                                 uint32_t order)
+    {
+        Entry entry;
+        entry.key          = make_xmp_property_key(store->arena(), schema_ns,
+                                                   property_path);
+        entry.value        = value;
+        entry.origin.block = block;
+        entry.origin.order_in_block = order;
+        entry.flags                 = flags;
+        return store->add_entry(entry);
+    }
+
     static EntryId add_exif_text(MetaStore* store, BlockId block, uint16_t tag,
                                  std::string_view value, uint32_t order)
     {
@@ -207,6 +223,27 @@ namespace {
             }
         }
         return count;
+    }
+
+    static const Entry* active_exif_entry(const MetaStore& store,
+                                          std::string_view ifd,
+                                          uint16_t tag) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (any(entry.flags, EntryFlags::Deleted)
+                || entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != tag) {
+                continue;
+            }
+            const std::span<const std::byte> ifd_bytes = store.arena().span(
+                entry.key.data.exif_tag.ifd);
+            if (std::string_view(reinterpret_cast<const char*>(ifd_bytes.data()),
+                                 ifd_bytes.size())
+                == ifd) {
+                return &entry;
+            }
+        }
+        return nullptr;
     }
 
     static bool active_exif_origin_wire_name(const MetaStore& store,
@@ -798,6 +835,263 @@ namespace {
         ASSERT_EQ(result.status, MetadataTechnicalTranslationStatus::Ok);
         EXPECT_EQ(result.entries_removed, 1U);
         EXPECT_EQ(active_exif_count(output, 0x0110U), 0U);
+    }
+
+    TEST(MetadataTranslation, TranslatesCaptureXmpToTypedExifScalars)
+    {
+        static constexpr std::string_view kExifNs
+            = "http://ns.adobe.com/exif/1.0/";
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_value(&source, block, kExifNs, "ExposureTime",
+                                make_urational(1U, 125U), EntryFlags::Dirty,
+                                0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, kExifNs, "FNumber", "2.8",
+                               EntryFlags::Dirty, 1U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, kExifNs, "ISOSpeedRatings[1]",
+                               "400", EntryFlags::Dirty, 2U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, kExifNs, "FocalLength",
+                               "66.0 mm", EntryFlags::Dirty, 3U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, kExifNs, "ExposureCompensation",
+                               "-1/3", EntryFlags::Dirty, 4U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        MetaStore translated;
+        const MetadataCaptureTranslationResult result
+            = translate_xmp_capture_metadata(
+                source, MetadataCaptureTranslationOptions {}, &translated);
+        ASSERT_EQ(result.status, MetadataCaptureTranslationStatus::Ok);
+        EXPECT_EQ(result.source_properties, 5U);
+        EXPECT_EQ(result.groups_translated, 5U);
+        EXPECT_EQ(result.entries_added, 5U);
+        EXPECT_EQ(source.entries().size(), 5U);
+
+        const Entry* exposure = active_exif_entry(translated, "exififd",
+                                                  0x829aU);
+        ASSERT_NE(exposure, nullptr);
+        ASSERT_EQ(exposure->value.elem_type, MetaElementType::URational);
+        EXPECT_EQ(exposure->value.data.ur.numer, 1U);
+        EXPECT_EQ(exposure->value.data.ur.denom, 125U);
+
+        const Entry* f_number = active_exif_entry(translated, "exififd",
+                                                  0x829dU);
+        ASSERT_NE(f_number, nullptr);
+        ASSERT_EQ(f_number->value.elem_type, MetaElementType::URational);
+        EXPECT_EQ(f_number->value.data.ur.numer, 14U);
+        EXPECT_EQ(f_number->value.data.ur.denom, 5U);
+
+        const Entry* iso = active_exif_entry(translated, "exififd", 0x8827U);
+        ASSERT_NE(iso, nullptr);
+        ASSERT_EQ(iso->value.elem_type, MetaElementType::U16);
+        EXPECT_EQ(iso->value.data.u64, 400U);
+
+        const Entry* focal = active_exif_entry(translated, "exififd", 0x920aU);
+        ASSERT_NE(focal, nullptr);
+        ASSERT_EQ(focal->value.elem_type, MetaElementType::URational);
+        EXPECT_EQ(focal->value.data.ur.numer, 66U);
+        EXPECT_EQ(focal->value.data.ur.denom, 1U);
+
+        const Entry* bias = active_exif_entry(translated, "exififd", 0x9204U);
+        ASSERT_NE(bias, nullptr);
+        ASSERT_EQ(bias->value.elem_type, MetaElementType::SRational);
+        EXPECT_EQ(bias->value.data.sr.numer, -1);
+        EXPECT_EQ(bias->value.data.sr.denom, 3);
+    }
+
+    TEST(MetadataTranslation, CaptureSourcesAreExactBoundedAndTransactional)
+    {
+        static constexpr std::string_view kExifNs
+            = "http://ns.adobe.com/exif/1.0/";
+        MetadataCaptureTranslationOptions options;
+        MetaStore output;
+
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block, kExifNs, "ExposureTime", "8e-3",
+                               EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, kExifNs, "ISO", "200",
+                               EntryFlags::None, 1U),
+                  kInvalidEntryId);
+        source.finalize();
+        MetadataCaptureTranslationResult result
+            = translate_xmp_capture_metadata(source, options, &output);
+        ASSERT_EQ(result.status, MetadataCaptureTranslationStatus::Ok);
+        EXPECT_EQ(result.source_properties, 1U);
+        const Entry* exposure = active_exif_entry(output, "exififd", 0x829aU);
+        ASSERT_NE(exposure, nullptr);
+        EXPECT_EQ(exposure->value.data.ur.numer, 1U);
+        EXPECT_EQ(exposure->value.data.ur.denom, 125U);
+        EXPECT_EQ(active_exif_count(output, 0x8827U), 0U);
+
+        options.source_mode = MetadataCaptureTranslationSourceMode::All;
+        result = translate_xmp_capture_metadata(source, options, &output);
+        ASSERT_EQ(result.status, MetadataCaptureTranslationStatus::Ok);
+        EXPECT_NE(active_exif_entry(output, "exififd", 0x8827U), nullptr);
+
+        MetaStore ambiguous;
+        const BlockId ambiguous_block = ambiguous.add_block(BlockInfo {});
+        ASSERT_NE(ambiguous_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&ambiguous, ambiguous_block, kExifNs, "ISO",
+                               "100", EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&ambiguous, ambiguous_block, kExifNs,
+                               "ISOSpeedRatings[1]", "100", EntryFlags::Dirty,
+                               1U),
+                  kInvalidEntryId);
+        ambiguous.finalize();
+        options.source_mode = MetadataCaptureTranslationSourceMode::DirtyOnly;
+        result = translate_xmp_capture_metadata(ambiguous, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataCaptureTranslationStatus::AmbiguousSource);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataCaptureTranslationMapping::XmpIso);
+        EXPECT_NE(active_exif_entry(output, "exififd", 0x8827U), nullptr);
+
+        const auto expect_failure =
+            [&](std::string_view path, std::string_view value,
+                MetadataCaptureTranslationStatus status,
+                MetadataCaptureTranslationMapping mapping) {
+                MetaStore invalid;
+                const BlockId invalid_block = invalid.add_block(BlockInfo {});
+                EXPECT_NE(invalid_block, kInvalidBlockId);
+                EXPECT_NE(add_xmp_text(&invalid, invalid_block, kExifNs, path,
+                                       value, EntryFlags::Dirty, 0U),
+                          kInvalidEntryId);
+                invalid.finalize();
+                const MetadataCaptureTranslationResult failed
+                    = translate_xmp_capture_metadata(invalid, options, &output);
+                EXPECT_EQ(failed.status, status);
+                EXPECT_EQ(failed.failed_mapping, mapping);
+                EXPECT_NE(active_exif_entry(output, "exififd", 0x8827U),
+                          nullptr);
+            };
+        expect_failure("ExposureTime", "1/0",
+                       MetadataCaptureTranslationStatus::InvalidNumericValue,
+                       MetadataCaptureTranslationMapping::XmpExposureTime);
+        expect_failure("ISO", "65536",
+                       MetadataCaptureTranslationStatus::ValueOutOfRange,
+                       MetadataCaptureTranslationMapping::XmpIso);
+        expect_failure(
+            "ExposureCompensation", "0.333333333333333",
+            MetadataCaptureTranslationStatus::ValueOutOfRange,
+            MetadataCaptureTranslationMapping::XmpExposureCompensation);
+        expect_failure("FocalLength", "50 pixels",
+                       MetadataCaptureTranslationStatus::InvalidNumericValue,
+                       MetadataCaptureTranslationMapping::XmpFocalLength);
+
+        MetaStore multi_iso;
+        const BlockId multi_iso_block = multi_iso.add_block(BlockInfo {});
+        ASSERT_NE(multi_iso_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&multi_iso, multi_iso_block, kExifNs,
+                               "ISOSpeedRatings[1]", "100", EntryFlags::Dirty,
+                               0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&multi_iso, multi_iso_block, kExifNs,
+                               "ISOSpeedRatings[2]", "200", EntryFlags::Dirty,
+                               1U),
+                  kInvalidEntryId);
+        multi_iso.finalize();
+        result = translate_xmp_capture_metadata(multi_iso, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataCaptureTranslationStatus::InvalidSourceValue);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataCaptureTranslationMapping::XmpIso);
+
+        MetaStore oversized;
+        const BlockId oversized_block = oversized.add_block(BlockInfo {});
+        ASSERT_NE(oversized_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&oversized, oversized_block, kExifNs, "FNumber",
+                               std::string(33U, '1'), EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        oversized.finalize();
+        options.max_text_bytes_per_property = 32U;
+        result = translate_xmp_capture_metadata(oversized, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataCaptureTranslationStatus::ValueTooLong);
+    }
+
+    TEST(MetadataTranslation,
+         CaptureConflictReplacementAndRemovalAreTransactional)
+    {
+        static constexpr std::string_view kExifNs
+            = "http://ns.adobe.com/exif/1.0/";
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block, kExifNs, "FNumber", "2.8",
+                               EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        Entry first;
+        first.key   = make_exif_tag_key(source.arena(), "exififd", 0x829dU);
+        first.value = make_urational(28U, 10U);
+        first.origin.block          = block;
+        first.origin.order_in_block = 1U;
+        ASSERT_NE(source.add_entry(first), kInvalidEntryId);
+        Entry duplicate                 = first;
+        duplicate.value                 = make_urational(14U, 5U);
+        duplicate.origin.order_in_block = 2U;
+        ASSERT_NE(source.add_entry(duplicate), kInvalidEntryId);
+        source.finalize();
+
+        MetadataCaptureTranslationOptions options;
+        options.exposure_time_to_exif         = false;
+        options.iso_to_exif                   = false;
+        options.focal_length_to_exif          = false;
+        options.exposure_compensation_to_exif = false;
+        options.conflict_policy
+            = MetadataCaptureTranslationConflictPolicy::PreserveExisting;
+        MetaStore output;
+        MetadataCaptureTranslationResult result
+            = translate_xmp_capture_metadata(source, options, &output);
+        ASSERT_EQ(result.status, MetadataCaptureTranslationStatus::Ok);
+        EXPECT_EQ(result.groups_preserved, 1U);
+        EXPECT_EQ(active_exif_count(output, 0x829dU), 2U);
+
+        options.conflict_policy
+            = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+        result = translate_xmp_capture_metadata(source, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataCaptureTranslationStatus::NativeConflict);
+
+        options.conflict_policy
+            = MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+        options.max_operations = 1U;
+        result = translate_xmp_capture_metadata(source, options, &output);
+        ASSERT_EQ(result.status, MetadataCaptureTranslationStatus::Ok);
+        EXPECT_EQ(result.entries_removed, 1U);
+        EXPECT_EQ(active_exif_count(output, 0x829dU), 1U);
+
+        MetaStore removal;
+        const BlockId removal_block = removal.add_block(BlockInfo {});
+        ASSERT_NE(removal_block, kInvalidBlockId);
+        Entry deleted;
+        deleted.key   = make_xmp_property_key(removal.arena(), kExifNs, "ISO");
+        deleted.value = make_u16(400U);
+        deleted.origin.block = removal_block;
+        deleted.flags        = EntryFlags::Dirty | EntryFlags::Deleted;
+        ASSERT_NE(removal.add_entry(deleted), kInvalidEntryId);
+        Entry native;
+        native.key   = make_exif_tag_key(removal.arena(), "exififd", 0x8827U);
+        native.value = make_u16(400U);
+        native.origin.block          = removal_block;
+        native.origin.order_in_block = 1U;
+        ASSERT_NE(removal.add_entry(native), kInvalidEntryId);
+        removal.finalize();
+
+        options.f_number_to_exif = false;
+        options.iso_to_exif      = true;
+        result = translate_xmp_capture_metadata(removal, options, &output);
+        ASSERT_EQ(result.status, MetadataCaptureTranslationStatus::Ok);
+        EXPECT_EQ(result.entries_removed, 1U);
+        EXPECT_EQ(active_exif_count(output, 0x8827U), 0U);
     }
 
     TEST(MetadataTranslation, TranslatesDescriptiveXmpToBoundedIptcGroups)

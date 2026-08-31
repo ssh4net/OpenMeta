@@ -5906,6 +5906,44 @@ store_has_u8_scalar_entry(const openmeta::MetaStore& store,
 }
 
 static bool
+store_has_urational_scalar_entry(const openmeta::MetaStore& store,
+                                 const openmeta::MetaKeyView& key,
+                                 uint32_t numerator,
+                                 uint32_t denominator) noexcept
+{
+    const std::span<const openmeta::EntryId> ids = store.find_all(key);
+    if (ids.size() != 1U || denominator == 0U) {
+        return false;
+    }
+    const openmeta::Entry& entry = store.entry(ids[0]);
+    return entry.value.kind == openmeta::MetaValueKind::Scalar
+           && entry.value.elem_type == openmeta::MetaElementType::URational
+           && entry.value.data.ur.denom != 0U
+           && static_cast<uint64_t>(entry.value.data.ur.numer) * denominator
+                  == static_cast<uint64_t>(numerator)
+                         * entry.value.data.ur.denom;
+}
+
+static bool
+store_has_srational_scalar_entry(const openmeta::MetaStore& store,
+                                 const openmeta::MetaKeyView& key,
+                                 int32_t numerator,
+                                 int32_t denominator) noexcept
+{
+    const std::span<const openmeta::EntryId> ids = store.find_all(key);
+    if (ids.size() != 1U || denominator <= 0) {
+        return false;
+    }
+    const openmeta::Entry& entry = store.entry(ids[0]);
+    return entry.value.kind == openmeta::MetaValueKind::Scalar
+           && entry.value.elem_type == openmeta::MetaElementType::SRational
+           && entry.value.data.sr.denom > 0
+           && static_cast<int64_t>(entry.value.data.sr.numer) * denominator
+                  == static_cast<int64_t>(numerator)
+                         * entry.value.data.sr.denom;
+}
+
+static bool
 store_has_u8_array_entry(const openmeta::MetaStore& store,
                          const openmeta::MetaKeyView& key,
                          std::span<const uint8_t> expected) noexcept
@@ -11855,6 +11893,96 @@ TEST(MetadataTransferApi,
         EXPECT_TRUE(store_has_any_text_entry(decoded,
                                              exif_key_view("ifd0", 0x0131U),
                                              "OpenMeta 0.4"));
+    }
+}
+
+TEST(MetadataTransferApi,
+     TranslatedCaptureXmpSurvivesNativeJpegAndTiffRoundTrip)
+{
+    static constexpr std::string_view kExifNs = "http://ns.adobe.com/exif/1.0/";
+    openmeta::MetaStore source;
+    const openmeta::BlockId block = source.add_block(openmeta::BlockInfo {});
+    ASSERT_NE(block, openmeta::kInvalidBlockId);
+    const auto add_xmp = [&](std::string_view path, std::string_view value,
+                             uint32_t order) {
+        openmeta::Entry entry;
+        entry.key   = openmeta::make_xmp_property_key(source.arena(), kExifNs,
+                                                      path);
+        entry.value = openmeta::make_text(source.arena(), value,
+                                          openmeta::TextEncoding::Utf8);
+        entry.origin.block          = block;
+        entry.origin.order_in_block = order;
+        entry.flags                 = openmeta::EntryFlags::Dirty;
+        EXPECT_NE(source.add_entry(entry), openmeta::kInvalidEntryId);
+    };
+    add_xmp("ExposureTime", "1/125", 0U);
+    add_xmp("FNumber", "2.8", 1U);
+    add_xmp("ISO", "400", 2U);
+    add_xmp("FocalLength", "50.0 mm", 3U);
+    add_xmp("ExposureBiasValue", "-1/3", 4U);
+    source.finalize();
+
+    openmeta::MetaStore translated;
+    const openmeta::MetadataCaptureTranslationResult translation
+        = openmeta::translate_xmp_capture_metadata(
+            source, openmeta::MetadataCaptureTranslationOptions {},
+            &translated);
+    ASSERT_EQ(translation.status,
+              openmeta::MetadataCaptureTranslationStatus::Ok);
+
+    struct Case final {
+        const char* label;
+        openmeta::TransferTargetFormat format;
+    };
+    static constexpr Case kCases[] = {
+        { "jpeg", openmeta::TransferTargetFormat::Jpeg },
+        { "tiff", openmeta::TransferTargetFormat::Tiff },
+    };
+
+    for (const Case& test_case : kCases) {
+        SCOPED_TRACE(test_case.label);
+        openmeta::PrepareTransferRequest request;
+        request.target_format      = test_case.format;
+        request.include_exif_app1  = true;
+        request.include_xmp_app1   = false;
+        request.include_icc_app2   = false;
+        request.include_iptc_app13 = false;
+
+        openmeta::PreparedTransferBundle bundle;
+        const openmeta::PrepareTransferResult prepared
+            = openmeta::prepare_metadata_for_target(translated, request,
+                                                    &bundle);
+        ASSERT_EQ(prepared.status, openmeta::TransferStatus::Ok);
+
+        const std::vector<std::byte> input
+            = test_case.format == openmeta::TransferTargetFormat::Jpeg
+                  ? make_jpeg_with_segments({})
+                  : make_minimal_tiff_little_endian();
+        openmeta::ExecutePreparedTransferOptions execute_options;
+        execute_options.edit_requested = true;
+        execute_options.edit_apply     = true;
+        const openmeta::ExecutePreparedTransferResult executed
+            = openmeta::execute_prepared_transfer(
+                &bundle, std::span<const std::byte>(input.data(), input.size()),
+                execute_options);
+        ASSERT_EQ(executed.edit_plan_status, openmeta::TransferStatus::Ok);
+        ASSERT_EQ(executed.edit_apply.status, openmeta::TransferStatus::Ok);
+
+        openmeta::MetaStore decoded;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(
+            std::span<const std::byte>(executed.edited_output.data(),
+                                       executed.edited_output.size()),
+            &decoded));
+        EXPECT_TRUE(store_has_urational_scalar_entry(
+            decoded, exif_key_view("exififd", 0x829aU), 1U, 125U));
+        EXPECT_TRUE(store_has_urational_scalar_entry(
+            decoded, exif_key_view("exififd", 0x829dU), 14U, 5U));
+        EXPECT_TRUE(store_has_u16_scalar_entry(
+            decoded, exif_key_view("exififd", 0x8827U), 400U));
+        EXPECT_TRUE(store_has_srational_scalar_entry(
+            decoded, exif_key_view("exififd", 0x9204U), -1, 3));
+        EXPECT_TRUE(store_has_urational_scalar_entry(
+            decoded, exif_key_view("exififd", 0x920aU), 50U, 1U));
     }
 }
 

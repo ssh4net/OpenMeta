@@ -129,7 +129,7 @@ Creation writes canonical portable-XMP entries because that representation can
 flow through the existing sidecar and transfer writers without requiring an
 original file layout. Direct EXIF/IPTC projection is not implied by this API.
 Use the explicit Translation steps for supported creation dates, common
-technical EXIF fields, and common descriptive IPTC fields; see
+technical and capture EXIF fields, and common descriptive IPTC fields; see
 [translation.md](translation.md).
 
 Image-dependent values such as dimensions, orientation, and color space must
