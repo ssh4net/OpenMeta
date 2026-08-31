@@ -16,6 +16,8 @@
 OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
+struct TransferTargetImageSpec;
+
 /// Experimental XMP creation-date translation contract version.
 inline constexpr uint32_t kMetadataDateTranslationContractVersion = 1U;
 
@@ -369,6 +371,122 @@ metadata_capture_translation_status_name(
 const char*
 metadata_capture_translation_mapping_name(
     MetadataCaptureTranslationMapping mapping) noexcept;
+
+/// Experimental target-bound image-geometry translation contract version.
+inline constexpr uint32_t kMetadataGeometryTranslationContractVersion = 1U;
+
+inline constexpr uint32_t kMetadataGeometryTranslationMaxAddedEntries = 5U;
+inline constexpr uint32_t kMetadataGeometryTranslationMaxOperations   = 1024U;
+inline constexpr uint32_t kMetadataGeometryTranslationMaxTextBytesPerProperty
+    = 32U;
+inline constexpr uint64_t kMetadataGeometryTranslationMaxTotalTextBytes = 160U;
+
+/// Which exact XMP properties are eligible as reverse geometry sources.
+enum class MetadataGeometryTranslationSourceMode : uint8_t {
+    /// Translate only a group with at least one Dirty member.
+    DirtyOnly,
+    /// Translate active clean or dirty entries; tombstones still require Dirty.
+    All,
+};
+
+/// How an existing native EXIF geometry group is reconciled.
+enum class MetadataGeometryTranslationConflictPolicy : uint8_t {
+    PreserveExisting,
+    FailOnConflict,
+    ReplaceExisting,
+};
+
+/// Exact image-geometry source mapping associated with a result or failure.
+enum class MetadataGeometryTranslationMapping : uint8_t {
+    None,
+    XmpOrientation,
+    XmpDimensions,
+};
+
+/// Caller-selected bounded reverse image-geometry mappings.
+struct MetadataGeometryTranslationOptions final {
+    MetadataGeometryTranslationSourceMode source_mode
+        = MetadataGeometryTranslationSourceMode::DirtyOnly;
+    MetadataGeometryTranslationConflictPolicy conflict_policy
+        = MetadataGeometryTranslationConflictPolicy::FailOnConflict;
+
+    /// tiff:Orientation -> IFD0 Orientation SHORT.
+    bool orientation_to_exif = true;
+    /// XMP stored-raster dimensions -> canonical TIFF/EXIF LONG dimensions.
+    bool dimensions_to_exif = true;
+
+    uint32_t max_added_entries = kMetadataGeometryTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataGeometryTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataGeometryTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataGeometryTranslationMaxTotalTextBytes;
+};
+
+enum class MetadataGeometryTranslationStatus : uint8_t {
+    Ok,
+    NullOutput,
+    SourceNotFinalized,
+    InvalidOptions,
+    InvalidTargetImageSpec,
+    TargetImageSpecRequired,
+    TargetImageSpecMismatch,
+    AmbiguousSource,
+    IncompleteSourceGroup,
+    InvalidSourceValue,
+    InvalidNumericValue,
+    ValueOutOfRange,
+    ValueTooLong,
+    SourceLimitExceeded,
+    NativeConflict,
+    EntryLimitExceeded,
+    OperationLimitExceeded,
+    InternalError,
+};
+
+/// Transactional result details for one reverse image-geometry translation.
+struct MetadataGeometryTranslationResult final {
+    MetadataGeometryTranslationStatus status
+        = MetadataGeometryTranslationStatus::Ok;
+    MetadataGeometryTranslationMapping failed_mapping
+        = MetadataGeometryTranslationMapping::None;
+    EntryId failed_source_entry = kInvalidEntryId;
+    uint32_t source_properties  = 0U;
+    uint32_t groups_translated  = 0U;
+    uint32_t groups_preserved   = 0U;
+    uint32_t groups_unchanged   = 0U;
+    uint32_t entries_added      = 0U;
+    uint32_t entries_updated    = 0U;
+    uint32_t entries_removed    = 0U;
+};
+
+/**
+ * \brief Translate exact XMP image geometry into target-bound native EXIF.
+ *
+ * Active orientation and dimension sources must exactly match the corresponding
+ * host-supplied target facts. Width and height are stored-raster dimensions;
+ * they are never swapped according to display orientation. The dimension group
+ * emits canonical IFD0 ImageWidth/ImageLength and ExifIFD
+ * PixelXDimension/PixelYDimension LONG values. Orientation emits one IFD0
+ * Orientation SHORT.
+ *
+ * Standard and OpenMeta-portable dimension aliases may coexist only when they
+ * agree. Duplicate exact properties, incomplete active/deleted dimension pairs,
+ * missing target facts, and source/target mismatches fail transactionally.
+ */
+MetadataGeometryTranslationResult
+translate_xmp_image_geometry(const MetaStore& source,
+                             const TransferTargetImageSpec& target_image_spec,
+                             const MetadataGeometryTranslationOptions& options,
+                             MetaStore* out_store);
+
+const char*
+metadata_geometry_translation_status_name(
+    MetadataGeometryTranslationStatus status) noexcept;
+
+const char*
+metadata_geometry_translation_mapping_name(
+    MetadataGeometryTranslationMapping mapping) noexcept;
 
 /// Experimental reverse descriptive-metadata translation contract version.
 inline constexpr uint32_t kMetadataDescriptiveTranslationContractVersion = 1U;

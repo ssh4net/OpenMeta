@@ -173,6 +173,17 @@ Host-facing API map
        conflicts, and resource limits are explicit; unrepresentable decimals
        fail instead of being approximated. Python remains a thin
        detached-document wrapper. See :doc:`translation`.
+   * - Target-bound image-geometry translation:
+       ``translate_xmp_image_geometry(...)``
+     - ``openmeta/metadata_translation.h``, ``openmeta/metadata_transfer.h``
+     - Experimental
+     - Transactional v1 projection of exact XMP orientation and complete
+       stored-raster dimensions into canonical native TIFF/EXIF ``SHORT`` and
+       ``LONG`` groups. Active values must agree with caller-provided
+       ``TransferTargetImageSpec`` facts; standard/portable aliases, incomplete
+       pairs, tombstones, conflicts, and limits are explicit. Display-oriented
+       dimensions are never inferred or swapped. Python remains a thin
+       detached-document wrapper. See :doc:`translation`.
    * - Reverse descriptive translation:
        ``translate_xmp_descriptive_metadata(...)``
      - ``openmeta/metadata_translation.h``

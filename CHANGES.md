@@ -1,5 +1,32 @@
 # OpenMeta Changes
 
+## 0.4.124 - 2026-08-31
+
+Changes compared with `0.4.123`.
+
+### Added
+
+- Added bounded transactional reverse translation from exact XMP orientation
+  and stored-raster dimensions into canonical native TIFF/EXIF geometry groups.
+- Added caller-supplied `TransferTargetImageSpec` reconciliation, standard and
+  portable dimension-alias agreement, complete-pair handling, explicit target
+  mismatch diagnostics, and thin Python parity.
+
+### Changed
+
+- Image geometry translation now emits `SHORT` orientation and `LONG` IFD0 plus
+  ExifIFD dimensions only when edited XMP agrees with the actual target image
+  specification; rotated display dimensions are never inferred or swapped.
+- Translation readiness is now documented at about 82-87% for the declared
+  scope after adding target-bound image geometry.
+
+### Tests And Validation
+
+- Added all-orientation, alias, incomplete-pair, mismatch, conflict,
+  replacement, tombstone, resource-limit, and transactional regressions.
+- Added native JPEG and TIFF write/decode round trips and extended the thin
+  Python metadata-editing smoke gate.
+
 ## 0.4.123 - 2026-08-31
 
 Changes compared with `0.4.122`.

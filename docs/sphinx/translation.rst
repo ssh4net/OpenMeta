@@ -5,13 +5,14 @@ Metadata Translation
 between metadata families. Current contracts translate edited XMP creation
 dates into native EXIF/IPTC date groups, exact technical XMP/TIFF properties
 into native EXIF fields, typed capture properties into native EXIF scalars,
-and exact descriptive XMP properties into native IPTC-IIM datasets before
-transfer or writing.
+target-bound image geometry into native TIFF/EXIF groups, and exact descriptive
+XMP properties into native IPTC-IIM datasets before transfer or writing.
 
 The APIs are experimental and versioned by
 ``kMetadataDateTranslationContractVersion == 1`` and
 ``kMetadataTechnicalTranslationContractVersion == 1`` and
 ``kMetadataCaptureTranslationContractVersion == 1`` and
+``kMetadataGeometryTranslationContractVersion == 1`` and
 ``kMetadataDescriptiveTranslationContractVersion == 1``.
 
 Workflow
@@ -24,6 +25,7 @@ invoke it implicitly:
 2. Call ``translate_xmp_creation_dates(...)``,
    ``translate_xmp_technical_metadata(...)``,
    ``translate_xmp_capture_metadata(...)``,
+   ``translate_xmp_image_geometry(...)``,
    ``translate_xmp_descriptive_metadata(...)``, or the required combination
    with explicit mapping and conflict options.
 3. Pass the returned finalized store to transfer preparation or a writer.
@@ -147,6 +149,24 @@ Portable and standard aliases target the same native singleton. If more than
 one eligible alias is present, the source is ambiguous and translation fails
 rather than selecting one.
 
+Target-bound image geometry
+---------------------------
+
+``translate_xmp_image_geometry(...)`` projects ``tiff:Orientation`` and
+complete XMP width/height pairs only when they agree with a caller-provided
+``TransferTargetImageSpec``. Orientation becomes one IFD0 ``SHORT``. Stored
+dimensions become IFD0 ``ImageWidth``/``ImageLength`` and ExifIFD
+``PixelXDimension``/``PixelYDimension`` ``LONG`` values.
+
+Width aliases are ``tiff:ImageWidth``, ``exif:ExifImageWidth``, and
+``exif:PixelXDimension``. Height aliases are ``tiff:ImageLength``, portable
+``tiff:ImageHeight``, ``exif:ExifImageHeight``, and
+``exif:PixelYDimension``. Aliases may coexist only when all values agree.
+
+Dimensions describe the stored raster and are never swapped for orientation
+indices 5 through 8. Missing target facts, target mismatches, contradictory
+aliases, incomplete pairs, and mixed active/deleted pairs fail transactionally.
+
 Descriptive mappings
 --------------------
 
@@ -193,8 +213,8 @@ incompatible charset marker or unrelated legacy high-bit data returns
 Conflict and removal policy
 ---------------------------
 
-The date, technical, capture, and descriptive conflict-policy enums apply the
-same three behaviors to each complete native group:
+The date, technical, capture, geometry, and descriptive conflict-policy enums
+apply the same three behaviors to each complete native group:
 
 .. list-table::
    :header-rows: 1
@@ -231,6 +251,12 @@ tag-specific conversion always emits scalar ``RATIONAL``, ``SHORT``, or
 ``SRATIONAL`` values, so generic writer type inference cannot select a
 different TIFF type.
 
+Geometry translation permits at most 5 added entries, 1024 operations, 32
+bytes per text property, and 160 total source text bytes. One dirty dimension
+makes the complete active pair eligible. Dirty geometry tombstones may remove
+native fields under ``ReplaceExisting`` only when the target spec does not
+still declare the same fact.
+
 Descriptive translation separately bounds matched source properties, added
 entries, operations, and total text bytes. In ``DirtyOnly`` mode, one dirty
 member makes the complete repeated creator/keyword group eligible, so
@@ -242,6 +268,7 @@ C++ example
 
 .. code-block:: cpp
 
+   #include "openmeta/metadata_transfer.h"
    #include "openmeta/metadata_translation.h"
 
    openmeta::MetadataDateTranslationOptions options;
@@ -269,13 +296,24 @@ C++ example
    const auto capture_result = openmeta::translate_xmp_capture_metadata(
        technical, capture_options, &capture);
 
+   openmeta::TransferTargetImageSpec target;
+   target.has_dimensions = true;
+   target.width = output_width;
+   target.height = output_height;
+   target.has_orientation = true;
+   target.orientation = output_orientation;
+   openmeta::MetaStore geometry;
+   const auto geometry_result = openmeta::translate_xmp_image_geometry(
+       capture, target, openmeta::MetadataGeometryTranslationOptions {},
+       &geometry);
+
    openmeta::MetadataDescriptiveTranslationOptions descriptive_options;
    descriptive_options.conflict_policy
        = openmeta::MetadataDescriptiveTranslationConflictPolicy::ReplaceExisting;
    openmeta::MetaStore descriptive;
    const auto descriptive_result
        = openmeta::translate_xmp_descriptive_metadata(
-           capture, descriptive_options, &descriptive);
+           geometry, descriptive_options, &descriptive);
 
 Python
 ------
@@ -293,6 +331,7 @@ Python calls the same C++ transaction and returns a detached ``Document``:
    translated = translated.translate_capture_metadata(
        conflict_policy=openmeta.MetadataCaptureTranslationConflictPolicy.ReplaceExisting,
    )
+   translated = translated.translate_image_geometry(target_image_spec)
    translated = translated.translate_descriptive_metadata(
        conflict_policy=openmeta.MetadataDescriptiveTranslationConflictPolicy.ReplaceExisting,
    )
@@ -304,7 +343,8 @@ Scope
 -----
 
 This milestone is intentionally limited to exact creation-date, common
-technical and capture EXIF, and common descriptive mappings. It does not yet
-provide arbitrary EXIF/IPTC/XMP translation, multilingual-alternative
-selection, timezone inference, numeric approximation or value repair, or
-automatic synchronization during transfer.
+technical and capture EXIF, target-bound orientation/stored dimensions, and
+common descriptive mappings. It does not yet provide arbitrary EXIF/IPTC/XMP
+translation, broader target layout/storage projection, multilingual-
+alternative selection, timezone inference, numeric approximation or value
+repair, or automatic synchronization during transfer.

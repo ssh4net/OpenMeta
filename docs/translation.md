@@ -91,6 +91,34 @@ Portable and standard aliases target the same native singleton. If more than
 one eligible alias is present, the source is ambiguous and translation fails
 rather than selecting one.
 
+## Target-Bound Image Geometry
+
+`translate_xmp_image_geometry(...)` projects edited XMP image geometry only
+when it agrees with a host-supplied `TransferTargetImageSpec`:
+
+| XMP source | Native EXIF destination | Required target fact |
+| --- | --- | --- |
+| `tiff:Orientation` | IFD0 `Orientation` as one `SHORT` | `has_orientation` and the same EXIF index in `1..8` |
+| `tiff:ImageWidth`, `exif:ExifImageWidth`, or `exif:PixelXDimension` plus a matching height alias | IFD0 `ImageWidth`/`ImageLength` and ExifIFD `PixelXDimension`/`PixelYDimension`, each as one `LONG` | `has_dimensions` and the same nonzero stored width/height |
+
+Height aliases are `tiff:ImageLength`, portable `tiff:ImageHeight`,
+`exif:ExifImageHeight`, and `exif:PixelYDimension`. Standard and portable
+aliases may coexist when all values agree. Duplicate exact properties or
+contradictory aliases fail instead of selecting one.
+
+Width and height always describe the stored target raster. They are not
+post-orientation display dimensions and are never swapped for orientation
+indices `5..8`. For example, a stored `640x480` raster with orientation `6`
+must use target width `640`, target height `480`, and orientation `6`; a host
+that physically rotates the pixels must instead provide the new stored
+dimensions and the orientation that applies to those output pixels.
+
+An active source without the corresponding target fact returns
+`TargetImageSpecRequired`. A source value that disagrees with the target, or a
+dirty deletion while the target still declares that fact, returns
+`TargetImageSpecMismatch`. Width and height are one complete group: mixed
+active/deleted state or only one axis returns `IncompleteSourceGroup`.
+
 ## Descriptive Mappings
 
 | XMP source | Native IPTC-IIM destination | Maximum encoded bytes |
@@ -116,8 +144,8 @@ charset marker or unrelated legacy high-bit data returns
 
 ## Conflict And Removal Policy
 
-The date, technical, capture, and descriptive conflict-policy enums apply the
-same three behaviors to each complete native group:
+The date, technical, capture, geometry, and descriptive conflict-policy enums
+apply the same three behaviors to each complete native group:
 
 | Policy | Behavior |
 | --- | --- |
@@ -145,6 +173,13 @@ tag-specific conversion always emits scalar `RATIONAL`, `SHORT`, or
 `SRATIONAL` values, so generic writer type inference cannot select a different
 TIFF type.
 
+Geometry translation permits at most 5 added entries, 1024 operations, 32
+bytes per textual property, and 160 total source text bytes. One dirty width or
+height member makes the complete active dimension group eligible in
+`DirtyOnly` mode. A complete dirty width/height tombstone pair may remove the
+native group under `ReplaceExisting` only when the target spec does not still
+declare dimensions; orientation follows the same target-contradiction rule.
+
 Descriptive translation separately bounds matched source properties, added
 entries, operations, and total text bytes. In `DirtyOnly` mode, one dirty member
 makes the complete repeated creator/keyword group eligible, so unchanged active
@@ -154,6 +189,7 @@ members are retained while dirty tombstones can remove native values under
 ## C++ Example
 
 ```cpp
+#include "openmeta/metadata_transfer.h"
 #include "openmeta/metadata_translation.h"
 
 openmeta::MetadataDateTranslationOptions options;
@@ -181,12 +217,23 @@ openmeta::MetaStore capture;
 const auto capture_result = openmeta::translate_xmp_capture_metadata(
     technical, capture_options, &capture);
 
+openmeta::TransferTargetImageSpec target;
+target.has_dimensions = true;
+target.width = output_width;
+target.height = output_height;
+target.has_orientation = true;
+target.orientation = output_orientation;
+openmeta::MetaStore geometry;
+const auto geometry_result = openmeta::translate_xmp_image_geometry(
+    capture, target, openmeta::MetadataGeometryTranslationOptions {},
+    &geometry);
+
 openmeta::MetadataDescriptiveTranslationOptions descriptive_options;
 descriptive_options.conflict_policy
     = openmeta::MetadataDescriptiveTranslationConflictPolicy::ReplaceExisting;
 openmeta::MetaStore descriptive;
 const auto descriptive_result = openmeta::translate_xmp_descriptive_metadata(
-    capture, descriptive_options, &descriptive);
+    geometry, descriptive_options, &descriptive);
 ```
 
 ## Python
@@ -203,6 +250,7 @@ translated = translated.translate_technical_metadata(
 translated = translated.translate_capture_metadata(
     conflict_policy=openmeta.MetadataCaptureTranslationConflictPolicy.ReplaceExisting,
 )
+translated = translated.translate_image_geometry(target_image_spec)
 translated = translated.translate_descriptive_metadata(
     conflict_policy=openmeta.MetadataDescriptiveTranslationConflictPolicy.ReplaceExisting,
 )
@@ -214,7 +262,8 @@ mapping, and source entry ID. The original `Document` is not mutated.
 ## Scope
 
 This milestone is intentionally limited to exact creation-date, common
-technical and capture EXIF, and common descriptive mappings. It does not yet
-provide arbitrary EXIF/IPTC/XMP translation, multilingual-alternative
-selection, timezone inference, numeric approximation or value repair, or
-automatic synchronization during transfer.
+technical and capture EXIF, target-bound orientation/stored dimensions, and
+common descriptive mappings. It does not yet provide arbitrary EXIF/IPTC/XMP
+translation, broader target image-layout/storage projection,
+multilingual-alternative selection, timezone inference, numeric approximation
+or value repair, or automatic synchronization during transfer.

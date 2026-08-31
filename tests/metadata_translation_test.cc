@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "openmeta/metadata_editing.h"
+#include "openmeta/metadata_transfer.h"
 #include "openmeta/metadata_translation.h"
 
 #include <gtest/gtest.h>
@@ -10,6 +11,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace openmeta {
@@ -1092,6 +1094,327 @@ namespace {
         ASSERT_EQ(result.status, MetadataCaptureTranslationStatus::Ok);
         EXPECT_EQ(result.entries_removed, 1U);
         EXPECT_EQ(active_exif_count(output, 0x8827U), 0U);
+    }
+
+    TEST(MetadataTranslation,
+         TranslatesTargetBoundXmpGeometryToCanonicalExifGroups)
+    {
+        static constexpr std::string_view kExifNs
+            = "http://ns.adobe.com/exif/1.0/";
+        static constexpr std::string_view kTiffNs
+            = "http://ns.adobe.com/tiff/1.0/";
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_value(&source, block, kTiffNs, "Orientation",
+                                make_u16(6U), EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, kTiffNs, "ImageWidth", "6000",
+                               EntryFlags::Dirty, 1U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_value(&source, block, kExifNs, "ExifImageWidth",
+                                make_u32(6000U), EntryFlags::None, 2U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, kExifNs, "PixelXDimension",
+                               "6000", EntryFlags::None, 3U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_value(&source, block, kTiffNs, "ImageHeight",
+                                make_u32(4000U), EntryFlags::None, 4U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_value(&source, block, kExifNs, "ExifImageHeight",
+                                make_u32(4000U), EntryFlags::Dirty, 5U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        TransferTargetImageSpec target;
+        target.has_dimensions  = true;
+        target.width           = 6000U;
+        target.height          = 4000U;
+        target.has_orientation = true;
+        target.orientation     = 6U;
+
+        MetaStore translated;
+        const MetadataGeometryTranslationResult result
+            = translate_xmp_image_geometry(source, target,
+                                           MetadataGeometryTranslationOptions {},
+                                           &translated);
+        ASSERT_EQ(result.status, MetadataGeometryTranslationStatus::Ok);
+        EXPECT_EQ(result.source_properties, 6U);
+        EXPECT_EQ(result.groups_translated, 2U);
+        EXPECT_EQ(result.entries_added, 5U);
+
+        const auto expect_native = [&](std::string_view ifd, uint16_t tag,
+                                       MetaElementType type, uint64_t value) {
+            const Entry* entry = active_exif_entry(translated, ifd, tag);
+            ASSERT_NE(entry, nullptr);
+            EXPECT_EQ(entry->value.kind, MetaValueKind::Scalar);
+            EXPECT_EQ(entry->value.elem_type, type);
+            EXPECT_EQ(entry->value.data.u64, value);
+        };
+        expect_native("ifd0", 0x0100U, MetaElementType::U32, 6000U);
+        expect_native("ifd0", 0x0101U, MetaElementType::U32, 4000U);
+        expect_native("exififd", 0xA002U, MetaElementType::U32, 6000U);
+        expect_native("exififd", 0xA003U, MetaElementType::U32, 4000U);
+        expect_native("ifd0", 0x0112U, MetaElementType::U16, 6U);
+    }
+
+    TEST(MetadataTranslation,
+         GeometryRejectsMissingMismatchedAmbiguousAndIncompleteSources)
+    {
+        static constexpr std::string_view kExifNs
+            = "http://ns.adobe.com/exif/1.0/";
+        static constexpr std::string_view kTiffNs
+            = "http://ns.adobe.com/tiff/1.0/";
+        MetadataGeometryTranslationOptions options;
+        options.orientation_to_exif = false;
+
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block, kExifNs, "ExifImageWidth", "640",
+                               EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, kExifNs, "ExifImageHeight",
+                               "480", EntryFlags::None, 1U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        MetaStore output;
+        TransferTargetImageSpec target;
+        MetadataGeometryTranslationResult result
+            = translate_xmp_image_geometry(source, target, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataGeometryTranslationStatus::TargetImageSpecRequired);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataGeometryTranslationMapping::XmpDimensions);
+
+        target.has_dimensions = true;
+        target.width          = 640U;
+        target.height         = 480U;
+        result = translate_xmp_image_geometry(source, target, options, &output);
+        ASSERT_EQ(result.status, MetadataGeometryTranslationStatus::Ok);
+        const Entry* committed_width = active_exif_entry(output, "ifd0",
+                                                         0x0100U);
+        ASSERT_NE(committed_width, nullptr);
+        EXPECT_EQ(committed_width->value.data.u64, 640U);
+
+        target.width  = 480U;
+        target.height = 640U;
+        result = translate_xmp_image_geometry(source, target, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataGeometryTranslationStatus::TargetImageSpecMismatch);
+        committed_width = active_exif_entry(output, "ifd0", 0x0100U);
+        ASSERT_NE(committed_width, nullptr);
+        EXPECT_EQ(committed_width->value.data.u64, 640U);
+
+        MetaStore incomplete;
+        const BlockId incomplete_block = incomplete.add_block(BlockInfo {});
+        ASSERT_NE(incomplete_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_value(&incomplete, incomplete_block, kTiffNs,
+                                "ImageWidth", make_u32(640U), EntryFlags::Dirty,
+                                0U),
+                  kInvalidEntryId);
+        incomplete.finalize();
+        target.width  = 640U;
+        target.height = 480U;
+        result = translate_xmp_image_geometry(incomplete, target, options,
+                                              &output);
+        EXPECT_EQ(result.status,
+                  MetadataGeometryTranslationStatus::IncompleteSourceGroup);
+
+        MetaStore duplicate;
+        const BlockId duplicate_block = duplicate.add_block(BlockInfo {});
+        ASSERT_NE(duplicate_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_value(&duplicate, duplicate_block, kExifNs,
+                                "ExifImageWidth", make_u32(640U),
+                                EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_value(&duplicate, duplicate_block, kExifNs,
+                                "ExifImageWidth", make_u32(640U),
+                                EntryFlags::Dirty, 1U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_value(&duplicate, duplicate_block, kExifNs,
+                                "ExifImageHeight", make_u32(480U),
+                                EntryFlags::Dirty, 2U),
+                  kInvalidEntryId);
+        duplicate.finalize();
+        result = translate_xmp_image_geometry(duplicate, target, options,
+                                              &output);
+        EXPECT_EQ(result.status,
+                  MetadataGeometryTranslationStatus::AmbiguousSource);
+
+        MetaStore oversized;
+        const BlockId oversized_block = oversized.add_block(BlockInfo {});
+        ASSERT_NE(oversized_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&oversized, oversized_block, kExifNs,
+                               "ExifImageWidth", std::string(33U, '1'),
+                               EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&oversized, oversized_block, kExifNs,
+                               "ExifImageHeight", "480", EntryFlags::Dirty, 1U),
+                  kInvalidEntryId);
+        oversized.finalize();
+        result = translate_xmp_image_geometry(oversized, target, options,
+                                              &output);
+        EXPECT_EQ(result.status,
+                  MetadataGeometryTranslationStatus::ValueTooLong);
+    }
+
+    TEST(MetadataTranslation, GeometryOrientationCoversAllExifIndexes)
+    {
+        static constexpr std::string_view kTiffNs
+            = "http://ns.adobe.com/tiff/1.0/";
+        MetadataGeometryTranslationOptions options;
+        options.dimensions_to_exif = false;
+        for (uint16_t orientation = 1U; orientation <= 8U; ++orientation) {
+            SCOPED_TRACE(orientation);
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            ASSERT_NE(block, kInvalidBlockId);
+            ASSERT_NE(add_xmp_value(&source, block, kTiffNs, "Orientation",
+                                    make_u16(orientation), EntryFlags::Dirty,
+                                    0U),
+                      kInvalidEntryId);
+            source.finalize();
+
+            TransferTargetImageSpec target;
+            target.has_orientation = true;
+            target.orientation     = orientation;
+            MetaStore output;
+            const MetadataGeometryTranslationResult result
+                = translate_xmp_image_geometry(source, target, options,
+                                               &output);
+            ASSERT_EQ(result.status, MetadataGeometryTranslationStatus::Ok);
+            const Entry* native = active_exif_entry(output, "ifd0", 0x0112U);
+            ASSERT_NE(native, nullptr);
+            EXPECT_EQ(native->value.elem_type, MetaElementType::U16);
+            EXPECT_EQ(native->value.data.u64, orientation);
+        }
+
+        MetaStore invalid_source;
+        const BlockId invalid_block = invalid_source.add_block(BlockInfo {});
+        ASSERT_NE(invalid_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_value(&invalid_source, invalid_block, kTiffNs,
+                                "Orientation", make_u16(9U), EntryFlags::Dirty,
+                                0U),
+                  kInvalidEntryId);
+        invalid_source.finalize();
+        TransferTargetImageSpec target;
+        target.has_orientation = true;
+        target.orientation     = 1U;
+        MetaStore output;
+        MetadataGeometryTranslationResult result
+            = translate_xmp_image_geometry(invalid_source, target, options,
+                                           &output);
+        EXPECT_EQ(result.status,
+                  MetadataGeometryTranslationStatus::ValueOutOfRange);
+
+        target.orientation = 9U;
+        result = translate_xmp_image_geometry(invalid_source, target, options,
+                                              &output);
+        EXPECT_EQ(result.status,
+                  MetadataGeometryTranslationStatus::InvalidTargetImageSpec);
+    }
+
+    TEST(MetadataTranslation,
+         GeometryConflictReplacementAndRemovalAreTransactional)
+    {
+        static constexpr std::string_view kExifNs
+            = "http://ns.adobe.com/exif/1.0/";
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_value(&source, block, kExifNs, "ExifImageWidth",
+                                make_u32(640U), EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_value(&source, block, kExifNs, "ExifImageHeight",
+                                make_u32(480U), EntryFlags::None, 1U),
+                  kInvalidEntryId);
+        Entry old_width;
+        old_width.key   = make_exif_tag_key(source.arena(), "ifd0", 0x0100U);
+        old_width.value = make_u16(320U);
+        old_width.origin.block          = block;
+        old_width.origin.order_in_block = 2U;
+        ASSERT_NE(source.add_entry(old_width), kInvalidEntryId);
+        source.finalize();
+
+        TransferTargetImageSpec target;
+        target.has_dimensions = true;
+        target.width          = 640U;
+        target.height         = 480U;
+        MetadataGeometryTranslationOptions options;
+        options.orientation_to_exif = false;
+        options.conflict_policy
+            = MetadataGeometryTranslationConflictPolicy::PreserveExisting;
+        MetaStore output;
+        MetadataGeometryTranslationResult result
+            = translate_xmp_image_geometry(source, target, options, &output);
+        ASSERT_EQ(result.status, MetadataGeometryTranslationStatus::Ok);
+        EXPECT_EQ(result.groups_preserved, 1U);
+        EXPECT_EQ(active_exif_count(output, 0x0100U), 1U);
+        EXPECT_EQ(active_exif_count(output, 0xA002U), 0U);
+
+        options.conflict_policy
+            = MetadataGeometryTranslationConflictPolicy::FailOnConflict;
+        result = translate_xmp_image_geometry(source, target, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataGeometryTranslationStatus::NativeConflict);
+
+        options.conflict_policy
+            = MetadataGeometryTranslationConflictPolicy::ReplaceExisting;
+        options.max_operations = 3U;
+        result = translate_xmp_image_geometry(source, target, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataGeometryTranslationStatus::OperationLimitExceeded);
+
+        options.max_operations = kMetadataGeometryTranslationMaxOperations;
+        result = translate_xmp_image_geometry(source, target, options, &output);
+        ASSERT_EQ(result.status, MetadataGeometryTranslationStatus::Ok);
+        EXPECT_EQ(result.entries_added, 3U);
+        EXPECT_EQ(result.entries_updated, 1U);
+        const Entry* width = active_exif_entry(output, "ifd0", 0x0100U);
+        ASSERT_NE(width, nullptr);
+        EXPECT_EQ(width->value.elem_type, MetaElementType::U32);
+        EXPECT_EQ(width->value.data.u64, 640U);
+
+        MetaStore removal;
+        const BlockId removal_block = removal.add_block(BlockInfo {});
+        ASSERT_NE(removal_block, kInvalidBlockId);
+        for (uint32_t i = 0U; i < 2U; ++i) {
+            Entry deleted;
+            deleted.key   = make_xmp_property_key(removal.arena(), kExifNs,
+                                                i == 0U ? "ExifImageWidth"
+                                                          : "ExifImageHeight");
+            deleted.value = make_u32(i == 0U ? 640U : 480U);
+            deleted.origin.block          = removal_block;
+            deleted.origin.order_in_block = i;
+            deleted.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+            ASSERT_NE(removal.add_entry(deleted), kInvalidEntryId);
+        }
+        static constexpr std::array<std::pair<std::string_view, uint16_t>, 4U>
+            kNative = { std::pair { "ifd0", uint16_t { 0x0100U } },
+                        std::pair { "ifd0", uint16_t { 0x0101U } },
+                        std::pair { "exififd", uint16_t { 0xA002U } },
+                        std::pair { "exififd", uint16_t { 0xA003U } } };
+        for (uint32_t i = 0U; i < kNative.size(); ++i) {
+            Entry native;
+            native.key   = make_exif_tag_key(removal.arena(), kNative[i].first,
+                                             kNative[i].second);
+            native.value = make_u32((i & 1U) == 0U ? 640U : 480U);
+            native.origin.block          = removal_block;
+            native.origin.order_in_block = i + 2U;
+            ASSERT_NE(removal.add_entry(native), kInvalidEntryId);
+        }
+        removal.finalize();
+        target.has_dimensions = false;
+        result = translate_xmp_image_geometry(removal, target, options,
+                                              &output);
+        ASSERT_EQ(result.status, MetadataGeometryTranslationStatus::Ok);
+        EXPECT_EQ(result.entries_removed, 4U);
+        EXPECT_EQ(active_exif_count(output, 0x0100U), 0U);
+        EXPECT_EQ(active_exif_count(output, 0x0101U), 0U);
+        EXPECT_EQ(active_exif_count(output, 0xA002U), 0U);
+        EXPECT_EQ(active_exif_count(output, 0xA003U), 0U);
     }
 
     TEST(MetadataTranslation, TranslatesDescriptiveXmpToBoundedIptcGroups)

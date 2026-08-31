@@ -48,6 +48,13 @@ inject the target profile. The Python binding exposes the same structure as
 wrappers expose matching `--target-*` flags for smoke tests and file-helper
 integration checks.
 
+When a host edits portable XMP orientation or dimensions before direct native
+writing, `translate_xmp_image_geometry(...)` can project those values into
+canonical TIFF/EXIF tags. It still requires the same target image spec and
+fails if XMP disagrees with the actual output raster. Width and height are
+stored-raster dimensions, not display-oriented dimensions after applying the
+orientation transform.
+
 For coarse transfer safety, use `TransferProfile::safety`. The default
 `CompatibleFile` mode is for metadata repackage or recompression into a
 compatible target and preserves source camera/color metadata after the

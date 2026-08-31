@@ -160,6 +160,35 @@ except ValueError as exc:
 else:
     raise AssertionError('out-of-range native EXIF ISO was accepted')
 
+geometry = openmeta.create_metadata([
+    openmeta.metadata_creation_u32(K.Orientation, 6),
+    openmeta.metadata_creation_u32(K.PixelWidth, 640),
+    openmeta.metadata_creation_u32(K.PixelHeight, 480),
+])
+target = openmeta.TransferTargetImageSpec()
+target.has_dimensions = True
+target.width = 640
+target.height = 480
+target.has_orientation = True
+target.orientation = 6
+translated_geometry = geometry.translate_image_geometry(target)
+assert openmeta.METADATA_GEOMETRY_TRANSLATION_CONTRACT_VERSION == 1
+assert translated_geometry.entry_count == geometry.entry_count + 5
+assert geometry.entry_count == 3
+
+mismatch = openmeta.TransferTargetImageSpec()
+mismatch.has_dimensions = True
+mismatch.width = 480
+mismatch.height = 640
+mismatch.has_orientation = True
+mismatch.orientation = 6
+try:
+    geometry.translate_image_geometry(mismatch)
+except ValueError as exc:
+    assert 'target_image_spec_mismatch for xmp_dimensions' in str(exc)
+else:
+    raise AssertionError('mismatched target image geometry was accepted')
+
 descriptive = openmeta.create_metadata([
     openmeta.metadata_creation_text(K.Title, 'Night ' + chr(0x666f)),
     openmeta.metadata_creation_text(K.Creator, 'Alice'),

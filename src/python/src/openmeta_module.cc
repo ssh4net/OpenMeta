@@ -6160,6 +6160,55 @@ translate_capture_metadata_document(
 }
 
 static std::shared_ptr<PyDocument>
+translate_image_geometry_document(
+    std::shared_ptr<PyDocument> source,
+    const TransferTargetImageSpec& target_image_spec,
+    MetadataGeometryTranslationSourceMode source_mode,
+    MetadataGeometryTranslationConflictPolicy conflict_policy,
+    bool orientation_to_exif, bool dimensions_to_exif,
+    uint32_t max_added_entries, uint32_t max_operations,
+    uint32_t max_text_bytes_per_property, uint64_t max_total_text_bytes)
+{
+    MetadataGeometryTranslationOptions options;
+    options.source_mode                 = source_mode;
+    options.conflict_policy             = conflict_policy;
+    options.orientation_to_exif         = orientation_to_exif;
+    options.dimensions_to_exif          = dimensions_to_exif;
+    options.max_added_entries           = max_added_entries;
+    options.max_operations              = max_operations;
+    options.max_text_bytes_per_property = max_text_bytes_per_property;
+    options.max_total_text_bytes        = max_total_text_bytes;
+
+    MetaStore translated;
+    MetadataGeometryTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_image_geometry(source->store, target_image_spec,
+                                              options, &translated);
+    }
+    if (result.status != MetadataGeometryTranslationStatus::Ok) {
+        std::string message = "metadata image-geometry translation failed: ";
+        message += metadata_geometry_translation_status_name(result.status);
+        if (result.failed_mapping != MetadataGeometryTranslationMapping::None) {
+            message += " for ";
+            message += metadata_geometry_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
 translate_descriptive_metadata_document(
     std::shared_ptr<PyDocument> source,
     MetadataDescriptiveTranslationSourceMode source_mode,
@@ -6790,6 +6839,8 @@ NB_MODULE(_openmeta, m)
         kMetadataTechnicalTranslationContractVersion);
     m.attr("METADATA_CAPTURE_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataCaptureTranslationContractVersion);
+    m.attr("METADATA_GEOMETRY_TRANSLATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataGeometryTranslationContractVersion);
     m.attr("METADATA_DESCRIPTIVE_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataDescriptiveTranslationContractVersion);
 
@@ -8165,6 +8216,77 @@ NB_MODULE(_openmeta, m)
     m.def("metadata_capture_translation_mapping_name",
           &metadata_capture_translation_mapping_name, "mapping"_a);
 
+    nb::enum_<MetadataGeometryTranslationSourceMode>(
+        m, "MetadataGeometryTranslationSourceMode")
+        .value("DirtyOnly", MetadataGeometryTranslationSourceMode::DirtyOnly)
+        .value("All", MetadataGeometryTranslationSourceMode::All);
+
+    nb::enum_<MetadataGeometryTranslationConflictPolicy>(
+        m, "MetadataGeometryTranslationConflictPolicy")
+        .value("PreserveExisting",
+               MetadataGeometryTranslationConflictPolicy::PreserveExisting)
+        .value("FailOnConflict",
+               MetadataGeometryTranslationConflictPolicy::FailOnConflict)
+        .value("ReplaceExisting",
+               MetadataGeometryTranslationConflictPolicy::ReplaceExisting);
+
+    nb::enum_<MetadataGeometryTranslationMapping>(
+        m, "MetadataGeometryTranslationMapping")
+        .value("None", MetadataGeometryTranslationMapping::None)
+        .value("XmpOrientation",
+               MetadataGeometryTranslationMapping::XmpOrientation)
+        .value("XmpDimensions",
+               MetadataGeometryTranslationMapping::XmpDimensions);
+
+    nb::enum_<MetadataGeometryTranslationStatus>(
+        m, "MetadataGeometryTranslationStatus")
+        .value("Ok", MetadataGeometryTranslationStatus::Ok)
+        .value("NullOutput", MetadataGeometryTranslationStatus::NullOutput)
+        .value("SourceNotFinalized",
+               MetadataGeometryTranslationStatus::SourceNotFinalized)
+        .value("InvalidOptions",
+               MetadataGeometryTranslationStatus::InvalidOptions)
+        .value("InvalidTargetImageSpec",
+               MetadataGeometryTranslationStatus::InvalidTargetImageSpec)
+        .value("TargetImageSpecRequired",
+               MetadataGeometryTranslationStatus::TargetImageSpecRequired)
+        .value("TargetImageSpecMismatch",
+               MetadataGeometryTranslationStatus::TargetImageSpecMismatch)
+        .value("AmbiguousSource",
+               MetadataGeometryTranslationStatus::AmbiguousSource)
+        .value("IncompleteSourceGroup",
+               MetadataGeometryTranslationStatus::IncompleteSourceGroup)
+        .value("InvalidSourceValue",
+               MetadataGeometryTranslationStatus::InvalidSourceValue)
+        .value("InvalidNumericValue",
+               MetadataGeometryTranslationStatus::InvalidNumericValue)
+        .value("ValueOutOfRange",
+               MetadataGeometryTranslationStatus::ValueOutOfRange)
+        .value("ValueTooLong", MetadataGeometryTranslationStatus::ValueTooLong)
+        .value("SourceLimitExceeded",
+               MetadataGeometryTranslationStatus::SourceLimitExceeded)
+        .value("NativeConflict",
+               MetadataGeometryTranslationStatus::NativeConflict)
+        .value("EntryLimitExceeded",
+               MetadataGeometryTranslationStatus::EntryLimitExceeded)
+        .value("OperationLimitExceeded",
+               MetadataGeometryTranslationStatus::OperationLimitExceeded)
+        .value("InternalError",
+               MetadataGeometryTranslationStatus::InternalError);
+
+    m.attr("METADATA_GEOMETRY_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
+        kMetadataGeometryTranslationMaxAddedEntries);
+    m.attr("METADATA_GEOMETRY_TRANSLATION_MAX_OPERATIONS") = nb::int_(
+        kMetadataGeometryTranslationMaxOperations);
+    m.attr("METADATA_GEOMETRY_TRANSLATION_MAX_TEXT_BYTES_PER_PROPERTY")
+        = nb::int_(kMetadataGeometryTranslationMaxTextBytesPerProperty);
+    m.attr("METADATA_GEOMETRY_TRANSLATION_MAX_TOTAL_TEXT_BYTES") = nb::int_(
+        kMetadataGeometryTranslationMaxTotalTextBytes);
+    m.def("metadata_geometry_translation_status_name",
+          &metadata_geometry_translation_status_name, "status"_a);
+    m.def("metadata_geometry_translation_mapping_name",
+          &metadata_geometry_translation_mapping_name, "mapping"_a);
+
     nb::enum_<MetadataDescriptiveTranslationSourceMode>(
         m, "MetadataDescriptiveTranslationSourceMode")
         .value("DirtyOnly", MetadataDescriptiveTranslationSourceMode::DirtyOnly)
@@ -8925,6 +9047,18 @@ NB_MODULE(_openmeta, m)
              = kMetadataCaptureTranslationMaxTextBytesPerProperty,
              "max_total_text_bytes"_a
              = kMetadataCaptureTranslationMaxTotalTextBytes)
+        .def("translate_image_geometry", &translate_image_geometry_document,
+             "target_image_spec"_a,
+             "source_mode"_a = MetadataGeometryTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataGeometryTranslationConflictPolicy::FailOnConflict,
+             "orientation_to_exif"_a = true, "dimensions_to_exif"_a = true,
+             "max_added_entries"_a = kMetadataGeometryTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataGeometryTranslationMaxOperations,
+             "max_text_bytes_per_property"_a
+             = kMetadataGeometryTranslationMaxTextBytesPerProperty,
+             "max_total_text_bytes"_a
+             = kMetadataGeometryTranslationMaxTotalTextBytes)
         .def("translate_descriptive_metadata",
              &translate_descriptive_metadata_document,
              "source_mode"_a
