@@ -6056,6 +6056,58 @@ translate_creation_dates_document(
 }
 
 static std::shared_ptr<PyDocument>
+translate_technical_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataTechnicalTranslationSourceMode source_mode,
+    MetadataTechnicalTranslationConflictPolicy conflict_policy,
+    bool modify_date_to_exif_datetime, bool make_to_exif_make,
+    bool model_to_exif_model, bool creator_tool_to_exif_software,
+    uint32_t max_added_entries, uint32_t max_operations,
+    uint32_t max_text_bytes_per_property, uint64_t max_total_text_bytes)
+{
+    MetadataTechnicalTranslationOptions options;
+    options.source_mode                   = source_mode;
+    options.conflict_policy               = conflict_policy;
+    options.modify_date_to_exif_datetime  = modify_date_to_exif_datetime;
+    options.make_to_exif_make             = make_to_exif_make;
+    options.model_to_exif_model           = model_to_exif_model;
+    options.creator_tool_to_exif_software = creator_tool_to_exif_software;
+    options.max_added_entries             = max_added_entries;
+    options.max_operations                = max_operations;
+    options.max_text_bytes_per_property   = max_text_bytes_per_property;
+    options.max_total_text_bytes          = max_total_text_bytes;
+
+    MetaStore translated;
+    MetadataTechnicalTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_technical_metadata(source->store, options,
+                                                  &translated);
+    }
+    if (result.status != MetadataTechnicalTranslationStatus::Ok) {
+        std::string message = "metadata technical translation failed: ";
+        message += metadata_technical_translation_status_name(result.status);
+        if (result.failed_mapping
+            != MetadataTechnicalTranslationMapping::None) {
+            message += " for ";
+            message += metadata_technical_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
 translate_descriptive_metadata_document(
     std::shared_ptr<PyDocument> source,
     MetadataDescriptiveTranslationSourceMode source_mode,
@@ -6682,6 +6734,8 @@ NB_MODULE(_openmeta, m)
         kMetadataEditingContractVersion);
     m.attr("METADATA_DATE_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataDateTranslationContractVersion);
+    m.attr("METADATA_TECHNICAL_TRANSLATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataTechnicalTranslationContractVersion);
     m.attr("METADATA_DESCRIPTIVE_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataDescriptiveTranslationContractVersion);
 
@@ -7923,6 +7977,73 @@ NB_MODULE(_openmeta, m)
     m.def("metadata_date_translation_mapping_name",
           &metadata_date_translation_mapping_name, "mapping"_a);
 
+    nb::enum_<MetadataTechnicalTranslationSourceMode>(
+        m, "MetadataTechnicalTranslationSourceMode")
+        .value("DirtyOnly", MetadataTechnicalTranslationSourceMode::DirtyOnly)
+        .value("All", MetadataTechnicalTranslationSourceMode::All);
+
+    nb::enum_<MetadataTechnicalTranslationConflictPolicy>(
+        m, "MetadataTechnicalTranslationConflictPolicy")
+        .value("PreserveExisting",
+               MetadataTechnicalTranslationConflictPolicy::PreserveExisting)
+        .value("FailOnConflict",
+               MetadataTechnicalTranslationConflictPolicy::FailOnConflict)
+        .value("ReplaceExisting",
+               MetadataTechnicalTranslationConflictPolicy::ReplaceExisting);
+
+    nb::enum_<MetadataTechnicalTranslationMapping>(
+        m, "MetadataTechnicalTranslationMapping")
+        .value("None", MetadataTechnicalTranslationMapping::None)
+        .value("XmpModifyDate",
+               MetadataTechnicalTranslationMapping::XmpModifyDate)
+        .value("TiffMake", MetadataTechnicalTranslationMapping::TiffMake)
+        .value("TiffModel", MetadataTechnicalTranslationMapping::TiffModel)
+        .value("XmpCreatorTool",
+               MetadataTechnicalTranslationMapping::XmpCreatorTool);
+
+    nb::enum_<MetadataTechnicalTranslationStatus>(
+        m, "MetadataTechnicalTranslationStatus")
+        .value("Ok", MetadataTechnicalTranslationStatus::Ok)
+        .value("NullOutput", MetadataTechnicalTranslationStatus::NullOutput)
+        .value("SourceNotFinalized",
+               MetadataTechnicalTranslationStatus::SourceNotFinalized)
+        .value("InvalidOptions",
+               MetadataTechnicalTranslationStatus::InvalidOptions)
+        .value("AmbiguousSource",
+               MetadataTechnicalTranslationStatus::AmbiguousSource)
+        .value("InvalidSourceValue",
+               MetadataTechnicalTranslationStatus::InvalidSourceValue)
+        .value("InvalidDateTime",
+               MetadataTechnicalTranslationStatus::InvalidDateTime)
+        .value("UnsupportedPrecision",
+               MetadataTechnicalTranslationStatus::UnsupportedPrecision)
+        .value("NonAsciiSource",
+               MetadataTechnicalTranslationStatus::NonAsciiSource)
+        .value("ValueTooLong", MetadataTechnicalTranslationStatus::ValueTooLong)
+        .value("SourceLimitExceeded",
+               MetadataTechnicalTranslationStatus::SourceLimitExceeded)
+        .value("NativeConflict",
+               MetadataTechnicalTranslationStatus::NativeConflict)
+        .value("EntryLimitExceeded",
+               MetadataTechnicalTranslationStatus::EntryLimitExceeded)
+        .value("OperationLimitExceeded",
+               MetadataTechnicalTranslationStatus::OperationLimitExceeded)
+        .value("InternalError",
+               MetadataTechnicalTranslationStatus::InternalError);
+
+    m.attr("METADATA_TECHNICAL_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
+        kMetadataTechnicalTranslationMaxAddedEntries);
+    m.attr("METADATA_TECHNICAL_TRANSLATION_MAX_OPERATIONS") = nb::int_(
+        kMetadataTechnicalTranslationMaxOperations);
+    m.attr("METADATA_TECHNICAL_TRANSLATION_MAX_TEXT_BYTES_PER_PROPERTY")
+        = nb::int_(kMetadataTechnicalTranslationMaxTextBytesPerProperty);
+    m.attr("METADATA_TECHNICAL_TRANSLATION_MAX_TOTAL_TEXT_BYTES") = nb::int_(
+        kMetadataTechnicalTranslationMaxTotalTextBytes);
+    m.def("metadata_technical_translation_status_name",
+          &metadata_technical_translation_status_name, "status"_a);
+    m.def("metadata_technical_translation_mapping_name",
+          &metadata_technical_translation_mapping_name, "mapping"_a);
+
     nb::enum_<MetadataDescriptiveTranslationSourceMode>(
         m, "MetadataDescriptiveTranslationSourceMode")
         .value("DirtyOnly", MetadataDescriptiveTranslationSourceMode::DirtyOnly)
@@ -8655,6 +8776,21 @@ NB_MODULE(_openmeta, m)
              "date_time_original_to_exif_original"_a  = true,
              "max_added_entries"_a = kMetadataDateTranslationMaxAddedEntries,
              "max_operations"_a    = kMetadataDateTranslationMaxOperations)
+        .def("translate_technical_metadata",
+             &translate_technical_metadata_document,
+             "source_mode"_a = MetadataTechnicalTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataTechnicalTranslationConflictPolicy::FailOnConflict,
+             "modify_date_to_exif_datetime"_a = true,
+             "make_to_exif_make"_a = true, "model_to_exif_model"_a = true,
+             "creator_tool_to_exif_software"_a = true,
+             "max_added_entries"_a
+             = kMetadataTechnicalTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataTechnicalTranslationMaxOperations,
+             "max_text_bytes_per_property"_a
+             = kMetadataTechnicalTranslationMaxTextBytesPerProperty,
+             "max_total_text_bytes"_a
+             = kMetadataTechnicalTranslationMaxTotalTextBytes)
         .def("translate_descriptive_metadata",
              &translate_descriptive_metadata_document,
              "source_mode"_a

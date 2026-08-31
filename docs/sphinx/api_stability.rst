@@ -152,6 +152,16 @@ Host-facing API map
        malformed dates, duplicate sources, and unresolved conflicts fail
        without replacing the output. Python exposes the same C++ transaction
        through a detached ``Document``. See :doc:`translation`.
+   * - Reverse technical EXIF translation:
+       ``translate_xmp_technical_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Transactional v1 projection of exact ``xmp:ModifyDate``, ``tiff:Make``,
+       ``tiff:Model``, and ``xmp:CreatorTool`` properties into native EXIF
+       groups. Full ModifyDate precision uses OffsetTime/SubSecTime companions;
+       singleton conflicts, dirty tombstones, ASCII validity, duplicates, and
+       resource limits are explicit. Python remains a thin detached-document
+       wrapper. See :doc:`translation`.
    * - Reverse descriptive translation:
        ``translate_xmp_descriptive_metadata(...)``
      - ``openmeta/metadata_translation.h``

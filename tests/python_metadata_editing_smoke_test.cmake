@@ -117,6 +117,28 @@ fractional_exif = fractional.translate_creation_dates(
 )
 assert fractional_exif.entry_count == fractional.entry_count + 3
 
+technical = openmeta.create_metadata([
+    openmeta.metadata_creation_text(
+        K.ModifyDate, '2026-08-31T12:34:56.125+09:00'),
+    openmeta.metadata_creation_text(K.CameraMake, 'OpenMeta Camera'),
+    openmeta.metadata_creation_text(K.CameraModel, 'OM-1'),
+    openmeta.metadata_creation_text(K.Software, 'OpenMeta Python'),
+])
+translated_technical = technical.translate_technical_metadata()
+assert openmeta.METADATA_TECHNICAL_TRANSLATION_CONTRACT_VERSION == 1
+assert translated_technical.entry_count == technical.entry_count + 6
+assert technical.entry_count == 4
+
+non_ascii_technical = openmeta.create_metadata([
+    openmeta.metadata_creation_text(K.CameraMake, 'M' + chr(0xe4) + 'ke'),
+])
+try:
+    non_ascii_technical.translate_technical_metadata()
+except ValueError as exc:
+    assert 'non_ascii_source for tiff_make' in str(exc)
+else:
+    raise AssertionError('non-ASCII EXIF technical translation was accepted')
+
 descriptive = openmeta.create_metadata([
     openmeta.metadata_creation_text(K.Title, 'Night ' + chr(0x666f)),
     openmeta.metadata_creation_text(K.Creator, 'Alice'),

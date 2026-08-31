@@ -130,6 +130,124 @@ const char*
 metadata_date_translation_mapping_name(
     MetadataDateTranslationMapping mapping) noexcept;
 
+/// Experimental reverse technical-EXIF translation contract version.
+inline constexpr uint32_t kMetadataTechnicalTranslationContractVersion = 1U;
+
+inline constexpr uint32_t kMetadataTechnicalTranslationMaxAddedEntries = 6U;
+inline constexpr uint32_t kMetadataTechnicalTranslationMaxOperations   = 1024U;
+inline constexpr uint32_t kMetadataTechnicalTranslationMaxTextBytesPerProperty
+    = 4096U;
+inline constexpr uint64_t kMetadataTechnicalTranslationMaxTotalTextBytes
+    = 16ULL * 1024ULL;
+
+/// Which exact XMP properties are eligible as reverse technical sources.
+enum class MetadataTechnicalTranslationSourceMode : uint8_t {
+    /// Translate only entries marked Dirty, including dirty tombstones.
+    DirtyOnly,
+    /// Translate active clean or dirty entries; tombstones still require Dirty.
+    All,
+};
+
+/// How an existing native EXIF group is reconciled.
+enum class MetadataTechnicalTranslationConflictPolicy : uint8_t {
+    PreserveExisting,
+    FailOnConflict,
+    ReplaceExisting,
+};
+
+/// Exact technical source mapping associated with a result or failure.
+enum class MetadataTechnicalTranslationMapping : uint8_t {
+    None,
+    XmpModifyDate,
+    TiffMake,
+    TiffModel,
+    XmpCreatorTool,
+};
+
+/// Caller-selected bounded reverse technical mappings.
+struct MetadataTechnicalTranslationOptions final {
+    MetadataTechnicalTranslationSourceMode source_mode
+        = MetadataTechnicalTranslationSourceMode::DirtyOnly;
+    MetadataTechnicalTranslationConflictPolicy conflict_policy
+        = MetadataTechnicalTranslationConflictPolicy::FailOnConflict;
+
+    /// xmp:ModifyDate -> IFD0 DateTime plus exact EXIF companions.
+    bool modify_date_to_exif_datetime = true;
+    /// tiff:Make -> IFD0 Make.
+    bool make_to_exif_make = true;
+    /// tiff:Model -> IFD0 Model.
+    bool model_to_exif_model = true;
+    /// xmp:CreatorTool -> IFD0 Software.
+    bool creator_tool_to_exif_software = true;
+
+    uint32_t max_added_entries = kMetadataTechnicalTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataTechnicalTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataTechnicalTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataTechnicalTranslationMaxTotalTextBytes;
+};
+
+enum class MetadataTechnicalTranslationStatus : uint8_t {
+    Ok,
+    NullOutput,
+    SourceNotFinalized,
+    InvalidOptions,
+    AmbiguousSource,
+    InvalidSourceValue,
+    InvalidDateTime,
+    UnsupportedPrecision,
+    NonAsciiSource,
+    ValueTooLong,
+    SourceLimitExceeded,
+    NativeConflict,
+    EntryLimitExceeded,
+    OperationLimitExceeded,
+    InternalError,
+};
+
+/// Transactional result details for one reverse technical translation.
+struct MetadataTechnicalTranslationResult final {
+    MetadataTechnicalTranslationStatus status
+        = MetadataTechnicalTranslationStatus::Ok;
+    MetadataTechnicalTranslationMapping failed_mapping
+        = MetadataTechnicalTranslationMapping::None;
+    EntryId failed_source_entry = kInvalidEntryId;
+    uint32_t source_properties  = 0U;
+    uint32_t groups_translated  = 0U;
+    uint32_t groups_preserved   = 0U;
+    uint32_t groups_unchanged   = 0U;
+    uint32_t entries_added      = 0U;
+    uint32_t entries_updated    = 0U;
+    uint32_t entries_removed    = 0U;
+};
+
+/**
+ * \brief Translate exact standard XMP/TIFF technical properties into EXIF.
+ *
+ * Supported mappings are xmp:ModifyDate, tiff:Make, tiff:Model, and
+ * xmp:CreatorTool. ModifyDate requires a full time and preserves up to nine
+ * fractional digits and a timezone through SubSecTime and OffsetTime. Text
+ * mappings require non-empty 7-bit ASCII without embedded NUL bytes.
+ *
+ * Each mapping reconciles independently. The source store is immutable and
+ * the output is replaced only after every selected mapping and resource limit
+ * succeeds. Exact namespaces and property paths are required, and duplicate
+ * eligible sources are ambiguous.
+ */
+MetadataTechnicalTranslationResult
+translate_xmp_technical_metadata(
+    const MetaStore& source, const MetadataTechnicalTranslationOptions& options,
+    MetaStore* out_store);
+
+const char*
+metadata_technical_translation_status_name(
+    MetadataTechnicalTranslationStatus status) noexcept;
+
+const char*
+metadata_technical_translation_mapping_name(
+    MetadataTechnicalTranslationMapping mapping) noexcept;
+
 /// Experimental reverse descriptive-metadata translation contract version.
 inline constexpr uint32_t kMetadataDescriptiveTranslationContractVersion = 1U;
 

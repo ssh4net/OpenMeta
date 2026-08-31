@@ -131,12 +131,13 @@ model should stay compact:
    * - Translation
      - Project metadata between families through explicit bounded mappings,
        including strict paired IPTC creation-date projection to XMP and
-       transactional reverse projection of edited XMP dates and common
-       descriptive properties into native EXIF/IPTC groups.
-     - Medium-high, about 70-80%; exact date parsing, seven bounded descriptive
-       IPTC mappings, repeated-value reconciliation, safe UTF-8 declaration,
-       tombstone propagation, resource limits, JPEG/TIFF round trips, and thin
-       Python exposure are implemented.
+       transactional reverse projection of edited XMP dates, common technical
+       fields, and common descriptive properties into native EXIF/IPTC groups.
+     - Medium-high, about 75-80%; exact date parsing, four technical EXIF
+       mappings, seven bounded descriptive IPTC mappings, repeated-value
+       reconciliation, safe ASCII/UTF-8 handling, tombstone propagation,
+       resource limits, JPEG/TIFF round trips, and thin Python exposure are
+       implemented.
    * - Writing
      - Serialize metadata and write or rewrite it into target containers.
      - Medium-high, about 70-80%; JPEG is strong, TIFF/DNG have a completed

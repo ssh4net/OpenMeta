@@ -11767,6 +11767,98 @@ TEST(MetadataTransferApi,
 }
 
 TEST(MetadataTransferApi,
+     TranslatedTechnicalXmpSurvivesNativeJpegAndTiffRoundTrip)
+{
+    const std::array fields = {
+        openmeta::make_metadata_creation_text(
+            openmeta::MetadataCreationFieldKind::ModifyDate,
+            "2026-08-31T12:34:56.125+09:00"),
+        openmeta::make_metadata_creation_text(
+            openmeta::MetadataCreationFieldKind::CameraMake, "OpenMeta Camera"),
+        openmeta::make_metadata_creation_text(
+            openmeta::MetadataCreationFieldKind::CameraModel, "OM-1"),
+        openmeta::make_metadata_creation_text(
+            openmeta::MetadataCreationFieldKind::Software, "OpenMeta 0.4"),
+    };
+    openmeta::MetadataCreationRequest creation_request;
+    creation_request.fields = fields;
+    openmeta::MetaStore source;
+    ASSERT_EQ(openmeta::create_metadata(creation_request, &source).status,
+              openmeta::MetadataCreationStatus::Ok);
+
+    openmeta::MetaStore translated;
+    const openmeta::MetadataTechnicalTranslationResult translation
+        = openmeta::translate_xmp_technical_metadata(
+            source, openmeta::MetadataTechnicalTranslationOptions {},
+            &translated);
+    ASSERT_EQ(translation.status,
+              openmeta::MetadataTechnicalTranslationStatus::Ok);
+
+    struct Case final {
+        const char* label;
+        openmeta::TransferTargetFormat format;
+    };
+    static constexpr Case kCases[] = {
+        { "jpeg", openmeta::TransferTargetFormat::Jpeg },
+        { "tiff", openmeta::TransferTargetFormat::Tiff },
+    };
+
+    for (const Case& test_case : kCases) {
+        SCOPED_TRACE(test_case.label);
+        openmeta::PrepareTransferRequest request;
+        request.target_format      = test_case.format;
+        request.include_exif_app1  = true;
+        request.include_xmp_app1   = false;
+        request.include_icc_app2   = false;
+        request.include_iptc_app13 = false;
+
+        openmeta::PreparedTransferBundle bundle;
+        const openmeta::PrepareTransferResult prepared
+            = openmeta::prepare_metadata_for_target(translated, request,
+                                                    &bundle);
+        ASSERT_EQ(prepared.status, openmeta::TransferStatus::Ok);
+
+        const std::vector<std::byte> input
+            = test_case.format == openmeta::TransferTargetFormat::Jpeg
+                  ? make_jpeg_with_segments({})
+                  : make_minimal_tiff_little_endian();
+        openmeta::ExecutePreparedTransferOptions execute_options;
+        execute_options.edit_requested = true;
+        execute_options.edit_apply     = true;
+        const openmeta::ExecutePreparedTransferResult executed
+            = openmeta::execute_prepared_transfer(
+                &bundle, std::span<const std::byte>(input.data(), input.size()),
+                execute_options);
+        ASSERT_EQ(executed.edit_plan_status, openmeta::TransferStatus::Ok);
+        ASSERT_EQ(executed.edit_apply.status, openmeta::TransferStatus::Ok);
+
+        openmeta::MetaStore decoded;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(
+            std::span<const std::byte>(executed.edited_output.data(),
+                                       executed.edited_output.size()),
+            &decoded));
+        EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                             exif_key_view("ifd0", 0x0132U),
+                                             "2026:08:31 12:34:56"));
+        EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                             exif_key_view("exififd", 0x9010U),
+                                             "+09:00"));
+        EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                             exif_key_view("exififd", 0x9290U),
+                                             "125"));
+        EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                             exif_key_view("ifd0", 0x010fU),
+                                             "OpenMeta Camera"));
+        EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                             exif_key_view("ifd0", 0x0110U),
+                                             "OM-1"));
+        EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                             exif_key_view("ifd0", 0x0131U),
+                                             "OpenMeta 0.4"));
+    }
+}
+
+TEST(MetadataTransferApi,
      PreparePortableXmpCanonicalizesManagedXmpDateAliasesOnlyWhenAvailable)
 {
     openmeta::MetaStore store;

@@ -21,6 +21,8 @@ namespace {
         = "http://ns.adobe.com/exif/1.0/";
     static constexpr std::string_view kXmpNsPhotoshop
         = "http://ns.adobe.com/photoshop/1.0/";
+    static constexpr std::string_view kXmpNsTiff
+        = "http://ns.adobe.com/tiff/1.0/";
     static constexpr std::string_view kXmpNsXmp = "http://ns.adobe.com/xap/1.0/";
 
     static std::string_view arena_text(const ByteArena& arena,
@@ -777,6 +779,461 @@ namespace {
         return MetadataDateTranslationStatus::Ok;
     }
 
+    enum class NativeTechnicalField : uint8_t {
+        ExifDateTime,
+        ExifOffsetTime,
+        ExifSubSecTime,
+        ExifMake,
+        ExifModel,
+        ExifSoftware,
+    };
+
+    struct TechnicalPlannedField final {
+        NativeTechnicalField field = NativeTechnicalField::ExifDateTime;
+        bool present               = false;
+        bool generated             = false;
+        std::string_view source_value;
+        std::array<char, 32U> generated_value {};
+        uint8_t generated_size = 0U;
+    };
+
+    struct TechnicalPlannedGroup final {
+        MetadataTechnicalTranslationMapping mapping
+            = MetadataTechnicalTranslationMapping::None;
+        EntryId source_entry = kInvalidEntryId;
+        std::array<TechnicalPlannedField, 3U> fields {};
+        uint8_t field_count = 0U;
+        bool existing_any   = false;
+        bool exact_match    = false;
+        bool apply          = false;
+    };
+
+    static std::string_view
+    technical_field_value(const TechnicalPlannedField& field) noexcept
+    {
+        if (field.generated) {
+            return std::string_view(field.generated_value.data(),
+                                    field.generated_size);
+        }
+        return field.source_value;
+    }
+
+    static MetadataTechnicalTranslationStatus find_technical_source_property(
+        const MetaStore& store, std::string_view schema_ns,
+        std::string_view property_path,
+        MetadataTechnicalTranslationSourceMode source_mode,
+        SourceProperty* out) noexcept
+    {
+        MetadataDateTranslationSourceMode date_source_mode
+            = MetadataDateTranslationSourceMode::DirtyOnly;
+        if (source_mode == MetadataTechnicalTranslationSourceMode::All) {
+            date_source_mode = MetadataDateTranslationSourceMode::All;
+        }
+        const MetadataDateTranslationStatus status
+            = find_source_property(store, schema_ns, property_path,
+                                   date_source_mode, out);
+        switch (status) {
+        case MetadataDateTranslationStatus::Ok:
+            return MetadataTechnicalTranslationStatus::Ok;
+        case MetadataDateTranslationStatus::AmbiguousSource:
+            return MetadataTechnicalTranslationStatus::AmbiguousSource;
+        case MetadataDateTranslationStatus::InvalidSourceValue:
+            return MetadataTechnicalTranslationStatus::InvalidSourceValue;
+        default: return MetadataTechnicalTranslationStatus::InternalError;
+        }
+    }
+
+    static bool valid_ascii_source(std::string_view text) noexcept
+    {
+        for (const char c : text) {
+            const uint8_t byte = static_cast<uint8_t>(c);
+            if (byte == 0U || byte > 0x7fU) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static TechnicalPlannedGroup
+    make_technical_datetime_group(EntryId source_entry,
+                                  const ParsedXmpDateTime& parsed,
+                                  bool deleted) noexcept
+    {
+        TechnicalPlannedGroup group;
+        group.mapping      = MetadataTechnicalTranslationMapping::XmpModifyDate;
+        group.source_entry = source_entry;
+        group.field_count  = 3U;
+        group.fields[0].field = NativeTechnicalField::ExifDateTime;
+        group.fields[1].field = NativeTechnicalField::ExifOffsetTime;
+        group.fields[2].field = NativeTechnicalField::ExifSubSecTime;
+        if (deleted) {
+            return group;
+        }
+
+        PlannedField date;
+        set_exif_datetime_value(parsed, &date);
+        group.fields[0].present         = date.present;
+        group.fields[0].generated       = true;
+        group.fields[0].generated_size  = date.value_size;
+        group.fields[0].generated_value = date.value;
+
+        PlannedField offset;
+        set_exif_offset_value(parsed, &offset);
+        group.fields[1].present         = offset.present;
+        group.fields[1].generated       = true;
+        group.fields[1].generated_size  = offset.value_size;
+        group.fields[1].generated_value = offset.value;
+
+        PlannedField subsecond;
+        set_exif_subsecond_value(parsed, &subsecond);
+        group.fields[2].present         = subsecond.present;
+        group.fields[2].generated       = true;
+        group.fields[2].generated_size  = subsecond.value_size;
+        group.fields[2].generated_value = subsecond.value;
+        return group;
+    }
+
+    static TechnicalPlannedGroup
+    make_technical_text_group(MetadataTechnicalTranslationMapping mapping,
+                              NativeTechnicalField field, EntryId source_entry,
+                              std::string_view source_value,
+                              bool deleted) noexcept
+    {
+        TechnicalPlannedGroup group;
+        group.mapping         = mapping;
+        group.source_entry    = source_entry;
+        group.field_count     = 1U;
+        group.fields[0].field = field;
+        if (!deleted) {
+            group.fields[0].present      = true;
+            group.fields[0].source_value = source_value;
+        }
+        return group;
+    }
+
+    static bool
+    technical_native_field_matches(const MetaStore& store, const Entry& entry,
+                                   NativeTechnicalField field) noexcept
+    {
+        if (entry.key.kind != MetaKeyKind::ExifTag) {
+            return false;
+        }
+        std::string_view ifd = "ifd0";
+        uint16_t tag         = 0U;
+        switch (field) {
+        case NativeTechnicalField::ExifDateTime: tag = 0x0132U; break;
+        case NativeTechnicalField::ExifOffsetTime:
+            ifd = "exififd";
+            tag = 0x9010U;
+            break;
+        case NativeTechnicalField::ExifSubSecTime:
+            ifd = "exififd";
+            tag = 0x9290U;
+            break;
+        case NativeTechnicalField::ExifMake: tag = 0x010fU; break;
+        case NativeTechnicalField::ExifModel: tag = 0x0110U; break;
+        case NativeTechnicalField::ExifSoftware: tag = 0x0131U; break;
+        }
+        return entry.key.data.exif_tag.tag == tag
+               && arena_text(store.arena(), entry.key.data.exif_tag.ifd) == ifd;
+    }
+
+    static bool
+    technical_entry_value_matches(const MetaStore& store, const Entry& entry,
+                                  const TechnicalPlannedField& field) noexcept
+    {
+        if (entry.value.kind != MetaValueKind::Text
+            && entry.value.kind != MetaValueKind::Bytes) {
+            return false;
+        }
+        std::span<const std::byte> bytes = store.arena().span(
+            entry.value.data.span);
+        while (!bytes.empty() && bytes.back() == std::byte { 0U }) {
+            bytes = bytes.first(bytes.size() - 1U);
+        }
+        const std::string_view expected = technical_field_value(field);
+        return bytes.size() == expected.size()
+               && std::string_view(reinterpret_cast<const char*>(bytes.data()),
+                                   bytes.size())
+                      == expected;
+    }
+
+    static void analyze_technical_group(const MetaStore& store,
+                                        TechnicalPlannedGroup* group) noexcept
+    {
+        if (!group) {
+            return;
+        }
+        group->existing_any                  = false;
+        group->exact_match                   = true;
+        const std::span<const Entry> entries = store.entries();
+        for (uint8_t f = 0U; f < group->field_count; ++f) {
+            const TechnicalPlannedField& field = group->fields[f];
+            uint32_t active_count              = 0U;
+            bool exact_value                   = false;
+            for (const Entry& entry : entries) {
+                if (any(entry.flags, EntryFlags::Deleted)
+                    || !technical_native_field_matches(store, entry,
+                                                       field.field)) {
+                    continue;
+                }
+                ++active_count;
+                if (active_count == 1U) {
+                    exact_value = technical_entry_value_matches(store, entry,
+                                                                field);
+                }
+            }
+            group->existing_any = group->existing_any || active_count > 0U;
+            if (field.present) {
+                group->exact_match = group->exact_match && active_count == 1U
+                                     && exact_value;
+            } else {
+                group->exact_match = group->exact_match && active_count == 0U;
+            }
+        }
+    }
+
+    static uint32_t
+    missing_technical_fields(const MetaStore& store,
+                             const TechnicalPlannedGroup& group) noexcept
+    {
+        uint32_t count = 0U;
+        for (uint8_t f = 0U; f < group.field_count; ++f) {
+            const TechnicalPlannedField& field = group.fields[f];
+            if (!field.present) {
+                continue;
+            }
+            bool found = false;
+            for (const Entry& entry : store.entries()) {
+                if (!any(entry.flags, EntryFlags::Deleted)
+                    && technical_native_field_matches(store, entry,
+                                                      field.field)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    static uint32_t
+    required_technical_operations(const MetaStore& store,
+                                  const TechnicalPlannedGroup& group) noexcept
+    {
+        uint32_t count = 0U;
+        for (uint8_t f = 0U; f < group.field_count; ++f) {
+            const TechnicalPlannedField& field = group.fields[f];
+            uint32_t active_count              = 0U;
+            bool first_matches                 = false;
+            for (const Entry& entry : store.entries()) {
+                if (any(entry.flags, EntryFlags::Deleted)
+                    || !technical_native_field_matches(store, entry,
+                                                       field.field)) {
+                    continue;
+                }
+                ++active_count;
+                if (active_count == 1U) {
+                    first_matches = technical_entry_value_matches(store, entry,
+                                                                  field);
+                }
+            }
+            if (!field.present) {
+                count += active_count;
+            } else if (active_count == 0U) {
+                ++count;
+            } else {
+                count += active_count - 1U;
+                if (!first_matches) {
+                    ++count;
+                }
+            }
+        }
+        return count;
+    }
+
+    static MetaKey make_technical_native_key(ByteArena& arena,
+                                             NativeTechnicalField field) noexcept
+    {
+        switch (field) {
+        case NativeTechnicalField::ExifDateTime:
+            return make_exif_tag_key(arena, "ifd0", 0x0132U);
+        case NativeTechnicalField::ExifOffsetTime:
+            return make_exif_tag_key(arena, "exififd", 0x9010U);
+        case NativeTechnicalField::ExifSubSecTime:
+            return make_exif_tag_key(arena, "exififd", 0x9290U);
+        case NativeTechnicalField::ExifMake:
+            return make_exif_tag_key(arena, "ifd0", 0x010fU);
+        case NativeTechnicalField::ExifModel:
+            return make_exif_tag_key(arena, "ifd0", 0x0110U);
+        case NativeTechnicalField::ExifSoftware:
+            return make_exif_tag_key(arena, "ifd0", 0x0131U);
+        }
+        return make_exif_tag_key(arena, "ifd0", 0U);
+    }
+
+    static bool append_technical_entry(MetaEdit* edit, const MetaStore& source,
+                                       const TechnicalPlannedGroup& group,
+                                       const TechnicalPlannedField& field,
+                                       uint32_t order_delta) noexcept
+    {
+        if (!edit || group.source_entry >= source.entries().size()) {
+            return false;
+        }
+        Entry entry;
+        entry.key    = make_technical_native_key(edit->arena(), field.field);
+        entry.value  = make_text(edit->arena(), technical_field_value(field),
+                                 TextEncoding::Ascii);
+        entry.origin = source.entry(group.source_entry).origin;
+        if (entry.origin.wire_type_name.size > 0U) {
+            entry.origin.wire_type_name = edit->arena().append(
+                source.arena().span(entry.origin.wire_type_name));
+        }
+        if (entry.origin.order_in_block
+            <= std::numeric_limits<uint32_t>::max() - order_delta) {
+            entry.origin.order_in_block += order_delta;
+        } else {
+            entry.origin.order_in_block = std::numeric_limits<uint32_t>::max();
+        }
+        entry.flags = EntryFlags::Dirty;
+        if (edit->arena().limit_exceeded()) {
+            return false;
+        }
+        edit->add_entry(entry);
+        return true;
+    }
+
+    static void
+    apply_technical_group(const MetaStore& source,
+                          const TechnicalPlannedGroup& group, MetaEdit* edit,
+                          MetadataTechnicalTranslationResult* result)
+    {
+        if (!edit || !result || !group.apply) {
+            return;
+        }
+        const std::span<const Entry> entries = source.entries();
+        for (uint8_t f = 0U; f < group.field_count; ++f) {
+            const TechnicalPlannedField& field = group.fields[f];
+            EntryId first_active               = kInvalidEntryId;
+            for (EntryId id = 0U; id < entries.size(); ++id) {
+                const Entry& entry = entries[id];
+                if (any(entry.flags, EntryFlags::Deleted)
+                    || !technical_native_field_matches(source, entry,
+                                                       field.field)) {
+                    continue;
+                }
+                if (!field.present || first_active != kInvalidEntryId) {
+                    edit->tombstone(id);
+                    ++result->entries_removed;
+                    continue;
+                }
+                first_active = id;
+                if (!technical_entry_value_matches(source, entry, field)) {
+                    edit->set_value(id, make_text(edit->arena(),
+                                                  technical_field_value(field),
+                                                  TextEncoding::Ascii));
+                    ++result->entries_updated;
+                }
+            }
+            if (field.present && first_active == kInvalidEntryId
+                && append_technical_entry(edit, source, group, field,
+                                          static_cast<uint32_t>(f) + 1U)) {
+                ++result->entries_added;
+            }
+        }
+        ++result->groups_translated;
+    }
+
+    static MetadataTechnicalTranslationResult
+    technical_translation_error(MetadataTechnicalTranslationStatus status,
+                                MetadataTechnicalTranslationMapping mapping
+                                = MetadataTechnicalTranslationMapping::None,
+                                EntryId source_entry = kInvalidEntryId) noexcept
+    {
+        MetadataTechnicalTranslationResult result;
+        result.status              = status;
+        result.failed_mapping      = mapping;
+        result.failed_source_entry = source_entry;
+        return result;
+    }
+
+    static MetadataTechnicalTranslationStatus
+    append_technical_group(const MetaStore& source,
+                           const MetadataTechnicalTranslationOptions& options,
+                           std::string_view schema_ns,
+                           std::string_view property_path,
+                           MetadataTechnicalTranslationMapping mapping,
+                           NativeTechnicalField native_field, bool date_time,
+                           std::array<TechnicalPlannedGroup, 4U>* groups,
+                           uint8_t* group_count, uint64_t* total_text_bytes,
+                           MetadataTechnicalTranslationResult* result) noexcept
+    {
+        if (!groups || !group_count || !total_text_bytes || !result
+            || *group_count >= groups->size()) {
+            return MetadataTechnicalTranslationStatus::InternalError;
+        }
+        SourceProperty property;
+        const MetadataTechnicalTranslationStatus source_status
+            = find_technical_source_property(source, schema_ns, property_path,
+                                             options.source_mode, &property);
+        if (source_status != MetadataTechnicalTranslationStatus::Ok) {
+            result->failed_mapping      = mapping;
+            result->failed_source_entry = property.entry_id;
+            return source_status;
+        }
+        if (!property.found) {
+            return MetadataTechnicalTranslationStatus::Ok;
+        }
+        ++result->source_properties;
+        if (!property.deleted) {
+            if (property.text.size() > options.max_text_bytes_per_property) {
+                result->failed_mapping      = mapping;
+                result->failed_source_entry = property.entry_id;
+                return MetadataTechnicalTranslationStatus::ValueTooLong;
+            }
+            if (property.text.size() > options.max_total_text_bytes
+                || *total_text_bytes
+                       > options.max_total_text_bytes - property.text.size()) {
+                result->failed_mapping      = mapping;
+                result->failed_source_entry = property.entry_id;
+                return MetadataTechnicalTranslationStatus::SourceLimitExceeded;
+            }
+            *total_text_bytes += property.text.size();
+        }
+
+        if (date_time) {
+            ParsedXmpDateTime parsed;
+            if (!property.deleted
+                && !parse_xmp_datetime(property.text, &parsed)) {
+                result->failed_mapping      = mapping;
+                result->failed_source_entry = property.entry_id;
+                return MetadataTechnicalTranslationStatus::InvalidDateTime;
+            }
+            if (!property.deleted && !parsed.has_time) {
+                result->failed_mapping      = mapping;
+                result->failed_source_entry = property.entry_id;
+                return MetadataTechnicalTranslationStatus::UnsupportedPrecision;
+            }
+            (*groups)[(*group_count)++]
+                = make_technical_datetime_group(property.entry_id, parsed,
+                                                property.deleted);
+            return MetadataTechnicalTranslationStatus::Ok;
+        }
+
+        if (!property.deleted && !valid_ascii_source(property.text)) {
+            result->failed_mapping      = mapping;
+            result->failed_source_entry = property.entry_id;
+            return MetadataTechnicalTranslationStatus::NonAsciiSource;
+        }
+        (*groups)[(*group_count)++]
+            = make_technical_text_group(mapping, native_field,
+                                        property.entry_id, property.text,
+                                        property.deleted);
+        return MetadataTechnicalTranslationStatus::Ok;
+    }
+
 }  // namespace
 
 MetadataDateTranslationResult
@@ -948,6 +1405,210 @@ metadata_date_translation_mapping_name(
         return "photoshop_date_created";
     case MetadataDateTranslationMapping::XmpDateTimeOriginal:
         return "xmp_date_time_original";
+    }
+    return "unknown";
+}
+
+MetadataTechnicalTranslationResult
+translate_xmp_technical_metadata(
+    const MetaStore& source, const MetadataTechnicalTranslationOptions& options,
+    MetaStore* out_store)
+{
+    if (!out_store) {
+        return technical_translation_error(
+            MetadataTechnicalTranslationStatus::NullOutput);
+    }
+    if (!source.is_finalized()) {
+        return technical_translation_error(
+            MetadataTechnicalTranslationStatus::SourceNotFinalized);
+    }
+    if (options.max_added_entries == 0U
+        || options.max_added_entries
+               > kMetadataTechnicalTranslationMaxAddedEntries
+        || options.max_operations == 0U
+        || options.max_operations > kMetadataTechnicalTranslationMaxOperations
+        || options.max_text_bytes_per_property == 0U
+        || options.max_text_bytes_per_property
+               > kMetadataTechnicalTranslationMaxTextBytesPerProperty
+        || options.max_total_text_bytes == 0U
+        || options.max_total_text_bytes
+               > kMetadataTechnicalTranslationMaxTotalTextBytes
+        || (options.source_mode
+                != MetadataTechnicalTranslationSourceMode::DirtyOnly
+            && options.source_mode
+                   != MetadataTechnicalTranslationSourceMode::All)
+        || (options.conflict_policy
+                != MetadataTechnicalTranslationConflictPolicy::PreserveExisting
+            && options.conflict_policy
+                   != MetadataTechnicalTranslationConflictPolicy::FailOnConflict
+            && options.conflict_policy
+                   != MetadataTechnicalTranslationConflictPolicy::ReplaceExisting)
+        || (!options.modify_date_to_exif_datetime && !options.make_to_exif_make
+            && !options.model_to_exif_model
+            && !options.creator_tool_to_exif_software)) {
+        return technical_translation_error(
+            MetadataTechnicalTranslationStatus::InvalidOptions);
+    }
+
+    std::array<TechnicalPlannedGroup, 4U> groups {};
+    uint8_t group_count       = 0U;
+    uint64_t total_text_bytes = 0U;
+    MetadataTechnicalTranslationResult result;
+    MetadataTechnicalTranslationStatus status
+        = MetadataTechnicalTranslationStatus::Ok;
+    if (options.modify_date_to_exif_datetime) {
+        status = append_technical_group(
+            source, options, kXmpNsXmp, "ModifyDate",
+            MetadataTechnicalTranslationMapping::XmpModifyDate,
+            NativeTechnicalField::ExifDateTime, true, &groups, &group_count,
+            &total_text_bytes, &result);
+    }
+    if (status == MetadataTechnicalTranslationStatus::Ok
+        && options.make_to_exif_make) {
+        status = append_technical_group(
+            source, options, kXmpNsTiff, "Make",
+            MetadataTechnicalTranslationMapping::TiffMake,
+            NativeTechnicalField::ExifMake, false, &groups, &group_count,
+            &total_text_bytes, &result);
+    }
+    if (status == MetadataTechnicalTranslationStatus::Ok
+        && options.model_to_exif_model) {
+        status = append_technical_group(
+            source, options, kXmpNsTiff, "Model",
+            MetadataTechnicalTranslationMapping::TiffModel,
+            NativeTechnicalField::ExifModel, false, &groups, &group_count,
+            &total_text_bytes, &result);
+    }
+    if (status == MetadataTechnicalTranslationStatus::Ok
+        && options.creator_tool_to_exif_software) {
+        status = append_technical_group(
+            source, options, kXmpNsXmp, "CreatorTool",
+            MetadataTechnicalTranslationMapping::XmpCreatorTool,
+            NativeTechnicalField::ExifSoftware, false, &groups, &group_count,
+            &total_text_bytes, &result);
+    }
+    if (status != MetadataTechnicalTranslationStatus::Ok) {
+        result.status = status;
+        return result;
+    }
+
+    uint32_t added_entries   = 0U;
+    uint32_t operation_count = 0U;
+    for (uint8_t i = 0U; i < group_count; ++i) {
+        TechnicalPlannedGroup& group = groups[i];
+        analyze_technical_group(source, &group);
+        switch (options.conflict_policy) {
+        case MetadataTechnicalTranslationConflictPolicy::PreserveExisting:
+            if (group.existing_any) {
+                ++result.groups_preserved;
+            } else {
+                group.apply = true;
+            }
+            break;
+        case MetadataTechnicalTranslationConflictPolicy::FailOnConflict:
+            if (group.existing_any && !group.exact_match) {
+                result.status
+                    = MetadataTechnicalTranslationStatus::NativeConflict;
+                result.failed_mapping      = group.mapping;
+                result.failed_source_entry = group.source_entry;
+                return result;
+            }
+            if (group.exact_match) {
+                ++result.groups_unchanged;
+            } else {
+                group.apply = true;
+            }
+            break;
+        case MetadataTechnicalTranslationConflictPolicy::ReplaceExisting:
+            if (group.exact_match) {
+                ++result.groups_unchanged;
+            } else {
+                group.apply = true;
+            }
+            break;
+        }
+        if (group.apply) {
+            added_entries += missing_technical_fields(source, group);
+            operation_count += required_technical_operations(source, group);
+        }
+    }
+    if (added_entries > options.max_added_entries
+        || source.entries().size() > static_cast<size_t>(kInvalidEntryId)
+        || static_cast<size_t>(added_entries)
+               > static_cast<size_t>(kInvalidEntryId)
+                     - source.entries().size()) {
+        result.status = MetadataTechnicalTranslationStatus::EntryLimitExceeded;
+        return result;
+    }
+    if (operation_count > options.max_operations) {
+        result.status
+            = MetadataTechnicalTranslationStatus::OperationLimitExceeded;
+        return result;
+    }
+
+    MetaEdit edit;
+    edit.reserve_ops(operation_count);
+    for (uint8_t i = 0U; i < group_count; ++i) {
+        apply_technical_group(source, groups[i], &edit, &result);
+    }
+    if (edit.ops().size() != operation_count || edit.arena().limit_exceeded()
+        || result.entries_added != added_entries) {
+        result.status = MetadataTechnicalTranslationStatus::InternalError;
+        return result;
+    }
+    *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    return result;
+}
+
+const char*
+metadata_technical_translation_status_name(
+    MetadataTechnicalTranslationStatus status) noexcept
+{
+    switch (status) {
+    case MetadataTechnicalTranslationStatus::Ok: return "ok";
+    case MetadataTechnicalTranslationStatus::NullOutput: return "null_output";
+    case MetadataTechnicalTranslationStatus::SourceNotFinalized:
+        return "source_not_finalized";
+    case MetadataTechnicalTranslationStatus::InvalidOptions:
+        return "invalid_options";
+    case MetadataTechnicalTranslationStatus::AmbiguousSource:
+        return "ambiguous_source";
+    case MetadataTechnicalTranslationStatus::InvalidSourceValue:
+        return "invalid_source_value";
+    case MetadataTechnicalTranslationStatus::InvalidDateTime:
+        return "invalid_date_time";
+    case MetadataTechnicalTranslationStatus::UnsupportedPrecision:
+        return "unsupported_precision";
+    case MetadataTechnicalTranslationStatus::NonAsciiSource:
+        return "non_ascii_source";
+    case MetadataTechnicalTranslationStatus::ValueTooLong:
+        return "value_too_long";
+    case MetadataTechnicalTranslationStatus::SourceLimitExceeded:
+        return "source_limit_exceeded";
+    case MetadataTechnicalTranslationStatus::NativeConflict:
+        return "native_conflict";
+    case MetadataTechnicalTranslationStatus::EntryLimitExceeded:
+        return "entry_limit_exceeded";
+    case MetadataTechnicalTranslationStatus::OperationLimitExceeded:
+        return "operation_limit_exceeded";
+    case MetadataTechnicalTranslationStatus::InternalError:
+        return "internal_error";
+    }
+    return "unknown";
+}
+
+const char*
+metadata_technical_translation_mapping_name(
+    MetadataTechnicalTranslationMapping mapping) noexcept
+{
+    switch (mapping) {
+    case MetadataTechnicalTranslationMapping::None: return "none";
+    case MetadataTechnicalTranslationMapping::XmpModifyDate:
+        return "xmp_modify_date";
+    case MetadataTechnicalTranslationMapping::TiffMake: return "tiff_make";
+    case MetadataTechnicalTranslationMapping::TiffModel: return "tiff_model";
+    case MetadataTechnicalTranslationMapping::XmpCreatorTool:
+        return "xmp_creator_tool";
     }
     return "unknown";
 }

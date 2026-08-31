@@ -1,5 +1,33 @@
 # OpenMeta Changes
 
+## 0.4.122 - 2026-08-31
+
+Changes compared with `0.4.121`.
+
+### Added
+
+- Added bounded transactional reverse translation from exact `xmp:ModifyDate`,
+  `tiff:Make`, `tiff:Model`, and `xmp:CreatorTool` properties into native EXIF
+  IFD0 fields.
+- Added explicit source-selection and per-group conflict policies, dirty
+  tombstone removal, duplicate-source rejection, ASCII and resource limits,
+  and a thin Python `Document.translate_technical_metadata(...)` wrapper.
+
+### Changed
+
+- `xmp:ModifyDate` translation preserves timezone and up to nine fractional
+  digits through native `OffsetTime` and `SubSecTime` companion tags instead
+  of truncating them.
+- Technical text translation rejects non-ASCII, embedded-NUL, oversized, and
+  ambiguous inputs transactionally rather than emitting invalid TIFF ASCII.
+
+### Tests And Validation
+
+- Added exact namespace, IFD/tag placement, precision, source-mode, conflict,
+  duplicate cleanup, tombstone, ASCII, and resource-limit regressions.
+- Added native JPEG and TIFF write/decode round trips for translated technical
+  EXIF and extended the Python metadata-editing smoke gate.
+
 ## 0.4.121 - 2026-08-30
 
 Changes compared with `0.4.120`.

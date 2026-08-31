@@ -50,6 +50,18 @@ namespace {
         return store->add_entry(entry);
     }
 
+    static EntryId add_exif_ifd_text(MetaStore* store, BlockId block,
+                                     std::string_view ifd, uint16_t tag,
+                                     std::string_view value, uint32_t order)
+    {
+        Entry entry;
+        entry.key   = make_exif_tag_key(store->arena(), ifd, tag);
+        entry.value = make_text(store->arena(), value, TextEncoding::Ascii);
+        entry.origin.block          = block;
+        entry.origin.order_in_block = order;
+        return store->add_entry(entry);
+    }
+
     static EntryId add_iptc_bytes(MetaStore* store, BlockId block,
                                   uint16_t dataset, std::string_view value,
                                   uint32_t order)
@@ -100,6 +112,29 @@ namespace {
                 continue;
             }
             if (entry_matches_text(store, entry, expected)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool active_exif_ifd_text(const MetaStore& store,
+                                     std::string_view expected_ifd,
+                                     uint16_t tag,
+                                     std::string_view expected) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (any(entry.flags, EntryFlags::Deleted)
+                || entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != tag) {
+                continue;
+            }
+            const std::span<const std::byte> ifd_bytes = store.arena().span(
+                entry.key.data.exif_tag.ifd);
+            if (std::string_view(reinterpret_cast<const char*>(ifd_bytes.data()),
+                                 ifd_bytes.size())
+                    == expected_ifd
+                && entry_matches_text(store, entry, expected)) {
                 return true;
             }
         }
@@ -502,6 +537,267 @@ namespace {
         EXPECT_EQ(active_exif_count(translated, 0x9012U), 0U);
         EXPECT_EQ(active_iptc_count(translated, 62U), 0U);
         EXPECT_EQ(active_iptc_count(translated, 63U), 0U);
+    }
+
+    TEST(MetadataTranslation, TranslatesTechnicalXmpToExactExifGroups)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/xap/1.0/",
+                               "ModifyDate", "2026-08-31T12:34:56.125+09:00",
+                               EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/tiff/1.0/",
+                               "Make", "OpenMeta Camera", EntryFlags::Dirty,
+                               1U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/tiff/1.0/",
+                               "Model", "OM-1", EntryFlags::Dirty, 2U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/xap/1.0/",
+                               "CreatorTool", "OpenMeta 0.4", EntryFlags::Dirty,
+                               3U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        MetaStore translated;
+        const MetadataTechnicalTranslationResult result
+            = translate_xmp_technical_metadata(
+                source, MetadataTechnicalTranslationOptions {}, &translated);
+        ASSERT_EQ(result.status, MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(result.source_properties, 4U);
+        EXPECT_EQ(result.groups_translated, 4U);
+        EXPECT_EQ(result.entries_added, 6U);
+        EXPECT_TRUE(active_exif_ifd_text(translated, "ifd0", 0x0132U,
+                                         "2026:08:31 12:34:56"));
+        EXPECT_TRUE(
+            active_exif_ifd_text(translated, "exififd", 0x9010U, "+09:00"));
+        EXPECT_TRUE(
+            active_exif_ifd_text(translated, "exififd", 0x9290U, "125"));
+        EXPECT_TRUE(active_exif_ifd_text(translated, "ifd0", 0x010fU,
+                                         "OpenMeta Camera"));
+        EXPECT_TRUE(active_exif_ifd_text(translated, "ifd0", 0x0110U, "OM-1"));
+        EXPECT_TRUE(
+            active_exif_ifd_text(translated, "ifd0", 0x0131U, "OpenMeta 0.4"));
+    }
+
+    TEST(MetadataTranslation, TechnicalSourcesAreExactAsciiAndBounded)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/tiff/1.0/",
+                               "Make", "Clean ignored", EntryFlags::None, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/tiff/1.0",
+                               "Model", "Wrong namespace", EntryFlags::Dirty,
+                               1U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        MetaStore translated;
+        MetadataTechnicalTranslationOptions options;
+        MetadataTechnicalTranslationResult result
+            = translate_xmp_technical_metadata(source, options, &translated);
+        ASSERT_EQ(result.status, MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(result.source_properties, 0U);
+
+        options.source_mode = MetadataTechnicalTranslationSourceMode::All;
+        result = translate_xmp_technical_metadata(source, options, &translated);
+        ASSERT_EQ(result.status, MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_TRUE(
+            active_exif_ifd_text(translated, "ifd0", 0x010fU, "Clean ignored"));
+        EXPECT_EQ(active_exif_count(translated, 0x0110U), 0U);
+
+        MetaStore ambiguous;
+        const BlockId ambiguous_block = ambiguous.add_block(BlockInfo {});
+        ASSERT_NE(ambiguous_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&ambiguous, ambiguous_block,
+                               "http://ns.adobe.com/tiff/1.0/", "Model", "A",
+                               EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&ambiguous, ambiguous_block,
+                               "http://ns.adobe.com/tiff/1.0/", "Model", "B",
+                               EntryFlags::Dirty, 1U),
+                  kInvalidEntryId);
+        ambiguous.finalize();
+        options.source_mode = MetadataTechnicalTranslationSourceMode::DirtyOnly;
+        result = translate_xmp_technical_metadata(ambiguous, options,
+                                                  &translated);
+        EXPECT_EQ(result.status,
+                  MetadataTechnicalTranslationStatus::AmbiguousSource);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataTechnicalTranslationMapping::TiffModel);
+        EXPECT_TRUE(
+            active_exif_ifd_text(translated, "ifd0", 0x010fU, "Clean ignored"));
+
+        MetaStore invalid;
+        const BlockId invalid_block = invalid.add_block(BlockInfo {});
+        ASSERT_NE(invalid_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&invalid, invalid_block,
+                               "http://ns.adobe.com/tiff/1.0/", "Make",
+                               "M\xc3\xa4ke", EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        invalid.finalize();
+        result = translate_xmp_technical_metadata(invalid, options,
+                                                  &translated);
+        EXPECT_EQ(result.status,
+                  MetadataTechnicalTranslationStatus::NonAsciiSource);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataTechnicalTranslationMapping::TiffMake);
+        EXPECT_TRUE(
+            active_exif_ifd_text(translated, "ifd0", 0x010fU, "Clean ignored"));
+
+        MetaStore embedded_nul;
+        const BlockId embedded_nul_block = embedded_nul.add_block(BlockInfo {});
+        ASSERT_NE(embedded_nul_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&embedded_nul, embedded_nul_block,
+                               "http://ns.adobe.com/tiff/1.0/", "Model",
+                               std::string_view("A\0B", 3U), EntryFlags::Dirty,
+                               0U),
+                  kInvalidEntryId);
+        embedded_nul.finalize();
+        result = translate_xmp_technical_metadata(embedded_nul, options,
+                                                  &translated);
+        EXPECT_EQ(result.status,
+                  MetadataTechnicalTranslationStatus::NonAsciiSource);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataTechnicalTranslationMapping::TiffModel);
+
+        MetaStore oversized;
+        const BlockId oversized_block = oversized.add_block(BlockInfo {});
+        ASSERT_NE(oversized_block, kInvalidBlockId);
+        const std::string long_model(33U, 'x');
+        ASSERT_NE(add_xmp_text(&oversized, oversized_block,
+                               "http://ns.adobe.com/tiff/1.0/", "Model",
+                               long_model, EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        oversized.finalize();
+        options.max_text_bytes_per_property = 32U;
+        result = translate_xmp_technical_metadata(oversized, options,
+                                                  &translated);
+        EXPECT_EQ(result.status,
+                  MetadataTechnicalTranslationStatus::ValueTooLong);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataTechnicalTranslationMapping::TiffModel);
+
+        options.max_text_bytes_per_property
+            = kMetadataTechnicalTranslationMaxTextBytesPerProperty;
+        options.max_total_text_bytes = 32U;
+        result = translate_xmp_technical_metadata(oversized, options,
+                                                  &translated);
+        EXPECT_EQ(result.status,
+                  MetadataTechnicalTranslationStatus::SourceLimitExceeded);
+
+        MetaStore malformed_date;
+        const BlockId malformed_date_block = malformed_date.add_block(
+            BlockInfo {});
+        ASSERT_NE(malformed_date_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&malformed_date, malformed_date_block,
+                               "http://ns.adobe.com/xap/1.0/", "ModifyDate",
+                               "2026-02-29T01:02:03Z", EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        malformed_date.finalize();
+        options.max_total_text_bytes
+            = kMetadataTechnicalTranslationMaxTotalTextBytes;
+        result = translate_xmp_technical_metadata(malformed_date, options,
+                                                  &translated);
+        EXPECT_EQ(result.status,
+                  MetadataTechnicalTranslationStatus::InvalidDateTime);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataTechnicalTranslationMapping::XmpModifyDate);
+
+        MetaStore date_only;
+        const BlockId date_only_block = date_only.add_block(BlockInfo {});
+        ASSERT_NE(date_only_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&date_only, date_only_block,
+                               "http://ns.adobe.com/xap/1.0/", "ModifyDate",
+                               "2026-08-31", EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        date_only.finalize();
+        result = translate_xmp_technical_metadata(date_only, options,
+                                                  &translated);
+        EXPECT_EQ(result.status,
+                  MetadataTechnicalTranslationStatus::UnsupportedPrecision);
+    }
+
+    TEST(MetadataTranslation,
+         TechnicalConflictReplacementAndRemovalAreTransactional)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/tiff/1.0/",
+                               "Make", "Replacement", EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&source, block, "ifd0", 0x010fU, "Old A",
+                                    1U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&source, block, "ifd0", 0x010fU, "Old B",
+                                    2U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        MetadataTechnicalTranslationOptions options;
+        options.modify_date_to_exif_datetime  = false;
+        options.model_to_exif_model           = false;
+        options.creator_tool_to_exif_software = false;
+        options.conflict_policy
+            = MetadataTechnicalTranslationConflictPolicy::PreserveExisting;
+        MetaStore output;
+        MetadataTechnicalTranslationResult result
+            = translate_xmp_technical_metadata(source, options, &output);
+        ASSERT_EQ(result.status, MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(result.groups_preserved, 1U);
+        EXPECT_TRUE(active_exif_ifd_text(output, "ifd0", 0x010fU, "Old A"));
+
+        options.conflict_policy
+            = MetadataTechnicalTranslationConflictPolicy::FailOnConflict;
+        result = translate_xmp_technical_metadata(source, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataTechnicalTranslationStatus::NativeConflict);
+
+        options.conflict_policy
+            = MetadataTechnicalTranslationConflictPolicy::ReplaceExisting;
+        options.max_operations = 1U;
+        result = translate_xmp_technical_metadata(source, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataTechnicalTranslationStatus::OperationLimitExceeded);
+
+        options.max_operations = kMetadataTechnicalTranslationMaxOperations;
+        result = translate_xmp_technical_metadata(source, options, &output);
+        ASSERT_EQ(result.status, MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(result.entries_updated, 1U);
+        EXPECT_EQ(result.entries_removed, 1U);
+        EXPECT_EQ(active_exif_count(output, 0x010fU), 1U);
+        EXPECT_TRUE(
+            active_exif_ifd_text(output, "ifd0", 0x010fU, "Replacement"));
+
+        MetaStore removal;
+        const BlockId removal_block = removal.add_block(BlockInfo {});
+        ASSERT_NE(removal_block, kInvalidBlockId);
+        Entry removed_xmp;
+        removed_xmp.key          = make_xmp_property_key(removal.arena(),
+                                                         "http://ns.adobe.com/tiff/1.0/",
+                                                         "Model");
+        removed_xmp.value        = make_text(removal.arena(), "Old model",
+                                             TextEncoding::Utf8);
+        removed_xmp.origin.block = removal_block;
+        removed_xmp.flags        = EntryFlags::Dirty | EntryFlags::Deleted;
+        ASSERT_NE(removal.add_entry(removed_xmp), kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&removal, removal_block, "ifd0", 0x0110U,
+                                    "Old model", 1U),
+                  kInvalidEntryId);
+        removal.finalize();
+        options.make_to_exif_make   = false;
+        options.model_to_exif_model = true;
+        options.conflict_policy
+            = MetadataTechnicalTranslationConflictPolicy::ReplaceExisting;
+        result = translate_xmp_technical_metadata(removal, options, &output);
+        ASSERT_EQ(result.status, MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(result.entries_removed, 1U);
+        EXPECT_EQ(active_exif_count(output, 0x0110U), 0U);
     }
 
     TEST(MetadataTranslation, TranslatesDescriptiveXmpToBoundedIptcGroups)
