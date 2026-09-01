@@ -1,5 +1,34 @@
 # OpenMeta Changes
 
+## 0.4.126 - 2026-09-01
+
+Changes compared with `0.4.125`.
+
+### Added
+
+- Added target-neutral immutable canonical TIFF/EXIF patch plans with opaque
+  plan-scoped handles for exact key occurrences and independently owned mutable
+  worker instances.
+- Added typed fixed-width scalar, rational, array, byte, and ASCII/UTF-8 patch
+  batches with allocation-free execution and canonical payload replay.
+
+### Changed
+
+- Canonical TIFF serialization now records source-backed patch locations during
+  preparation without exposing offsets or making regenerated IFD pointers and
+  synthetic fields patchable.
+- Writing and host-integration documentation now defines the lifecycle,
+  container boundary, concurrency rules, supported classic-TIFF types, and
+  variable-width/MakerNote limitations of prepared canonical patching.
+
+### Tests And Validation
+
+- Added inline/out-of-line typed patch, decode round-trip, duplicate-occurrence,
+  foreign-handle, duplicate-handle, alias, rollback, immutable-plan, independent
+  worker, and no-reallocation regressions.
+- Extended the installed shared-library consumer to compile and execute the new
+  canonical patch contract through exported package targets.
+
 ## 0.4.125 - 2026-09-01
 
 Changes compared with `0.4.124`.

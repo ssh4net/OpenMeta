@@ -50,9 +50,13 @@ The canonical payload maps to current transfer carriers as follows:
 payload. Hosts writing a different container should own its framing and use
 the canonical bytes directly.
 
-The current time-patch map remains target-specific and is still exposed
-through prepared transfer handoffs. General target-neutral compiled patch
-handles are a later milestone; do not retain or infer private TIFF byte offsets.
+For fixed-width values that must change during repeated execution,
+[`exif_tiff_patch.h`](../src/include/openmeta/exif_tiff_patch.h) compiles exact
+key occurrences into opaque plan-scoped handles. Its immutable canonical plan,
+per-worker instances, transactional typed patches, and payload replay remain
+independent of container selection. See
+[`canonical_patching.md`](canonical_patching.md). Do not retain or infer private
+TIFF byte offsets.
 
 ## Policy And Limits
 

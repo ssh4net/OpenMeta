@@ -998,6 +998,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/exif_tag_names_test.cc
     tests/exr_adapter_test.cc
     tests/exr_decode_test.cc
+    tests/exif_tiff_patch_test.cc
     tests/exif_tiff_decode_test.cc
     tests/exif_value_names_test.cc
     tests/geotiff_decode_test.cc

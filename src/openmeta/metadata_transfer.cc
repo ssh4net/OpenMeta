@@ -7,6 +7,7 @@
 #include "openmeta/container_scan.h"
 #include "openmeta/exif_tag_names.h"
 #include "openmeta/exif_tiff_decode.h"
+#include "openmeta/exif_tiff_patch.h"
 #include "openmeta/exif_tiff_serialize.h"
 #include "openmeta/interop_export.h"
 #include "openmeta/jumbf_decode.h"
@@ -18,6 +19,7 @@
 #include "crw_ciff_decode_internal.h"
 #include "interop_safety_internal.h"
 #include "interop_value_format_internal.h"
+#include "metadata_logical_field_internal.h"
 #include "raf_decode_internal.h"
 #include "x3f_decode_internal.h"
 
@@ -30,6 +32,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -142,6 +145,26 @@ build_prepared_bundle_webp_package(std::span<const std::byte> input_webp,
                                    bool strip_existing_xmp,
                                    PreparedTransferPackagePlan* out_plan,
                                    uint32_t* out_removed_chunks) noexcept;
+
+struct ExifTiffPatchHandleAccess final {
+    static ExifTiffPatchHandle make(uint64_t plan_id, uint32_t index) noexcept
+    {
+        ExifTiffPatchHandle handle;
+        handle.token_ = (plan_id << 16U) | static_cast<uint64_t>(index + 1U);
+        return handle;
+    }
+
+    static uint64_t plan_id(ExifTiffPatchHandle handle) noexcept
+    {
+        return handle.token_ >> 16U;
+    }
+
+    static uint32_t index(ExifTiffPatchHandle handle) noexcept
+    {
+        const uint32_t encoded = static_cast<uint16_t>(handle.token_);
+        return encoded == 0U ? UINT32_MAX : encoded - 1U;
+    }
+};
 
 namespace {
 
@@ -576,6 +599,7 @@ namespace {
         uint16_t type         = 0;
         uint32_t count        = 0;
         uint32_t source_order = 0;
+        EntryId source_entry  = kInvalidEntryId;
         std::vector<std::byte> value;
         bool inline_value = false;
         std::array<std::byte, 4> inline_bytes {};
@@ -607,6 +631,14 @@ namespace {
         uint32_t preserved_raw_makernote_count        = 0;
         std::vector<std::byte> tiff_payload;
         std::vector<TimePatchSlot> time_patch_map;
+        struct PatchSourceSlot final {
+            EntryId source_entry = kInvalidEntryId;
+            uint32_t byte_offset = 0U;
+            uint32_t byte_width  = 0U;
+            uint16_t tiff_type   = 0U;
+            uint32_t tiff_count  = 0U;
+        };
+        std::vector<PatchSourceSlot> patch_source_slots;
     };
 
     struct TransferExifIfdRef final {
@@ -7146,10 +7178,36 @@ namespace {
         ifd0->entries.push_back(std::move(e));
     }
 
+    static void record_exif_patch_source_slot(const SerializedIfdEntry& entry,
+                                              uint32_t directory_value_offset,
+                                              uint64_t tiff_size,
+                                              ExifPackBuild* out) noexcept
+    {
+        if (!out || entry.source_entry == kInvalidEntryId || entry.value.empty()
+            || entry.value.size() > static_cast<size_t>(UINT32_MAX)) {
+            return;
+        }
+        const uint32_t byte_offset = entry.inline_value ? directory_value_offset
+                                                        : entry.value_offset;
+        if (byte_offset > tiff_size
+            || entry.value.size() > static_cast<size_t>(tiff_size)
+                                        - static_cast<size_t>(byte_offset)) {
+            return;
+        }
+        ExifPackBuild::PatchSourceSlot slot;
+        slot.source_entry = entry.source_entry;
+        slot.byte_offset  = byte_offset;
+        slot.byte_width   = static_cast<uint32_t>(entry.value.size());
+        slot.tiff_type    = entry.type;
+        slot.tiff_count   = entry.count;
+        out->patch_source_slots.push_back(slot);
+    }
+
     static ExifPackBuild build_exif_tiff_payload(
         const MetaStore& store, TransferPolicyAction makernote_policy,
         bool include_subifds, bool inject_minimal_dng_version,
-        bool honor_wire_type_hints, uint64_t max_output_bytes) noexcept
+        bool honor_wire_type_hints, uint64_t max_output_bytes,
+        bool collect_patch_source_slots) noexcept
     {
         ExifPackBuild out;
 
@@ -7161,7 +7219,11 @@ namespace {
         std::vector<SerializedIfd> subifds;
         bool saw_dng_version = false;
 
-        for (const Entry& e : store.entries()) {
+        const std::span<const Entry> source_entries = store.entries();
+        for (EntryId source_entry = 0U;
+             source_entry < static_cast<EntryId>(source_entries.size());
+             ++source_entry) {
+            const Entry& e = source_entries[source_entry];
             if (any(e.flags, EntryFlags::Deleted)
                 || e.key.kind != MetaKeyKind::ExifTag) {
                 continue;
@@ -7202,6 +7264,7 @@ namespace {
             SerializedIfdEntry encoded;
             encoded.tag          = tag;
             encoded.source_order = e.origin.order_in_block;
+            encoded.source_entry = source_entry;
             if (!encode_tiff_value(store, e, honor_wire_type_hints, &encoded)) {
                 note_exif_pack_skip(ifd_name, &out);
                 continue;
@@ -7528,6 +7591,10 @@ namespace {
                         out.skipped_count += 1U;
                     }
                 }
+                if (collect_patch_source_slots) {
+                    record_exif_patch_source_slot(e, p + 8U, tiff_bytes.size(),
+                                                  &out);
+                }
                 p += 12U;
             }
             uint32_t next_ifd_offset = 0U;
@@ -7589,6 +7656,10 @@ namespace {
                         out.skipped_count += 1U;
                     }
                 }
+                if (collect_patch_source_slots) {
+                    record_exif_patch_source_slot(e, p + 8U, tiff_bytes.size(),
+                                                  &out);
+                }
                 p += 12U;
             }
             uint32_t next_ifd_offset = 0U;
@@ -7620,6 +7691,10 @@ namespace {
                     }
                 } else {
                     put_u32le(&tiff_bytes, p + 8U, e.value_offset);
+                }
+                if (collect_patch_source_slots) {
+                    record_exif_patch_source_slot(e, p + 8U, tiff_bytes.size(),
+                                                  &out);
                 }
                 p += 12U;
             }
@@ -11959,6 +12034,434 @@ namespace {
                    : "dng target mode requires edit_target_path";
     }
 
+    struct CompiledExifTiffPatchSlot final {
+        uint32_t byte_offset = 0U;
+        uint32_t byte_width  = 0U;
+        ExifTiffPatchValueSpec value;
+    };
+
+    struct PreparedExifTiffPatchPlanState final {
+        uint32_t contract_version = kExifTiffPatchContractVersion;
+        uint64_t plan_id          = 0U;
+        std::vector<std::byte> payload;
+        std::vector<CompiledExifTiffPatchSlot> slots;
+    };
+
+    struct PreparedExifTiffPatchInstanceState final {
+        uint32_t contract_version = kExifTiffPatchContractVersion;
+        uint64_t plan_id          = 0U;
+        uint32_t seen_epoch       = 0U;
+        std::vector<std::byte> payload;
+        std::vector<CompiledExifTiffPatchSlot> slots;
+        std::vector<uint32_t> seen;
+    };
+
+    static PreparedExifTiffPatchPlanState*
+    exif_tiff_patch_plan_state(void* state) noexcept
+    {
+        return static_cast<PreparedExifTiffPatchPlanState*>(state);
+    }
+
+    static const PreparedExifTiffPatchPlanState*
+    const_exif_tiff_patch_plan_state(const void* state) noexcept
+    {
+        return static_cast<const PreparedExifTiffPatchPlanState*>(state);
+    }
+
+    static PreparedExifTiffPatchInstanceState*
+    exif_tiff_patch_instance_state(void* state) noexcept
+    {
+        return static_cast<PreparedExifTiffPatchInstanceState*>(state);
+    }
+
+    static const PreparedExifTiffPatchInstanceState*
+    const_exif_tiff_patch_instance_state(const void* state) noexcept
+    {
+        return static_cast<const PreparedExifTiffPatchInstanceState*>(state);
+    }
+
+    static ExifTiffPatchResult
+    make_exif_tiff_patch_error(ExifTiffPatchCode code,
+                               uint32_t failed_index = UINT32_MAX) noexcept
+    {
+        ExifTiffPatchResult result;
+        result.code         = code;
+        result.failed_index = failed_index;
+        return result;
+    }
+
+    static uint32_t meta_element_width(MetaElementType type) noexcept
+    {
+        switch (type) {
+        case MetaElementType::U8:
+        case MetaElementType::I8: return 1U;
+        case MetaElementType::U16:
+        case MetaElementType::I16: return 2U;
+        case MetaElementType::U32:
+        case MetaElementType::I32:
+        case MetaElementType::F32: return 4U;
+        case MetaElementType::U64:
+        case MetaElementType::I64:
+        case MetaElementType::F64:
+        case MetaElementType::URational:
+        case MetaElementType::SRational: return 8U;
+        }
+        return 0U;
+    }
+
+    static bool valid_exif_tiff_patch_value_spec(
+        const ExifTiffPatchValueSpec& spec) noexcept
+    {
+        if (spec.kind == MetaValueKind::Empty || spec.count == 0U
+            || meta_element_width(spec.elem_type) == 0U) {
+            return false;
+        }
+        if (spec.kind == MetaValueKind::Scalar) {
+            return spec.count == 1U
+                   && spec.text_encoding == TextEncoding::Unknown;
+        }
+        if (spec.kind == MetaValueKind::Array) {
+            return spec.text_encoding == TextEncoding::Unknown;
+        }
+        if (spec.kind == MetaValueKind::Bytes) {
+            return spec.elem_type == MetaElementType::U8
+                   && spec.text_encoding == TextEncoding::Unknown;
+        }
+        if (spec.kind == MetaValueKind::Text) {
+            return spec.elem_type == MetaElementType::U8
+                   && (spec.text_encoding == TextEncoding::Ascii
+                       || spec.text_encoding == TextEncoding::Utf8);
+        }
+        return false;
+    }
+
+    static bool exif_tiff_patch_value_specs_equal(
+        const ExifTiffPatchValueSpec& first,
+        const ExifTiffPatchValueSpec& second) noexcept
+    {
+        return first.kind == second.kind && first.elem_type == second.elem_type
+               && first.text_encoding == second.text_encoding
+               && first.count == second.count;
+    }
+
+    static ExifTiffPatchValueSpec
+    exif_tiff_patch_value_spec_from_value(const MetaValue& value) noexcept
+    {
+        ExifTiffPatchValueSpec spec;
+        spec.kind          = value.kind;
+        spec.elem_type     = value.elem_type;
+        spec.text_encoding = value.text_encoding;
+        spec.count         = value.count;
+        return spec;
+    }
+
+    static ExifTiffPatchValueSpec
+    exif_tiff_patch_value_spec_from_view(const MetaValueView& value) noexcept
+    {
+        ExifTiffPatchValueSpec spec;
+        spec.kind          = value.kind;
+        spec.elem_type     = value.elem_type;
+        spec.text_encoding = value.text_encoding;
+        spec.count         = value.count;
+        return spec;
+    }
+
+    static bool
+    exif_tiff_patch_serialized_width(const ExifTiffPatchValueSpec& spec,
+                                     uint32_t* out_width) noexcept
+    {
+        if (!out_width || !valid_exif_tiff_patch_value_spec(spec)) {
+            return false;
+        }
+        if (spec.kind == MetaValueKind::Bytes) {
+            *out_width = spec.count;
+            return true;
+        }
+        if (spec.kind == MetaValueKind::Text) {
+            if (spec.count == UINT32_MAX) {
+                return false;
+            }
+            *out_width = spec.count + 1U;
+            return true;
+        }
+        const uint32_t element_width = meta_element_width(spec.elem_type);
+        if (spec.count > UINT32_MAX / element_width) {
+            return false;
+        }
+        *out_width = spec.count * element_width;
+        return true;
+    }
+
+    static bool exif_tiff_patch_value_view_valid(
+        const MetaValueView& value,
+        const ExifTiffPatchValueSpec& expected) noexcept
+    {
+        const ExifTiffPatchValueSpec actual
+            = exif_tiff_patch_value_spec_from_view(value);
+        if (!exif_tiff_patch_value_specs_equal(actual, expected)) {
+            return false;
+        }
+        uint32_t serialized_width = 0U;
+        if (!exif_tiff_patch_serialized_width(actual, &serialized_width)) {
+            return false;
+        }
+        if (actual.kind == MetaValueKind::Scalar) {
+            if (!value.payload.empty()) {
+                return false;
+            }
+            switch (actual.elem_type) {
+            case MetaElementType::U8: return value.scalar.u64 <= UINT8_MAX;
+            case MetaElementType::U16: return value.scalar.u64 <= UINT16_MAX;
+            case MetaElementType::U32: return value.scalar.u64 <= UINT32_MAX;
+            case MetaElementType::I8:
+                return value.scalar.i64 >= INT8_MIN
+                       && value.scalar.i64 <= INT8_MAX;
+            case MetaElementType::I16:
+                return value.scalar.i64 >= INT16_MIN
+                       && value.scalar.i64 <= INT16_MAX;
+            case MetaElementType::I32:
+                return value.scalar.i64 >= INT32_MIN
+                       && value.scalar.i64 <= INT32_MAX;
+            case MetaElementType::URational: return value.scalar.ur.denom != 0U;
+            case MetaElementType::SRational: return value.scalar.sr.denom != 0;
+            case MetaElementType::U64:
+            case MetaElementType::I64:
+            case MetaElementType::F32:
+            case MetaElementType::F64: return true;
+            }
+            return false;
+        }
+        const uint32_t payload_width = actual.kind == MetaValueKind::Text
+                                           ? actual.count
+                                           : serialized_width;
+        if (value.payload.size() != static_cast<size_t>(payload_width)) {
+            return false;
+        }
+        if (actual.kind == MetaValueKind::Text) {
+            const std::string_view text(reinterpret_cast<const char*>(
+                                            value.payload.data()),
+                                        value.payload.size());
+            if (!detail::metadata_logical_text_is_valid(text)) {
+                return false;
+            }
+            if (actual.text_encoding == TextEncoding::Ascii) {
+                for (const char character : text) {
+                    if (static_cast<unsigned char>(character) > 0x7FU) {
+                        return false;
+                    }
+                }
+            }
+        }
+        if (actual.kind != MetaValueKind::Array
+            || (actual.elem_type != MetaElementType::URational
+                && actual.elem_type != MetaElementType::SRational)) {
+            return true;
+        }
+        for (uint32_t i = 0U; i < actual.count; ++i) {
+            uint32_t denominator = 0U;
+            std::memcpy(&denominator,
+                        value.payload.data() + static_cast<size_t>(i) * 8U + 4U,
+                        sizeof(denominator));
+            if (denominator == 0U) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool exif_tiff_patch_ranges_overlap(const void* first_data,
+                                               uint64_t first_size,
+                                               const void* second_data,
+                                               uint64_t second_size) noexcept
+    {
+        if (!first_data || !second_data || first_size == 0U
+            || second_size == 0U) {
+            return false;
+        }
+        const uintptr_t first_begin  = reinterpret_cast<uintptr_t>(first_data);
+        const uintptr_t second_begin = reinterpret_cast<uintptr_t>(second_data);
+        const uintptr_t max_address  = std::numeric_limits<uintptr_t>::max();
+        if (first_size > max_address - first_begin
+            || second_size > max_address - second_begin) {
+            return true;
+        }
+        const uintptr_t first_end = first_begin
+                                    + static_cast<uintptr_t>(first_size);
+        const uintptr_t second_end = second_begin
+                                     + static_cast<uintptr_t>(second_size);
+        return first_begin < second_end && second_begin < first_end;
+    }
+
+    static void patch_write_u16le(std::byte* out, uint16_t value) noexcept
+    {
+        out[0] = static_cast<std::byte>(value & 0xFFU);
+        out[1] = static_cast<std::byte>((value >> 8U) & 0xFFU);
+    }
+
+    static void patch_write_u32le(std::byte* out, uint32_t value) noexcept
+    {
+        out[0] = static_cast<std::byte>(value & 0xFFU);
+        out[1] = static_cast<std::byte>((value >> 8U) & 0xFFU);
+        out[2] = static_cast<std::byte>((value >> 16U) & 0xFFU);
+        out[3] = static_cast<std::byte>((value >> 24U) & 0xFFU);
+    }
+
+    static void patch_write_u64le(std::byte* out, uint64_t value) noexcept
+    {
+        patch_write_u32le(out, static_cast<uint32_t>(value & 0xFFFFFFFFULL));
+        patch_write_u32le(out + 4U, static_cast<uint32_t>(value >> 32U));
+    }
+
+    static void patch_write_scalar(std::byte* out,
+                                   const MetaValueView& value) noexcept
+    {
+        switch (value.elem_type) {
+        case MetaElementType::U8:
+            out[0] = static_cast<std::byte>(value.scalar.u64 & 0xFFU);
+            return;
+        case MetaElementType::I8:
+            out[0] = static_cast<std::byte>(
+                static_cast<uint8_t>(static_cast<int8_t>(value.scalar.i64)));
+            return;
+        case MetaElementType::U16:
+            patch_write_u16le(out, static_cast<uint16_t>(value.scalar.u64));
+            return;
+        case MetaElementType::I16:
+            patch_write_u16le(out, static_cast<uint16_t>(
+                                       static_cast<int16_t>(value.scalar.i64)));
+            return;
+        case MetaElementType::U32:
+            patch_write_u32le(out, static_cast<uint32_t>(value.scalar.u64));
+            return;
+        case MetaElementType::I32:
+            patch_write_u32le(out, static_cast<uint32_t>(
+                                       static_cast<int32_t>(value.scalar.i64)));
+            return;
+        case MetaElementType::U64:
+            patch_write_u64le(out, value.scalar.u64);
+            return;
+        case MetaElementType::I64:
+            patch_write_u64le(out, static_cast<uint64_t>(value.scalar.i64));
+            return;
+        case MetaElementType::F32:
+            patch_write_u32le(out, value.scalar.f32_bits);
+            return;
+        case MetaElementType::F64:
+            patch_write_u64le(out, value.scalar.f64_bits);
+            return;
+        case MetaElementType::URational:
+            patch_write_u32le(out, value.scalar.ur.numer);
+            patch_write_u32le(out + 4U, value.scalar.ur.denom);
+            return;
+        case MetaElementType::SRational:
+            patch_write_u32le(out,
+                              static_cast<uint32_t>(value.scalar.sr.numer));
+            patch_write_u32le(out + 4U,
+                              static_cast<uint32_t>(value.scalar.sr.denom));
+            return;
+        }
+    }
+
+    static void patch_write_array(std::byte* out,
+                                  const MetaValueView& value) noexcept
+    {
+        const uint32_t width = meta_element_width(value.elem_type);
+        if (width == 1U) {
+            std::memcpy(out, value.payload.data(), value.payload.size());
+            return;
+        }
+        for (uint32_t i = 0U; i < value.count; ++i) {
+            const size_t offset = static_cast<size_t>(i) * width;
+            if (width == 2U) {
+                uint16_t element = 0U;
+                std::memcpy(&element, value.payload.data() + offset,
+                            sizeof(element));
+                patch_write_u16le(out + offset, element);
+            } else if (width == 4U) {
+                uint32_t element = 0U;
+                std::memcpy(&element, value.payload.data() + offset,
+                            sizeof(element));
+                patch_write_u32le(out + offset, element);
+            } else if (value.elem_type == MetaElementType::URational
+                       || value.elem_type == MetaElementType::SRational) {
+                uint32_t first  = 0U;
+                uint32_t second = 0U;
+                std::memcpy(&first, value.payload.data() + offset,
+                            sizeof(first));
+                std::memcpy(&second, value.payload.data() + offset + 4U,
+                            sizeof(second));
+                patch_write_u32le(out + offset, first);
+                patch_write_u32le(out + offset + 4U, second);
+            } else {
+                uint64_t element = 0U;
+                std::memcpy(&element, value.payload.data() + offset,
+                            sizeof(element));
+                patch_write_u64le(out + offset, element);
+            }
+        }
+    }
+
+    static void patch_write_value(std::byte* out,
+                                  const MetaValueView& value) noexcept
+    {
+        if (value.kind == MetaValueKind::Scalar) {
+            patch_write_scalar(out, value);
+            return;
+        }
+        if (value.kind == MetaValueKind::Array) {
+            patch_write_array(out, value);
+            return;
+        }
+        if (!value.payload.empty()) {
+            std::memcpy(out, value.payload.data(), value.payload.size());
+        }
+        if (value.kind == MetaValueKind::Text) {
+            out[value.payload.size()] = std::byte { 0U };
+        }
+    }
+
+    static void exif_tiff_patch_hash_byte(uint64_t* hash,
+                                          uint8_t value) noexcept
+    {
+        *hash ^= value;
+        *hash *= 1099511628211ULL;
+    }
+
+    static void exif_tiff_patch_hash_u32(uint64_t* hash,
+                                         uint32_t value) noexcept
+    {
+        for (uint32_t i = 0U; i < 4U; ++i) {
+            exif_tiff_patch_hash_byte(hash, static_cast<uint8_t>(
+                                                (value >> (i * 8U)) & 0xFFU));
+        }
+    }
+
+    static uint64_t exif_tiff_patch_plan_id(
+        std::span<const std::byte> payload,
+        std::span<const CompiledExifTiffPatchSlot> slots) noexcept
+    {
+        uint64_t hash = 1469598103934665603ULL;
+        for (const std::byte value : payload) {
+            exif_tiff_patch_hash_byte(&hash, static_cast<uint8_t>(value));
+        }
+        for (const CompiledExifTiffPatchSlot& slot : slots) {
+            exif_tiff_patch_hash_u32(&hash, slot.byte_offset);
+            exif_tiff_patch_hash_u32(&hash, slot.byte_width);
+            exif_tiff_patch_hash_byte(&hash,
+                                      static_cast<uint8_t>(slot.value.kind));
+            exif_tiff_patch_hash_byte(&hash, static_cast<uint8_t>(
+                                                 slot.value.elem_type));
+            exif_tiff_patch_hash_byte(&hash, static_cast<uint8_t>(
+                                                 slot.value.text_encoding));
+            exif_tiff_patch_hash_u32(&hash, slot.value.count);
+        }
+        uint64_t result = (hash ^ (hash >> 48U)) & 0x0000FFFFFFFFFFFFULL;
+        if (result == 0U) {
+            result = 1U;
+        }
+        return result;
+    }
+
 }  // namespace
 
 ExifTiffSerializeResult
@@ -11994,7 +12497,7 @@ serialize_exif_tiff(const MetaStore& store, std::span<std::byte> output,
     const ExifPackBuild build = build_exif_tiff_payload(
         store, makernote_policy, options.include_subifds,
         options.inject_minimal_dng_version, options.honor_wire_type_hints,
-        options.max_output_bytes);
+        options.max_output_bytes, false);
     result.entries_serialized = build.serialized_count;
     result.entries_skipped    = build.skipped_count;
     if (build.limit_exceeded) {
@@ -12037,6 +12540,493 @@ exif_tiff_serialize_status_name(ExifTiffSerializeStatus status) noexcept
         return "serialization_failed";
     }
     return "unknown";
+}
+
+
+PreparedExifTiffPatchPlan::PreparedExifTiffPatchPlan() noexcept = default;
+
+
+PreparedExifTiffPatchPlan::~PreparedExifTiffPatchPlan() noexcept { reset(); }
+
+
+PreparedExifTiffPatchPlan::PreparedExifTiffPatchPlan(
+    PreparedExifTiffPatchPlan&& other) noexcept
+    : state_(other.state_)
+{
+    other.state_ = nullptr;
+}
+
+
+PreparedExifTiffPatchPlan&
+PreparedExifTiffPatchPlan::operator=(PreparedExifTiffPatchPlan&& other) noexcept
+{
+    if (this != &other) {
+        reset();
+        state_       = other.state_;
+        other.state_ = nullptr;
+    }
+    return *this;
+}
+
+
+bool
+PreparedExifTiffPatchPlan::valid() const noexcept
+{
+    const PreparedExifTiffPatchPlanState* state
+        = const_exif_tiff_patch_plan_state(state_);
+    return state && state->contract_version == kExifTiffPatchContractVersion
+           && state->plan_id != 0U && !state->payload.empty()
+           && !state->slots.empty();
+}
+
+
+uint32_t
+PreparedExifTiffPatchPlan::handle_count() const noexcept
+{
+    const PreparedExifTiffPatchPlanState* state
+        = const_exif_tiff_patch_plan_state(state_);
+    if (!state || state->contract_version != kExifTiffPatchContractVersion
+        || state->slots.size() > static_cast<size_t>(UINT32_MAX)) {
+        return 0U;
+    }
+    return static_cast<uint32_t>(state->slots.size());
+}
+
+
+std::span<const std::byte>
+PreparedExifTiffPatchPlan::payload() const noexcept
+{
+    const PreparedExifTiffPatchPlanState* state
+        = const_exif_tiff_patch_plan_state(state_);
+    if (!state || state->contract_version != kExifTiffPatchContractVersion) {
+        return {};
+    }
+    return std::span<const std::byte>(state->payload.data(),
+                                      state->payload.size());
+}
+
+
+void
+PreparedExifTiffPatchPlan::reset() noexcept
+{
+    delete exif_tiff_patch_plan_state(state_);
+    state_ = nullptr;
+}
+
+
+PreparedExifTiffPatchInstance::PreparedExifTiffPatchInstance() noexcept
+    = default;
+
+
+PreparedExifTiffPatchInstance::~PreparedExifTiffPatchInstance() noexcept
+{
+    reset();
+}
+
+
+PreparedExifTiffPatchInstance::PreparedExifTiffPatchInstance(
+    PreparedExifTiffPatchInstance&& other) noexcept
+    : state_(other.state_)
+{
+    other.state_ = nullptr;
+}
+
+
+PreparedExifTiffPatchInstance&
+PreparedExifTiffPatchInstance::operator=(
+    PreparedExifTiffPatchInstance&& other) noexcept
+{
+    if (this != &other) {
+        reset();
+        state_       = other.state_;
+        other.state_ = nullptr;
+    }
+    return *this;
+}
+
+
+bool
+PreparedExifTiffPatchInstance::valid() const noexcept
+{
+    const PreparedExifTiffPatchInstanceState* state
+        = const_exif_tiff_patch_instance_state(state_);
+    return state && state->contract_version == kExifTiffPatchContractVersion
+           && state->plan_id != 0U && !state->payload.empty()
+           && !state->slots.empty()
+           && state->seen.size() == state->slots.size();
+}
+
+
+uint32_t
+PreparedExifTiffPatchInstance::handle_count() const noexcept
+{
+    const PreparedExifTiffPatchInstanceState* state
+        = const_exif_tiff_patch_instance_state(state_);
+    if (!state || state->contract_version != kExifTiffPatchContractVersion
+        || state->slots.size() > static_cast<size_t>(UINT32_MAX)) {
+        return 0U;
+    }
+    return static_cast<uint32_t>(state->slots.size());
+}
+
+
+std::span<const std::byte>
+PreparedExifTiffPatchInstance::payload() const noexcept
+{
+    const PreparedExifTiffPatchInstanceState* state
+        = const_exif_tiff_patch_instance_state(state_);
+    if (!state || state->contract_version != kExifTiffPatchContractVersion) {
+        return {};
+    }
+    return std::span<const std::byte>(state->payload.data(),
+                                      state->payload.size());
+}
+
+
+void
+PreparedExifTiffPatchInstance::reset() noexcept
+{
+    delete exif_tiff_patch_instance_state(state_);
+    state_ = nullptr;
+}
+
+
+uint32_t
+exif_tiff_patch_contract_version() noexcept
+{
+    return kExifTiffPatchContractVersion;
+}
+
+
+const char*
+exif_tiff_patch_code_name(ExifTiffPatchCode code) noexcept
+{
+    switch (code) {
+    case ExifTiffPatchCode::None: return "none";
+    case ExifTiffPatchCode::NullOutput: return "null_output";
+    case ExifTiffPatchCode::InvalidOptions: return "invalid_options";
+    case ExifTiffPatchCode::StoreNotFinalized: return "store_not_finalized";
+    case ExifTiffPatchCode::InvalidMetadata: return "invalid_metadata";
+    case ExifTiffPatchCode::NoExifData: return "no_exif_data";
+    case ExifTiffPatchCode::LimitExceeded: return "limit_exceeded";
+    case ExifTiffPatchCode::SerializationFailed: return "serialization_failed";
+    case ExifTiffPatchCode::EmptyRequests: return "empty_requests";
+    case ExifTiffPatchCode::HandleBufferSizeMismatch:
+        return "handle_buffer_size_mismatch";
+    case ExifTiffPatchCode::InvalidRequest: return "invalid_request";
+    case ExifTiffPatchCode::KeyNotFound: return "key_not_found";
+    case ExifTiffPatchCode::OccurrenceOutOfRange:
+        return "occurrence_out_of_range";
+    case ExifTiffPatchCode::ValueTypeMismatch: return "value_type_mismatch";
+    case ExifTiffPatchCode::EntryNotSerializable:
+        return "entry_not_serializable";
+    case ExifTiffPatchCode::DuplicateRequest: return "duplicate_request";
+    case ExifTiffPatchCode::AllocationFailed: return "allocation_failed";
+    case ExifTiffPatchCode::InvalidPlan: return "invalid_plan";
+    case ExifTiffPatchCode::InvalidInstance: return "invalid_instance";
+    case ExifTiffPatchCode::EmptyUpdates: return "empty_updates";
+    case ExifTiffPatchCode::InvalidHandle: return "invalid_handle";
+    case ExifTiffPatchCode::ForeignHandle: return "foreign_handle";
+    case ExifTiffPatchCode::DuplicateHandle: return "duplicate_handle";
+    case ExifTiffPatchCode::WidthMismatch: return "width_mismatch";
+    case ExifTiffPatchCode::InvalidValue: return "invalid_value";
+    case ExifTiffPatchCode::ValueAliasesInstance:
+        return "value_aliases_instance";
+    }
+    return "unknown";
+}
+
+
+ExifTiffPatchResult
+prepare_exif_tiff_patch_plan(const MetaStore& store,
+                             std::span<const ExifTiffPatchRequest> requests,
+                             const ExifTiffPatchPlanOptions& options,
+                             std::span<ExifTiffPatchHandle> handles,
+                             PreparedExifTiffPatchPlan* out_plan) noexcept
+{
+    if (!out_plan) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::NullOutput);
+    }
+    if (options.max_patch_requests == 0U
+        || options.serialization.max_output_bytes == 0U
+        || options.serialization.max_output_bytes > UINT32_MAX
+        || static_cast<uint8_t>(options.serialization.makernote_policy)
+               > static_cast<uint8_t>(ExifTiffMakerNotePolicy::PreserveOpaque)) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::InvalidOptions);
+    }
+    if (requests.empty()) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::EmptyRequests);
+    }
+    if (requests.size() > options.max_patch_requests
+        || requests.size() > kMaxPreparedExifTiffPatchHandles) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::LimitExceeded);
+    }
+    if (handles.size() != requests.size()) {
+        return make_exif_tiff_patch_error(
+            ExifTiffPatchCode::HandleBufferSizeMismatch);
+    }
+    if (!store.is_finalized()) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::StoreNotFinalized);
+    }
+    if (options.serialization.validate) {
+        MetadataValidationOptions validation;
+        validation.require_finalized = true;
+        if (!validate_store(store, validation).ok()) {
+            return make_exif_tiff_patch_error(
+                ExifTiffPatchCode::InvalidMetadata);
+        }
+    }
+
+    const TransferPolicyAction makernote_policy
+        = options.serialization.makernote_policy
+                  == ExifTiffMakerNotePolicy::PreserveOpaque
+              ? TransferPolicyAction::Keep
+              : TransferPolicyAction::Drop;
+    ExifPackBuild build = build_exif_tiff_payload(
+        store, makernote_policy, options.serialization.include_subifds,
+        options.serialization.inject_minimal_dng_version,
+        options.serialization.honor_wire_type_hints,
+        options.serialization.max_output_bytes, true);
+    if (build.limit_exceeded) {
+        ExifTiffPatchResult result = make_exif_tiff_patch_error(
+            ExifTiffPatchCode::LimitExceeded);
+        result.serialize_status = ExifTiffSerializeStatus::LimitExceeded;
+        return result;
+    }
+    if (!build.produced || build.tiff_payload.empty()) {
+        ExifTiffPatchResult result = make_exif_tiff_patch_error(
+            build.source_count == 0U ? ExifTiffPatchCode::NoExifData
+                                     : ExifTiffPatchCode::SerializationFailed);
+        result.serialize_status
+            = build.source_count == 0U
+                  ? ExifTiffSerializeStatus::NoExifData
+                  : ExifTiffSerializeStatus::SerializationFailed;
+        return result;
+    }
+
+    std::vector<CompiledExifTiffPatchSlot> compiled;
+    compiled.reserve(requests.size());
+    for (uint32_t request_index = 0U;
+         request_index < static_cast<uint32_t>(requests.size());
+         ++request_index) {
+        const ExifTiffPatchRequest& request = requests[request_index];
+        if (request.key.kind != MetaKeyKind::ExifTag
+            || request.key.data.exif_tag.ifd.empty()
+            || !valid_exif_tiff_patch_value_spec(request.expected)) {
+            return make_exif_tiff_patch_error(ExifTiffPatchCode::InvalidRequest,
+                                              request_index);
+        }
+        const std::span<const EntryId> ids = store.find_all(request.key);
+        if (ids.empty()) {
+            return make_exif_tiff_patch_error(ExifTiffPatchCode::KeyNotFound,
+                                              request_index);
+        }
+        if (request.occurrence >= ids.size()) {
+            return make_exif_tiff_patch_error(
+                ExifTiffPatchCode::OccurrenceOutOfRange, request_index);
+        }
+        const EntryId source_entry = ids[request.occurrence];
+        for (uint32_t previous = 0U; previous < request_index; ++previous) {
+            const ExifTiffPatchRequest& prior        = requests[previous];
+            const std::span<const EntryId> prior_ids = store.find_all(
+                prior.key);
+            if (prior.occurrence < prior_ids.size()
+                && prior_ids[prior.occurrence] == source_entry) {
+                return make_exif_tiff_patch_error(
+                    ExifTiffPatchCode::DuplicateRequest, request_index);
+            }
+        }
+
+        const ExifTiffPatchValueSpec actual
+            = exif_tiff_patch_value_spec_from_value(
+                store.entry(source_entry).value);
+        if (!exif_tiff_patch_value_specs_equal(actual, request.expected)) {
+            return make_exif_tiff_patch_error(
+                ExifTiffPatchCode::ValueTypeMismatch, request_index);
+        }
+
+        const ExifPackBuild::PatchSourceSlot* source_slot = nullptr;
+        for (const ExifPackBuild::PatchSourceSlot& candidate :
+             build.patch_source_slots) {
+            if (candidate.source_entry == source_entry) {
+                source_slot = &candidate;
+                break;
+            }
+        }
+        if (!source_slot) {
+            return make_exif_tiff_patch_error(
+                ExifTiffPatchCode::EntryNotSerializable, request_index);
+        }
+        uint32_t expected_width = 0U;
+        if (!exif_tiff_patch_serialized_width(request.expected, &expected_width)
+            || expected_width != source_slot->byte_width) {
+            return make_exif_tiff_patch_error(ExifTiffPatchCode::WidthMismatch,
+                                              request_index);
+        }
+
+        CompiledExifTiffPatchSlot slot;
+        slot.byte_offset = source_slot->byte_offset;
+        slot.byte_width  = source_slot->byte_width;
+        slot.value       = request.expected;
+        compiled.push_back(slot);
+    }
+
+    PreparedExifTiffPatchPlanState* state = new (std::nothrow)
+        PreparedExifTiffPatchPlanState;
+    if (!state) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::AllocationFailed);
+    }
+    state->payload = std::move(build.tiff_payload);
+    state->slots   = std::move(compiled);
+    state->plan_id = exif_tiff_patch_plan_id(
+        std::span<const std::byte>(state->payload.data(), state->payload.size()),
+        std::span<const CompiledExifTiffPatchSlot>(state->slots.data(),
+                                                   state->slots.size()));
+
+    PreparedExifTiffPatchPlan prepared;
+    prepared.state_ = state;
+    for (uint32_t i = 0U; i < static_cast<uint32_t>(handles.size()); ++i) {
+        handles[i] = ExifTiffPatchHandleAccess::make(state->plan_id, i);
+    }
+    *out_plan = std::move(prepared);
+
+    ExifTiffPatchResult result;
+    result.payload_size = state->payload.size();
+    result.handle_count = static_cast<uint32_t>(state->slots.size());
+    return result;
+}
+
+
+ExifTiffPatchResult
+create_prepared_exif_tiff_patch_instance(
+    const PreparedExifTiffPatchPlan& plan,
+    PreparedExifTiffPatchInstance* out_instance) noexcept
+{
+    if (!out_instance) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::NullOutput);
+    }
+    const PreparedExifTiffPatchPlanState* source
+        = const_exif_tiff_patch_plan_state(plan.state_);
+    if (!source || source->contract_version != kExifTiffPatchContractVersion
+        || source->plan_id == 0U || source->payload.empty()
+        || source->slots.empty()) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::InvalidPlan);
+    }
+    PreparedExifTiffPatchInstanceState* state = new (std::nothrow)
+        PreparedExifTiffPatchInstanceState;
+    if (!state) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::AllocationFailed);
+    }
+    state->plan_id = source->plan_id;
+    state->payload = source->payload;
+    state->slots   = source->slots;
+    state->seen.assign(source->slots.size(), 0U);
+
+    PreparedExifTiffPatchInstance prepared;
+    prepared.state_ = state;
+    *out_instance   = std::move(prepared);
+
+    ExifTiffPatchResult result;
+    result.payload_size = state->payload.size();
+    result.handle_count = static_cast<uint32_t>(state->slots.size());
+    return result;
+}
+
+
+ExifTiffPatchResult
+patch_prepared_exif_tiff_instance(
+    PreparedExifTiffPatchInstance* instance,
+    std::span<const ExifTiffPatchUpdate> updates) noexcept
+{
+    if (!instance) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::NullOutput);
+    }
+    PreparedExifTiffPatchInstanceState* state = exif_tiff_patch_instance_state(
+        instance->state_);
+    if (!state || state->contract_version != kExifTiffPatchContractVersion
+        || state->plan_id == 0U || state->payload.empty()
+        || state->slots.empty() || state->seen.size() != state->slots.size()) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::InvalidInstance);
+    }
+    if (updates.empty()) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::EmptyUpdates);
+    }
+    if (updates.size() > state->slots.size()) {
+        return make_exif_tiff_patch_error(ExifTiffPatchCode::LimitExceeded);
+    }
+    state->seen_epoch += 1U;
+    if (state->seen_epoch == 0U) {
+        std::fill(state->seen.begin(), state->seen.end(), 0U);
+        state->seen_epoch = 1U;
+    }
+
+    for (uint32_t update_index = 0U;
+         update_index < static_cast<uint32_t>(updates.size()); ++update_index) {
+        const ExifTiffPatchUpdate& update = updates[update_index];
+        if (!update.handle.valid()) {
+            return make_exif_tiff_patch_error(ExifTiffPatchCode::InvalidHandle,
+                                              update_index);
+        }
+        if (ExifTiffPatchHandleAccess::plan_id(update.handle)
+            != state->plan_id) {
+            return make_exif_tiff_patch_error(ExifTiffPatchCode::ForeignHandle,
+                                              update_index);
+        }
+        const uint32_t slot_index = ExifTiffPatchHandleAccess::index(
+            update.handle);
+        if (slot_index >= state->slots.size()) {
+            return make_exif_tiff_patch_error(ExifTiffPatchCode::InvalidHandle,
+                                              update_index);
+        }
+        if (state->seen[slot_index] == state->seen_epoch) {
+            return make_exif_tiff_patch_error(ExifTiffPatchCode::DuplicateHandle,
+                                              update_index);
+        }
+        state->seen[slot_index] = state->seen_epoch;
+
+        const CompiledExifTiffPatchSlot& slot = state->slots[slot_index];
+        const ExifTiffPatchValueSpec actual
+            = exif_tiff_patch_value_spec_from_view(update.value);
+        if (!exif_tiff_patch_value_specs_equal(actual, slot.value)) {
+            return make_exif_tiff_patch_error(
+                ExifTiffPatchCode::ValueTypeMismatch, update_index);
+        }
+        if (!exif_tiff_patch_value_view_valid(update.value, slot.value)) {
+            return make_exif_tiff_patch_error(ExifTiffPatchCode::InvalidValue,
+                                              update_index);
+        }
+        uint32_t update_width = 0U;
+        if (!exif_tiff_patch_serialized_width(actual, &update_width)
+            || update_width != slot.byte_width
+            || slot.byte_offset > state->payload.size()
+            || slot.byte_width > state->payload.size()
+                                     - static_cast<size_t>(slot.byte_offset)) {
+            return make_exif_tiff_patch_error(ExifTiffPatchCode::WidthMismatch,
+                                              update_index);
+        }
+        if (!update.value.payload.empty()
+            && exif_tiff_patch_ranges_overlap(state->payload.data(),
+                                              state->payload.size(),
+                                              update.value.payload.data(),
+                                              update.value.payload.size())) {
+            return make_exif_tiff_patch_error(
+                ExifTiffPatchCode::ValueAliasesInstance, update_index);
+        }
+    }
+
+    for (const ExifTiffPatchUpdate& update : updates) {
+        const uint32_t slot_index = ExifTiffPatchHandleAccess::index(
+            update.handle);
+        const CompiledExifTiffPatchSlot& slot = state->slots[slot_index];
+        patch_write_value(state->payload.data() + slot.byte_offset,
+                          update.value);
+    }
+
+    ExifTiffPatchResult result;
+    result.payload_size    = state->payload.size();
+    result.handle_count    = static_cast<uint32_t>(state->slots.size());
+    result.patched_handles = static_cast<uint32_t>(updates.size());
+    return result;
 }
 
 
@@ -12661,7 +13651,7 @@ prepare_metadata_for_target_impl(const MetaStore& store,
             prepared_store, effective_makernote,
             transfer_target_is_tiff_family(request.target_format),
             request.target_format == TransferTargetFormat::Dng, true,
-            kMaxJpegExifTiffBytes);
+            kMaxJpegExifTiffBytes, false);
         if (exif_build.produced && !exif_build.tiff_payload.empty()) {
             const uint32_t block_index = static_cast<uint32_t>(
                 bundle.blocks.size());

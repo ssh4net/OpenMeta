@@ -416,6 +416,17 @@ payload storage. Generic hosts can call
 `prepared_transfer_handoff_instance_time_patch_field(...)` during setup to
 obtain the exact width and slot count without exposing payload offsets.
 
+### Target-Neutral Canonical EXIF Patching
+
+Use `openmeta/exif_tiff_patch.h` when the destination container is host-owned or
+not known during metadata preparation. It compiles exact EXIF key occurrences
+into opaque handles over unwrapped canonical TIFF bytes. Preparation and worker
+creation may allocate; typed fixed-width patch batches and `payload()` replay do
+not. The host adds JPEG, PNG/WebP, JP2/JXL/BMFF, JPH, or private-container
+framing after patching. See
+[canonical_patching.md](canonical_patching.md) for the transaction, concurrency,
+and supported-type contract.
+
 ### Experimental Adapter-View Pattern
 
 Use this when you want one target-neutral operation list.

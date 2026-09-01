@@ -24,7 +24,7 @@ model should stay compact:
 | Editing | Modify existing logical metadata entries while preserving valid surrounding structure. | Medium-high, about 75-80%; the v1 logical add/set/remove transaction, deterministic occurrence handling, singleton conflict repair, dirty/tombstone behavior, provenance preservation, portable serialization, transfer visibility, and immutable thin Python wrapper are implemented. |
 | Transfer | Move metadata between files using explicit compatible-file or rendered-image safety policies. | High, about 85-90%; the primary writer contract, bounded EXIF/IPTC/XMP synchronization policy, compare-backed release gates, stable prepared handoff, and TIFF/DNG baseline are complete. |
 | Translation | Project metadata between families through explicit bounded mappings, including strict paired IPTC creation-date projection to XMP plus transactional reverse projection of edited XMP dates, common technical and capture fields, target-bound image geometry, and common descriptive properties into native EXIF/IPTC groups. | Medium-high, about 82-87%; exact date parsing, four technical and five typed capture EXIF mappings, target-validated orientation and complete stored-dimension groups, seven bounded descriptive IPTC mappings, repeated-value reconciliation, exact rational conversion, safe ASCII/UTF-8 handling, tombstone propagation, resource limits, JPEG/TIFF round trips, and thin Python exposure are implemented. |
-| Writing | Serialize metadata and write or rewrite it into target containers. | High, about 78-84%; target-neutral deterministic TIFF/EXIF measure/write now feeds existing JPEG/TIFF, PNG/WebP, JP2/JXL, and BMFF wrappers; JPEG is strong, TIFF/DNG have a bounded rewrite contract, and compact BMFF `iloc` fields can be normalized, while broader BMFF/JXL/EXR behavior remains intentionally bounded. |
+| Writing | Serialize metadata and write or rewrite it into target containers. | High, about 80-85%; target-neutral deterministic TIFF/EXIF measure/write plus immutable compiled fixed-width patch plans now feed host-owned replay and existing JPEG/TIFF, PNG/WebP, JP2/JXL, and BMFF wrappers; JPEG is strong, TIFF/DNG have a bounded rewrite contract, and compact BMFF `iloc` fields can be normalized, while broader BMFF/JXL/EXR behavior remains intentionally bounded. |
 | Adapters | Thin integration layers for host APIs or format-specific ecosystems such as EXR, DNG SDK, LibRaw orientation mapping, and flat host exports. | Medium, about 60-70%. |
 | Utilities | Small standalone helpers such as capability queries, compatibility dumps, safety audits, tag-name lookup, version-value formatting, and orientation conversion. | Medium, about 65-75%. |
 
@@ -39,16 +39,19 @@ independent conformance sample set, even though tracked inputs have explicit
 read outcomes.
 
 The logical and generic typed Creation, detached store validation, canonical
-TIFF/EXIF serialization, Editing, reverse-date, reverse-capture, target-bound
+TIFF/EXIF serialization and prepared fixed-width patching, Editing,
+reverse-date, reverse-capture, target-bound
 geometry, and reverse-descriptive Translation milestones are implemented in
 [`metadata_creation.h`](../src/include/openmeta/metadata_creation.h),
 [`metadata_authoring.h`](../src/include/openmeta/metadata_authoring.h),
-[`exif_tiff_serialize.h`](../src/include/openmeta/exif_tiff_serialize.h), and
+[`exif_tiff_serialize.h`](../src/include/openmeta/exif_tiff_serialize.h),
+[`exif_tiff_patch.h`](../src/include/openmeta/exif_tiff_patch.h),
 [`metadata_editing.h`](../src/include/openmeta/metadata_editing.h), plus
 [`metadata_translation.h`](../src/include/openmeta/metadata_translation.h),
 with their contracts documented in [`creation.md`](creation.md),
 [`generic_authoring.md`](generic_authoring.md),
 [`canonical_serialization.md`](canonical_serialization.md),
+[`canonical_patching.md`](canonical_patching.md),
 [`editing.md`](editing.md), and [`translation.md`](translation.md). The active
 implementation sequence continues through Transfer, Translation, and Writing.
 Creation and Editing resume for multilingual alternatives, full RDF structured

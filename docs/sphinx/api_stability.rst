@@ -155,6 +155,14 @@ Host-facing API map
      - Deterministic measure/write for unwrapped little-endian TIFF bytes. The
        same payload feeds existing target wrappers. Opaque MakerNotes drop by
        default. See :doc:`canonical_serialization`.
+   * - Prepared canonical TIFF/EXIF patching:
+       ``prepare_exif_tiff_patch_plan(...)``, immutable plans, worker
+       instances, and transactional typed patches
+     - ``openmeta/exif_tiff_patch.h``
+     - Experimental v1
+     - Target-neutral opaque handles for exact source-backed fixed-width
+       values. Preparation and worker creation may allocate; patch batches and
+       payload access do not. See :doc:`canonical_patching`.
    * - Logical metadata editing: ``edit_metadata(...)`` and add/set/remove
        helpers
      - ``openmeta/metadata_editing.h``

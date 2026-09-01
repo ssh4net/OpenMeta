@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <openmeta/build_info.h>
+#include <openmeta/exif_tiff_patch.h>
 #include <openmeta/exif_tiff_serialize.h>
 #include <openmeta/host_adoption.h>
 #include <openmeta/metadata_authoring.h>
@@ -76,6 +77,38 @@ main()
                  == openmeta::ExifTiffSerializeStatus::OutputTruncated
           && measured.needed != 0U && serialized.ok()
           && serialized.written == measured.needed;
+    openmeta::ExifTiffPatchRequest patch_request;
+    patch_request.key = openmeta::make_exif_tag_key_view("ifd0", 0x0112U);
+    patch_request.expected.kind      = openmeta::MetaValueKind::Scalar;
+    patch_request.expected.elem_type = openmeta::MetaElementType::U16;
+    patch_request.expected.count     = 1U;
+    openmeta::ExifTiffPatchHandle patch_handle;
+    openmeta::PreparedExifTiffPatchPlan patch_plan;
+    const openmeta::ExifTiffPatchResult patch_prepared
+        = openmeta::prepare_exif_tiff_patch_plan(
+            authored,
+            std::span<const openmeta::ExifTiffPatchRequest>(&patch_request, 1U),
+            {}, std::span<openmeta::ExifTiffPatchHandle>(&patch_handle, 1U),
+            &patch_plan);
+    openmeta::PreparedExifTiffPatchInstance patch_instance;
+    const openmeta::ExifTiffPatchResult patch_instance_created
+        = openmeta::create_prepared_exif_tiff_patch_instance(patch_plan,
+                                                             &patch_instance);
+    const openmeta::ExifTiffPatchUpdate patch_update {
+        patch_handle,
+        openmeta::make_value_view_u16(3U),
+    };
+    const openmeta::ExifTiffPatchResult canonical_patched
+        = openmeta::patch_prepared_exif_tiff_instance(
+            &patch_instance,
+            std::span<const openmeta::ExifTiffPatchUpdate>(&patch_update, 1U));
+    const bool canonical_patch_contract_matches
+        = openmeta::exif_tiff_patch_contract_version()
+              == openmeta::kExifTiffPatchContractVersion
+          && patch_prepared.ok() && patch_instance_created.ok()
+          && canonical_patched.ok() && patch_plan.valid()
+          && patch_instance.valid()
+          && patch_plan.payload().size() == patch_instance.payload().size();
     openmeta::PreparedTransferHandoff handoff;
     openmeta::PreparedTransferHandoffInstance instance;
     openmeta::PreparedTransferHandoffTimePatchFieldView field;
@@ -99,7 +132,8 @@ main()
                    || !handoff_contract_matches || !instance_contract_matches
                    || !translation_contract_matches
                    || !descriptive_translation_contract_matches
-                   || !authoring_contract_matches || handoff.valid()
+                   || !authoring_contract_matches
+                   || !canonical_patch_contract_matches || handoff.valid()
                    || instance.valid()
                    || created.code
                           != openmeta::PreparedTransferHandoffCode::InvalidState

@@ -52,6 +52,7 @@ and must not be used as an asset-authenticity or trust gate.
    editing
    translation
    canonical_serialization
+   canonical_patching
    raw_read_parity_plan
    build
    shared_library

@@ -27,6 +27,10 @@ Preparation may allocate. Serialize once and retain immutable bytes for an
 allocation-free replay path. Repeated serialization against an immutable
 finalized store is deterministic and thread-safe.
 
+For repeated fixed-width changes, ``openmeta/exif_tiff_patch.h`` compiles exact
+key occurrences into opaque target-neutral handles. See
+:doc:`canonical_patching`.
+
 Validation and output bounds are enabled by default. Opaque MakerNotes are
 dropped unless explicitly preserved, and preservation does not reconstruct or
 relocate vendor-private tables. The host must still ensure that image-dependent
