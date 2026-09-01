@@ -7,9 +7,11 @@
 #include "openmeta/container_scan.h"
 #include "openmeta/exif_tag_names.h"
 #include "openmeta/exif_tiff_decode.h"
+#include "openmeta/exif_tiff_serialize.h"
 #include "openmeta/interop_export.h"
 #include "openmeta/jumbf_decode.h"
 #include "openmeta/mapped_file.h"
+#include "openmeta/validate.h"
 #include "openmeta/vendor_raw_processing.h"
 #include "openmeta/xmp_dump.h"
 
@@ -597,10 +599,13 @@ namespace {
 
     struct ExifPackBuild final {
         bool produced                                 = false;
+        bool limit_exceeded                           = false;
+        uint32_t source_count                         = 0;
+        uint32_t serialized_count                     = 0;
         uint32_t skipped_count                        = 0;
         uint32_t decoded_only_makernote_skipped_count = 0;
         uint32_t preserved_raw_makernote_count        = 0;
-        std::vector<std::byte> app1_payload;
+        std::vector<std::byte> tiff_payload;
         std::vector<TimePatchSlot> time_patch_map;
     };
 
@@ -6850,7 +6855,72 @@ namespace {
         }
     }
 
+    static bool encode_tiff_array_value(const MetaStore& store,
+                                        const MetaValue& value,
+                                        SerializedIfdEntry* out) noexcept
+    {
+        out->type = tiff_type_from_elem(value.elem_type);
+        if (out->type == 0U) {
+            return false;
+        }
+        const uint32_t width                   = tiff_type_size(out->type);
+        const std::span<const std::byte> bytes = store.arena().span(
+            value.data.span);
+        if (width == 0U) {
+            return false;
+        }
+        uint32_t count = value.count;
+        if (count == 0U) {
+            if (bytes.size() % width != 0U
+                || bytes.size() / width > UINT32_MAX) {
+                return false;
+            }
+            count = static_cast<uint32_t>(bytes.size() / width);
+        } else if (static_cast<uint64_t>(count) * width != bytes.size()) {
+            return false;
+        }
+        out->count = count;
+        if (width == 1U) {
+            out->value.assign(bytes.begin(), bytes.end());
+            return true;
+        }
+        out->value.reserve(bytes.size());
+        for (uint32_t i = 0U; i < count; ++i) {
+            const size_t offset = static_cast<size_t>(i) * width;
+            if (width == 2U) {
+                uint16_t element = 0U;
+                std::memcpy(&element, bytes.data() + offset, sizeof(element));
+                append_u16le(&out->value, element);
+            } else if (width == 4U) {
+                uint32_t element = 0U;
+                std::memcpy(&element, bytes.data() + offset, sizeof(element));
+                append_u32le(&out->value, element);
+            } else if (width == 8U) {
+                if (value.elem_type == MetaElementType::F64) {
+                    uint64_t bits = 0U;
+                    std::memcpy(&bits, bytes.data() + offset, sizeof(bits));
+                    append_u32le(&out->value,
+                                 static_cast<uint32_t>(bits & 0xFFFFFFFFULL));
+                    append_u32le(&out->value,
+                                 static_cast<uint32_t>(bits >> 32U));
+                } else {
+                    uint32_t first  = 0U;
+                    uint32_t second = 0U;
+                    std::memcpy(&first, bytes.data() + offset, sizeof(first));
+                    std::memcpy(&second, bytes.data() + offset + 4U,
+                                sizeof(second));
+                    append_u32le(&out->value, first);
+                    append_u32le(&out->value, second);
+                }
+            } else {
+                return false;
+            }
+        }
+        return true;
+    }
+
     static bool encode_tiff_value(const MetaStore& store, const Entry& e,
+                                  bool honor_wire_type_hints,
                                   SerializedIfdEntry* out) noexcept
     {
         if (!out) {
@@ -6872,7 +6942,14 @@ namespace {
             return true;
         }
         if (v.kind == MetaValueKind::Bytes) {
-            out->type                              = 7U;  // UNDEFINED
+            out->type = 7U;  // UNDEFINED
+            if (honor_wire_type_hints
+                && e.origin.wire_type.family == WireFamily::Tiff
+                && (e.origin.wire_type.code == 1U
+                    || e.origin.wire_type.code == 6U
+                    || e.origin.wire_type.code == 7U)) {
+                out->type = e.origin.wire_type.code;
+            }
             const std::span<const std::byte> bytes = store.arena().span(
                 v.data.span);
             out->value.assign(bytes.begin(), bytes.end());
@@ -6880,23 +6957,7 @@ namespace {
             return true;
         }
         if (v.kind == MetaValueKind::Array) {
-            out->type = tiff_type_from_elem(v.elem_type);
-            if (out->type == 0U) {
-                return false;
-            }
-            const std::span<const std::byte> bytes = store.arena().span(
-                v.data.span);
-            out->value.assign(bytes.begin(), bytes.end());
-            out->count = v.count;
-            if (out->count == 0U) {
-                const uint32_t elem_size = tiff_type_size(out->type);
-                if (elem_size == 0U || out->value.size() % elem_size != 0U) {
-                    return false;
-                }
-                out->count = static_cast<uint32_t>(out->value.size()
-                                                   / elem_size);
-            }
-            return true;
+            return encode_tiff_array_value(store, v, out);
         }
         if (v.kind != MetaValueKind::Scalar) {
             return false;
@@ -7085,9 +7146,10 @@ namespace {
         ifd0->entries.push_back(std::move(e));
     }
 
-    static ExifPackBuild build_jpeg_exif_app1_payload(
+    static ExifPackBuild build_exif_tiff_payload(
         const MetaStore& store, TransferPolicyAction makernote_policy,
-        bool include_subifds, bool inject_minimal_dng_version) noexcept
+        bool include_subifds, bool inject_minimal_dng_version,
+        bool honor_wire_type_hints, uint64_t max_output_bytes) noexcept
     {
         ExifPackBuild out;
 
@@ -7104,6 +7166,7 @@ namespace {
                 || e.key.kind != MetaKeyKind::ExifTag) {
                 continue;
             }
+            out.source_count += 1U;
 
             std::string_view ifd_name;
             if (!ifd_name_for_entry(store, e, &ifd_name)) {
@@ -7139,7 +7202,7 @@ namespace {
             SerializedIfdEntry encoded;
             encoded.tag          = tag;
             encoded.source_order = e.origin.order_in_block;
-            if (!encode_tiff_value(store, e, &encoded)) {
+            if (!encode_tiff_value(store, e, honor_wire_type_hints, &encoded)) {
                 note_exif_pack_skip(ifd_name, &out);
                 continue;
             }
@@ -7176,6 +7239,7 @@ namespace {
             }
             dst->present = true;
             dst->entries.push_back(std::move(encoded));
+            out.serialized_count += 1U;
         }
 
         maybe_add_synthetic_dng_version(&ifd0, inject_minimal_dng_version,
@@ -7396,7 +7460,8 @@ namespace {
             }
         }
 
-        if (data_cursor > kMaxJpegExifTiffBytes) {
+        if (data_cursor > max_output_bytes) {
+            out.limit_exceeded = true;
             return out;
         }
 
@@ -7456,7 +7521,7 @@ namespace {
                         TimePatchSlot slot_desc;
                         slot_desc.field       = patch_field;
                         slot_desc.block_index = 0U;
-                        slot_desc.byte_offset = 6U + patch_offset;
+                        slot_desc.byte_offset = patch_offset;
                         slot_desc.width = static_cast<uint16_t>(patch_width);
                         out.time_patch_map.push_back(slot_desc);
                     } else {
@@ -7517,7 +7582,7 @@ namespace {
                         TimePatchSlot slot_desc;
                         slot_desc.field       = patch_field;
                         slot_desc.block_index = 0U;
-                        slot_desc.byte_offset = 6U + patch_offset;
+                        slot_desc.byte_offset = patch_offset;
                         slot_desc.width = static_cast<uint16_t>(patch_width);
                         out.time_patch_map.push_back(slot_desc);
                     } else {
@@ -7621,12 +7686,8 @@ namespace {
             }
         }
 
-        append_ascii_bytes(&out.app1_payload, "Exif");
-        out.app1_payload.push_back(std::byte { 0x00 });
-        out.app1_payload.push_back(std::byte { 0x00 });
-        out.app1_payload.insert(out.app1_payload.end(), tiff_bytes.begin(),
-                                tiff_bytes.end());
-        out.produced = true;
+        out.tiff_payload = std::move(tiff_bytes);
+        out.produced     = true;
         return out;
     }
 
@@ -10493,36 +10554,18 @@ namespace {
         return true;
     }
 
-    static bool
-    build_tiff_exif_payload_from_app1(std::span<const std::byte> exif_app1,
-                                      std::vector<std::byte>* out_payload,
-                                      std::string* err) noexcept
+    static void
+    append_exif_app1_payload_from_tiff(std::span<const std::byte> tiff,
+                                       std::vector<std::byte>* output) noexcept
     {
-        if (!out_payload) {
-            if (err) {
-                *err = "exif tiff output buffer is null";
-            }
-            return false;
+        if (!output) {
+            return;
         }
-        out_payload->clear();
-        if (exif_app1.size() < 14U) {
-            if (err) {
-                *err = "exif source app1 payload too small";
-            }
-            return false;
-        }
-        const char kExifPrefix[6] = { 'E', 'x', 'i', 'f', '\0', '\0' };
-        for (size_t i = 0; i < 6U; ++i) {
-            if (std::to_integer<uint8_t>(exif_app1[i])
-                != static_cast<uint8_t>(kExifPrefix[i])) {
-                if (err) {
-                    *err = "exif source payload missing Exif\\0\\0 prefix";
-                }
-                return false;
-            }
-        }
-        out_payload->assign(exif_app1.begin() + 6, exif_app1.end());
-        return !out_payload->empty();
+        output->reserve(output->size() + 6U + tiff.size());
+        append_ascii_bytes(output, "Exif");
+        output->push_back(std::byte { 0x00 });
+        output->push_back(std::byte { 0x00 });
+        output->insert(output->end(), tiff.begin(), tiff.end());
     }
 
     static bool
@@ -10534,21 +10577,18 @@ namespace {
         }
         if (target_format == TransferTargetFormat::Png
             || target_format == TransferTargetFormat::Webp) {
-            if (slot->byte_offset < 6U) {
-                return false;
-            }
-            slot->byte_offset -= 6U;
             return true;
         }
+        uint32_t prefix_bytes = 6U;
         if (target_format == TransferTargetFormat::Jxl
             || target_format == TransferTargetFormat::Jp2
             || transfer_target_is_bmff(target_format)) {
-            if (slot->byte_offset > UINT32_MAX - 4U) {
-                return false;
-            }
-            slot->byte_offset += 4U;
-            return true;
+            prefix_bytes = 10U;
         }
+        if (slot->byte_offset > UINT32_MAX - prefix_bytes) {
+            return false;
+        }
+        slot->byte_offset += prefix_bytes;
         return true;
     }
 
@@ -11921,6 +11961,85 @@ namespace {
 
 }  // namespace
 
+ExifTiffSerializeResult
+serialize_exif_tiff(const MetaStore& store, std::span<std::byte> output,
+                    const ExifTiffSerializeOptions& options) noexcept
+{
+    ExifTiffSerializeResult result;
+    if (options.max_output_bytes == 0U || options.max_output_bytes > UINT32_MAX
+        || static_cast<uint8_t>(options.makernote_policy)
+               > static_cast<uint8_t>(ExifTiffMakerNotePolicy::PreserveOpaque)) {
+        result.status = ExifTiffSerializeStatus::InvalidOptions;
+        return result;
+    }
+    if (!store.is_finalized()) {
+        result.status = ExifTiffSerializeStatus::StoreNotFinalized;
+        return result;
+    }
+    if (options.validate) {
+        MetadataValidationOptions validation;
+        validation.require_finalized           = true;
+        const MetadataValidationResult checked = validate_store(store,
+                                                                validation);
+        if (!checked.ok()) {
+            result.status = ExifTiffSerializeStatus::InvalidMetadata;
+            return result;
+        }
+    }
+
+    const TransferPolicyAction makernote_policy
+        = options.makernote_policy == ExifTiffMakerNotePolicy::PreserveOpaque
+              ? TransferPolicyAction::Keep
+              : TransferPolicyAction::Drop;
+    const ExifPackBuild build = build_exif_tiff_payload(
+        store, makernote_policy, options.include_subifds,
+        options.inject_minimal_dng_version, options.honor_wire_type_hints,
+        options.max_output_bytes);
+    result.entries_serialized = build.serialized_count;
+    result.entries_skipped    = build.skipped_count;
+    if (build.limit_exceeded) {
+        result.status = ExifTiffSerializeStatus::LimitExceeded;
+        return result;
+    }
+    if (!build.produced || build.tiff_payload.empty()) {
+        result.status = build.source_count == 0U
+                            ? ExifTiffSerializeStatus::NoExifData
+                            : ExifTiffSerializeStatus::SerializationFailed;
+        return result;
+    }
+
+    result.needed       = build.tiff_payload.size();
+    const size_t copied = std::min(output.size(), build.tiff_payload.size());
+    if (copied != 0U) {
+        std::memcpy(output.data(), build.tiff_payload.data(), copied);
+    }
+    result.written = copied;
+    result.status  = copied == build.tiff_payload.size()
+                         ? ExifTiffSerializeStatus::Ok
+                         : ExifTiffSerializeStatus::OutputTruncated;
+    return result;
+}
+
+
+const char*
+exif_tiff_serialize_status_name(ExifTiffSerializeStatus status) noexcept
+{
+    switch (status) {
+    case ExifTiffSerializeStatus::Ok: return "ok";
+    case ExifTiffSerializeStatus::OutputTruncated: return "output_truncated";
+    case ExifTiffSerializeStatus::InvalidOptions: return "invalid_options";
+    case ExifTiffSerializeStatus::StoreNotFinalized:
+        return "store_not_finalized";
+    case ExifTiffSerializeStatus::InvalidMetadata: return "invalid_metadata";
+    case ExifTiffSerializeStatus::NoExifData: return "no_exif_data";
+    case ExifTiffSerializeStatus::LimitExceeded: return "limit_exceeded";
+    case ExifTiffSerializeStatus::SerializationFailed:
+        return "serialization_failed";
+    }
+    return "unknown";
+}
+
+
 static PrepareTransferResult
 prepare_metadata_for_target_impl(const MetaStore& store,
                                  const PrepareTransferRequest& request,
@@ -12538,104 +12657,61 @@ prepare_metadata_for_target_impl(const MetaStore& store,
     }
 
     if (request.include_exif_app1 && has_exif) {
-        ExifPackBuild exif_build = build_jpeg_exif_app1_payload(
+        ExifPackBuild exif_build = build_exif_tiff_payload(
             prepared_store, effective_makernote,
             transfer_target_is_tiff_family(request.target_format),
-            request.target_format == TransferTargetFormat::Dng);
-        if (exif_build.produced && !exif_build.app1_payload.empty()) {
+            request.target_format == TransferTargetFormat::Dng, true,
+            kMaxJpegExifTiffBytes);
+        if (exif_build.produced && !exif_build.tiff_payload.empty()) {
             const uint32_t block_index = static_cast<uint32_t>(
                 bundle.blocks.size());
             PreparedTransferBlock b;
-            b.kind     = TransferBlockKind::Exif;
-            b.order    = 100U;
-            bool ready = true;
+            b.kind  = TransferBlockKind::Exif;
+            b.order = 100U;
+            const std::span<const std::byte> tiff(
+                exif_build.tiff_payload.data(), exif_build.tiff_payload.size());
             if (request.target_format == TransferTargetFormat::Jpeg) {
-                b.route   = "jpeg:app1-exif";
-                b.payload = std::move(exif_build.app1_payload);
+                b.route = "jpeg:app1-exif";
+                append_exif_app1_payload_from_tiff(tiff, &b.payload);
             } else if (transfer_target_is_tiff_family(request.target_format)) {
                 // TIFF backends can consume this as a serialized Exif APP1 blob
                 // and materialize ExifIFD pointers/entries natively.
-                b.route   = "tiff:ifd-exif-app1";
-                b.payload = std::move(exif_build.app1_payload);
+                b.route = "tiff:ifd-exif-app1";
+                append_exif_app1_payload_from_tiff(tiff, &b.payload);
             } else if (request.target_format == TransferTargetFormat::Png) {
-                std::string err;
-                if (!build_tiff_exif_payload_from_app1(
-                        std::span<const std::byte>(
-                            exif_build.app1_payload.data(),
-                            exif_build.app1_payload.size()),
-                        &b.payload, &err)) {
-                    requested_present_but_unpacked = true;
-                    if (r.code == PrepareTransferCode::None) {
-                        r.code = PrepareTransferCode::ExifPackFailed;
-                    }
-                    r.warnings += 1U;
-                    append_message(&r.message,
-                                   err.empty()
-                                       ? "png exif payload conversion failed"
-                                       : err);
-                    ready = false;
-                }
-                if (ready) {
-                    b.route = "png:chunk-exif";
-                }
+                b.route   = "png:chunk-exif";
+                b.payload = std::move(exif_build.tiff_payload);
             } else if (request.target_format == TransferTargetFormat::Jp2) {
                 b.route    = "jp2:box-exif";
                 b.box_type = { 'E', 'x', 'i', 'f' };
                 append_u32be(&b.payload, 6U);
-                b.payload.insert(b.payload.end(),
-                                 exif_build.app1_payload.begin(),
-                                 exif_build.app1_payload.end());
+                append_exif_app1_payload_from_tiff(tiff, &b.payload);
             } else if (transfer_target_is_bmff(request.target_format)) {
                 b.route = "bmff:item-exif";
                 append_u32be(&b.payload, 6U);
-                b.payload.insert(b.payload.end(),
-                                 exif_build.app1_payload.begin(),
-                                 exif_build.app1_payload.end());
+                append_exif_app1_payload_from_tiff(tiff, &b.payload);
             } else if (request.target_format == TransferTargetFormat::Webp) {
-                std::string err;
-                if (!build_tiff_exif_payload_from_app1(
-                        std::span<const std::byte>(
-                            exif_build.app1_payload.data(),
-                            exif_build.app1_payload.size()),
-                        &b.payload, &err)) {
-                    requested_present_but_unpacked = true;
-                    if (r.code == PrepareTransferCode::None) {
-                        r.code = PrepareTransferCode::ExifPackFailed;
-                    }
-                    r.warnings += 1U;
-                    append_message(&r.message,
-                                   err.empty()
-                                       ? "webp exif payload conversion failed"
-                                       : err);
-                    ready = false;
-                }
-                if (ready) {
-                    b.route = "webp:chunk-exif";
-                }
+                b.route   = "webp:chunk-exif";
+                b.payload = std::move(exif_build.tiff_payload);
             } else {
                 b.route    = "jxl:box-exif";
                 b.box_type = { 'E', 'x', 'i', 'f' };
                 append_u32be(&b.payload, 6U);
-                b.payload.insert(b.payload.end(),
-                                 exif_build.app1_payload.begin(),
-                                 exif_build.app1_payload.end());
+                append_exif_app1_payload_from_tiff(tiff, &b.payload);
             }
-            if (ready) {
-                bundle.blocks.push_back(std::move(b));
-                for (size_t i = 0; i < exif_build.time_patch_map.size(); ++i) {
-                    TimePatchSlot slot = exif_build.time_patch_map[i];
-                    slot.block_index   = block_index;
-                    if (!adjust_exif_time_patch_slot_for_target(
-                            request.target_format, &slot)) {
-                        r.warnings += 1U;
-                        append_message(
-                            &r.message,
-                            "exif time patch slot could not be mapped to "
-                            "target payload layout");
-                        continue;
-                    }
-                    bundle.time_patch_map.push_back(slot);
+            bundle.blocks.push_back(std::move(b));
+            for (size_t i = 0; i < exif_build.time_patch_map.size(); ++i) {
+                TimePatchSlot slot = exif_build.time_patch_map[i];
+                slot.block_index   = block_index;
+                if (!adjust_exif_time_patch_slot_for_target(
+                        request.target_format, &slot)) {
+                    r.warnings += 1U;
+                    append_message(&r.message,
+                                   "exif time patch slot could not be mapped to "
+                                   "target payload layout");
+                    continue;
                 }
+                bundle.time_patch_map.push_back(slot);
             }
             if (exif_build.decoded_only_makernote_skipped_count > 0U) {
                 r.warnings += 1U;

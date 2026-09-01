@@ -981,10 +981,26 @@ fields, and FLIR radiometric/raw-value/geometry fields. These buckets are used
 by rendered-image safety filtering; they are not target-owned metadata for
 rendered outputs.
 
+Author and serialize metadata
+-----------------------------
+
+Use :doc:`generic_authoring` when a host knows exact EXIF/TIFF/DNG-style, XMP,
+or IPTC-IIM keys. The builder deep-copies borrowed values, enforces resource
+limits, finalizes a temporary store, and validates it before replacing the
+output. Optional context carries dimensions, samples per pixel, and color-plane
+facts owned by the codec.
+
+Use :doc:`canonical_serialization` when a host owns unfamiliar container
+framing. ``serialize_exif_tiff()`` measures and writes unwrapped TIFF/EXIF
+bytes, which can be retained for repeated replay without selecting a fake
+``TransferTargetFormat``.
+
 Related pages
 -------------
 
 - :doc:`quick_start`
 - :doc:`interop_api`
+- :doc:`generic_authoring`
+- :doc:`canonical_serialization`
 - :doc:`development`
 - :doc:`api`

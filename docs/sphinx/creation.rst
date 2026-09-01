@@ -170,6 +170,7 @@ common capture EXIF fields, and common descriptive IPTC fields; see
 
 Dimensions, orientation, and color space must describe destination pixels.
 They must not be copied from a differently sized, rotated, converted, or
-color-transformed source image. Custom properties, non-default languages,
-structured XMP, binary values, fresh ICC profiles, and direct EXIF/IPTC block
-construction remain outside this milestone.
+color-transformed source image. C++ hosts that know exact keys and types can
+use :doc:`generic_authoring` for direct EXIF/IPTC construction and safe
+scalar/indexed custom XMP. Full arbitrary RDF structures and fresh ICC profile
+construction remain outside the current authoring scope.

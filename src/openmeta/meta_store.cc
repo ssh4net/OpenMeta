@@ -72,6 +72,32 @@ MetaStore::add_entry(const Entry& entry)
 
 
 void
+MetaStore::reserve(uint32_t block_capacity, uint32_t entry_capacity,
+                   size_t arena_bytes)
+{
+    if (finalized_) {
+        return;
+    }
+    const size_t blocks  = static_cast<size_t>(block_capacity);
+    const size_t entries = static_cast<size_t>(entry_capacity);
+    if (blocks > max_entries_ || entries > max_entries_) {
+        entry_limit_exceeded_ = true;
+        return;
+    }
+    arena_.reserve(arena_bytes);
+    if (arena_.limit_exceeded()) {
+        return;
+    }
+    blocks_.reserve(blocks);
+    entries_.reserve(entries);
+    entries_by_block_.reserve(entries);
+    block_spans_.reserve(blocks);
+    entries_by_key_.reserve(entries);
+    key_spans_.reserve(entries);
+}
+
+
+void
 MetaStore::constrain_resources(uint32_t max_entries,
                                uint64_t max_arena_bytes) noexcept
 {
@@ -255,7 +281,7 @@ MetaStore::rebuild_block_index()
 
     EntryIdLessByBlock less;
     less.store = this;
-    std::stable_sort(entries_by_block_.begin(), entries_by_block_.end(), less);
+    std::sort(entries_by_block_.begin(), entries_by_block_.end(), less);
 
     for (uint32_t i = 0; i < static_cast<uint32_t>(entries_by_block_.size());
          ++i) {
@@ -296,7 +322,7 @@ MetaStore::rebuild_key_index()
 
     EntryIdLessByKey less;
     less.store = this;
-    std::stable_sort(entries_by_key_.begin(), entries_by_key_.end(), less);
+    std::sort(entries_by_key_.begin(), entries_by_key_.end(), less);
 
     key_spans_.clear();
     if (entries_by_key_.empty()) {

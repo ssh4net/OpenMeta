@@ -133,6 +133,28 @@ Host-facing API map
        UTF-8/XML text and typed numeric constraints, and exposes the same C++
        policy through thin Python bindings. Direct EXIF/IPTC projection remains
        a Translation concern. See :doc:`creation`.
+   * - Generic typed metadata authoring: ``create_metadata_store(...)``,
+       borrowed key/value helpers, and ``MetaStore::reserve(...)``
+     - ``openmeta/metadata_authoring.h``, ``openmeta/meta_key.h``,
+       ``openmeta/meta_value.h``, ``openmeta/meta_store.h``
+     - Experimental v1
+     - Transactional bounded construction of finalized EXIF/TIFF/DNG-style,
+       XMP, and IPTC-IIM entries. Unknown/private EXIF and custom XMP
+       namespaces remain authorable; safe scalar/indexed custom XMP is
+       supported. C++ only in this milestone. See :doc:`generic_authoring`.
+   * - Detached store/schema validation: ``validate_entry(...)`` and
+       ``validate_store(...)``
+     - ``openmeta/validate.h``
+     - Experimental v1
+     - Structured structural and initial TIFF/EXIF/GPS/DNG/XMP schema
+       diagnostics with resource limits, duplicate-singleton checks, and
+       optional image/CFA/color context.
+   * - Canonical TIFF/EXIF serialization: ``serialize_exif_tiff(...)``
+     - ``openmeta/exif_tiff_serialize.h``
+     - Experimental v1
+     - Deterministic measure/write for unwrapped little-endian TIFF bytes. The
+       same payload feeds existing target wrappers. Opaque MakerNotes drop by
+       default. See :doc:`canonical_serialization`.
    * - Logical metadata editing: ``edit_metadata(...)`` and add/set/remove
        helpers
      - ``openmeta/metadata_editing.h``

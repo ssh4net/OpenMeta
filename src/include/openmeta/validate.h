@@ -6,6 +6,7 @@
 
 #include "openmeta/ccm_query.h"
 #include "openmeta/jumbf_decode.h"
+#include "openmeta/meta_store.h"
 #include "openmeta/resource_policy.h"
 #include "openmeta/simple_meta.h"
 
@@ -21,6 +22,9 @@
 OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
+/// Stable detached entry/store validation contract version.
+inline constexpr uint32_t kMetadataValidationContractVersion = 1U;
+
 /// Top-level validation status for \ref validate_file.
 enum class ValidateStatus : uint8_t {
     Ok,
@@ -33,6 +37,100 @@ enum class ValidateStatus : uint8_t {
 enum class ValidateIssueSeverity : uint8_t {
     Warning,
     Error,
+};
+
+/// Stable result status for detached metadata entry/store validation.
+enum class MetadataValidationStatus : uint8_t {
+    Ok,
+    InvalidArgument,
+    InvalidMetadata,
+    LimitExceeded,
+};
+
+/// Policy for EXIF/TIFF tags not present in the built-in standard schema table.
+enum class MetadataUnknownTagPolicy : uint8_t {
+    Allow,
+    Warning,
+    Error,
+};
+
+/// Stable detached metadata validation issue code.
+enum class MetadataValidationIssueCode : uint16_t {
+    None = 0,
+    StoreNotFinalized,
+    InvalidEntryId,
+    StoreLimitExceeded,
+    ValueLimitExceeded,
+    InvalidKey,
+    InvalidOrigin,
+    InvalidValueShape,
+    ScalarOutOfRange,
+    RationalDenominatorZero,
+    InvalidText,
+    InvalidWireType,
+    InvalidWireCount,
+    WrongIfd,
+    WrongType,
+    WrongCount,
+    DuplicateSingleton,
+    InvalidXmpNamespace,
+    InvalidXmpPropertyPath,
+    UnknownExifTag,
+    ImageContextMismatch,
+    InconsistentRelatedEntries,
+    IssueLimitExceeded,
+};
+
+/// Optional destination/raw-image facts used for cross-entry validation.
+struct MetadataValidationContext final {
+    bool has_dimensions = false;
+    uint32_t width      = 0U;
+    uint32_t height     = 0U;
+
+    bool has_samples_per_pixel = false;
+    uint16_t samples_per_pixel = 0U;
+
+    bool has_color_planes = false;
+    uint16_t color_planes = 0U;
+};
+
+/// Policy and resource bounds for detached entry/store validation.
+struct MetadataValidationOptions final {
+    bool validate_schema     = true;
+    bool validate_wire_hints = true;
+    bool require_finalized   = false;
+    bool warnings_as_errors  = false;
+    uint32_t max_issues      = 4096U;
+    uint32_t max_key_bytes   = 4096U;
+    uint32_t max_entries     = 200000U;
+    uint64_t max_arena_bytes = 64ULL * 1024ULL * 1024ULL;
+    uint64_t max_value_bytes = 64ULL * 1024ULL * 1024ULL;
+    MetadataUnknownTagPolicy unknown_exif_tags = MetadataUnknownTagPolicy::Allow;
+    MetadataValidationContext context;
+};
+
+/// One fixed-field structured issue from detached validation.
+struct MetadataValidationIssue final {
+    ValidateIssueSeverity severity   = ValidateIssueSeverity::Warning;
+    MetadataValidationIssueCode code = MetadataValidationIssueCode::None;
+    EntryId entry                    = kInvalidEntryId;
+    EntryId related_entry            = kInvalidEntryId;
+    MetaKeyKind key_kind             = MetaKeyKind::ExifTag;
+    uint16_t tag                     = 0U;
+};
+
+/// Detached entry/store validation result.
+struct MetadataValidationResult final {
+    MetadataValidationStatus status = MetadataValidationStatus::Ok;
+    uint32_t entries_checked        = 0U;
+    uint32_t warning_count          = 0U;
+    uint32_t error_count            = 0U;
+    std::vector<MetadataValidationIssue> issues;
+
+    bool ok() const noexcept
+    {
+        return status == MetadataValidationStatus::Ok && error_count == 0U;
+    }
 };
 
 /// One validation issue emitted by \ref validate_file.
@@ -106,6 +204,22 @@ struct ValidateResult final {
 ValidateResult
 validate_file(const char* path,
               const ValidateOptions& options = ValidateOptions {}) noexcept;
+
+/** Validate one entry in a detached store without modifying it. */
+MetadataValidationResult
+validate_entry(const MetaStore& store, EntryId entry,
+               const MetadataValidationOptions& options
+               = MetadataValidationOptions {}) noexcept;
+
+/** Validate structural, schema, duplicate, and optional image relationships. */
+MetadataValidationResult
+validate_store(const MetaStore& store, const MetadataValidationOptions& options
+                                       = MetadataValidationOptions {}) noexcept;
+
+const char*
+metadata_validation_status_name(MetadataValidationStatus status) noexcept;
+const char*
+metadata_validation_issue_code_name(MetadataValidationIssueCode code) noexcept;
 
 }  // namespace openmeta
 OPENMETA_PUBLIC_END

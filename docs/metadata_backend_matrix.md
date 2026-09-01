@@ -370,6 +370,14 @@ container call mapping.
       source identity or unique exported name, with explicit keys required for
       new custom metadata. Remove-by-identity and remove-by-unique-name preserve
       stable tombstones; duplicate flat names are never collapsed implicitly.
+    - `create_metadata_store(...)` builds a fresh finalized store from exact
+      borrowed EXIF/TIFF/DNG-style, XMP, and IPTC-IIM entries when no source
+      snapshot exists. `validate_store(...)` supplies structured schema and
+      image-context diagnostics before encoder handoff.
+    - `serialize_exif_tiff(...)` exposes the deterministic unwrapped TIFF/EXIF
+      payload directly. Hosts can measure exact storage, retain immutable bytes,
+      and apply their own container framing without selecting a fake transfer
+      target. Existing transfer preparation wraps this same canonical payload.
     - `collect_prepared_transfer_package_views(...)` is the target-neutral
       semantic package surface above that persisted batch.
     - `replay_prepared_transfer_package_batch(...)` is the target-neutral

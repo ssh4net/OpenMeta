@@ -9,6 +9,7 @@
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_value.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -145,6 +146,13 @@ public:
     /// Appends an entry and returns its id.
     EntryId add_entry(const Entry& entry);
 
+    /**
+     * Reserves build, lookup-index, and arena capacity during initialization.
+     * The call is ignored after finalization and does not change logical size.
+     */
+    void reserve(uint32_t block_capacity, uint32_t entry_capacity,
+                 size_t arena_bytes);
+
     /// Applies cumulative decode ceilings. Repeated calls retain the lowest
     /// non-zero limits, including across nested decoder calls.
     void constrain_resources(uint32_t max_entries,
@@ -193,7 +201,7 @@ private:
     std::vector<EntryId> entries_by_key_;
     std::vector<KeySpan> key_spans_;
 
-    bool finalized_ = false;
+    bool finalized_            = false;
     uint64_t max_entries_      = UINT32_MAX;
     bool entry_limit_exceeded_ = false;
 };

@@ -6,6 +6,144 @@
 
 namespace openmeta {
 
+static MetaValueView
+make_scalar_value_view(const MetaValue& value) noexcept
+{
+    MetaValueView out;
+    out.kind          = value.kind;
+    out.elem_type     = value.elem_type;
+    out.text_encoding = value.text_encoding;
+    out.count         = value.count;
+    out.scalar        = value.data;
+    return out;
+}
+
+
+MetaValueView
+make_value_view_u8(uint8_t value) noexcept
+{
+    return make_scalar_value_view(make_u8(value));
+}
+
+
+MetaValueView
+make_value_view_i8(int8_t value) noexcept
+{
+    return make_scalar_value_view(make_i8(value));
+}
+
+
+MetaValueView
+make_value_view_u16(uint16_t value) noexcept
+{
+    return make_scalar_value_view(make_u16(value));
+}
+
+
+MetaValueView
+make_value_view_i16(int16_t value) noexcept
+{
+    return make_scalar_value_view(make_i16(value));
+}
+
+
+MetaValueView
+make_value_view_u32(uint32_t value) noexcept
+{
+    return make_scalar_value_view(make_u32(value));
+}
+
+
+MetaValueView
+make_value_view_i32(int32_t value) noexcept
+{
+    return make_scalar_value_view(make_i32(value));
+}
+
+
+MetaValueView
+make_value_view_u64(uint64_t value) noexcept
+{
+    return make_scalar_value_view(make_u64(value));
+}
+
+
+MetaValueView
+make_value_view_i64(int64_t value) noexcept
+{
+    return make_scalar_value_view(make_i64(value));
+}
+
+
+MetaValueView
+make_value_view_f32_bits(uint32_t bits) noexcept
+{
+    return make_scalar_value_view(make_f32_bits(bits));
+}
+
+
+MetaValueView
+make_value_view_f64_bits(uint64_t bits) noexcept
+{
+    return make_scalar_value_view(make_f64_bits(bits));
+}
+
+
+MetaValueView
+make_value_view_urational(uint32_t numer, uint32_t denom) noexcept
+{
+    return make_scalar_value_view(make_urational(numer, denom));
+}
+
+
+MetaValueView
+make_value_view_srational(int32_t numer, int32_t denom) noexcept
+{
+    return make_scalar_value_view(make_srational(numer, denom));
+}
+
+
+MetaValueView
+make_value_view_bytes(std::span<const std::byte> bytes) noexcept
+{
+    MetaValueView out;
+    out.kind    = MetaValueKind::Bytes;
+    out.count   = bytes.size() <= static_cast<size_t>(UINT32_MAX)
+                      ? static_cast<uint32_t>(bytes.size())
+                      : UINT32_MAX;
+    out.payload = bytes;
+    return out;
+}
+
+
+MetaValueView
+make_value_view_text(std::string_view text, TextEncoding encoding) noexcept
+{
+    MetaValueView out;
+    out.kind          = MetaValueKind::Text;
+    out.text_encoding = encoding;
+    out.count         = text.size() <= static_cast<size_t>(UINT32_MAX)
+                            ? static_cast<uint32_t>(text.size())
+                            : UINT32_MAX;
+    out.payload       = std::as_bytes(
+        std::span<const char>(text.data(), text.size()));
+    return out;
+}
+
+
+MetaValueView
+make_value_view_array(MetaElementType elem_type,
+                      std::span<const std::byte> raw_elements,
+                      uint32_t element_count) noexcept
+{
+    MetaValueView out;
+    out.kind      = MetaValueKind::Array;
+    out.elem_type = elem_type;
+    out.count     = element_count;
+    out.payload   = raw_elements;
+    return out;
+}
+
 static bool
 fits_u32_size(size_t value) noexcept
 {

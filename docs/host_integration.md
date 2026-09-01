@@ -999,33 +999,42 @@ fields, and FLIR radiometric/raw-value/geometry fields. These buckets are used
 by rendered-image safety filtering; they are not target-owned metadata for
 rendered outputs.
 
-## 11. Build `MetaStore` Yourself
+## 11. Author And Serialize Metadata
 
-If your application creates metadata directly, build the store first and then
-reuse the same export and transfer APIs.
+Use the transactional generic builder instead of manually appending unchecked
+entries when the application knows exact metadata keys and values.
 
 ```cpp
-#include "openmeta/meta_key.h"
-#include "openmeta/meta_store.h"
-#include "openmeta/meta_value.h"
+#include "openmeta/metadata_authoring.h"
 
+const std::array entries = {
+    openmeta::MetadataAuthoringEntry {
+        openmeta::make_exif_tag_key_view("ifd0", 0x010F),
+        openmeta::make_value_view_text(
+            "Vendor", openmeta::TextEncoding::Ascii),
+    },
+};
 openmeta::MetaStore store;
-const openmeta::BlockId block = store.add_block(openmeta::BlockInfo {});
-
-openmeta::Entry entry;
-entry.key = openmeta::make_exif_tag_key(store.arena(), "ifd0", 0x010F);
-entry.value = openmeta::make_text(
-    store.arena(), "Vendor", openmeta::TextEncoding::Ascii);
-entry.origin.block = block;
-entry.origin.order_in_block = 0;
-
-store.add_entry(entry);
-store.finalize();
+const auto authored = openmeta::create_metadata_store(entries, &store);
 ```
+
+The builder deep-copies borrowed values, applies resource limits, finalizes a
+temporary store, and calls detached structural/schema validation before
+replacing the output. Optional image context lets a codec provide dimensions,
+samples per pixel, and color-plane facts it actually owns.
+
+When a host owns unfamiliar container framing, call
+`serialize_exif_tiff()` to measure and write unwrapped TIFF/EXIF bytes. Retain
+that immutable payload for repeated replay. Do not select a fake
+`TransferTargetFormat`; container-specific box, chunk, or marker framing stays
+host-owned. See [generic_authoring.md](generic_authoring.md) and
+[canonical_serialization.md](canonical_serialization.md).
 
 ## Related Docs
 
 - [quick_start.md](quick_start.md)
 - [metadata_support.md](metadata_support.md)
 - [metadata_transfer_plan.md](metadata_transfer_plan.md)
+- [generic_authoring.md](generic_authoring.md)
+- [canonical_serialization.md](canonical_serialization.md)
 - [development.md](development.md)

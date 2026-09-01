@@ -201,6 +201,17 @@ struct MetaKeyView final {
     } data;
 };
 
+/// Creates a borrowed key for an EXIF/TIFF tag within a named IFD token.
+MetaKeyView
+make_exif_tag_key_view(std::string_view ifd, uint16_t tag) noexcept;
+/// Creates a borrowed key for one IPTC-IIM record/dataset pair.
+MetaKeyView
+make_iptc_dataset_key_view(uint16_t record, uint16_t dataset) noexcept;
+/// Creates a borrowed key for one URI-qualified XMP property path.
+MetaKeyView
+make_xmp_property_key_view(std::string_view schema_ns,
+                           std::string_view property_path) noexcept;
+
 /// Creates a key for an EXIF/TIFF tag within a named IFD token (e.g. "ifd0", "exififd").
 MetaKey
 make_exif_tag_key(ByteArena& arena, std::string_view ifd, uint16_t tag);

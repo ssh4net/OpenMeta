@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <openmeta/build_info.h>
+#include <openmeta/exif_tiff_serialize.h>
 #include <openmeta/host_adoption.h>
+#include <openmeta/metadata_authoring.h>
 #include <openmeta/metadata_translation.h>
 #include <openmeta/prepared_transfer_handoff.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 
 int
 main()
@@ -44,6 +49,33 @@ main()
           && descriptive_translation.status
                  == openmeta::MetadataDescriptiveTranslationStatus::Ok
           && descriptive_translated.is_finalized();
+    const openmeta::MetadataAuthoringEntry orientation {
+        openmeta::make_exif_tag_key_view("ifd0", 0x0112U),
+        openmeta::make_value_view_u16(1U),
+        openmeta::WireType { openmeta::WireFamily::Tiff, 3U },
+        1U,
+    };
+    openmeta::MetaStore authored;
+    const openmeta::MetadataAuthoringResult authoring
+        = openmeta::create_metadata_store(
+            std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
+            &authored);
+    const openmeta::MetadataValidationResult validation
+        = openmeta::validate_store(authored);
+    const openmeta::ExifTiffSerializeResult measured
+        = openmeta::serialize_exif_tiff(authored, {});
+    std::vector<std::byte> exif(static_cast<size_t>(measured.needed));
+    const openmeta::ExifTiffSerializeResult serialized
+        = openmeta::serialize_exif_tiff(authored, exif);
+    const bool authoring_contract_matches
+        = openmeta::kMetadataAuthoringContractVersion == 1U
+          && openmeta::kMetadataValidationContractVersion == 1U
+          && openmeta::kExifTiffSerializeContractVersion == 1U && authoring.ok()
+          && validation.ok()
+          && measured.status
+                 == openmeta::ExifTiffSerializeStatus::OutputTruncated
+          && measured.needed != 0U && serialized.ok()
+          && serialized.written == measured.needed;
     openmeta::PreparedTransferHandoff handoff;
     openmeta::PreparedTransferHandoffInstance instance;
     openmeta::PreparedTransferHandoffTimePatchFieldView field;
@@ -67,7 +99,8 @@ main()
                    || !handoff_contract_matches || !instance_contract_matches
                    || !translation_contract_matches
                    || !descriptive_translation_contract_matches
-                   || handoff.valid() || instance.valid()
+                   || !authoring_contract_matches || handoff.valid()
+                   || instance.valid()
                    || created.code
                           != openmeta::PreparedTransferHandoffCode::InvalidState
                    || described.code

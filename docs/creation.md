@@ -137,6 +137,9 @@ describe the destination pixels. OpenMeta cannot infer them from an encoder
 buffer. Do not copy those values from a differently sized, rotated, converted,
 or color-transformed source image.
 
-This milestone does not yet cover arbitrary custom properties, non-default
-language alternatives, structured XMP records, binary values, fresh ICC
-profiles, or direct EXIF/IPTC block construction.
+The logical-field API does not expose arbitrary custom properties, binary
+values, or direct EXIF/IPTC construction. C++ hosts that know exact keys and
+types can use the transactional generic builder in
+[generic_authoring.md](generic_authoring.md), including safe scalar/indexed
+custom XMP. Full arbitrary RDF structures and fresh ICC profile construction
+remain outside the current authoring scope.

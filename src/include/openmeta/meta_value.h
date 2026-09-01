@@ -105,6 +105,54 @@ struct MetaValue final {
     } data;
 };
 
+/**
+ * \brief Borrowed typed metadata value used by authoring and host import APIs.
+ *
+ * Scalars use \ref scalar. Arrays, bytes, and text use \ref payload; the
+ * caller retains ownership for the duration of the consuming call.
+ */
+struct MetaValueView final {
+    MetaValueKind kind         = MetaValueKind::Empty;
+    MetaElementType elem_type  = MetaElementType::U8;
+    TextEncoding text_encoding = TextEncoding::Unknown;
+    uint32_t count             = 0U;
+    MetaValue::Data scalar;
+    std::span<const std::byte> payload;
+};
+
+MetaValueView
+make_value_view_u8(uint8_t value) noexcept;
+MetaValueView
+make_value_view_i8(int8_t value) noexcept;
+MetaValueView
+make_value_view_u16(uint16_t value) noexcept;
+MetaValueView
+make_value_view_i16(int16_t value) noexcept;
+MetaValueView
+make_value_view_u32(uint32_t value) noexcept;
+MetaValueView
+make_value_view_i32(int32_t value) noexcept;
+MetaValueView
+make_value_view_u64(uint64_t value) noexcept;
+MetaValueView
+make_value_view_i64(int64_t value) noexcept;
+MetaValueView
+make_value_view_f32_bits(uint32_t bits) noexcept;
+MetaValueView
+make_value_view_f64_bits(uint64_t bits) noexcept;
+MetaValueView
+make_value_view_urational(uint32_t numer, uint32_t denom) noexcept;
+MetaValueView
+make_value_view_srational(int32_t numer, int32_t denom) noexcept;
+MetaValueView
+make_value_view_bytes(std::span<const std::byte> bytes) noexcept;
+MetaValueView
+make_value_view_text(std::string_view text, TextEncoding encoding) noexcept;
+MetaValueView
+make_value_view_array(MetaElementType elem_type,
+                      std::span<const std::byte> raw_elements,
+                      uint32_t element_count) noexcept;
+
 /** \name Scalar constructors
  *  @{
  */

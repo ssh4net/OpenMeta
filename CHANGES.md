@@ -1,5 +1,42 @@
 # OpenMeta Changes
 
+## 0.4.125 - 2026-09-01
+
+Changes compared with `0.4.124`.
+
+### Added
+
+- Added a bounded transactional C++ builder for exact EXIF/TIFF/DNG-style,
+  XMP, and IPTC-IIM entries, including borrowed typed values, optional wire
+  hints, unknown/private tags, scalar/indexed custom XMP, and public
+  `MetaStore::reserve(...)` capacity planning.
+- Added detached `validate_entry(...)` and `validate_store(...)` structural and
+  initial TIFF/EXIF/GPS/DNG/XMP schema validation with a versioned public
+  contract, structured diagnostics, resource bounds, duplicate-singleton
+  checks, and optional image/CFA/color context.
+- Added deterministic target-neutral `serialize_exif_tiff(...)` measure/write
+  for unwrapped little-endian TIFF bytes.
+
+### Changed
+
+- JPEG/TIFF, PNG/WebP, and JP2/JXL/BMFF EXIF preparation now wraps the same
+  canonical TIFF payload while retaining existing carrier layouts and
+  target-specific time-patch offsets.
+- TIFF array emission now normalizes native typed array storage to
+  little-endian bytes and compatible TIFF wire hints can preserve BYTE, SBYTE,
+  or UNDEFINED payload intent.
+- Public creation, host-integration, backend, stability, and development docs
+  now distinguish logical creation, exact typed authoring, validation,
+  canonical payload serialization, and host-owned container framing.
+
+### Tests And Validation
+
+- Added transactional/deep-copy authoring, custom indexed XMP, schema and
+  context failure, wire-hint, deterministic measure/write, decode round-trip,
+  carrier-wrapper, and patch-offset regressions.
+- Re-ran the existing transfer/edit/handoff compatibility suite across all
+  supported writer target families.
+
 ## 0.4.124 - 2026-08-31
 
 Changes compared with `0.4.123`.

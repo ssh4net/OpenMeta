@@ -28,6 +28,40 @@ compare_bytes(std::span<const std::byte> a,
 }
 
 
+MetaKeyView
+make_exif_tag_key_view(std::string_view ifd, uint16_t tag) noexcept
+{
+    MetaKeyView key;
+    key.kind              = MetaKeyKind::ExifTag;
+    key.data.exif_tag.ifd = ifd;
+    key.data.exif_tag.tag = tag;
+    return key;
+}
+
+
+MetaKeyView
+make_iptc_dataset_key_view(uint16_t record, uint16_t dataset) noexcept
+{
+    MetaKeyView key;
+    key.kind                      = MetaKeyKind::IptcDataset;
+    key.data.iptc_dataset.record  = record;
+    key.data.iptc_dataset.dataset = dataset;
+    return key;
+}
+
+
+MetaKeyView
+make_xmp_property_key_view(std::string_view schema_ns,
+                           std::string_view property_path) noexcept
+{
+    MetaKeyView key;
+    key.kind                            = MetaKeyKind::XmpProperty;
+    key.data.xmp_property.schema_ns     = schema_ns;
+    key.data.xmp_property.property_path = property_path;
+    return key;
+}
+
+
 MetaKey
 make_exif_tag_key(ByteArena& arena, std::string_view ifd, uint16_t tag)
 {

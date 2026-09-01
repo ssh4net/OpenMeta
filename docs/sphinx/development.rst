@@ -107,13 +107,13 @@ model should stay compact:
        ASCII contract, Python wrappers, Release/libc++ CI gate, and opt-in
        scaling benchmark are implemented.
    * - Creation
-     - Build fresh metadata entries from host-provided values through a
-       transactional, bounded logical-field request that produces a finalized
-       canonical portable-XMP store.
-     - Medium-high, about 70-75%; the v1 C++ contract, common descriptive and
-       capture fields, UTF-8/XML and typed-value validation, resource limits,
-       deterministic collection ordering, portable serialization,
-       semantic-query visibility, and thin Python wrapper are implemented.
+     - Build fresh metadata entries through either logical fields or exact
+       typed keys.
+     - High, about 82-87%; the logical API and thin Python wrapper remain
+       simple, while the C++ generic v1 builder covers EXIF/TIFF/DNG-style
+       tags, IPTC, custom scalar/indexed XMP, borrowed typed values, wire hints,
+       capacity planning, and detached validation. Full RDF authoring and fresh
+       ICC construction remain open.
    * - Editing
      - Modify existing logical metadata entries while preserving valid
        surrounding structure.
@@ -142,10 +142,11 @@ model should stay compact:
        round trips, and thin Python exposure are implemented.
    * - Writing
      - Serialize metadata and write or rewrite it into target containers.
-     - Medium-high, about 70-80%; JPEG is strong, TIFF/DNG have a completed
-       bounded rewrite contract, and compact BMFF ``iloc`` fields can be
-       normalized for metadata insertion, while broader BMFF/JXL/EXR behavior
-       remains intentionally bounded.
+     - High, about 78-84%; target-neutral deterministic TIFF/EXIF measure/write
+       feeds JPEG/TIFF, PNG/WebP, JP2/JXL, and BMFF wrappers. JPEG is strong,
+       TIFF/DNG have a bounded rewrite contract, and compact BMFF ``iloc``
+       fields can be normalized, while broader BMFF/JXL/EXR behavior remains
+       intentionally bounded.
    * - Adapters
      - Thin integration layers for host APIs or format-specific ecosystems such
        as EXR, DNG SDK, LibRaw orientation mapping, and flat host exports.
@@ -166,17 +167,16 @@ retains a ``98-100%`` range because not every declared container lane has an
 independent conformance sample set, even though tracked inputs have explicit
 read outcomes.
 
-The first Creation, Editing, reverse-date, reverse-capture, target-bound
-geometry, and reverse-descriptive Translation milestones are implemented in
-``openmeta/metadata_creation.h``,
-``openmeta/metadata_editing.h``, and ``openmeta/metadata_translation.h``, with
-their contracts documented in :doc:`creation`, :doc:`editing`, and
-:doc:`translation`. The active implementation sequence continues through
+Logical and generic typed Creation, detached validation, canonical TIFF/EXIF
+serialization, Editing, and current reverse Translation milestones are
+implemented in their public headers. Their contracts are documented in
+:doc:`creation`, :doc:`generic_authoring`, :doc:`canonical_serialization`,
+:doc:`editing`, and :doc:`translation`. The active sequence continues through
 Transfer, Translation, and Writing.
-Creation and Editing resume for arbitrary/custom properties, multilingual
-alternatives, structured values, broader direct family projection, structural
-block operations, and broader cross-family synchronization. Adapters and
-Utilities remain deferred. Fuzzy Search resumes before those final two stages for
+Creation and Editing resume for multilingual alternatives, full RDF structured
+values, fresh ICC construction, structural block operations, and broader
+cross-family synchronization. Adapters and Utilities remain deferred. Fuzzy
+Search resumes before those final two stages for
 independently sourced quality expansion, designed Unicode/transliteration
 behavior, multilingual gates, and an optional immutable index for repeated
 searches over large stores.

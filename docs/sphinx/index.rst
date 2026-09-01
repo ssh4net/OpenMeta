@@ -48,8 +48,10 @@ and must not be used as an asset-authenticity or trust gate.
    interpretation_status
    fuzzy_search
    creation
+   generic_authoring
    editing
    translation
+   canonical_serialization
    raw_read_parity_plan
    build
    shared_library

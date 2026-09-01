@@ -408,6 +408,7 @@ set(OPENMETA_SOURCES
   src/openmeta/meta_key.cc
   src/openmeta/metadata_capabilities.cc
   src/openmeta/metadata_concepts.cc
+  src/openmeta/metadata_authoring.cc
   src/openmeta/metadata_creation.cc
   src/openmeta/metadata_editing.cc
   src/openmeta/metadata_translation.cc
@@ -418,6 +419,7 @@ set(OPENMETA_SOURCES
   src/openmeta/metadata_interpretation.cc
   src/openmeta/metadata_query.cc
   src/openmeta/metadata_snapshot_io.cc
+  src/openmeta/metadata_store_validate.cc
   src/openmeta/metadata_transfer.cc
   src/openmeta/prepared_transfer_handoff.cc
   src/openmeta/metadata_logical_field_internal.cc
@@ -1007,6 +1009,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/makernote_decode_test.cc
     tests/metadata_capabilities_test.cc
     tests/metadata_concepts_test.cc
+    tests/metadata_authoring_serialize_test.cc
     tests/metadata_creation_test.cc
     tests/metadata_editing_test.cc
     tests/metadata_editing_transfer_test.cc
