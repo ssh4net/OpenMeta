@@ -1,5 +1,28 @@
 # OpenMeta Changes
 
+## 0.4.127 - 2026-09-02
+
+Changes compared with `0.4.126`.
+
+### Changed
+
+- Bounded foreign BMFF `iprp` rewriting now accepts multiple valid `ipma`
+  association boxes and consolidates them into one deterministic table in
+  first-seen source order.
+- Association merging preserves unrelated item/property links, deduplicates
+  repeated property indexes, retains an essential bit if any input association
+  marks it, and applies managed-item and ICC-property remapping across the
+  combined table.
+- Aggregate table, entry, and association limits bound multi-table parsing, and
+  indexed item lookup avoids quadratic merging for large valid inputs.
+
+### Tests And Validation
+
+- Added duplicate-table, split-association, and mixed v0/v1 regressions for
+  deterministic `ipma` consolidation, essential-bit promotion, ICC insertion,
+  aggregate resource limits, and fail-closed rejection of an unsupported
+  secondary table version.
+
 ## 0.4.126 - 2026-09-01
 
 Changes compared with `0.4.125`.

@@ -182,6 +182,10 @@ For the public per-target preserve/replace guarantees, see
   associations, appends the transferred `colr/prof` property, and associates
   it with the primary item and any retained item that previously referenced a
   replaced ICC property while preserving the prior essential association bit.
+  A foreign `iprp` may contain multiple valid `ipma` boxes; OpenMeta validates
+  all of them, combines entries by item ID, deduplicates property associations
+  while preserving essential bits, and emits one consolidated `ipma` table in
+  first-seen source order.
   Broader non-ICC property replacement and arbitrary scene/property-graph
   rewrites remain out of scope for the current contract.
 - Embedded-XMP strip mode removes XMP from OpenMeta-authored metadata `meta`

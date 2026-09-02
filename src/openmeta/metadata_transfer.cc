@@ -35,6 +35,7 @@
 #include <new>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
@@ -29509,6 +29510,10 @@ namespace {
         std::vector<uint16_t> associations;
     };
 
+    static constexpr size_t kMaxBmffForeignIpmaBoxes        = 4096U;
+    static constexpr size_t kMaxBmffForeignIpmaEntries      = 1U << 20U;
+    static constexpr size_t kMaxBmffForeignIpmaAssociations = 1U << 22U;
+
     static bool build_bmff_foreign_new_ipma_box(
         uint32_t primary_item_id, const std::vector<uint32_t>& property_indices,
         std::vector<std::byte>* out_box, EmitTransferResult* out) noexcept
@@ -29596,7 +29601,8 @@ namespace {
 
         const uint64_t payload_begin = ipma.offset + ipma.header_size;
         const uint64_t payload_end   = ipma.offset + ipma.size;
-        if (payload_begin + 8U > payload_end || payload_end > bytes.size()) {
+        if (payload_begin > payload_end || payload_end > bytes.size()
+            || payload_end - payload_begin < 8U) {
             return fail_bmff_foreign_meta_merge(
                 out, TransferStatus::Malformed,
                 EmitTransferCode::InvalidPayload,
@@ -29626,18 +29632,21 @@ namespace {
                                                 EmitTransferCode::InvalidPayload,
                                                 "ipma entry count is truncated");
         }
-        if (entry_count > (1U << 20U)) {
+        if (entry_count > kMaxBmffForeignIpmaEntries) {
             return fail_bmff_foreign_meta_merge(
                 out, TransferStatus::LimitExceeded,
                 EmitTransferCode::InvalidPayload,
                 "ipma entry count is too large");
         }
 
-        const size_t item_id_width = version == 0U ? 2U : 4U;
-        const size_t assoc_width   = (flags & 1U) != 0U ? 2U : 1U;
-        size_t cursor              = static_cast<size_t>(payload_begin + 8U);
+        const size_t item_id_width    = version == 0U ? 2U : 4U;
+        const size_t assoc_width      = (flags & 1U) != 0U ? 2U : 1U;
+        size_t cursor                 = static_cast<size_t>(payload_begin + 8U);
+        const size_t payload_end_size = static_cast<size_t>(payload_end);
+        size_t parsed_association_count = 0U;
         for (uint32_t i = 0U; i < entry_count; ++i) {
-            if (cursor + item_id_width + 1U > payload_end) {
+            if (cursor > payload_end_size
+                || item_id_width + 1U > payload_end_size - cursor) {
                 return fail_bmff_foreign_meta_merge(
                     out, TransferStatus::Malformed,
                     EmitTransferCode::InvalidPayload,
@@ -29657,8 +29666,18 @@ namespace {
             const uint8_t association_count = std::to_integer<uint8_t>(
                 bytes[cursor]);
             cursor += 1U;
-            if (cursor + static_cast<size_t>(association_count) * assoc_width
-                > payload_end) {
+            if (static_cast<size_t>(association_count)
+                > kMaxBmffForeignIpmaAssociations - parsed_association_count) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::LimitExceeded,
+                    EmitTransferCode::InvalidPayload,
+                    "ipma association count is too large");
+            }
+            parsed_association_count += association_count;
+            const size_t association_bytes
+                = static_cast<size_t>(association_count) * assoc_width;
+            if (cursor > payload_end_size
+                || association_bytes > payload_end_size - cursor) {
                 return fail_bmff_foreign_meta_merge(
                     out, TransferStatus::Malformed,
                     EmitTransferCode::InvalidPayload,
@@ -29718,6 +29737,46 @@ namespace {
         entry->associations.push_back(association);
     }
 
+    static bool
+    bmff_merge_ipma_entries(std::span<const BmffForeignIpmaEntry> source,
+                            std::vector<BmffForeignIpmaEntry>* merged,
+                            std::unordered_map<uint32_t, size_t>* positions,
+                            EmitTransferResult* out) noexcept
+    {
+        if (!merged || !positions) {
+            return false;
+        }
+        for (size_t i = 0; i < source.size(); ++i) {
+            const auto found    = positions->find(source[i].item_id);
+            size_t target_index = merged->size();
+            if (found == positions->end()) {
+                if (merged->size() >= kMaxBmffForeignIpmaEntries) {
+                    return fail_bmff_foreign_meta_merge(
+                        out, TransferStatus::LimitExceeded,
+                        EmitTransferCode::InvalidPayload,
+                        "combined ipma entry count is too large");
+                }
+                BmffForeignIpmaEntry entry;
+                entry.item_id = source[i].item_id;
+                merged->push_back(std::move(entry));
+                positions->emplace(source[i].item_id, target_index);
+            } else {
+                target_index = found->second;
+            }
+            for (size_t j = 0; j < source[i].associations.size(); ++j) {
+                bmff_append_ipma_association(&(*merged)[target_index],
+                                             source[i].associations[j]);
+                if ((*merged)[target_index].associations.size() > 0xFFU) {
+                    return fail_bmff_foreign_meta_merge(
+                        out, TransferStatus::LimitExceeded,
+                        EmitTransferCode::InvalidPayload,
+                        "combined ipma association count exceeds 8-bit range");
+                }
+            }
+        }
+        return true;
+    }
+
     static void bmff_remap_ipma_entries(
         const std::vector<uint32_t>& removed_item_ids,
         const std::vector<BmffForeignManagedItemReplacement>& replacements,
@@ -29728,6 +29787,8 @@ namespace {
         }
         std::vector<BmffForeignIpmaEntry> remapped;
         remapped.reserve(entries->size());
+        std::unordered_map<uint32_t, size_t> positions;
+        positions.reserve(entries->size());
         for (size_t i = 0; i < entries->size(); ++i) {
             const uint32_t item_id
                 = bmff_remap_managed_item_id(removed_item_ids, replacements,
@@ -29736,17 +29797,15 @@ namespace {
                 continue;
             }
 
+            const auto found    = positions.find(item_id);
             size_t target_index = remapped.size();
-            for (size_t j = 0; j < remapped.size(); ++j) {
-                if (remapped[j].item_id == item_id) {
-                    target_index = j;
-                    break;
-                }
-            }
-            if (target_index == remapped.size()) {
+            if (found == positions.end()) {
                 BmffForeignIpmaEntry entry;
                 entry.item_id = item_id;
                 remapped.push_back(std::move(entry));
+                positions.emplace(item_id, target_index);
+            } else {
+                target_index = found->second;
             }
             for (size_t j = 0; j < (*entries)[i].associations.size(); ++j) {
                 bmff_append_ipma_association(&remapped[target_index],
@@ -29757,24 +29816,59 @@ namespace {
     }
 
     static bool build_bmff_foreign_merged_ipma_box(
-        std::span<const std::byte> bytes, const TransferBmffBox& ipma,
-        uint32_t primary_item_id,
+        std::span<const std::byte> bytes,
+        std::span<const TransferBmffBox> ipma_boxes, uint32_t primary_item_id,
         const std::vector<uint32_t>& existing_property_index_map,
         const std::vector<uint32_t>& property_indices,
         const std::vector<uint32_t>& removed_item_ids,
         const std::vector<BmffForeignManagedItemReplacement>& replacements,
         std::vector<std::byte>* out_box, EmitTransferResult* out) noexcept
     {
-        if (!out_box || primary_item_id == 0U) {
+        if (!out_box || primary_item_id == 0U || ipma_boxes.empty()) {
             return false;
         }
 
         uint8_t version = 0U;
         uint32_t flags  = 0U;
         std::vector<BmffForeignIpmaEntry> entries;
-        if (!bmff_parse_ipma_entries(bytes, ipma, &version, &flags, &entries,
-                                     out)) {
-            return false;
+        std::unordered_map<uint32_t, size_t> positions;
+        size_t source_entry_count       = 0U;
+        size_t source_association_count = 0U;
+        for (size_t i = 0; i < ipma_boxes.size(); ++i) {
+            uint8_t input_version = 0U;
+            uint32_t input_flags  = 0U;
+            std::vector<BmffForeignIpmaEntry> input_entries;
+            if (!bmff_parse_ipma_entries(bytes, ipma_boxes[i], &input_version,
+                                         &input_flags, &input_entries, out)) {
+                return false;
+            }
+            if (input_entries.size()
+                > kMaxBmffForeignIpmaEntries - source_entry_count) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::LimitExceeded,
+                    EmitTransferCode::InvalidPayload,
+                    "combined source ipma entry count is too large");
+            }
+            source_entry_count += input_entries.size();
+            for (size_t j = 0; j < input_entries.size(); ++j) {
+                if (input_entries[j].associations.size()
+                    > kMaxBmffForeignIpmaAssociations
+                          - source_association_count) {
+                    return fail_bmff_foreign_meta_merge(
+                        out, TransferStatus::LimitExceeded,
+                        EmitTransferCode::InvalidPayload,
+                        "combined source ipma association count is too large");
+                }
+                source_association_count += input_entries[j].associations.size();
+            }
+            if (!bmff_merge_ipma_entries(
+                    std::span<const BmffForeignIpmaEntry>(input_entries.data(),
+                                                          input_entries.size()),
+                    &entries, &positions, out)) {
+                return false;
+            }
+            version = std::max(version, input_version);
+            flags |= input_flags;
         }
         bmff_remap_ipma_entries(removed_item_ids, replacements, &entries);
         if (primary_item_id > 0xFFFFU) {
@@ -29841,6 +29935,18 @@ namespace {
             }
         }
 
+        size_t output_association_count = 0U;
+        for (size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i].associations.size()
+                > kMaxBmffForeignIpmaAssociations - output_association_count) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::LimitExceeded,
+                    EmitTransferCode::InvalidPayload,
+                    "combined output ipma association count is too large");
+            }
+            output_association_count += entries[i].associations.size();
+        }
+
         bool needs_large_indices = (flags & 1U) != 0U;
         for (size_t i = 0; i < entries.size(); ++i) {
             const bool add_to_entry = i == primary_index
@@ -29869,12 +29975,20 @@ namespace {
                             EmitTransferCode::InvalidPayload,
                             "ipma association count exceeds 8-bit range");
                     }
+                    if (output_association_count
+                        >= kMaxBmffForeignIpmaAssociations) {
+                        return fail_bmff_foreign_meta_merge(
+                            out, TransferStatus::LimitExceeded,
+                            EmitTransferCode::InvalidPayload,
+                            "combined output ipma association count is too large");
+                    }
                     uint16_t value = static_cast<uint16_t>(property_indices[j]);
                     if (i < replacement_property_essential.size()
                         && replacement_property_essential[i] != 0U) {
                         value = static_cast<uint16_t>(value | 0x8000U);
                     }
                     entries[i].associations.push_back(value);
+                    output_association_count += 1U;
                 }
             }
         }
@@ -29985,8 +30099,7 @@ namespace {
         }
 
         bool has_ipco = false;
-        bool has_ipma = false;
-        TransferBmffBox ipma {};
+        std::vector<TransferBmffBox> ipma_boxes;
         uint32_t existing_property_count = 0U;
         std::vector<std::byte> ipco_payload;
         std::vector<uint32_t> existing_property_index_map;
@@ -30026,14 +30139,13 @@ namespace {
                         return false;
                     }
                 } else if (child.type == fourcc('i', 'p', 'm', 'a')) {
-                    if (has_ipma) {
+                    if (ipma_boxes.size() >= kMaxBmffForeignIpmaBoxes) {
                         return fail_bmff_foreign_meta_merge(
-                            out, TransferStatus::Unsupported,
-                            EmitTransferCode::InvalidArgument,
-                            "multiple ipma boxes are not supported");
+                            out, TransferStatus::LimitExceeded,
+                            EmitTransferCode::InvalidPayload,
+                            "ipma box count is too large");
                     }
-                    has_ipma = true;
-                    ipma     = child;
+                    ipma_boxes.push_back(child);
                 }
                 if (child.size == 0U) {
                     break;
@@ -30051,6 +30163,7 @@ namespace {
         if (props.empty() && !ctx.has_iprp) {
             return true;
         }
+        const bool has_ipma = !ipma_boxes.empty();
         if (props.empty() && !has_ipma) {
             out_box->insert(out_box->end(),
                             bytes.begin()
@@ -30108,9 +30221,12 @@ namespace {
         std::vector<std::byte> ipma_box;
         if (has_ipma) {
             if (!build_bmff_foreign_merged_ipma_box(
-                    bytes, ipma, ctx.primary_item_id,
-                    existing_property_index_map, property_indices,
-                    removed_item_ids, replacements, &ipma_box, out)) {
+                    bytes,
+                    std::span<const TransferBmffBox>(ipma_boxes.data(),
+                                                     ipma_boxes.size()),
+                    ctx.primary_item_id, existing_property_index_map,
+                    property_indices, removed_item_ids, replacements, &ipma_box,
+                    out)) {
                 return false;
             }
         } else if (!property_indices.empty()) {
@@ -30147,7 +30263,7 @@ namespace {
                     wrote_ipco = true;
                 } else if (child.type == fourcc('i', 'p', 'm', 'a')
                            && has_ipma) {
-                    if (!ipma_box.empty()) {
+                    if (!wrote_ipma && !ipma_box.empty()) {
                         iprp_payload.insert(iprp_payload.end(),
                                             ipma_box.begin(), ipma_box.end());
                     }

@@ -140,7 +140,7 @@ when the active plane is unknown.
 | `WebP` | `EXIF`, XMP RIFF chunk, `ICCP`, bounded `C2PA` | Replace matching managed RIFF chunks; preserve unrelated chunks; patch `VP8X` feature bits | EXIF/XMP/ICC edits require an existing `VP8X` chunk |
 | `JP2` | top-level `Exif`, top-level XMP `xml` box, `jp2h/colr` ICC | Replace matching top-level metadata boxes; rewrite `jp2h` only to replace/insert `colr`; preserve unrelated boxes and unrelated `jp2h` children | Does not synthesize `jp2h`; requires one existing `jp2h` for ICC |
 | `JXL` | top-level `Exif`, XMP `xml` box, `jumb`, `c2pa` | Replace matching top-level boxes; preserve signature and non-managed boxes; classify `jumb` as generic JUMBF or C2PA | ICC is encoder handoff only; file edit emits uncompressed prepared metadata boxes |
-| `HEIF` / `AVIF` / `CR3` | BMFF metadata items (`Exif`, XMP `mime`, JUMBF/C2PA), bounded `colr/prof` ICC properties, plus OpenMeta-authored metadata-only `meta` boxes | Preserve non-`meta` top-level boxes; replace prior OpenMeta-authored metadata `meta`; merge/replace/strip item metadata in parseable foreign top-level `meta` graphs by extending `iinf`/`iloc`/`idat`/`iref`; remap unambiguous managed item replacements across `iref`/version-0 `grpl`/`ipma`; replace prior ICC `colr` properties and remap `iprp`/`ipco`/`ipma` for bounded ICC | Does not rewrite arbitrary BMFF scene/property graphs |
+| `HEIF` / `AVIF` / `CR3` | BMFF metadata items (`Exif`, XMP `mime`, JUMBF/C2PA), bounded `colr/prof` ICC properties, plus OpenMeta-authored metadata-only `meta` boxes | Preserve non-`meta` top-level boxes; replace prior OpenMeta-authored metadata `meta`; merge/replace/strip item metadata in parseable foreign top-level `meta` graphs by extending `iinf`/`iloc`/`idat`/`iref`; remap unambiguous managed item replacements across `iref`/version-0 `grpl`/`ipma`; consolidate multiple valid `ipma` tables; replace prior ICC `colr` properties and remap `iprp`/`ipco`/`ipma` for bounded ICC | Does not rewrite arbitrary BMFF scene/property graphs |
 | `EXR` | safe string header attributes through the EXR transfer emitter or adapter batch | No file rewrite contract today; host applies prepared attributes through its own EXR writer | Attribute-emitter target, not a file edit path |
 
 When any decoded IPTC dataset is dirty, JPEG APP13 and TIFF tag 33723 payloads
@@ -321,6 +321,15 @@ associations. A strip operation has no replacement, and multiple old or new
 items make the mapping ambiguous; in both cases references to removed item IDs
 are deleted rather than redirected by guesswork. Unrelated relations, groups,
 properties, and associations remain unchanged.
+
+If a supported foreign `iprp` contains multiple valid `ipma` boxes, OpenMeta
+merges their entries by item ID and emits one deterministic consolidated `ipma`
+in first-seen item and property-association order. Repeated property
+associations are deduplicated, and the association remains essential when any
+source table marks it essential. Every input table is validated before output
+is produced; malformed tables, unsupported versions, aggregate table, entry,
+or association overflow fail the complete edit instead of producing a partial
+graph. Multiple competing `ipco` property containers remain unsupported.
 
 For bounded ICC transfer, OpenMeta removes prior ICC `colr/prof` and
 `colr/rICC` properties from `iprp/ipco`, compacts/remaps existing `ipma`

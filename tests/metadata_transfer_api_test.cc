@@ -3090,6 +3090,75 @@ duplicate_top_level_bmff_meta_iprp_child_box(std::vector<std::byte>* bytes,
 }
 
 static bool
+append_top_level_bmff_meta_iprp_child_box(std::vector<std::byte>* bytes,
+                                          std::span<const std::byte> child)
+{
+    if (!bytes || child.empty()) {
+        return false;
+    }
+    size_t meta_off  = 0U;
+    size_t meta_size = 0U;
+    if (!find_top_level_bmff_box(std::span<const std::byte>(bytes->data(),
+                                                            bytes->size()),
+                                 openmeta::fourcc('m', 'e', 't', 'a'),
+                                 &meta_off, &meta_size)) {
+        return false;
+    }
+    size_t iprp_off  = 0U;
+    size_t iprp_size = 0U;
+    if (!find_top_level_bmff_meta_child_box(
+            std::span<const std::byte>(bytes->data(), bytes->size()),
+            openmeta::fourcc('i', 'p', 'r', 'p'), &iprp_off, &iprp_size)
+        || child.size() > std::numeric_limits<uint32_t>::max() - iprp_size
+        || child.size() > std::numeric_limits<uint32_t>::max() - meta_size) {
+        return false;
+    }
+
+    bytes->insert(bytes->begin()
+                      + static_cast<std::ptrdiff_t>(iprp_off + iprp_size),
+                  child.begin(), child.end());
+    return write_test_u32be(bytes, iprp_off,
+                            static_cast<uint32_t>(iprp_size + child.size()))
+           && write_test_u32be(bytes, meta_off,
+                               static_cast<uint32_t>(meta_size + child.size()));
+}
+
+static std::vector<std::byte>
+make_test_bmff_ipma_v0_single_association_box(uint16_t item_id,
+                                              uint8_t association)
+{
+    std::vector<std::byte> payload;
+    append_bmff_fullbox_header(&payload, 0U);
+    append_u32be(&payload, 1U);
+    append_u16be(&payload, item_id);
+    payload.push_back(std::byte { 1U });
+    payload.push_back(static_cast<std::byte>(association));
+
+    std::vector<std::byte> box;
+    append_bmff_box(&box, openmeta::fourcc('i', 'p', 'm', 'a'),
+                    std::span<const std::byte>(payload.data(), payload.size()));
+    return box;
+}
+
+static std::vector<std::byte>
+make_test_bmff_ipma_v1_single_association_box(uint32_t item_id,
+                                              uint16_t association)
+{
+    std::vector<std::byte> payload;
+    append_bmff_fullbox_header(&payload, 1U);
+    payload[3U] = std::byte { 0x01U };
+    append_u32be(&payload, 1U);
+    append_u32be(&payload, item_id);
+    payload.push_back(std::byte { 1U });
+    append_u16be(&payload, association);
+
+    std::vector<std::byte> box;
+    append_bmff_box(&box, openmeta::fourcc('i', 'p', 'm', 'a'),
+                    std::span<const std::byte>(payload.data(), payload.size()));
+    return box;
+}
+
+static bool
 patch_top_level_bmff_meta_ipma_first_association(std::vector<std::byte>* bytes,
                                                  uint8_t value)
 {
@@ -45421,6 +45490,86 @@ TEST(MetadataTransferApi,
 }
 
 TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditRejectsUnsupportedSecondaryIpmaVersion)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+    openmeta::PreparedTransferBlock icc;
+    icc.route   = "bmff:property-colr-icc";
+    icc.payload = { std::byte { 'p' }, std::byte { 'r' }, std::byte { 'o' },
+                    std::byte { 'f' }, std::byte { 0x20 } };
+    bundle.blocks.push_back(icc);
+
+    std::vector<std::byte> input = make_bmff_foreign_meta_existing_ipma_target();
+    std::vector<std::byte> second_ipma
+        = make_test_bmff_ipma_v0_single_association_box(1U, 0x01U);
+    ASSERT_GE(second_ipma.size(), 12U);
+    second_ipma[8U] = std::byte { 2U };
+    ASSERT_TRUE(append_top_level_bmff_meta_iprp_child_box(
+        &input,
+        std::span<const std::byte>(second_ipma.data(), second_ipma.size())));
+
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested = true;
+    options.edit_apply     = true;
+
+    const openmeta::ExecutePreparedTransferResult result
+        = openmeta::execute_prepared_transfer(
+            &bundle, std::span<const std::byte>(input.data(), input.size()),
+            options);
+
+    EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::Unsupported);
+    EXPECT_NE(result.edit_plan_message.find("ipma version is not supported"),
+              std::string::npos);
+    EXPECT_EQ(result.edit_apply.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(result.edited_output.empty());
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditRejectsExcessiveIpmaTableCount)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+    openmeta::PreparedTransferBlock icc;
+    icc.route   = "bmff:property-colr-icc";
+    icc.payload = { std::byte { 'p' }, std::byte { 'r' }, std::byte { 'o' },
+                    std::byte { 'f' }, std::byte { 0x21 } };
+    bundle.blocks.push_back(icc);
+
+    const std::vector<std::byte> additional_ipma
+        = make_test_bmff_ipma_v0_single_association_box(1U, 0x01U);
+    std::vector<std::byte> excessive_tables;
+    constexpr size_t kAdditionalTableCount = 4096U;
+    excessive_tables.reserve(additional_ipma.size() * kAdditionalTableCount);
+    for (size_t i = 0U; i < kAdditionalTableCount; ++i) {
+        excessive_tables.insert(excessive_tables.end(), additional_ipma.begin(),
+                                additional_ipma.end());
+    }
+
+    std::vector<std::byte> input = make_bmff_foreign_meta_existing_ipma_target();
+    ASSERT_TRUE(append_top_level_bmff_meta_iprp_child_box(
+        &input, std::span<const std::byte>(excessive_tables.data(),
+                                           excessive_tables.size())));
+
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested = true;
+    options.edit_apply     = true;
+
+    const openmeta::ExecutePreparedTransferResult result
+        = openmeta::execute_prepared_transfer(
+            &bundle, std::span<const std::byte>(input.data(), input.size()),
+            options);
+
+    EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::LimitExceeded);
+    EXPECT_NE(result.edit_plan_message.find("ipma box count is too large"),
+              std::string::npos);
+    EXPECT_EQ(result.edit_apply.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(result.edited_output.empty());
+}
+
+TEST(MetadataTransferApi,
      ExecutePreparedTransferBmffEditRejectsDuplicateForeignIpcoBox)
 {
     openmeta::PreparedTransferBundle bundle;
@@ -45453,7 +45602,7 @@ TEST(MetadataTransferApi,
 }
 
 TEST(MetadataTransferApi,
-     ExecutePreparedTransferBmffEditRejectsDuplicateForeignIpmaBox)
+     ExecutePreparedTransferBmffEditCanonicalizesDuplicateForeignIpmaBoxes)
 {
     openmeta::PreparedTransferBundle bundle;
     bundle.target_format = openmeta::TransferTargetFormat::Heif;
@@ -45477,11 +45626,133 @@ TEST(MetadataTransferApi,
             &bundle, std::span<const std::byte>(input.data(), input.size()),
             options);
 
-    EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::Unsupported);
-    EXPECT_NE(result.edit_plan_message.find("multiple ipma boxes"),
-              std::string::npos);
-    EXPECT_EQ(result.edit_apply.status, openmeta::TransferStatus::Unsupported);
-    EXPECT_TRUE(result.edited_output.empty());
+    EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+    ASSERT_FALSE(result.edited_output.empty());
+    const std::span<const std::byte> edited(result.edited_output.data(),
+                                            result.edited_output.size());
+    EXPECT_EQ(payload_ascii_count(edited, "ipma"), 1U);
+
+    uint32_t association_count = 0U;
+    uint32_t property_count    = 0U;
+    ASSERT_TRUE(read_test_bmff_ipma_item_property_count(edited, 1U, 1U,
+                                                        &association_count,
+                                                        &property_count));
+    EXPECT_EQ(association_count, 2U);
+    EXPECT_EQ(property_count, 1U);
+    ASSERT_TRUE(read_test_bmff_ipma_item_property_count(edited, 1U, 2U,
+                                                        &association_count,
+                                                        &property_count));
+    EXPECT_EQ(association_count, 2U);
+    EXPECT_EQ(property_count, 1U);
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditMergesSplitForeignIpmaAssociations)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+    openmeta::PreparedTransferBlock icc;
+    icc.route   = "bmff:property-colr-icc";
+    icc.payload = { std::byte { 'p' }, std::byte { 'r' }, std::byte { 'o' },
+                    std::byte { 'f' }, std::byte { 0x24 } };
+    bundle.blocks.push_back(icc);
+
+    std::vector<std::byte> input = make_bmff_foreign_meta_existing_ipma_target();
+    const std::vector<std::byte> second_ipma
+        = make_test_bmff_ipma_v0_single_association_box(1U, 0x81U);
+    ASSERT_TRUE(append_top_level_bmff_meta_iprp_child_box(
+        &input,
+        std::span<const std::byte>(second_ipma.data(), second_ipma.size())));
+
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested = true;
+    options.edit_apply     = true;
+
+    const openmeta::ExecutePreparedTransferResult result
+        = openmeta::execute_prepared_transfer(
+            &bundle, std::span<const std::byte>(input.data(), input.size()),
+            options);
+
+    EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+    ASSERT_FALSE(result.edited_output.empty());
+    const std::span<const std::byte> edited(result.edited_output.data(),
+                                            result.edited_output.size());
+    EXPECT_EQ(payload_ascii_count(edited, "ipma"), 1U);
+
+    uint32_t association_count = 0U;
+    uint32_t property_count    = 0U;
+    uint32_t essential_count   = 0U;
+    ASSERT_TRUE(read_test_bmff_ipma_item_property_stats(
+        edited, 1U, 1U, &association_count, &property_count, &essential_count));
+    EXPECT_EQ(association_count, 2U);
+    EXPECT_EQ(property_count, 1U);
+    EXPECT_EQ(essential_count, 1U);
+    ASSERT_TRUE(read_test_bmff_ipma_item_property_count(edited, 1U, 2U,
+                                                        &association_count,
+                                                        &property_count));
+    EXPECT_EQ(association_count, 2U);
+    EXPECT_EQ(property_count, 1U);
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditMergesMixedIpmaWireForms)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+    openmeta::PreparedTransferBlock icc;
+    icc.route   = "bmff:property-colr-icc";
+    icc.payload = { std::byte { 'p' }, std::byte { 'r' }, std::byte { 'o' },
+                    std::byte { 'f' }, std::byte { 0x25 } };
+    bundle.blocks.push_back(icc);
+
+    std::vector<std::byte> input = make_bmff_foreign_meta_existing_ipma_target();
+    const std::vector<std::byte> second_ipma
+        = make_test_bmff_ipma_v1_single_association_box(1U, 0x8001U);
+    ASSERT_TRUE(append_top_level_bmff_meta_iprp_child_box(
+        &input,
+        std::span<const std::byte>(second_ipma.data(), second_ipma.size())));
+
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested = true;
+    options.edit_apply     = true;
+
+    const openmeta::ExecutePreparedTransferResult result
+        = openmeta::execute_prepared_transfer(
+            &bundle, std::span<const std::byte>(input.data(), input.size()),
+            options);
+
+    EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+    ASSERT_FALSE(result.edited_output.empty());
+    const std::span<const std::byte> edited(result.edited_output.data(),
+                                            result.edited_output.size());
+    EXPECT_EQ(payload_ascii_count(edited, "ipma"), 1U);
+
+    size_t ipma_off  = 0U;
+    size_t ipma_size = 0U;
+    ASSERT_TRUE(find_top_level_bmff_meta_iprp_child_box(
+        edited, openmeta::fourcc('i', 'p', 'm', 'a'), &ipma_off, &ipma_size));
+    ASSERT_GE(ipma_size, 12U);
+    EXPECT_EQ(edited[ipma_off + 8U], std::byte { 1U });
+    EXPECT_EQ(edited[ipma_off + 11U], std::byte { 1U });
+
+    uint32_t association_count = 0U;
+    uint32_t property_count    = 0U;
+    uint32_t essential_count   = 0U;
+    ASSERT_TRUE(read_test_bmff_ipma_item_property_stats(
+        edited, 1U, 1U, &association_count, &property_count, &essential_count));
+    EXPECT_EQ(association_count, 2U);
+    EXPECT_EQ(property_count, 1U);
+    EXPECT_EQ(essential_count, 1U);
+    ASSERT_TRUE(read_test_bmff_ipma_item_property_count(edited, 1U, 2U,
+                                                        &association_count,
+                                                        &property_count));
+    EXPECT_EQ(association_count, 2U);
+    EXPECT_EQ(property_count, 1U);
 }
 
 TEST(MetadataTransferApi,
@@ -45905,8 +46176,10 @@ TEST(MetadataTransferApi,
                     std::byte { 'w' }, std::byte { '/' }, std::byte { '>' } };
     bundle.blocks.push_back(xmp);
 
-    const std::vector<std::byte> input
+    std::vector<std::byte> input
         = make_bmff_foreign_meta_existing_exif_xmp_target(true);
+    ASSERT_TRUE(duplicate_top_level_bmff_meta_iprp_child_box(
+        &input, openmeta::fourcc('i', 'p', 'm', 'a')));
 
     openmeta::ExecutePreparedTransferOptions options;
     options.edit_requested = true;
@@ -45922,6 +46195,7 @@ TEST(MetadataTransferApi,
     ASSERT_FALSE(result.edited_output.empty());
     const std::span<const std::byte> edited(result.edited_output.data(),
                                             result.edited_output.size());
+    EXPECT_EQ(payload_ascii_count(edited, "ipma"), 1U);
 
     uint32_t count = 0U;
     ASSERT_TRUE(count_test_bmff_iref_relations(

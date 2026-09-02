@@ -68,7 +68,7 @@ XMP-capable targets.
 | WebP | Bounded but real | Prepared bundle, compiled emit, bounded chunk rewrite/edit, file-helper roundtrip | Not a general WebP chunk editor |
 | JP2 | Bounded but real | Prepared bundle, compiled emit, bounded box rewrite/edit, file-helper roundtrip | `jp2h` synthesis is still out of scope |
 | JXL | Bounded but real | Prepared bundle, compiled emit, bounded box rewrite/edit, file-helper roundtrip | Still narrower than JPEG/TIFF |
-| HEIF / AVIF / CR3 | Bounded but real | Prepared bundle, compiled emit, direct prepared item/property payload byte-writer handoff, OpenMeta-managed BMFF item/property edit, constrained foreign-`meta` item merge/replacement/strip, compact `iloc` field normalization, managed item-ID remapping across `iref`/version-0 `grpl`/`ipma`, plus bounded ICC property merge, file-helper roundtrip | Direct payload output is a host handoff rather than a standalone BMFF file; arbitrary foreign `meta` scene/property-graph rewrite is still unsupported |
+| HEIF / AVIF / CR3 | Bounded but real | Prepared bundle, compiled emit, direct prepared item/property payload byte-writer handoff, OpenMeta-managed BMFF item/property edit, constrained foreign-`meta` item merge/replacement/strip, compact `iloc` field normalization, managed item-ID remapping across `iref`/version-0 `grpl`/`ipma`, deterministic multi-`ipma` consolidation, plus bounded ICC property merge, file-helper roundtrip | Direct payload output is a host handoff rather than a standalone BMFF file; arbitrary foreign `meta` scene/property-graph rewrite is still unsupported |
 | EXR | Stable bounded host target | Prepared bundle, compiled emit, direct backend attribute emit, prepared-bundle to `ExrAdapterBatch` bridge, CLI/Python transfer surface | Host-emission only for the current roadmap; no OpenMeta file rewrite/edit path |
 
 ## What Is Already Implemented
@@ -377,6 +377,10 @@ Implemented as a bounded BMFF target family:
   replacement remaps retained `iref` endpoints, version-0 `grpl` item-group
   members, and `ipma` item associations; strip and ambiguous replacement paths
   remove references to deleted managed item IDs instead of leaving them stale
+- multiple valid foreign `ipma` boxes are validated and merged by item ID into
+  one consolidated table in first-seen source order; repeated property
+  associations are deduplicated while preserving an essential bit asserted by
+  any source table
 - rebuilt foreign `iloc` graphs compact foldable self-contained base offsets to
   a zero-width base-offset field when safe
 - bounded foreign top-level `meta` ICC property merge by replacing prior ICC

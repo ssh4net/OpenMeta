@@ -338,9 +338,9 @@ Target Summary
        OpenMeta-authored metadata ``meta``; merge/replace/strip item metadata
        in parseable foreign top-level ``meta`` graphs by extending
        ``iinf``/``iloc``/``idat``/``iref``; remap unambiguous managed item
-       replacements across ``iref``/version-0 ``grpl``/``ipma``; replace prior
-       ICC ``colr`` properties and remap ``iprp``/``ipco``/``ipma`` for bounded
-       ICC.
+       replacements across ``iref``/version-0 ``grpl``/``ipma``; consolidate
+       multiple valid ``ipma`` tables; replace prior ICC ``colr`` properties
+       and remap ``iprp``/``ipco``/``ipma`` for bounded ICC.
      - Does not rewrite arbitrary BMFF scene/property graphs.
    * - ``EXR``
      - safe string header attributes through the EXR transfer emitter or
@@ -536,6 +536,16 @@ Exif, XMP, JUMBF, or C2PA family, OpenMeta remaps that item ID in retained
 or new items make the mapping ambiguous; in both cases references to removed
 item IDs are deleted rather than redirected by guesswork. Unrelated relations,
 groups, properties, and associations remain unchanged.
+
+If a supported foreign ``iprp`` contains multiple valid ``ipma`` boxes,
+OpenMeta merges their entries by item ID and emits one deterministic
+consolidated ``ipma`` in first-seen item and property-association order.
+Repeated property associations are deduplicated, and the association remains
+essential when any source table marks it essential. Every input table is
+validated before output is produced; malformed tables, unsupported versions,
+aggregate table, entry, or association overflow fail the complete edit instead
+of producing a partial graph. Multiple competing ``ipco`` property containers
+remain unsupported.
 
 For bounded ICC transfer, OpenMeta removes prior ICC ``colr/prof`` and
 ``colr/rICC`` properties from ``iprp/ipco``, compacts/remaps existing ``ipma``
