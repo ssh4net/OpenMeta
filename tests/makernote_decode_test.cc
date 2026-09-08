@@ -10159,6 +10159,80 @@ TEST(MakerNoteDecode, DecodesCasioFaceInfo2IntoDerivedIfdForDciAlias)
 }
 
 
+TEST(MakerNoteDecode, DecodesMultipleCasioFaceInfoBlocksAcrossStoreGrowth)
+{
+    const std::string_view make = "CASIO";
+    const uint32_t payload_off = 57U + static_cast<uint32_t>(make.size()) + 32U;
+    const uint32_t payload_bytes = 0x54U;
+    std::vector<std::byte> mn;
+    append_bytes(&mn, "DCI");
+    mn.push_back(std::byte { 0 });
+    append_u32be(&mn, 2);
+    for (uint32_t i = 0; i < 2; ++i) {
+        append_u16be(&mn, 0x2089);
+        append_u16be(&mn, 7);
+        append_u32be(&mn, payload_bytes);
+        append_u32be(&mn, payload_off + i * payload_bytes);
+    }
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote(make, mn);
+    ASSERT_EQ(tiff.size(), payload_off);
+    for (uint32_t i = 0; i < 2; ++i) {
+        std::vector<std::byte> payload(payload_bytes, std::byte { 0 });
+        payload[0] = std::byte { 0x02 };
+        payload[1] = std::byte { 0x01 };
+        payload[2] = static_cast<std::byte>(i + 1U);
+        write_u16le_at(&payload, 0x0004, 640U);
+        write_u16le_at(&payload, 0x0006, 480U);
+        payload[0x0008] = static_cast<std::byte>(7U + i);
+        for (uint32_t face = 0; face <= i; ++face) {
+            for (uint32_t k = 0; k < 4; ++k) {
+                write_u16le_at(&payload, 0x0018U + face * 0x34U + k * 2U,
+                               static_cast<uint16_t>(100U * i + 10U * face + k));
+            }
+        }
+        tiff.insert(tiff.end(), payload.begin(), payload.end());
+    }
+
+    MetaStore store;
+    std::array<ExifIfdRef, 8> ifds {};
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    ASSERT_EQ(decode_exif_tiff(tiff, store, ifds, options).status,
+              ExifDecodeStatus::Ok);
+    store.finalize();
+    static constexpr std::string_view tables[] = { "mk_casio_faceinfo2_0",
+                                                   "mk_casio_faceinfo2_1" };
+    for (uint32_t i = 0; i < 2; ++i) {
+        const std::span<const EntryId> counts = store.find_all(
+            exif_key(tables[i], 0x0002));
+        ASSERT_EQ(counts.size(), 1U);
+        EXPECT_EQ(store.entry(counts[0]).value.data.u64, i + 1U);
+        const std::span<const EntryId> values = store.find_all(
+            exif_key(tables[i], 0x0008));
+        ASSERT_EQ(values.size(), 1U);
+        EXPECT_EQ(store.entry(values[0]).value.data.u64, 7U + i);
+        for (uint32_t face = 0; face <= i; ++face) {
+            const std::span<const EntryId> positions = store.find_all(
+                exif_key(tables[i],
+                         static_cast<uint16_t>(0x0018U + face * 0x34U)));
+            ASSERT_EQ(positions.size(), 1U);
+            const Entry& e = store.entry(positions[0]);
+            ASSERT_EQ(e.value.kind, MetaValueKind::Array);
+            ASSERT_EQ(e.value.elem_type, MetaElementType::U16);
+            ASSERT_EQ(e.value.count, 4U);
+            const std::span<const std::byte> raw = store.arena().span(
+                e.value.data.span);
+            ASSERT_EQ(raw.size(), 8U);
+            uint16_t actual[4];
+            std::memcpy(actual, raw.data(), sizeof(actual));
+            for (uint32_t k = 0; k < 4; ++k) {
+                EXPECT_EQ(actual[k], 100U * i + 10U * face + k);
+            }
+        }
+    }
+}
+
+
 TEST(MakerNoteDecode, DecodesCasioQvciApp1Block)
 {
     // Minimal JPEG with a single APP1 "QVCI" segment and EOI.

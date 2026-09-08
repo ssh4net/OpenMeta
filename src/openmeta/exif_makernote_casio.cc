@@ -2,7 +2,9 @@
 
 #include "exif_tiff_decode_internal.h"
 
+#include <array>
 #include <cstdint>
+#include <cstring>
 
 namespace openmeta::exif_internal {
 
@@ -242,16 +244,20 @@ namespace {
             return;
         }
 
-        const ByteArena& arena               = store.arena();
-        const std::span<const Entry> entries = store.entries();
+        const ByteArena& arena   = store.arena();
+        const size_t entry_count = store.entries().size();
 
         uint32_t idx_faceinfo1 = 0;
         uint32_t idx_faceinfo2 = 0;
 
         char sub_ifd_buf[96];
+        // The final supported FaceInfo1 position ends at 0x03fc; FaceInfo2
+        // needs fewer bytes. Keep this prefix independent of arena growth.
+        std::array<std::byte, 0x03fc> source_storage;
 
-        for (size_t i = 0; i < entries.size(); ++i) {
-            const Entry& e = entries[i];
+        for (size_t i = 0; i < entry_count; ++i) {
+            // Derived entries can also reallocate the entry vector.
+            const Entry& e = store.entry(static_cast<EntryId>(i));
             if (e.key.kind != MetaKeyKind::ExifTag) {
                 continue;
             }
@@ -266,11 +272,17 @@ namespace {
                 continue;
             }
 
-            const ByteSpan raw_span                  = e.value.data.span;
-            const std::span<const std::byte> raw_src = arena.span(raw_span);
-            if (raw_src.empty()) {
+            const ByteSpan raw_span                 = e.value.data.span;
+            const std::span<const std::byte> source = arena.span(raw_span);
+            if (source.empty()) {
                 continue;
             }
+            const size_t source_size = source.size() < source_storage.size()
+                                           ? source.size()
+                                           : source_storage.size();
+            std::memcpy(source_storage.data(), source.data(), source_size);
+            const std::span<const std::byte> raw_src(source_storage.data(),
+                                                     source_size);
 
             const std::string_view mk_prefix = "mk_casio";
 

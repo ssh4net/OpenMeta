@@ -469,7 +469,10 @@ nikon_try_decode_preview_ifd_from_makernote(
         return false;
     }
 
-    decode_classic_ifd_no_header(cfg, tiff_bytes, ifd_off, ifd_name, store,
+    // The nested decoder grows the arena that owns tiff_bytes.
+    const std::vector<std::byte> preview_storage(tiff_bytes.begin(),
+                                                 tiff_bytes.end());
+    decode_classic_ifd_no_header(cfg, preview_storage, ifd_off, ifd_name, store,
                                  options, status_out, EntryFlags::Derived);
     return true;
 }
@@ -1282,6 +1285,19 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
 
     std::string_view model;
     (void)ctx.find_first_text("ifd0", 0x0110 /* Model */, &model);
+    // Resolve model-dependent choices before derived values grow the arena.
+    const bool model_has_d40 = model.find("NIKON D40")
+                               != std::string_view::npos;
+    const bool model_has_d80 = model.find("NIKON D80")
+                               != std::string_view::npos;
+    const bool model_has_d300 = model.find("NIKON D300")
+                                != std::string_view::npos;
+    const bool model_has_d3  = model.find("NIKON D3") != std::string_view::npos;
+    const bool model_has_d3x = model.find("NIKON D3X")
+                               != std::string_view::npos;
+    const bool model_has_d500 = model.find("NIKON D500")
+                                != std::string_view::npos;
+    const bool model_is_zf = nikon_model_is_zf(model);
 
     uint32_t serial_key     = 0;
     uint32_t shutter_count  = 0;
@@ -1400,13 +1416,27 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
     uint32_t idx_aftune          = 0;
     uint32_t idx_retouchinfo     = 0;
 
+    // Derived text/array values can reallocate the source arena. Allocate
+    // scratch once for the largest admitted block, then reuse it per candidate.
+    size_t max_source_bytes = 0;
     for (uint32_t i = 0; i < cand_count; ++i) {
-        const uint16_t tag                       = cands[i].tag;
-        const ByteSpan raw_span                  = cands[i].value.data.span;
-        const std::span<const std::byte> raw_src = store.arena().span(raw_span);
-        if (raw_src.empty()) {
+        const size_t size = store.arena().span(cands[i].value.data.span).size();
+        if (size > max_source_bytes) {
+            max_source_bytes = size;
+        }
+    }
+    std::vector<std::byte> source_storage(max_source_bytes);
+
+    for (uint32_t i = 0; i < cand_count; ++i) {
+        const uint16_t tag                      = cands[i].tag;
+        const ByteSpan raw_span                 = cands[i].value.data.span;
+        const std::span<const std::byte> source = store.arena().span(raw_span);
+        if (source.empty()) {
             continue;
         }
+        std::memcpy(source_storage.data(), source.data(), source.size());
+        const std::span<const std::byte> raw_src(source_storage.data(),
+                                                 source.size());
 
         const std::string_view mk_prefix = "mk_nikon";
 
@@ -3155,26 +3185,24 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
             }
 
             std::string_view shotinfo_table = "shotinfo";
-            if (ver == "0209"
-                && model.find("NIKON D40") != std::string_view::npos) {
+            if (ver == "0209" && model_has_d40) {
                 shotinfo_table = "shotinfod40";
-            } else if (ver == "0208"
-                       && model.find("NIKON D80") != std::string_view::npos) {
+            } else if (ver == "0208" && model_has_d80) {
                 shotinfo_table = "shotinfod80";
             } else if (ver == "0210") {
-                if (model.find("NIKON D300") != std::string_view::npos) {
+                if (model_has_d300) {
                     shotinfo_table = "shotinfod300a";
-                } else if (model.find("NIKON D3") != std::string_view::npos) {
+                } else if (model_has_d3) {
                     shotinfo_table = "shotinfod3a";
                 }
             } else if (ver == "0213") {
                 shotinfo_table = "shotinfod90";
             } else if (ver == "0214") {
-                if (model.find("NIKON D3X") != std::string_view::npos) {
+                if (model_has_d3x) {
                     shotinfo_table = "shotinfod3x";
-                } else if (model.find("NIKON D300") != std::string_view::npos) {
+                } else if (model_has_d300) {
                     shotinfo_table = "shotinfod300b";
-                } else if (model.find("NIKON D3") != std::string_view::npos) {
+                } else if (model_has_d3) {
                     shotinfo_table = "shotinfod3b";
                 }
             } else if (ver == "0215") {
@@ -3361,13 +3389,10 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                                 dec_src, store, options, status_out);
                         } else if (ver == "0238" || ver == "0239") {
                             decode_nikon_shotinfo_d5d500_offsets(
-                                mk_prefix,
-                                model.find("NIKON D500")
-                                    != std::string_view::npos,
-                                &idx_rotationinfo, &idx_jpginfo,
-                                &idx_bracketinginfo, &idx_shootingmenu,
-                                &idx_otherinfo, dec_src, store, options,
-                                status_out);
+                                mk_prefix, model_has_d500, &idx_rotationinfo,
+                                &idx_jpginfo, &idx_bracketinginfo,
+                                &idx_shootingmenu, &idx_otherinfo, dec_src,
+                                store, options, status_out);
                         } else if (ver == "0246") {
                             decode_nikon_shotinfo_d6_offsets(
                                 mk_prefix, &idx_seqinfo, &idx_intervalinfo,
@@ -3413,7 +3438,7 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                                                         shotinfo_prefix_bytes));
                 }
 
-                if (shotinfo_table == "shotinfo" && nikon_model_is_zf(model)) {
+                if (shotinfo_table == "shotinfo" && model_is_zf) {
                     uint8_t variants_out[256];
                     for (uint32_t k = 0; k < out_count; ++k) {
                         variants_out[k] = (tags_out[k] == 0x0024U) ? 1U : 0U;
@@ -3461,7 +3486,7 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
             } else if (ver == "0210") {
                 settings_table = "settingsd3";
                 settings_len   = 24;
-                if (model.find("NIKON D300") != std::string_view::npos) {
+                if (model_has_d300) {
                     settings_start = 790;
                 } else {
                     settings_start = 0x0301;
@@ -3561,8 +3586,7 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                 if (settings_start + settings_len > raw_src.size()) {
                     // Best-effort fallback: D3 custom settings may be located at
                     // 0x30a for some firmware versions.
-                    if (ver == "0210"
-                        && model.find("NIKON D3") != std::string_view::npos
+                    if (ver == "0210" && model_has_d3
                         && (0x030a + settings_len) <= raw_src.size()) {
                         settings_start = 0x030a;
                     } else {

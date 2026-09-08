@@ -13,6 +13,7 @@
 #include <array>
 #include <cstring>
 #include <string_view>
+#include <vector>
 
 namespace openmeta {
 namespace {
@@ -2791,6 +2792,7 @@ namespace {
         uint32_t idx_nefinfo        = 0;
         uint32_t idx_distortioninfo = 0;
         uint32_t idx_vignetteinfo   = 0;
+        std::vector<std::byte> tiff_storage;
         for (size_t i = 0; i < sizeof(kNefInfoIfds) / sizeof(kNefInfoIfds[0]);
              ++i) {
             MetaValue nefinfo;
@@ -2806,8 +2808,12 @@ namespace {
                 continue;
             }
 
-            const std::span<const std::byte> tiff_bytes = raw.subspan(
+            // Nested decoding appends to the same arena that owns raw.
+            // Keep its input independent for the entire derived decode.
+            const std::span<const std::byte> source = raw.subspan(
                 static_cast<size_t>(hdr_off));
+            tiff_storage.assign(source.begin(), source.end());
+            const std::span<const std::byte> tiff_bytes(tiff_storage);
             if (tiff_bytes.size() < 8U) {
                 continue;
             }
