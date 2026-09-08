@@ -3,15 +3,17 @@
 `openmeta/metadata_translation.h` provides bounded explicit projection between
 metadata families. Current contracts translate edited XMP creation dates into
 native EXIF/IPTC date groups, exact technical XMP/TIFF properties into native
-EXIF fields, typed capture properties into native EXIF scalars, and exact
-descriptive XMP properties into native IPTC-IIM datasets before transfer or
-writing.
+EXIF fields, typed capture properties into native EXIF scalars, target-bound
+image geometry into native TIFF/EXIF groups, and exact descriptive and flat
+location XMP properties into native IPTC-IIM datasets before transfer or writing.
 
 The APIs are experimental and versioned by
 `kMetadataDateTranslationContractVersion == 1` and
 `kMetadataTechnicalTranslationContractVersion == 1` and
 `kMetadataCaptureTranslationContractVersion == 1` and
-`kMetadataDescriptiveTranslationContractVersion == 1`.
+`kMetadataGeometryTranslationContractVersion == 1` and
+`kMetadataDescriptiveTranslationContractVersion == 1` and
+`kMetadataLocationTranslationContractVersion == 1`.
 
 ## Workflow
 
@@ -22,7 +24,9 @@ invoke it implicitly:
 2. Call `translate_xmp_creation_dates(...)`,
    `translate_xmp_technical_metadata(...)`,
    `translate_xmp_capture_metadata(...)`,
-   `translate_xmp_descriptive_metadata(...)`, or the required combination with
+   `translate_xmp_image_geometry(...)`,
+   `translate_xmp_descriptive_metadata(...)`,
+   `translate_xmp_location_metadata(...)`, or the required combination with
    explicit mapping and conflict options.
 3. Pass the returned finalized store to transfer preparation or a writer.
 
@@ -142,10 +146,48 @@ value is ASCII or will be replaced by the same transaction. An incompatible
 charset marker or unrelated legacy high-bit data returns
 `NativeEncodingConflict` without modifying the output.
 
+## Location Mappings
+
+`translate_xmp_location_metadata(...)` accepts
+`MetadataLocationTranslationOptions` and returns
+`MetadataDescriptiveTranslationResult`. It uses the descriptive source modes,
+conflict policies, statuses, and mapping diagnostics. The existing descriptive
+API still selects only its original seven mappings.
+
+| Exact XMP source | Native IPTC-IIM destination | Maximum encoded bytes |
+| --- | --- | --- |
+| `photoshop:City` | `City` (2:90) | 32 |
+| `Iptc4xmpCore:Location` | `Sub-location` (2:92) | 32 |
+| `photoshop:State` | `Province-State` (2:95) | 32 |
+| `photoshop:Country` | `Country-PrimaryLocationName` (2:101) | 64 |
+| `Iptc4xmpCore:CountryCode` | `Country-PrimaryLocationCode` (2:100) | 3 |
+
+These are the flat legacy location mappings in the
+[IPTC Photo Metadata Standard](https://www.iptc.org/std/photometadata/specification/IPTC-PhotoMetadata-2025.1.html).
+Each mapping is an independent singleton. Namespace URIs and property paths
+must match exactly; duplicate active sources are rejected even when equal.
+Empty values, invalid UTF-8/XML text, embedded NULs, and excess bytes fail
+without changing the output. Removal uses a dirty tombstone.
+
+Country codes require exactly two or three uppercase ASCII letters and are
+preserved byte for byte. Code membership, conversion between two and three
+letters, and agreement with the country name belong to the caller. Structured
+`LocationCreated`/`LocationShown` properties, indexed or qualified forms, and
+GPS are not aliases and are not selected by this API. The operation does not
+infer whether a flat location describes the camera or the depicted subject.
+
+UTF-8 charset promotion follows the descriptive policy above, including
+rejection of incompatible markers and unrelated legacy high-bit IPTC values.
+Limits are 1024 matched source properties, 4096 operations, 8 MiB of inspected
+text/charset-safety bytes, and six added entries (five datasets plus one charset
+marker). Options can lower these limits. New entries copy source provenance;
+updates preserve the existing native entry's provenance. Translation is a
+preparation operation that may allocate; it is not an allocation-free replay API.
+
 ## Conflict And Removal Policy
 
-The date, technical, capture, geometry, and descriptive conflict-policy enums
-apply the same three behaviors to each complete native group:
+All translation APIs apply the following behaviors to each complete native
+group. Location translation reuses the descriptive conflict-policy enum.
 
 | Policy | Behavior |
 | --- | --- |
@@ -234,6 +276,13 @@ descriptive_options.conflict_policy
 openmeta::MetaStore descriptive;
 const auto descriptive_result = openmeta::translate_xmp_descriptive_metadata(
     geometry, descriptive_options, &descriptive);
+
+openmeta::MetadataLocationTranslationOptions location_options;
+location_options.conflict_policy
+    = openmeta::MetadataDescriptiveTranslationConflictPolicy::ReplaceExisting;
+openmeta::MetaStore location;
+const auto location_result = openmeta::translate_xmp_location_metadata(
+    descriptive, location_options, &location);
 ```
 
 ## Python
@@ -254,6 +303,9 @@ translated = translated.translate_image_geometry(target_image_spec)
 translated = translated.translate_descriptive_metadata(
     conflict_policy=openmeta.MetadataDescriptiveTranslationConflictPolicy.ReplaceExisting,
 )
+translated = translated.translate_location_metadata(
+    conflict_policy=openmeta.MetadataDescriptiveTranslationConflictPolicy.ReplaceExisting,
+)
 ```
 
 Invalid or lossy requests raise `ValueError` containing the C++ status,
@@ -263,7 +315,8 @@ mapping, and source entry ID. The original `Document` is not mutated.
 
 This milestone is intentionally limited to exact creation-date, common
 technical and capture EXIF, target-bound orientation/stored dimensions, and
-common descriptive mappings. It does not yet provide arbitrary EXIF/IPTC/XMP
-translation, broader target image-layout/storage projection,
+common descriptive and flat IPTC Core location mappings. It does not yet
+provide arbitrary EXIF/IPTC/XMP translation, broader target image-layout/storage
+projection,
 multilingual-alternative selection, timezone inference, numeric approximation
 or value repair, or automatic synchronization during transfer.

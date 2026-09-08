@@ -1,5 +1,53 @@
 # OpenMeta Changes
 
+## 0.4.128 - 2026-09-08
+
+Changes compared with `0.4.127`.
+
+### Added
+
+- Added explicit transactional XMP-to-IPTC-IIM location writeback for City,
+  Sublocation, Province/State, Country, and CountryCode, with independent
+  mapping selection and a thin Python `Document.translate_location_metadata`
+  wrapper.
+
+### Changed
+
+- Location and descriptive writeback share the existing IPTC text transaction,
+  conflict policies, diagnostics, UTF-8 charset safety, and resource limits.
+  Existing descriptive option/result layouts and default mappings are retained.
+- Location text obeys native byte limits without truncation. Country codes
+  require two or three uppercase ASCII letters; no lookup, case conversion,
+  structured-location selection, or GPS inference is performed.
+
+### Fixed
+
+- Brotli discovery selects matching Release/Debug archives when available,
+  including the common library and optional encoder. Explicit library-path
+  overrides remain supported.
+- BMFF decoding avoids a redundant large temporary and keeps metadata emission
+  scratch outside recursive scan frames, reducing stack use in Debug builds.
+- Nikon and Casio derived metadata decoding retains independent input bytes
+  while appending to the metadata store, preventing reads through invalidated
+  arena and entry pointers. Nikon model choices are resolved before mutation.
+- CMake rejects MSVC shared-library builds with a static CRT, preventing
+  cross-DLL C++ allocation ownership failures. Static builds still support
+  `/MT` and `/MTd`; shared builds require a matching `/MD` or `/MDd` prefix.
+
+### Tests And Validation
+
+- Added source-selection, duplicate, tombstone, encoding, byte-limit,
+  resource-limit, provenance, idempotence, and failure-atomicity regressions.
+- Added native JPEG/TIFF replacement and removal readback with stale raw IPTC
+  resources, Python binding coverage, and an installed shared-library consumer
+  check for location authoring and translation.
+- Added nested BMFF metadata coverage at the traversal depth limit, including
+  invalid metadata followed by a valid box.
+- Corrected the canonical transfer test's timestamp search to use a single
+  literal range, avoiding reliance on string-literal pooling in Debug builds.
+- Added duplicate Casio face-info coverage and verified Nikon/Casio lifetime
+  regressions with native MSVC Debug and AddressSanitizer.
+
 ## 0.4.127 - 2026-09-02
 
 Changes compared with `0.4.126`.

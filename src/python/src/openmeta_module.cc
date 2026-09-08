@@ -6265,6 +6265,57 @@ translate_descriptive_metadata_document(
     return document;
 }
 
+static std::shared_ptr<PyDocument>
+translate_location_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataDescriptiveTranslationSourceMode source_mode,
+    MetadataDescriptiveTranslationConflictPolicy conflict_policy,
+    bool city_to_iptc, bool sublocation_to_iptc, bool state_to_iptc,
+    bool country_to_iptc, bool country_code_to_iptc,
+    uint32_t max_source_properties, uint32_t max_added_entries,
+    uint32_t max_operations, uint64_t max_total_text_bytes)
+{
+    MetadataLocationTranslationOptions options;
+    options.source_mode           = source_mode;
+    options.conflict_policy       = conflict_policy;
+    options.city_to_iptc          = city_to_iptc;
+    options.sublocation_to_iptc   = sublocation_to_iptc;
+    options.state_to_iptc         = state_to_iptc;
+    options.country_to_iptc       = country_to_iptc;
+    options.country_code_to_iptc  = country_code_to_iptc;
+    options.max_source_properties = max_source_properties;
+    options.max_added_entries     = max_added_entries;
+    options.max_operations        = max_operations;
+    options.max_total_text_bytes  = max_total_text_bytes;
+    MetaStore translated;
+    MetadataDescriptiveTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_location_metadata(source->store, options,
+                                                 &translated);
+    }
+    if (result.status != MetadataDescriptiveTranslationStatus::Ok) {
+        std::string message = "metadata location translation failed: ";
+        message += metadata_descriptive_translation_status_name(result.status);
+        if (result.failed_mapping
+            != MetadataDescriptiveTranslationMapping::None) {
+            message += " for ";
+            message += metadata_descriptive_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
 static std::string
 document_compatibility_dump(std::shared_ptr<PyDocument> d,
                             ExportNameStyle style, ExportNamePolicy name_policy,
@@ -6843,6 +6894,8 @@ NB_MODULE(_openmeta, m)
         kMetadataGeometryTranslationContractVersion);
     m.attr("METADATA_DESCRIPTIVE_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataDescriptiveTranslationContractVersion);
+    m.attr("METADATA_LOCATION_TRANSLATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataLocationTranslationContractVersion);
 
     nb::enum_<ScanStatus>(m, "ScanStatus")
         .value("Ok", ScanStatus::Ok)
@@ -8313,7 +8366,17 @@ NB_MODULE(_openmeta, m)
         .value("PhotoshopCredit",
                MetadataDescriptiveTranslationMapping::PhotoshopCredit)
         .value("PhotoshopSource",
-               MetadataDescriptiveTranslationMapping::PhotoshopSource);
+               MetadataDescriptiveTranslationMapping::PhotoshopSource)
+        .value("PhotoshopCity",
+               MetadataDescriptiveTranslationMapping::PhotoshopCity)
+        .value("IptcLocation",
+               MetadataDescriptiveTranslationMapping::IptcLocation)
+        .value("PhotoshopState",
+               MetadataDescriptiveTranslationMapping::PhotoshopState)
+        .value("PhotoshopCountry",
+               MetadataDescriptiveTranslationMapping::PhotoshopCountry)
+        .value("IptcCountryCode",
+               MetadataDescriptiveTranslationMapping::IptcCountryCode);
 
     nb::enum_<MetadataDescriptiveTranslationStatus>(
         m, "MetadataDescriptiveTranslationStatus")
@@ -8350,6 +8413,8 @@ NB_MODULE(_openmeta, m)
         kMetadataDescriptiveTranslationMaxOperations);
     m.attr("METADATA_DESCRIPTIVE_TRANSLATION_MAX_TOTAL_TEXT_BYTES") = nb::int_(
         kMetadataDescriptiveTranslationMaxTotalTextBytes);
+    m.attr("METADATA_LOCATION_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
+        kMetadataLocationTranslationMaxAddedEntries);
     m.def("metadata_descriptive_translation_status_name",
           &metadata_descriptive_translation_status_name, "status"_a);
     m.def("metadata_descriptive_translation_mapping_name",
@@ -9075,6 +9140,21 @@ NB_MODULE(_openmeta, m)
              = kMetadataDescriptiveTranslationMaxSourceProperties,
              "max_added_entries"_a
              = kMetadataDescriptiveTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataDescriptiveTranslationMaxOperations,
+             "max_total_text_bytes"_a
+             = kMetadataDescriptiveTranslationMaxTotalTextBytes)
+        .def("translate_location_metadata",
+             &translate_location_metadata_document,
+             "source_mode"_a
+             = MetadataDescriptiveTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataDescriptiveTranslationConflictPolicy::FailOnConflict,
+             "city_to_iptc"_a = true, "sublocation_to_iptc"_a = true,
+             "state_to_iptc"_a = true, "country_to_iptc"_a = true,
+             "country_code_to_iptc"_a = true,
+             "max_source_properties"_a
+             = kMetadataDescriptiveTranslationMaxSourceProperties,
+             "max_added_entries"_a = kMetadataLocationTranslationMaxAddedEntries,
              "max_operations"_a = kMetadataDescriptiveTranslationMaxOperations,
              "max_total_text_bytes"_a
              = kMetadataDescriptiveTranslationMaxTotalTextBytes)

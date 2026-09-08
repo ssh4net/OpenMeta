@@ -25,6 +25,8 @@ namespace {
         = "http://purl.org/dc/elements/1.1/";
     static constexpr std::string_view kXmpNsPhotoshop
         = "http://ns.adobe.com/photoshop/1.0/";
+    static constexpr std::string_view kXmpNsIptcCore
+        = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
 
     struct MappingDescriptor final {
         MetadataDescriptiveTranslationMapping mapping
@@ -58,6 +60,22 @@ namespace {
             kXmpNsPhotoshop, "Source", 115U, 32U, false },
     };
 
+    static constexpr std::array<MappingDescriptor, 5U> kLocationMappings = {
+        MappingDescriptor { MetadataDescriptiveTranslationMapping::PhotoshopCity,
+                            kXmpNsPhotoshop, "City", 90U, 32U, false },
+        MappingDescriptor { MetadataDescriptiveTranslationMapping::IptcLocation,
+                            kXmpNsIptcCore, "Location", 92U, 32U, false },
+        MappingDescriptor {
+            MetadataDescriptiveTranslationMapping::PhotoshopState,
+            kXmpNsPhotoshop, "State", 95U, 32U, false },
+        MappingDescriptor {
+            MetadataDescriptiveTranslationMapping::PhotoshopCountry,
+            kXmpNsPhotoshop, "Country", 101U, 64U, false },
+        MappingDescriptor {
+            MetadataDescriptiveTranslationMapping::IptcCountryCode,
+            kXmpNsIptcCore, "CountryCode", 100U, 3U, false },
+    };
+
     struct SourceText final {
         EntryId entry_id = kInvalidEntryId;
         uint32_t index   = 0U;
@@ -86,30 +104,6 @@ namespace {
         const std::span<const std::byte> bytes = arena.span(span);
         return std::string_view(reinterpret_cast<const char*>(bytes.data()),
                                 bytes.size());
-    }
-
-    static bool
-    mapping_enabled(const MetadataDescriptiveTranslationOptions& options,
-                    MetadataDescriptiveTranslationMapping mapping) noexcept
-    {
-        switch (mapping) {
-        case MetadataDescriptiveTranslationMapping::DcTitle:
-            return options.title_to_iptc_object_name;
-        case MetadataDescriptiveTranslationMapping::DcDescription:
-            return options.description_to_iptc_caption;
-        case MetadataDescriptiveTranslationMapping::DcCreator:
-            return options.creators_to_iptc_bylines;
-        case MetadataDescriptiveTranslationMapping::DcSubject:
-            return options.keywords_to_iptc_keywords;
-        case MetadataDescriptiveTranslationMapping::DcRights:
-            return options.copyright_to_iptc_copyright;
-        case MetadataDescriptiveTranslationMapping::PhotoshopCredit:
-            return options.credit_to_iptc_credit;
-        case MetadataDescriptiveTranslationMapping::PhotoshopSource:
-            return options.source_to_iptc_source;
-        case MetadataDescriptiveTranslationMapping::None: return false;
-        }
-        return false;
     }
 
     static bool parse_indexed_path(std::string_view path, std::string_view base,
@@ -219,9 +213,6 @@ namespace {
             return MetadataDescriptiveTranslationStatus::InternalError;
         }
         plan->descriptor = &descriptor;
-        if (!mapping_enabled(options, descriptor.mapping)) {
-            return MetadataDescriptiveTranslationStatus::Ok;
-        }
 
         bool has_dirty = false;
         std::vector<SourceCandidate> candidates;
@@ -288,6 +279,18 @@ namespace {
                 result->failed_mapping      = descriptor.mapping;
                 result->failed_source_entry = candidate.entry_id;
                 return MetadataDescriptiveTranslationStatus::ValueTooLong;
+            }
+            if (descriptor.mapping
+                == MetadataDescriptiveTranslationMapping::IptcCountryCode) {
+                bool valid = text.size() == 2U || text.size() == 3U;
+                for (const char c : text) {
+                    valid = valid && c >= 'A' && c <= 'Z';
+                }
+                if (!valid) {
+                    result->failed_mapping      = descriptor.mapping;
+                    result->failed_source_entry = candidate.entry_id;
+                    return MetadataDescriptiveTranslationStatus::InvalidSourceValue;
+                }
             }
             if (text.size() > options.max_total_text_bytes
                 || text.size()
@@ -385,8 +388,9 @@ namespace {
         return MetadataDescriptiveTranslationStatus::Ok;
     }
 
-    static bool mapping_owns_native_entry(
-        EntryId id, const std::array<PlannedMapping, 7U>& plans) noexcept
+    static bool
+    mapping_owns_native_entry(EntryId id,
+                              std::span<const PlannedMapping> plans) noexcept
     {
         for (const PlannedMapping& plan : plans) {
             if (!plan.eligible || plan.preserved) {
@@ -414,7 +418,7 @@ namespace {
 
     static MetadataDescriptiveTranslationStatus
     plan_utf8_charset(const MetaStore& source,
-                      const std::array<PlannedMapping, 7U>& plans,
+                      std::span<const PlannedMapping> plans,
                       uint64_t max_inspected_bytes, bool* out_add,
                       EntryId* out_source) noexcept
     {
@@ -554,10 +558,11 @@ namespace {
 
 }  // namespace
 
-MetadataDescriptiveTranslationResult
-translate_xmp_descriptive_metadata(
+static MetadataDescriptiveTranslationResult
+translate_iptc_text_mappings(
     const MetaStore& source,
-    const MetadataDescriptiveTranslationOptions& options, MetaStore* out_store)
+    const MetadataDescriptiveTranslationOptions& options,
+    std::span<const MappingDescriptor> mappings, MetaStore* out_store)
 {
     if (!out_store) {
         return translation_error(
@@ -567,14 +572,8 @@ translate_xmp_descriptive_metadata(
         return translation_error(
             MetadataDescriptiveTranslationStatus::SourceNotFinalized);
     }
-    const bool any_mapping = options.title_to_iptc_object_name
-                             || options.description_to_iptc_caption
-                             || options.creators_to_iptc_bylines
-                             || options.keywords_to_iptc_keywords
-                             || options.copyright_to_iptc_copyright
-                             || options.credit_to_iptc_credit
-                             || options.source_to_iptc_source;
-    if (!any_mapping || options.max_source_properties == 0U
+    if (mappings.empty() || mappings.size() > kMappings.size()
+        || options.max_source_properties == 0U
         || options.max_source_properties
                > kMetadataDescriptiveTranslationMaxSourceProperties
         || options.max_added_entries == 0U
@@ -600,13 +599,14 @@ translate_xmp_descriptive_metadata(
             MetadataDescriptiveTranslationStatus::InvalidOptions);
     }
 
-    std::array<PlannedMapping, 7U> plans;
+    std::array<PlannedMapping, kMappings.size()> plan_storage;
+    const std::span<PlannedMapping> plans(plan_storage.data(), mappings.size());
     uint32_t matched_sources  = 0U;
     uint64_t total_text_bytes = 0U;
     MetadataDescriptiveTranslationResult result;
-    for (size_t i = 0U; i < kMappings.size(); ++i) {
+    for (size_t i = 0U; i < mappings.size(); ++i) {
         const MetadataDescriptiveTranslationStatus status
-            = collect_source_mapping(source, options, kMappings[i],
+            = collect_source_mapping(source, options, mappings[i],
                                      &matched_sources, &total_text_bytes,
                                      &plans[i], &result);
         if (status != MetadataDescriptiveTranslationStatus::Ok) {
@@ -760,6 +760,74 @@ translate_xmp_descriptive_metadata(
     return result;
 }
 
+MetadataDescriptiveTranslationResult
+translate_xmp_descriptive_metadata(
+    const MetaStore& source,
+    const MetadataDescriptiveTranslationOptions& options, MetaStore* out_store)
+{
+    const std::array enabled = {
+        options.title_to_iptc_object_name,
+        options.description_to_iptc_caption,
+        options.creators_to_iptc_bylines,
+        options.keywords_to_iptc_keywords,
+        options.copyright_to_iptc_copyright,
+        options.credit_to_iptc_credit,
+        options.source_to_iptc_source,
+    };
+    std::array<MappingDescriptor, kMappings.size()> selected;
+    size_t count = 0U;
+    for (size_t i = 0U; i < kMappings.size(); ++i) {
+        if (enabled[i]) {
+            selected[count++] = kMappings[i];
+        }
+    }
+    return translate_iptc_text_mappings(
+        source, options,
+        std::span<const MappingDescriptor>(selected.data(), count), out_store);
+}
+
+MetadataDescriptiveTranslationResult
+translate_xmp_location_metadata(
+    const MetaStore& source, const MetadataLocationTranslationOptions& options,
+    MetaStore* out_store)
+{
+    if (!out_store) {
+        return translation_error(
+            MetadataDescriptiveTranslationStatus::NullOutput);
+    }
+    if (!source.is_finalized()) {
+        return translation_error(
+            MetadataDescriptiveTranslationStatus::SourceNotFinalized);
+    }
+    if (options.max_added_entries
+        > kMetadataLocationTranslationMaxAddedEntries) {
+        return translation_error(
+            MetadataDescriptiveTranslationStatus::InvalidOptions);
+    }
+    const std::array enabled = {
+        options.city_to_iptc,         options.sublocation_to_iptc,
+        options.state_to_iptc,        options.country_to_iptc,
+        options.country_code_to_iptc,
+    };
+    std::array<MappingDescriptor, kLocationMappings.size()> selected;
+    size_t count = 0U;
+    for (size_t i = 0U; i < kLocationMappings.size(); ++i) {
+        if (enabled[i]) {
+            selected[count++] = kLocationMappings[i];
+        }
+    }
+    MetadataDescriptiveTranslationOptions text_options;
+    text_options.source_mode           = options.source_mode;
+    text_options.conflict_policy       = options.conflict_policy;
+    text_options.max_source_properties = options.max_source_properties;
+    text_options.max_added_entries     = options.max_added_entries;
+    text_options.max_operations        = options.max_operations;
+    text_options.max_total_text_bytes  = options.max_total_text_bytes;
+    return translate_iptc_text_mappings(
+        source, text_options,
+        std::span<const MappingDescriptor>(selected.data(), count), out_store);
+}
+
 const char*
 metadata_descriptive_translation_status_name(
     MetadataDescriptiveTranslationStatus status) noexcept
@@ -809,6 +877,16 @@ metadata_descriptive_translation_mapping_name(
         return "photoshop_credit";
     case MetadataDescriptiveTranslationMapping::PhotoshopSource:
         return "photoshop_source";
+    case MetadataDescriptiveTranslationMapping::PhotoshopCity:
+        return "photoshop_city";
+    case MetadataDescriptiveTranslationMapping::IptcLocation:
+        return "iptc_location";
+    case MetadataDescriptiveTranslationMapping::PhotoshopState:
+        return "photoshop_state";
+    case MetadataDescriptiveTranslationMapping::PhotoshopCountry:
+        return "photoshop_country";
+    case MetadataDescriptiveTranslationMapping::IptcCountryCode:
+        return "iptc_country_code";
     }
     return "unknown";
 }

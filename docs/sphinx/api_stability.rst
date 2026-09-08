@@ -224,6 +224,15 @@ Host-facing API map
        byte limits, conflicts, and UTF-8 charset declaration are explicit;
        unsafe legacy charset reinterpretation fails atomically. Python remains
        a thin detached-document wrapper. See :doc:`translation`.
+   * - Reverse location translation: ``translate_xmp_location_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Transactional v1 projection of five flat IPTC Core location properties
+       into native IPTC-IIM. Reuses descriptive policies, statuses, and result
+       diagnostics with separate location options. Exact singleton paths,
+       byte limits, country-code syntax, dirty tombstones, and charset safety
+       are explicit; structured locations and GPS are outside the contract.
+       Python provides the same operation. See :doc:`translation`.
    * - EXIF/TIFF orientation helpers: ``interpret_exif_orientation(...)``,
        ``exif_orientation_name(...)``,
        ``exif_orientation_rotation_degrees_cw(...)``,

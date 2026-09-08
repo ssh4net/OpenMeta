@@ -886,13 +886,19 @@ Priority legend:
 | Full arbitrary metadata editing parity | `Later` | Strategic follow-up, not part of the next parity-closing milestone |
 
 Suggested delivery sequence:
-1. Finish the stable writer contract for the first-class target family.
-2. Finish the broader sync-policy layer and compare-backed release validation.
-3. Harden the two highest-risk writer lanes: `TIFF/DNG` and bounded `BMFF`.
-4. Continue the Nikon inventory beyond standard embedded-TIFF offsets, then
+1. Extend explicit native writeback beyond the completed date, technical,
+   capture, geometry, descriptive, and flat IPTC Core location mappings. The
+   location batch in 0.4.128 covers five singleton fields; editorial IPTC,
+   additional capture fields, GPS, and structured-location reconciliation
+   remain separate bounded candidates. See `docs/translation.md`.
+2. Retain the completed writer-baseline and compare-backed release gates while
+   extending validated foreign `BMFF` graph shapes.
+3. Continue the Nikon inventory beyond standard embedded-TIFF offsets, then
    apply the same vendor/version-specific offset and integrity evidence pattern
    to Canon, Olympus, and Sony; enable rewrite only for fully verified lanes.
-5. Spend follow-up time on modern-container depth, `EXR`, and long-tail native semantics only after the main writer baseline is defendable.
+4. Follow through on modern-container read depth and long-tail native semantics.
+   EXR remains a stable bounded host-emission target; file rewriting is outside
+   the current contract.
 
 ### Now Slice Implementation Board
 

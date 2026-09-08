@@ -210,6 +210,40 @@ except ValueError as exc:
 else:
     raise AssertionError('oversized IPTC title translation was accepted')
 
+import tempfile
+from pathlib import Path
+
+with tempfile.TemporaryDirectory() as temporary:
+    location_path = Path(temporary) / 'location.jpg'
+    xml = b'''<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">
+<rdf:Description xmlns:p=\"http://ns.adobe.com/photoshop/1.0/\"
+xmlns:i=\"http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/\">
+<p:City>Kyoto</p:City><i:Location>Garden</i:Location><p:State>Kyoto</p:State>
+<p:Country>Japan</p:Country><i:CountryCode>JP</i:CountryCode>
+</rdf:Description></rdf:RDF>'''
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    location_path.write_bytes(bytes.fromhex('ffd8ffe1') +
+        (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    location = openmeta.read(str(location_path))
+    clean = location.translate_location_metadata()
+    assert clean.entry_count == location.entry_count
+    translated_location = location.translate_location_metadata(
+        source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All)
+    assert openmeta.METADATA_LOCATION_TRANSLATION_CONTRACT_VERSION == 1
+    assert translated_location.entry_count == location.entry_count + 5
+    native_packet, _ = translated_location.dump_xmp_portable(
+        include_existing_xmp=False, include_exif=False, include_iptc=True)
+    assert b'Kyoto' in native_packet and b'Garden' in native_packet
+    assert b'Japan' in native_packet and b'>JP<' in native_packet
+    try:
+        location.translate_location_metadata(
+            source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All,
+            max_added_entries=4)
+    except ValueError as exc:
+        assert 'entry_limit_exceeded' in str(exc)
+    else:
+        raise AssertionError('location entry limit was ignored')
+
 print('openmeta metadata editing smoke ok')
 ")
 

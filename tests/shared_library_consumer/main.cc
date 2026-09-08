@@ -56,6 +56,26 @@ main()
         openmeta::WireType { openmeta::WireFamily::Tiff, 3U },
         1U,
     };
+    const openmeta::MetadataAuthoringEntry location {
+        openmeta::make_xmp_property_key_view(
+            "http://ns.adobe.com/photoshop/1.0/", "City"),
+        openmeta::make_value_view_text("Kyoto", openmeta::TextEncoding::Utf8),
+    };
+    openmeta::MetaStore location_source;
+    const auto location_authored = openmeta::create_metadata_store(
+        std::span<const openmeta::MetadataAuthoringEntry>(&location, 1U),
+        &location_source);
+    openmeta::MetaStore location_translated;
+    const auto location_translation = openmeta::translate_xmp_location_metadata(
+        location_source, openmeta::MetadataLocationTranslationOptions {},
+        &location_translated);
+    const bool location_contract_matches
+        = location_authored.ok()
+          && openmeta::kMetadataLocationTranslationContractVersion == 1U
+          && location_translation.status
+                 == openmeta::MetadataDescriptiveTranslationStatus::Ok
+          && location_translation.entries_added == 1U
+          && location_translated.is_finalized();
     openmeta::MetaStore authored;
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
@@ -132,7 +152,7 @@ main()
                    || !handoff_contract_matches || !instance_contract_matches
                    || !translation_contract_matches
                    || !descriptive_translation_contract_matches
-                   || !authoring_contract_matches
+                   || !location_contract_matches || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()
                    || instance.valid()
                    || created.code

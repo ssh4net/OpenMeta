@@ -513,7 +513,7 @@ enum class MetadataDescriptiveTranslationConflictPolicy : uint8_t {
     ReplaceExisting,
 };
 
-/// Exact descriptive source mapping associated with a result or failure.
+/// Exact descriptive or location source mapping associated with a result.
 enum class MetadataDescriptiveTranslationMapping : uint8_t {
     None,
     DcTitle,
@@ -523,6 +523,11 @@ enum class MetadataDescriptiveTranslationMapping : uint8_t {
     DcRights,
     PhotoshopCredit,
     PhotoshopSource,
+    PhotoshopCity,
+    IptcLocation,
+    PhotoshopState,
+    PhotoshopCountry,
+    IptcCountryCode,
 };
 
 /// Caller-selected bounded reverse descriptive mappings.
@@ -607,6 +612,50 @@ metadata_descriptive_translation_status_name(
 const char*
 metadata_descriptive_translation_mapping_name(
     MetadataDescriptiveTranslationMapping mapping) noexcept;
+
+/// Experimental reverse IPTC Core location translation contract version.
+inline constexpr uint32_t kMetadataLocationTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataLocationTranslationMaxAddedEntries = 6U;
+
+/// Independent flat location mappings using the descriptive IPTC policies.
+struct MetadataLocationTranslationOptions final {
+    MetadataDescriptiveTranslationSourceMode source_mode
+        = MetadataDescriptiveTranslationSourceMode::DirtyOnly;
+    MetadataDescriptiveTranslationConflictPolicy conflict_policy
+        = MetadataDescriptiveTranslationConflictPolicy::FailOnConflict;
+
+    bool city_to_iptc         = true;
+    bool sublocation_to_iptc  = true;
+    bool state_to_iptc        = true;
+    bool country_to_iptc      = true;
+    bool country_code_to_iptc = true;
+
+    uint32_t max_source_properties
+        = kMetadataDescriptiveTranslationMaxSourceProperties;
+    uint32_t max_added_entries = kMetadataLocationTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataDescriptiveTranslationMaxOperations;
+    uint64_t max_total_text_bytes
+        = kMetadataDescriptiveTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Translate flat IPTC Core XMP location properties into native IPTC-IIM.
+ *
+ * Exact mappings are photoshop:City, Iptc4xmpCore:Location, photoshop:State,
+ * photoshop:Country, and Iptc4xmpCore:CountryCode. Country codes require two
+ * or three uppercase ASCII letters; code membership and country-name agreement
+ * are caller responsibilities. Text byte limits and UTF-8 charset safety use
+ * the same transaction as descriptive translation. Duplicate active singleton
+ * sources are ambiguous. Structured locations and GPS are not aliases.
+ *
+ * Policies, status, mapping diagnostics, and counters use the descriptive
+ * translation types. At most five datasets and one charset entry are added.
+ * The immutable source and output are unchanged on failure.
+ */
+MetadataDescriptiveTranslationResult
+translate_xmp_location_metadata(
+    const MetaStore& source, const MetadataLocationTranslationOptions& options,
+    MetaStore* out_store);
 
 }  // namespace openmeta
 OPENMETA_PUBLIC_END
