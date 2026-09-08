@@ -165,6 +165,17 @@ if(MSVC AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
     "MSVC runtime library used by OpenMeta and its CMake consumers")
 endif()
 
+if(MSVC AND OPENMETA_BUILD_SHARED AND
+   (CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL "MultiThreaded" OR
+    CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL "MultiThreadedDebug" OR
+    CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL "MultiThreaded$<$<CONFIG:Debug>:Debug>"))
+  message(FATAL_ERROR
+    "OpenMeta shared libraries require the DLL CRT (/MD or /MDd): public C++ "
+    "objects can allocate and free memory across the DLL boundary. Use a "
+    "matching DLL-CRT dependency prefix, or set OPENMETA_BUILD_SHARED=OFF "
+    "with an /MT or /MTd prefix.")
+endif()
+
 if(OPENMETA_USE_LIBCXX)
   if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "OPENMETA_USE_LIBCXX requires Clang.")

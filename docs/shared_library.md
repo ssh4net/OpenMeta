@@ -43,9 +43,14 @@ settings as the package producer.
 On MSVC, select the runtime library through `CMAKE_MSVC_RUNTIME_LIBRARY` when
 configuring OpenMeta. The installed targets propagate that selection to CMake
 consumers, and the package publishes it as `OpenMeta_MSVC_RUNTIME_LIBRARY`.
-For example, use `MultiThreaded` with an `/MT` dependency prefix and
-`MultiThreadedDLL` with an `/MD` dependency prefix. The default is `/MD` in
-Release and `/MDd` in Debug.
+Shared builds require the DLL CRT: `/MD` in Release and `/MDd` in Debug is
+the default. The DLL and its consumers exchange C++ objects that can allocate
+and free memory on opposite sides of the boundary. Separate static CRT copies
+can fail on this ownership path, as described in
+[Microsoft's CRT boundary guidance](https://learn.microsoft.com/en-us/cpp/c-runtime-library/potential-errors-passing-crt-objects-across-dll-boundaries).
+Use a matching DLL-CRT dependency prefix. CMake rejects shared builds with
+`MultiThreaded`, `MultiThreadedDebug`, or their Debug generator expression.
+An `/MT` or `/MTd` prefix supports `OPENMETA_BUILD_SHARED=OFF` static builds.
 
 ## Dependencies And Runtime
 

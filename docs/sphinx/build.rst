@@ -37,6 +37,10 @@ Run ``openmeta_gate_shared_install`` to validate an installed package with an
 independent CMake consumer. See :doc:`../shared_library` for ABI, dependency,
 Windows DLL deployment, and platform-validation details.
 
+MSVC shared builds require the DLL CRT (``/MD`` or ``/MDd``) and a matching
+dependency prefix. For a static CRT prefix (``/MT`` or ``/MTd``), configure
+``OPENMETA_BUILD_SHARED=OFF``.
+
 Options
 -------
 
@@ -71,6 +75,14 @@ Optional dependency notes:
   OpenMeta still locates XMP blocks but does not decode them into entries.
 - RapidFuzz C++ is disabled by default and is required only for ranked fuzzy
   metadata-name search.
+
+Brotli discovery uses separate Release and Debug archives when the prefix
+provides them, including ``brotlidecd``, ``brotlicommond``, and ``brotliencd``.
+The legacy ``Brotli_DEC_LIBRARY``, ``Brotli_COMMON_LIBRARY``, and
+``Brotli_ENC_LIBRARY`` paths override discovery for all configurations. Clear
+old cached paths with ``-U 'Brotli_*_LIBRARY'`` to enable fresh discovery.
+If only one archive variant is available, CMake uses it for other configurations;
+the dependency and consumer runtime settings must still be compatible.
 
 The configured CMake report and runtime metadata capability API are
 authoritative for a particular build; enabling a discovery-based option does
