@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace openmeta {
@@ -642,6 +643,51 @@ namespace {
     }
 
 }  // namespace
+
+TEST(BmffDerivedFieldsDecode, BoundsNestedMetaTraversalAndSkipsInvalidMeta)
+{
+    for (const uint32_t depth : { 0U, 1U, 16U, 17U }) {
+        SCOPED_TRACE(depth);
+        std::vector<std::byte> pitm_payload;
+        append_fullbox_header(&pitm_payload, 0U);
+        append_u16be(&pitm_payload, 77U);
+        std::vector<std::byte> meta_payload;
+        append_fullbox_header(&meta_payload, 0U);
+        append_bmff_box(&meta_payload, fourcc('p', 'i', 't', 'm'),
+                        pitm_payload);
+        std::vector<std::byte> nested;
+        append_bmff_box(&nested, fourcc('m', 'e', 't', 'a'), {});
+        append_bmff_box(&nested, fourcc('m', 'e', 't', 'a'), meta_payload);
+        for (uint32_t i = 0U; i < depth; ++i) {
+            std::vector<std::byte> parent;
+            append_bmff_box(&parent, fourcc('m', 'o', 'o', 'v'), nested);
+            nested = std::move(parent);
+        }
+        std::vector<std::byte> ftyp_payload;
+        append_fourcc(&ftyp_payload, fourcc('h', 'e', 'i', 'c'));
+        append_u32be(&ftyp_payload, 0U);
+        append_fourcc(&ftyp_payload, fourcc('m', 'i', 'f', '1'));
+        std::vector<std::byte> file;
+        append_bmff_box(&file, fourcc('f', 't', 'y', 'p'), ftyp_payload);
+        file.insert(file.end(), nested.begin(), nested.end());
+
+        MetaStore store;
+        std::array<ContainerBlockRef, 16U> blocks {};
+        std::array<ExifIfdRef, 8U> ifds {};
+        std::array<std::byte, 1024U> payload {};
+        std::array<uint32_t, 32U> scratch {};
+        (void)simple_meta_read(file, store, blocks, ifds, payload, scratch,
+                               ExifDecodeOptions {}, PayloadOptions {});
+        store.finalize();
+        const auto ids = collect_u32_values(store, "meta.primary_item_id");
+        if (depth <= 16U) {
+            ASSERT_EQ(ids.size(), 1U);
+            EXPECT_EQ(ids[0U], 77U);
+        } else {
+            EXPECT_TRUE(ids.empty());
+        }
+    }
+}
 
 TEST(BmffDerivedFieldsDecode, EmitsFtypAndPrimaryProps)
 {

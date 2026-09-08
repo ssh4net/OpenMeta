@@ -541,16 +541,16 @@ namespace {
             }
             ASSERT_EQ(bundle.time_patch_map.size(), 1U);
             const TimePatchSlot& slot = bundle.time_patch_map.front();
-            EXPECT_EQ(slot.byte_offset,
-                      static_cast<uint32_t>(prefix)
-                          + static_cast<uint32_t>(
-                              std::search(expected.begin(), expected.end(),
-                                          reinterpret_cast<const std::byte*>(
-                                              "2026:09:01 12:34:56"),
-                                          reinterpret_cast<const std::byte*>(
-                                              "2026:09:01 12:34:56")
-                                              + 19U)
-                              - expected.begin()));
+            static constexpr std::string_view kTimestamp = "2026:09:01 12:34:56";
+            const auto timestamp_bytes = std::as_bytes(
+                std::span(kTimestamp.data(), kTimestamp.size()));
+            const auto timestamp = std::search(expected.begin(), expected.end(),
+                                               timestamp_bytes.begin(),
+                                               timestamp_bytes.end());
+            ASSERT_NE(timestamp, expected.end());
+            EXPECT_EQ(slot.byte_offset, static_cast<uint32_t>(prefix)
+                                            + static_cast<uint32_t>(
+                                                timestamp - expected.begin()));
         }
     }
 
