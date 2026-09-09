@@ -244,6 +244,61 @@ xmlns:i=\"http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/\">
     else:
         raise AssertionError('location entry limit was ignored')
 
+with tempfile.TemporaryDirectory() as temporary:
+    editorial_path = Path(temporary) / 'editorial.jpg'
+    xml = b'''<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">
+<rdf:Description xmlns:p=\"http://ns.adobe.com/photoshop/1.0/\">
+<p:Headline>Garden opens</p:Headline><p:Instructions>Contact the editor</p:Instructions>
+<p:TransmissionReference>JOB-42</p:TransmissionReference>
+</rdf:Description></rdf:RDF>'''
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    editorial_path.write_bytes(bytes.fromhex('ffd8ffe1') +
+        (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    editorial = openmeta.read(str(editorial_path))
+    original_count = editorial.entry_count
+    assert editorial.translate_editorial_metadata().entry_count == original_count
+    translated_editorial = editorial.translate_editorial_metadata(
+        source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All)
+    assert openmeta.METADATA_EDITORIAL_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_EDITORIAL_TRANSLATION_MAX_ADDED_ENTRIES == 4
+    assert translated_editorial.entry_count == original_count + 3
+    native_packet, _ = translated_editorial.dump_xmp_portable(
+        include_existing_xmp=False, include_exif=False, include_iptc=True)
+    assert b'Garden opens' in native_packet and b'Contact the editor' in native_packet
+    assert b'JOB-42' in native_packet
+    assert editorial.entry_count == original_count
+    for selected in range(3):
+        one = editorial.translate_editorial_metadata(
+            source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All,
+            headline_to_iptc=selected == 0, instructions_to_iptc=selected == 1,
+            transmission_reference_to_iptc=selected == 2)
+        assert one.entry_count == original_count + 1
+        packet, _ = one.dump_xmp_portable(
+            include_existing_xmp=False, include_exif=False, include_iptc=True)
+        for index, value in enumerate((b'Garden opens', b'Contact the editor', b'JOB-42')):
+            assert (value in packet) == (index == selected)
+    try:
+        editorial.translate_editorial_metadata(
+            source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All,
+            max_added_entries=2)
+    except ValueError as exc:
+        assert 'entry_limit_exceeded' in str(exc)
+    else:
+        raise AssertionError('editorial entry limit was ignored')
+    assert editorial.entry_count == original_count
+    xml = xml.replace(b'JOB-42', b'R' * 33)
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    editorial_path.write_bytes(bytes.fromhex('ffd8ffe1') +
+        (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    oversized_editorial = openmeta.read(str(editorial_path))
+    try:
+        oversized_editorial.translate_editorial_metadata(
+            source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All)
+    except ValueError as exc:
+        assert 'value_too_long for photoshop_transmission_reference' in str(exc)
+    else:
+        raise AssertionError('oversized editorial identifier was accepted')
+
 print('openmeta metadata editing smoke ok')
 ")
 

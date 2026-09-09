@@ -513,7 +513,7 @@ enum class MetadataDescriptiveTranslationConflictPolicy : uint8_t {
     ReplaceExisting,
 };
 
-/// Exact descriptive or location source mapping associated with a result.
+/// Exact descriptive, location, or editorial source mapping for a result.
 enum class MetadataDescriptiveTranslationMapping : uint8_t {
     None,
     DcTitle,
@@ -528,6 +528,9 @@ enum class MetadataDescriptiveTranslationMapping : uint8_t {
     PhotoshopState,
     PhotoshopCountry,
     IptcCountryCode,
+    PhotoshopHeadline,
+    PhotoshopInstructions,
+    PhotoshopTransmissionReference,
 };
 
 /// Caller-selected bounded reverse descriptive mappings.
@@ -655,6 +658,48 @@ struct MetadataLocationTranslationOptions final {
 MetadataDescriptiveTranslationResult
 translate_xmp_location_metadata(
     const MetaStore& source, const MetadataLocationTranslationOptions& options,
+    MetaStore* out_store);
+
+/// Experimental reverse IPTC editorial translation contract version.
+inline constexpr uint32_t kMetadataEditorialTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataEditorialTranslationMaxAddedEntries = 4U;
+
+/// Independent editorial mappings using the descriptive IPTC policies.
+struct MetadataEditorialTranslationOptions final {
+    MetadataDescriptiveTranslationSourceMode source_mode
+        = MetadataDescriptiveTranslationSourceMode::DirtyOnly;
+    MetadataDescriptiveTranslationConflictPolicy conflict_policy
+        = MetadataDescriptiveTranslationConflictPolicy::FailOnConflict;
+
+    bool headline_to_iptc               = true;
+    bool instructions_to_iptc           = true;
+    bool transmission_reference_to_iptc = true;
+
+    uint32_t max_source_properties
+        = kMetadataDescriptiveTranslationMaxSourceProperties;
+    uint32_t max_added_entries = kMetadataEditorialTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataDescriptiveTranslationMaxOperations;
+    uint64_t max_total_text_bytes
+        = kMetadataDescriptiveTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Translate exact Photoshop XMP editorial properties into IPTC-IIM.
+ *
+ * Headline maps to 2:105 (256 bytes), Instructions to 2:40 (256 bytes), and
+ * TransmissionReference to 2:103 (32 bytes). All are singleton text properties.
+ * Limits count UTF-8 bytes and never truncate. Title, description, rights, and
+ * other identifiers are not aliases for these properties.
+ *
+ * Policies, status, diagnostics, and counters use the descriptive translation
+ * types. Duplicate active sources are ambiguous. Dirty deletions remove native
+ * groups only with ReplaceExisting. Charset safety and resource limits use the
+ * same transaction as descriptive translation. At most three datasets and one
+ * charset entry are added. The source and output are unchanged on failure.
+ */
+MetadataDescriptiveTranslationResult
+translate_xmp_editorial_metadata(
+    const MetaStore& source, const MetadataEditorialTranslationOptions& options,
     MetaStore* out_store);
 
 }  // namespace openmeta

@@ -133,11 +133,11 @@ model should stay compact:
        including strict paired IPTC creation-date projection to XMP and
        transactional reverse projection of edited XMP dates, common technical
        and capture fields, target-bound image geometry, descriptive properties,
-       and flat IPTC Core locations into native EXIF/IPTC groups.
+       flat IPTC Core locations, and editorial fields into native EXIF/IPTC groups.
      - Medium-high, about 82-87% for the declared scope; exact date parsing,
        four technical and five typed capture EXIF mappings, target-validated
-       orientation and complete stored-dimension groups, seven descriptive
-       and five location IPTC mappings,
+       orientation and complete stored-dimension groups, seven descriptive,
+       five location and three editorial IPTC mappings,
        repeated-value reconciliation, exact rational conversion, safe
        ASCII/UTF-8 handling, tombstone propagation, resource limits, JPEG/TIFF
        round trips, and thin Python exposure are implemented.

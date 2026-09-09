@@ -887,9 +887,10 @@ Priority legend:
 
 Suggested delivery sequence:
 1. Extend explicit native writeback beyond the completed date, technical,
-   capture, geometry, descriptive, and flat IPTC Core location mappings. The
-   location batch in 0.4.128 covers five singleton fields; editorial IPTC,
-   additional capture fields, GPS, and structured-location reconciliation
+   capture, geometry, descriptive, flat IPTC Core location, and editorial mappings.
+   The 0.4.128 location batch covers five singleton fields; 0.4.129 adds
+   Headline, Instructions, and Transmission Reference. Remaining editorial
+   fields, additional capture fields, GPS, and structured-location reconciliation
    remain separate bounded candidates. See `docs/translation.md`.
 2. Retain the completed writer-baseline and compare-backed release gates while
    extending validated foreign `BMFF` graph shapes.

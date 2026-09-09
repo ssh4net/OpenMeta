@@ -233,6 +233,13 @@ Host-facing API map
        byte limits, country-code syntax, dirty tombstones, and charset safety
        are explicit; structured locations and GPS are outside the contract.
        Python provides the same operation. See :doc:`translation`.
+   * - Reverse editorial translation: ``translate_xmp_editorial_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Transactional v1 Headline, Instructions, and TransmissionReference
+       writeback with independent editorial options. Reuses descriptive
+       policies/results, exact singleton validation, UTF-8 safety, and resource
+       limits. Python provides the same operation. See :doc:`translation`.
    * - EXIF/TIFF orientation helpers: ``interpret_exif_orientation(...)``,
        ``exif_orientation_name(...)``,
        ``exif_orientation_rotation_degrees_cw(...)``,

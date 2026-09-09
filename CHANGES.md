@@ -1,5 +1,22 @@
 # OpenMeta Changes
 
+## 0.4.129 - 2026-09-09
+
+Changes compared with `0.4.128`.
+
+### Added
+
+- Added explicit XMP-to-IPTC-IIM editorial writeback for Headline, Instructions,
+  and Transmission Reference, with independent C++ options and a thin Python
+  `Document.translate_editorial_metadata` wrapper.
+- Editorial translation reuses the descriptive transaction, conflict and
+  removal policies, UTF-8 charset safety, provenance, and resource limits.
+  Existing descriptive and location APIs retain their mapping sets and defaults.
+- Added exact-path and source-mode selection, encoded byte limits, duplicate
+  handling, failure atomicity, charset safety, replacement/removal, provenance,
+  and idempotence regressions; JPEG/TIFF native persistence, Python binding,
+  and installed shared-library consumer coverage.
+
 ## 0.4.128 - 2026-09-08
 
 Changes compared with `0.4.127`.

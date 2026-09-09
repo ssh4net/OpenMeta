@@ -76,6 +76,28 @@ main()
                  == openmeta::MetadataDescriptiveTranslationStatus::Ok
           && location_translation.entries_added == 1U
           && location_translated.is_finalized();
+    const openmeta::MetadataAuthoringEntry editorial {
+        openmeta::make_xmp_property_key_view(
+            "http://ns.adobe.com/photoshop/1.0/", "Headline"),
+        openmeta::make_value_view_text("Garden opens",
+                                       openmeta::TextEncoding::Utf8),
+    };
+    openmeta::MetaStore editorial_source;
+    const auto editorial_authored = openmeta::create_metadata_store(
+        std::span<const openmeta::MetadataAuthoringEntry>(&editorial, 1U),
+        &editorial_source);
+    openmeta::MetaStore editorial_translated;
+    const auto editorial_translation
+        = openmeta::translate_xmp_editorial_metadata(
+            editorial_source, openmeta::MetadataEditorialTranslationOptions {},
+            &editorial_translated);
+    const bool editorial_contract_matches
+        = editorial_authored.ok()
+          && openmeta::kMetadataEditorialTranslationContractVersion == 1U
+          && editorial_translation.status
+                 == openmeta::MetadataDescriptiveTranslationStatus::Ok
+          && editorial_translation.entries_added == 1U
+          && editorial_translated.is_finalized();
     openmeta::MetaStore authored;
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
@@ -152,7 +174,8 @@ main()
                    || !handoff_contract_matches || !instance_contract_matches
                    || !translation_contract_matches
                    || !descriptive_translation_contract_matches
-                   || !location_contract_matches || !authoring_contract_matches
+                   || !location_contract_matches || !editorial_contract_matches
+                   || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()
                    || instance.valid()
                    || created.code

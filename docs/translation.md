@@ -4,8 +4,8 @@
 metadata families. Current contracts translate edited XMP creation dates into
 native EXIF/IPTC date groups, exact technical XMP/TIFF properties into native
 EXIF fields, typed capture properties into native EXIF scalars, target-bound
-image geometry into native TIFF/EXIF groups, and exact descriptive and flat
-location XMP properties into native IPTC-IIM datasets before transfer or writing.
+image geometry into native TIFF/EXIF groups, and exact descriptive, flat
+location, and editorial XMP properties into native IPTC-IIM datasets before writing.
 
 The APIs are experimental and versioned by
 `kMetadataDateTranslationContractVersion == 1` and
@@ -13,7 +13,8 @@ The APIs are experimental and versioned by
 `kMetadataCaptureTranslationContractVersion == 1` and
 `kMetadataGeometryTranslationContractVersion == 1` and
 `kMetadataDescriptiveTranslationContractVersion == 1` and
-`kMetadataLocationTranslationContractVersion == 1`.
+`kMetadataLocationTranslationContractVersion == 1` and
+`kMetadataEditorialTranslationContractVersion == 1`.
 
 ## Workflow
 
@@ -26,7 +27,8 @@ invoke it implicitly:
    `translate_xmp_capture_metadata(...)`,
    `translate_xmp_image_geometry(...)`,
    `translate_xmp_descriptive_metadata(...)`,
-   `translate_xmp_location_metadata(...)`, or the required combination with
+   `translate_xmp_location_metadata(...)`,
+   `translate_xmp_editorial_metadata(...)`, or the required combination with
    explicit mapping and conflict options.
 3. Pass the returned finalized store to transfer preparation or a writer.
 
@@ -184,10 +186,46 @@ marker). Options can lower these limits. New entries copy source provenance;
 updates preserve the existing native entry's provenance. Translation is a
 preparation operation that may allocate; it is not an allocation-free replay API.
 
+## Editorial Mappings
+
+`translate_xmp_editorial_metadata(...)` accepts
+`MetadataEditorialTranslationOptions` and returns
+`MetadataDescriptiveTranslationResult`. Each mapping has an independent flag;
+`DirtyOnly` and `FailOnConflict` are the defaults. Descriptive and location
+calls retain their existing mapping sets.
+
+| Exact XMP source | Native IPTC-IIM destination | Maximum encoded bytes |
+| --- | --- | --- |
+| `photoshop:Headline` | `Headline` (2:105) | 256 |
+| `photoshop:Instructions` | `SpecialInstructions` (2:40) | 256 |
+| `photoshop:TransmissionReference` | `OriginalTransmissionReference` (2:103) | 32 |
+
+The mappings and limits follow the
+[IPTC Photo Metadata Standard 2025.1](https://www.iptc.org/std/photometadata/specification/IPTC-PhotoMetadata-2025.1.html).
+Sources must be exact singleton properties in the Photoshop namespace
+`http://ns.adobe.com/photoshop/1.0/`. Title, description, rights usage terms,
+and other job identifiers are not aliases. Empty text, invalid UTF-8/XML,
+embedded NULs, duplicate active singletons, and excess encoded bytes fail
+transactionally. Values are never truncated. Dirty tombstones request removal
+under `ReplaceExisting`.
+
+The shared IPTC transaction enforces charset safety, preserves unrelated
+native data, copies source provenance for new entries, and retains native
+provenance for updates. Limits are 1024 matched source properties, four added
+entries (three datasets plus one UTF-8 charset marker), 4096 operations, and
+8 MiB of inspected text/charset-safety bytes. Options may lower these limits;
+disabling every mapping is invalid. This preparation operation may allocate.
+
+Python exposes the same operation as `Document.translate_editorial_metadata`,
+with `headline_to_iptc`, `instructions_to_iptc`, and
+`transmission_reference_to_iptc` flags. It returns a detached document and raises
+`ValueError` with mapping diagnostics on failure. For clean metadata read from
+a file, explicitly select `MetadataDescriptiveTranslationSourceMode.All`.
+
 ## Conflict And Removal Policy
 
 All translation APIs apply the following behaviors to each complete native
-group. Location translation reuses the descriptive conflict-policy enum.
+group. Location and editorial translation reuse the descriptive conflict-policy enum.
 
 | Policy | Behavior |
 | --- | --- |

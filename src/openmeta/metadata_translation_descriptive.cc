@@ -76,6 +76,18 @@ namespace {
             kXmpNsIptcCore, "CountryCode", 100U, 3U, false },
     };
 
+    static constexpr std::array<MappingDescriptor, 3U> kEditorialMappings = {
+        MappingDescriptor {
+            MetadataDescriptiveTranslationMapping::PhotoshopHeadline,
+            kXmpNsPhotoshop, "Headline", 105U, 256U, false },
+        MappingDescriptor {
+            MetadataDescriptiveTranslationMapping::PhotoshopInstructions,
+            kXmpNsPhotoshop, "Instructions", 40U, 256U, false },
+        MappingDescriptor {
+            MetadataDescriptiveTranslationMapping::PhotoshopTransmissionReference,
+            kXmpNsPhotoshop, "TransmissionReference", 103U, 32U, false },
+    };
+
     struct SourceText final {
         EntryId entry_id = kInvalidEntryId;
         uint32_t index   = 0U;
@@ -828,6 +840,48 @@ translate_xmp_location_metadata(
         std::span<const MappingDescriptor>(selected.data(), count), out_store);
 }
 
+MetadataDescriptiveTranslationResult
+translate_xmp_editorial_metadata(
+    const MetaStore& source, const MetadataEditorialTranslationOptions& options,
+    MetaStore* out_store)
+{
+    if (!out_store) {
+        return translation_error(
+            MetadataDescriptiveTranslationStatus::NullOutput);
+    }
+    if (!source.is_finalized()) {
+        return translation_error(
+            MetadataDescriptiveTranslationStatus::SourceNotFinalized);
+    }
+    if (options.max_added_entries
+        > kMetadataEditorialTranslationMaxAddedEntries) {
+        return translation_error(
+            MetadataDescriptiveTranslationStatus::InvalidOptions);
+    }
+    const std::array enabled = {
+        options.headline_to_iptc,
+        options.instructions_to_iptc,
+        options.transmission_reference_to_iptc,
+    };
+    std::array<MappingDescriptor, kEditorialMappings.size()> selected;
+    size_t count = 0U;
+    for (size_t i = 0U; i < kEditorialMappings.size(); ++i) {
+        if (enabled[i]) {
+            selected[count++] = kEditorialMappings[i];
+        }
+    }
+    MetadataDescriptiveTranslationOptions text_options;
+    text_options.source_mode           = options.source_mode;
+    text_options.conflict_policy       = options.conflict_policy;
+    text_options.max_source_properties = options.max_source_properties;
+    text_options.max_added_entries     = options.max_added_entries;
+    text_options.max_operations        = options.max_operations;
+    text_options.max_total_text_bytes  = options.max_total_text_bytes;
+    return translate_iptc_text_mappings(
+        source, text_options,
+        std::span<const MappingDescriptor>(selected.data(), count), out_store);
+}
+
 const char*
 metadata_descriptive_translation_status_name(
     MetadataDescriptiveTranslationStatus status) noexcept
@@ -887,6 +941,12 @@ metadata_descriptive_translation_mapping_name(
         return "photoshop_country";
     case MetadataDescriptiveTranslationMapping::IptcCountryCode:
         return "iptc_country_code";
+    case MetadataDescriptiveTranslationMapping::PhotoshopHeadline:
+        return "photoshop_headline";
+    case MetadataDescriptiveTranslationMapping::PhotoshopInstructions:
+        return "photoshop_instructions";
+    case MetadataDescriptiveTranslationMapping::PhotoshopTransmissionReference:
+        return "photoshop_transmission_reference";
     }
     return "unknown";
 }
