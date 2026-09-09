@@ -11085,3 +11085,31 @@ TEST(XmpDump, PortableCanSuppressIptcProjection)
 }
 
 }  // namespace openmeta
+
+
+TEST(XmpDump, PortableDistinguishesNauticalMilesFromKnots)
+{
+    openmeta::MetaStore store;
+    for (const uint16_t tag : { 12U, 25U }) {
+        openmeta::Entry entry;
+        entry.key   = openmeta::make_exif_tag_key(store.arena(), "gpsifd", tag);
+        entry.value = openmeta::make_text(store.arena(), "N",
+                                          openmeta::TextEncoding::Ascii);
+        ASSERT_NE(store.add_entry(entry), openmeta::kInvalidEntryId);
+    }
+    store.finalize();
+    openmeta::XmpPortableOptions options;
+    options.include_exif         = true;
+    options.include_existing_xmp = false;
+    std::vector<std::byte> output(4096U);
+    const auto result = openmeta::dump_xmp_portable(store, output, options);
+    ASSERT_EQ(result.status, openmeta::XmpDumpStatus::Ok);
+    const std::string_view xml(reinterpret_cast<const char*>(output.data()),
+                               result.written);
+    EXPECT_NE(xml.find("<exif:GPSSpeedRef>knots</exif:GPSSpeedRef>"),
+              std::string_view::npos);
+    EXPECT_NE(
+        xml.find(
+            "<exif:GPSDestDistanceRef>Nautical miles</exif:GPSDestDistanceRef>"),
+        std::string_view::npos);
+}

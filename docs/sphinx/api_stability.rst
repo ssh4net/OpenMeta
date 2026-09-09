@@ -269,6 +269,13 @@ Host-facing API map
        direction/reference writeback. Exact precision, UTC rollover, version
        support, paired conflicts/removal, and portable reference aliases are
        explicit. Python provides the same operation. See :doc:`translation`.
+   * - Destination GPS translation: ``translate_xmp_gps_destination_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Transactional v1 destination coordinates, bearing/reference, and distance/unit
+       writeback. Exact precision, paired conflicts/removal, version retention,
+       and historical distance-label compatibility are explicit. Python provides
+       the same operation. See :doc:`translation`.
    * - EXIF/TIFF orientation helpers: ``interpret_exif_orientation(...)``,
        ``exif_orientation_name(...)``,
        ``exif_orientation_rotation_degrees_cw(...)``,

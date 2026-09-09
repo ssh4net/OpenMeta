@@ -1053,4 +1053,446 @@ TEST(MetadataGpsNavigation, ResourceAndOptionLimitsLeaveOutputUnchanged)
                  "exif_gps_timestamp");
 }
 
+namespace {
+    using DestinationOptions = MetadataGpsDestinationTranslationOptions;
+    static constexpr std::array<uint16_t, 8> kDestinationTags { 19U, 20U, 21U,
+                                                                22U, 23U, 24U,
+                                                                25U, 26U };
+    static MetaStore destination(EntryFlags flags = EntryFlags::Dirty)
+    {
+        MetaStore store;
+        xmp_text(store, "GPSDestLatitude", "35,48.125S", flags);
+        xmp_text(store, "GPSDestLongitude", "139,34,55.25E", flags);
+        xmp_text(store, "GPSDestBearingRef", "True North", flags);
+        xmp_text(store, "GPSDestBearing", "359.99", flags);
+        xmp_text(store, "GPSDestDistanceRef", "Nautical miles", flags);
+        xmp_text(store, "GPSDestDistance", "12345/100", flags);
+        return store;
+    }
+    static void expect_destination_failure(MetaStore& source, Status expected,
+                                           DestinationOptions options = {})
+    {
+        source.finalize();
+        const size_t count = source.entries().size();
+        MetaStore output;
+        native(output, 8U,
+               make_text(output.arena(), "sentinel", TextEncoding::Ascii));
+        output.finalize();
+        EXPECT_EQ(translate_xmp_gps_destination_metadata(source, options,
+                                                         &output)
+                      .status,
+                  expected);
+        EXPECT_EQ(source.entries().size(), count);
+        ASSERT_EQ(output.entries().size(), 1U);
+        ASSERT_NE(gps(output, 8U), nullptr);
+        EXPECT_EQ(view(output, gps(output, 8U)->value.data.span), "sentinel");
+        EXPECT_EQ(translate_xmp_gps_destination_metadata(source, options,
+                                                         &source)
+                      .status,
+                  expected);
+        EXPECT_EQ(source.entries().size(), count);
+    }
+}  // namespace
+
+TEST(MetadataGpsDestination, WritesFourGroupsWithOwnedProvenanceAndIsIdempotent)
+{
+    MetaStore output;
+    {
+        MetaStore source = destination();
+        source.finalize();
+        const auto result = translate_xmp_gps_destination_metadata(source, {},
+                                                                   &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.source_properties, 6U);
+        EXPECT_EQ(result.groups_translated, 4U);
+        EXPECT_EQ(result.entries_added, 9U);
+        EXPECT_EQ(source.entries().size(), 6U);
+    }
+    expect_coordinate(output, 20U,
+                      { { { 35U, 1U }, { 48U, 1U }, { 15U, 2U } } });
+    expect_coordinate(output, 22U,
+                      { { { 139U, 1U }, { 34U, 1U }, { 221U, 4U } } });
+    for (const uint16_t tag : kDestinationTags) {
+        ASSERT_NE(gps(output, tag), nullptr);
+        EXPECT_EQ(view(output, gps(output, tag)->origin.wire_type_name),
+                  "gps-source");
+    }
+    EXPECT_EQ(view(output, gps(output, 19U)->value.data.span), "S");
+    EXPECT_EQ(view(output, gps(output, 21U)->value.data.span), "E");
+    EXPECT_EQ(view(output, gps(output, 23U)->value.data.span), "T");
+    EXPECT_EQ(view(output, gps(output, 25U)->value.data.span), "N");
+    EXPECT_EQ(gps(output, 24U)->value.data.ur.numer, 35999U);
+    EXPECT_EQ(gps(output, 24U)->value.data.ur.denom, 100U);
+    EXPECT_EQ(gps(output, 26U)->value.data.ur.numer, 2469U);
+    EXPECT_EQ(gps(output, 26U)->value.data.ur.denom, 20U);
+    const auto again = translate_xmp_gps_destination_metadata(output, {},
+                                                              &output);
+    EXPECT_EQ(again.status, Status::Ok);
+    EXPECT_EQ(again.groups_unchanged, 4U);
+    EXPECT_EQ(again.entries_added, 0U);
+}
+
+TEST(MetadataGpsDestination, CoordinateBoundsPrecisionAndZeroHemisphereAreExact)
+{
+    for (const auto path : { "GPSDestLatitude", "GPSDestLongitude" }) {
+        const bool latitude = std::string_view(path) == "GPSDestLatitude";
+        for (const auto input : latitude ? std::array { "90,0S", "0,0S" }
+                                         : std::array { "180,0W", "0,0W" }) {
+            MetaStore source;
+            xmp_text(source, path, input);
+            source.finalize();
+            MetaStore output;
+            ASSERT_EQ(translate_xmp_gps_destination_metadata(source, {}, &output)
+                          .status,
+                      Status::Ok);
+            EXPECT_EQ(view(output,
+                           gps(output, latitude ? 19U : 21U)->value.data.span),
+                      latitude ? "S" : "W");
+        }
+        MetaStore source;
+        xmp_text(source, path, latitude ? "90,0.0001N" : "180,0,0.1E");
+        expect_destination_failure(source, Status::ValueOutOfRange);
+        source = MetaStore {};
+        xmp_text(source, path, latitude ? "1,60N" : "1,0,60E");
+        expect_destination_failure(source, Status::ValueOutOfRange);
+        source = MetaStore {};
+        xmp_text(source, path, latitude ? "1,2E" : "1,2N");
+        expect_destination_failure(source, Status::InvalidSourceValue);
+        source = MetaStore {};
+        xmp_text(source, path,
+                 latitude ? "1,0,0.0000000001N" : "1,0,0.0000000001E");
+        expect_destination_failure(source, Status::UnsupportedPrecision);
+    }
+}
+
+TEST(MetadataGpsDestination, DistanceUnitsAndBearingAliasesNeverConvertValues)
+{
+    for (const auto ref :
+         { "K", "M", "N", "Kilometers", "Miles", "Nautical miles", "Knots" }) {
+        MetaStore source;
+        xmp_text(source, "GPSDestDistanceRef", ref);
+        xmp_text(source, "GPSDestDistance", "7/3");
+        source.finalize();
+        MetaStore output;
+        ASSERT_EQ(
+            translate_xmp_gps_destination_metadata(source, {}, &output).status,
+            Status::Ok);
+        const std::string_view unit(ref);
+        const char expected = unit == "K" || unit == "Kilometers" ? 'K'
+                              : unit == "M" || unit == "Miles"    ? 'M'
+                                                                  : 'N';
+        EXPECT_EQ(view(output, gps(output, 25U)->value.data.span),
+                  std::string_view(&expected, 1U));
+        EXPECT_EQ(gps(output, 26U)->value.data.ur.numer, 7U);
+        EXPECT_EQ(gps(output, 26U)->value.data.ur.denom, 3U);
+    }
+    for (const auto ref : { "T", "M", "True North", "Magnetic North" }) {
+        MetaStore source;
+        xmp_text(source, "GPSDestBearingRef", ref);
+        xmp_text(source, "GPSDestBearing", "1/3");
+        source.finalize();
+        MetaStore output;
+        ASSERT_EQ(
+            translate_xmp_gps_destination_metadata(source, {}, &output).status,
+            Status::Ok);
+        EXPECT_EQ(view(output, gps(output, 23U)->value.data.span).front(),
+                  ref[0]);
+        EXPECT_EQ(gps(output, 24U)->value.data.ur.denom, 3U);
+    }
+    for (const auto ref :
+         { "knots", "km/h", "mph", "n", " N", "N ", "Nautical Miles" }) {
+        MetaStore source;
+        xmp_text(source, "GPSDestDistanceRef", ref);
+        xmp_text(source, "GPSDestDistance", "1");
+        expect_destination_failure(source, Status::InvalidSourceValue);
+    }
+}
+
+TEST(MetadataGpsDestination, RejectsInvalidRationalsAnglesAndFloatingPoint)
+{
+    for (const auto value :
+         { "-1", "+1", "1e2", "1/0", "1.0/2", "1 miles", " 1" }) {
+        MetaStore source;
+        xmp_text(source, "GPSDestDistanceRef", "M");
+        xmp_text(source, "GPSDestDistance", value);
+        expect_destination_failure(source, Status::InvalidSourceValue);
+    }
+    for (const auto value : { "359.991", "360", "720/2" }) {
+        MetaStore source;
+        xmp_text(source, "GPSDestBearingRef", "T");
+        xmp_text(source, "GPSDestBearing", value);
+        expect_destination_failure(source, Status::ValueOutOfRange);
+    }
+    MetaStore source;
+    xmp_text(source, "GPSDestDistanceRef", "N");
+    xmp(source, "GPSDestDistance", make_f64_bits(0x3ff0000000000000ULL));
+    expect_destination_failure(source, Status::InvalidSourceValue);
+    source = MetaStore {};
+    xmp_text(source, "GPSDestDistanceRef", "N");
+    xmp_text(source, "GPSDestDistance", "4294967296");
+    expect_destination_failure(source, Status::UnsupportedPrecision);
+}
+
+TEST(MetadataGpsDestination, AcceptsExactTypedZeroIntegerAndRationalDistance)
+{
+    for (const auto value :
+         { make_u32(0U), make_i32(7), make_urational(14U, 6U) }) {
+        MetaStore source;
+        xmp_text(source, "GPSDestDistanceRef", "K");
+        xmp(source, "GPSDestDistance", value);
+        source.finalize();
+        MetaStore output;
+        ASSERT_EQ(
+            translate_xmp_gps_destination_metadata(source, {}, &output).status,
+            Status::Ok);
+        EXPECT_EQ(gps(output, 26U)->value.elem_type,
+                  MetaElementType::URational);
+    }
+}
+
+TEST(MetadataGpsDestination,
+     CompletePairsSelectDirtyCompanionAndRejectAmbiguity)
+{
+    for (const auto prefix : { "GPSDestBearing", "GPSDestDistance" }) {
+        const std::string ref = std::string(prefix) + "Ref";
+        for (const bool dirty_ref : { false, true }) {
+            MetaStore source;
+            xmp_text(source, ref,
+                     std::string_view(prefix) == "GPSDestBearing" ? "T" : "K",
+                     dirty_ref ? EntryFlags::Dirty : EntryFlags::None);
+            xmp_text(source, prefix, "1.5",
+                     dirty_ref ? EntryFlags::None : EntryFlags::Dirty);
+            source.finalize();
+            MetaStore output;
+            EXPECT_EQ(translate_xmp_gps_destination_metadata(source, {}, &output)
+                          .entries_added,
+                      3U);
+        }
+        MetaStore source;
+        xmp_text(source, prefix, "1");
+        expect_destination_failure(source, Status::IncompleteSource);
+        source = MetaStore {};
+        xmp_text(source, ref, "K", EntryFlags::Dirty | EntryFlags::Deleted);
+        xmp_text(source, prefix, "1");
+        expect_destination_failure(source, Status::IncompleteSource);
+        source = MetaStore {};
+        xmp_text(source, prefix, "1");
+        xmp_text(source, prefix, "1");
+        xmp_text(source, ref, "T");
+        expect_destination_failure(source, Status::AmbiguousSource);
+    }
+    MetaStore source = destination();
+    xmp_text(source, "GPSDestLatitude", "1,2N");
+    expect_destination_failure(source, Status::AmbiguousSource);
+}
+
+TEST(MetadataGpsDestination, PartialOrMalformedNativeGroupsShareConflictPolicy)
+{
+    for (const uint16_t tag : kDestinationTags) {
+        MetaStore source = destination();
+        native(source, tag, make_u32(99U));
+        expect_destination_failure(source, Status::NativeConflict);
+        DestinationOptions options;
+        options.conflict_policy = Policy::PreserveExisting;
+        MetaStore output;
+        const auto preserved
+            = translate_xmp_gps_destination_metadata(source, options, &output);
+        ASSERT_EQ(preserved.status, Status::Ok);
+        EXPECT_EQ(preserved.groups_preserved, 1U);
+        const uint16_t other = tag % 2U != 0U ? tag + 1U : tag - 1U;
+        EXPECT_EQ(gps(output, other), nullptr);
+        options.conflict_policy = Policy::ReplaceExisting;
+        ASSERT_EQ(translate_xmp_gps_destination_metadata(source, options,
+                                                         &output)
+                      .status,
+                  Status::Ok);
+        EXPECT_NE(gps(output, other), nullptr);
+    }
+}
+
+TEST(MetadataGpsDestination,
+     DirtySelectionAndIndependentFlagsLeavePrimaryApiUnchanged)
+{
+    MetaStore source = destination(EntryFlags::None);
+    source.finalize();
+    MetaStore output;
+    EXPECT_EQ(translate_xmp_gps_destination_metadata(source, {}, &output)
+                  .entries_added,
+              0U);
+    MetadataGpsTranslationOptions primary;
+    primary.source_mode = MetadataGpsTranslationSourceMode::All;
+    EXPECT_EQ(translate_xmp_gps_metadata(source, primary, &output).entries_added,
+              0U);
+    for (size_t i = 0U; i < 4U; ++i) {
+        DestinationOptions options;
+        options.source_mode       = MetadataGpsTranslationSourceMode::All;
+        options.latitude_to_exif  = i == 0U;
+        options.longitude_to_exif = i == 1U;
+        options.bearing_to_exif   = i == 2U;
+        options.distance_to_exif  = i == 3U;
+        const auto result
+            = translate_xmp_gps_destination_metadata(source, options, &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.groups_translated, 1U);
+        EXPECT_EQ(result.entries_added, 3U);
+        EXPECT_NE(gps(output, kDestinationTags[i * 2U]), nullptr);
+    }
+    source = MetaStore {};
+    xmp_text(source, "GPSDestDistanceRef", "M", EntryFlags::None);
+    xmp_text(source, "GPSDestDistance", "25");
+    source.finalize();
+    EXPECT_EQ(translate_xmp_gps_destination_metadata(source, {}, &output)
+                  .entries_added,
+              3U);
+}
+
+TEST(MetadataGpsDestination,
+     ComparesEquivalentNativeRationalsAndRepairsDuplicates)
+{
+    MetaStore source;
+    xmp_text(source, "GPSDestDistanceRef", "K");
+    xmp_text(source, "GPSDestDistance", "1.5");
+    native(source, 25U,
+           make_text(source.arena(), std::string_view("K\0", 2U),
+                     TextEncoding::Ascii));
+    native(source, 26U, make_urational(6U, 4U));
+    source.finalize();
+    MetaStore output;
+    const auto same = translate_xmp_gps_destination_metadata(source, {},
+                                                             &output);
+    ASSERT_EQ(same.status, Status::Ok);
+    EXPECT_EQ(same.groups_unchanged, 1U);
+    EXPECT_EQ(same.entries_added, 1U);
+    source = MetaStore {};
+    xmp_text(source, "GPSDestDistanceRef", "K");
+    xmp_text(source, "GPSDestDistance", "1.5");
+    native(source, 25U, make_text(source.arena(), "M", TextEncoding::Ascii));
+    native(source, 25U, make_text(source.arena(), "N", TextEncoding::Ascii));
+    native(source, 26U, make_urational(9U, 1U));
+    native(source, 26U, make_urational(10U, 1U));
+    source.finalize();
+    DestinationOptions options;
+    options.conflict_policy = Policy::ReplaceExisting;
+    const auto fixed = translate_xmp_gps_destination_metadata(source, options,
+                                                              &output);
+    ASSERT_EQ(fixed.status, Status::Ok);
+    EXPECT_EQ(fixed.entries_removed, 2U);
+    EXPECT_EQ(gps_count(output, 25U), 1U);
+    EXPECT_EQ(gps_count(output, 26U), 1U);
+}
+
+TEST(MetadataGpsDestination,
+     CompleteDirtyRemovalCleansVersionUnlessOtherGpsRemains)
+{
+    for (const bool unrelated : { false, true }) {
+        MetaStore source = destination(EntryFlags::Dirty | EntryFlags::Deleted);
+        native(source, 0U,
+               make_u8_array(source.arena(),
+                             std::array<uint8_t, 4> { 2U, 3U, 0U, 0U }));
+        for (const uint16_t tag : kDestinationTags) {
+            native(source, tag, make_u32(99U));
+        }
+        if (unrelated) {
+            native(source, 8U,
+                   make_text(source.arena(), "retained", TextEncoding::Ascii));
+        }
+        source.finalize();
+        DestinationOptions options;
+        options.conflict_policy = Policy::ReplaceExisting;
+        MetaStore output;
+        const auto result
+            = translate_xmp_gps_destination_metadata(source, options, &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.entries_removed, unrelated ? 8U : 9U);
+        EXPECT_EQ(gps(output, 0U) != nullptr, unrelated);
+        for (const uint16_t tag : kDestinationTags) {
+            EXPECT_EQ(gps(output, tag), nullptr);
+        }
+    }
+    MetaStore source = destination(EntryFlags::Deleted);
+    native(source, 20U, make_u32(99U));
+    source.finalize();
+    MetaStore output;
+    EXPECT_EQ(translate_xmp_gps_destination_metadata(source, {}, &output)
+                  .entries_removed,
+              0U);
+    EXPECT_NE(gps(output, 20U), nullptr);
+}
+
+TEST(MetadataGpsDestination, ResourceAndOptionLimitsLeaveOutputUnchanged)
+{
+    MetaStore source = destination();
+    MetaStore output;
+    EXPECT_EQ(translate_xmp_gps_destination_metadata(source, {}, nullptr).status,
+              Status::NullOutput);
+    EXPECT_EQ(translate_xmp_gps_destination_metadata(source, {}, &output).status,
+              Status::SourceNotFinalized);
+    DestinationOptions options;
+    options.max_added_entries = 8U;
+    expect_destination_failure(source, Status::EntryLimitExceeded, options);
+    options                = {};
+    options.max_operations = 8U;
+    expect_destination_failure(source, Status::OperationLimitExceeded, options);
+    options                             = {};
+    options.max_text_bytes_per_property = 3U;
+    expect_destination_failure(source, Status::ValueTooLong, options);
+    options                      = {};
+    options.max_total_text_bytes = 32U;
+    expect_destination_failure(source, Status::SourceLimitExceeded, options);
+    std::array<DestinationOptions, 7> invalid {};
+    invalid[0].max_added_entries           = 10U;
+    invalid[1].max_operations              = 0U;
+    invalid[2].max_text_bytes_per_property = 129U;
+    invalid[3].max_total_text_bytes        = 769U;
+    invalid[4].source_mode = static_cast<MetadataGpsTranslationSourceMode>(99U);
+    invalid[5].conflict_policy       = static_cast<Policy>(99U);
+    invalid[6].latitude_to_exif      = invalid[6].longitude_to_exif
+        = invalid[6].bearing_to_exif = invalid[6].distance_to_exif = false;
+    for (const DestinationOptions& option : invalid) {
+        expect_destination_failure(source, Status::InvalidOptions, option);
+    }
+    EXPECT_STREQ(metadata_gps_translation_mapping_name(
+                     MetadataGpsTranslationMapping::ExifGpsDestLatitude),
+                 "exif_gps_dest_latitude");
+}
+
+TEST(MetadataGpsDestination,
+     RetainsVersionAndUnrelatedGpsWithoutVersionInference)
+{
+    for (const uint8_t minor : { 0U, 2U, 3U, 4U, 9U }) {
+        MetaStore source = destination();
+        native(source, 0U,
+               make_u8_array(source.arena(),
+                             std::array<uint8_t, 4> { 2U, minor, 0U, 0U }));
+        native(source, 8U,
+               make_text(source.arena(), "retained", TextEncoding::Ascii));
+        source.finalize();
+        MetaStore output;
+        ASSERT_EQ(
+            translate_xmp_gps_destination_metadata(source, {}, &output).status,
+            Status::Ok);
+        EXPECT_EQ(output.arena().span(gps(output, 0U)->value.data.span)[1],
+                  static_cast<std::byte>(minor));
+        EXPECT_EQ(view(output, gps(output, 8U)->value.data.span), "retained");
+    }
+    MetaStore source = destination();
+    native(source, 0U, make_u32(2300U));
+    expect_destination_failure(source, Status::NativeConflict);
+}
+
+TEST(MetadataGpsDestination,
+     ExactPathsIgnorePrimaryNavigationAndForeignProperties)
+{
+    MetaStore source = position();
+    xmp_text(source, "GPSTimeStamp", "2024-01-01T00:00:00Z");
+    xmp_text(source, "GPSDestLatitudeRef", "N");
+    xmp_text(source, "GPSDestDistance[1]", "10");
+    xmp(source, "GPSDestLatitude", make_u32(3U), EntryFlags::Dirty, "foreign");
+    source.finalize();
+    MetaStore output;
+    EXPECT_EQ(translate_xmp_gps_destination_metadata(source, {}, &output)
+                  .entries_added,
+              0U);
+}
+
 }  // namespace openmeta

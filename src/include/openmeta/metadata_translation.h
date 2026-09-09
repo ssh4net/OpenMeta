@@ -849,6 +849,10 @@ enum class MetadataGpsTranslationMapping : uint8_t {
     ExifGpsSpeed,
     ExifGpsTrack,
     ExifGpsImgDirection,
+    ExifGpsDestLatitude,
+    ExifGpsDestLongitude,
+    ExifGpsDestBearing,
+    ExifGpsDestDistance,
 };
 enum class MetadataGpsTranslationStatus : uint8_t {
     Ok,
@@ -968,6 +972,51 @@ MetadataGpsTranslationResult
 translate_xmp_gps_navigation_metadata(
     const MetaStore& source,
     const MetadataGpsNavigationTranslationOptions& options,
+    MetaStore* out_store);
+
+inline constexpr uint32_t kMetadataGpsDestinationTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataGpsDestinationTranslationMaxAddedEntries = 9U;
+inline constexpr uint64_t kMetadataGpsDestinationTranslationMaxTotalTextBytes
+    = 768U;
+
+struct MetadataGpsDestinationTranslationOptions final {
+    MetadataGpsTranslationSourceMode source_mode
+        = MetadataGpsTranslationSourceMode::DirtyOnly;
+    MetadataGpsTranslationConflictPolicy conflict_policy
+        = MetadataGpsTranslationConflictPolicy::FailOnConflict;
+    bool latitude_to_exif  = true;
+    bool longitude_to_exif = true;
+    bool bearing_to_exif   = true;
+    bool distance_to_exif  = true;
+    uint32_t max_added_entries
+        = kMetadataGpsDestinationTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataGpsTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataGpsTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataGpsDestinationTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Atomically translate destination GPS coordinates, bearing, and distance.
+ *
+ * GPSDestLatitude/Longitude use the primary GPS exact coordinate syntax.
+ * GPSDestBearing and GPSDestDistance each require their complete XMP
+ * reference/value pair. Bearing is in [0, 359.99], with T/M or the portable
+ * True North/Magnetic North aliases. Distance is an exact unsigned rational,
+ * with K/M/N units (kilometers, miles, nautical miles). Kilometers, Miles,
+ * and Nautical miles are accepted aliases. Historical portable Knots also
+ * means N distance; it never requests a speed or unit conversion.
+ *
+ * No position, bearing, distance, datum, or north reference is inferred or
+ * converted. Source selection, paired conflicts/removal, version cleanup,
+ * provenance, limits, and failure atomicity follow the primary GPS contract.
+ * Existing primary and navigation APIs are unchanged. Preparation may allocate.
+ */
+MetadataGpsTranslationResult
+translate_xmp_gps_destination_metadata(
+    const MetaStore& source,
+    const MetadataGpsDestinationTranslationOptions& options,
     MetaStore* out_store);
 
 const char*

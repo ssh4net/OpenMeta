@@ -736,6 +736,90 @@ values, which can change reference spelling or timestamp formatting. ExistingWin
 preserves supplied XMP values over generated counterparts. The portable writer's
 native-only decimal formatting is not an exact arbitrary-rational round trip.
 
+Destination GPS writeback
+-------------------------
+
+``translate_xmp_gps_destination_metadata(...)`` uses independent
+``MetadataGpsDestinationTranslationOptions`` and the shared GPS result, source
+mode, conflict policy, and diagnostic enums. Contract version 1 adds four
+atomic groups; the primary GPS and navigation APIs keep their existing scopes.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Exact EXIF XMP source
+     - Native ``gpsifd`` fields
+     - Flag
+   * - ``GPSDestLatitude``
+     - DestLatitudeRef (19) and DestLatitude (20)
+     - ``latitude_to_exif``
+   * - ``GPSDestLongitude``
+     - DestLongitudeRef (21) and DestLongitude (22)
+     - ``longitude_to_exif``
+   * - ``GPSDestBearingRef`` and ``GPSDestBearing``
+     - DestBearingRef (23) and DestBearing (24)
+     - ``bearing_to_exif``
+   * - ``GPSDestDistanceRef`` and ``GPSDestDistance``
+     - DestDistanceRef (25) and DestDistance (26)
+     - ``distance_to_exif``
+
+Sources use exact unindexed, unqualified paths in
+``http://ns.adobe.com/exif/1.0/``. Coordinates use the primary GPS text syntax:
+``degrees,decimalMinutesN`` or ``degrees,minutes,decimalSecondsN``, with the
+appropriate N/S or E/W hemisphere. Bounds are 90/180 degrees and minutes or
+seconds below 60; components after a maximum degree must be zero. Output is
+ASCII hemisphere plus exact reduced unsigned RATIONAL[3], including the
+hemisphere of zero. Unsupported precision fails without rounding.
+
+Bearing and distance use the navigation exact nonnegative integer/rational
+scalar or unsigned integer/decimal/fraction text syntax. Bearing is in
+[0, 359.99], with ``T``/``M`` or exact ``True North``/``Magnetic North`` aliases.
+Distance accepts ``K``/``M``/``N`` for kilometers, miles, and nautical miles, plus
+exact ``Kilometers``, ``Miles``, and ``Nautical miles`` aliases. These distance
+units follow `CIPA DC-X010-2017, section 8.3 <https://cipa.jp/std/documents/e/DC-X010-2017.pdf>`_.
+Portable XMP now emits ``Nautical miles`` for destination unit N; it previously
+emitted the incorrect label ``Knots``. The reverse API accepts that historical
+capitalized spelling as N distance without converting the number. Lowercase
+``knots``, ``km/h``, and ``mph`` are speed references and are rejected for distance.
+No bearing, distance, primary position, datum, north reference, or unit is
+inferred or converted. Numeric precision follows the primary GPS parser limits.
+
+Defaults are DirtyOnly/FailOnConflict with all four groups enabled. One dirty
+bearing/distance member selects the complete active pair, including its clean
+companion. Missing, duplicate, and mixed deleted/active members fail. A dirty
+coordinate tombstone removes both native coordinate fields; bearing/distance
+removal requires both XMP members to be dirty tombstones. Clean tombstones
+are ignored. Missing groups preserve their native values.
+
+Native pairs follow the primary GPS conflict policy. PreserveExisting retains
+a whole group when either native member exists. FailOnConflict requires a
+complete equivalent pair. ReplaceExisting repairs partial or malformed groups
+and removes duplicates. Equivalence compares typed rational components exactly;
+text may include its one wire NUL. A well-formed native BYTE[4] GPSVersionID is
+retained without interpreting or upgrading it. Missing versions default to
+2.3.0.0 when active output needs one. Malformed or duplicate active versions
+fail. Removing the final GPS value removes its version; unrelated GPS retains it.
+
+Limits are nine added entries including the version, 1024 operations, 128 text
+bytes per selected active source, and 768 total text bytes. Limits may be
+lowered. All selected groups share one transaction; failures leave source and
+output unchanged, including aliasing. New entries own their provenance.
+Preparation may allocate. Python returns a detached document:
+
+.. code-block:: python
+
+   destination = document.translate_gps_destination_metadata(
+       source_mode=openmeta.MetadataGpsTranslationSourceMode.All,
+       conflict_policy=openmeta.MetadataGpsTranslationConflictPolicy.ReplaceExisting,
+   )
+
+Persist the result through transfer preparation. To retain original XMP values
+and spelling, Python transfer requires both ``xmp_include_existing=True`` and
+``xmp_conflict_policy=openmeta.XmpConflictPolicy.ExistingWins``. Native-only
+portable coordinate/rational formatting can be approximate; reverse translation
+cannot recover precision already lost from its input. Receiver status/quality,
+DOP, and geographic computation remain outside this contract.
+
 Conflict and removal policy
 ---------------------------
 

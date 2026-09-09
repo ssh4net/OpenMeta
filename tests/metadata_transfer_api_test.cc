@@ -13140,6 +13140,194 @@ TEST(MetadataTransferApi,
     }
 }
 
+TEST(MetadataTransferApi,
+     GpsDestinationSnapshotCreatesReplacesAndRemovesNativeGroups)
+{
+    const std::array<std::string_view, 6> paths {
+        "GPSDestLatitude", "GPSDestLongitude",   "GPSDestBearingRef",
+        "GPSDestBearing",  "GPSDestDistanceRef", "GPSDestDistance"
+    };
+    const std::array<std::string_view, 6> values {
+        "35,48.125S", "139,34,55.25E", "T", "359.99", "N", "12345/100"
+    };
+    const std::array<uint16_t, 9> tags { 0U,  19U, 20U, 21U, 22U,
+                                         23U, 24U, 25U, 26U };
+    for (const unsigned container : { 0U, 1U, 2U }) {
+        const auto format = container == 0U
+                                ? openmeta::TransferTargetFormat::Jpeg
+                                : openmeta::TransferTargetFormat::Tiff;
+        for (const unsigned mode : { 0U, 1U, 2U, 3U }) {
+            SCOPED_TRACE(container);
+            SCOPED_TRACE(mode);
+            openmeta::MetaStore source;
+            for (size_t i = 0U; i < paths.size(); ++i) {
+                openmeta::Entry entry;
+                entry.key = openmeta::make_xmp_property_key(
+                    source.arena(), "http://ns.adobe.com/exif/1.0/", paths[i]);
+                entry.value = openmeta::make_text(source.arena(), values[i],
+                                                  openmeta::TextEncoding::Utf8);
+                entry.flags = openmeta::EntryFlags::Dirty;
+                if (mode >= 2U) {
+                    entry.flags |= openmeta::EntryFlags::Deleted;
+                }
+                ASSERT_NE(source.add_entry(entry), openmeta::kInvalidEntryId);
+            }
+            openmeta::Entry camera;
+            camera.key   = openmeta::make_exif_tag_key(source.arena(), "ifd0",
+                                                       0x010fU);
+            camera.value = openmeta::make_text(source.arena(), "Keep camera",
+                                               openmeta::TextEncoding::Ascii);
+            ASSERT_NE(source.add_entry(camera), openmeta::kInvalidEntryId);
+            if (mode != 0U) {
+                const std::array<uint8_t, 4> version { 2U, 3U, 0U, 0U };
+                const std::array<openmeta::URational, 3> coordinate {
+                    { { 1U, 1U }, { 2U, 1U }, { 3U, 1U } }
+                };
+                const std::array native_values {
+                    openmeta::make_u8_array(source.arena(), version),
+                    openmeta::make_text(source.arena(), "N",
+                                        openmeta::TextEncoding::Ascii),
+                    openmeta::make_urational_array(source.arena(), coordinate),
+                    openmeta::make_text(source.arena(), "W",
+                                        openmeta::TextEncoding::Ascii),
+                    openmeta::make_urational_array(source.arena(), coordinate),
+                    openmeta::make_text(source.arena(), "M",
+                                        openmeta::TextEncoding::Ascii),
+                    openmeta::make_urational(2U, 1U),
+                    openmeta::make_text(source.arena(), "K",
+                                        openmeta::TextEncoding::Ascii),
+                    openmeta::make_urational(3U, 1U)
+                };
+                for (size_t i = 0U; i < tags.size(); ++i) {
+                    openmeta::Entry entry;
+                    entry.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                              "gpsifd", tags[i]);
+                    entry.value = native_values[i];
+                    ASSERT_NE(source.add_entry(entry),
+                              openmeta::kInvalidEntryId);
+                }
+            }
+            if (mode == 3U) {
+                openmeta::Entry retained;
+                retained.key = openmeta::make_exif_tag_key(source.arena(),
+                                                           "gpsifd", 8U);
+                retained.value
+                    = openmeta::make_text(source.arena(), "Retained satellites",
+                                          openmeta::TextEncoding::Ascii);
+                ASSERT_NE(source.add_entry(retained),
+                          openmeta::kInvalidEntryId);
+            }
+            source.finalize();
+            openmeta::PrepareTransferRequest request;
+            request.target_format      = format;
+            request.include_exif_app1  = true;
+            request.include_xmp_app1   = false;
+            request.include_icc_app2   = false;
+            request.include_iptc_app13 = false;
+            openmeta::ExecutePreparedTransferOptions execute;
+            execute.edit_requested = true;
+            execute.edit_apply     = true;
+            const auto input = container == 0U ? make_jpeg_with_segments({})
+                               : container == 1U
+                                   ? make_minimal_tiff_little_endian()
+                                   : make_minimal_bigtiff_little_endian();
+            openmeta::PreparedTransferBundle seed_bundle;
+            ASSERT_EQ(openmeta::prepare_metadata_for_target(source, request,
+                                                            &seed_bundle)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            const auto seed = openmeta::execute_prepared_transfer(&seed_bundle,
+                                                                  input,
+                                                                  execute);
+            ASSERT_EQ(seed.edit_apply.status, openmeta::TransferStatus::Ok);
+            openmeta::MetadataGpsDestinationTranslationOptions options;
+            options.conflict_policy
+                = openmeta::MetadataGpsTranslationConflictPolicy::ReplaceExisting;
+            openmeta::MetaStore translated;
+            ASSERT_EQ(openmeta::translate_xmp_gps_destination_metadata(
+                          source, options, &translated)
+                          .status,
+                      openmeta::MetadataGpsTranslationStatus::Ok);
+            const auto snapshot = openmeta::build_transfer_source_snapshot(
+                translated);
+            std::vector<std::byte> serialized;
+            ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(snapshot,
+                                                                   &serialized)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::TransferSourceSnapshot restored;
+            ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(serialized,
+                                                                     &restored)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::PreparedTransferBundle bundle;
+            ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(restored,
+                                                                     request,
+                                                                     &bundle)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            const auto written = openmeta::execute_prepared_transfer(
+                &bundle, seed.edited_output, execute);
+            ASSERT_EQ(written.edit_apply.status, openmeta::TransferStatus::Ok);
+            openmeta::MetaStore decoded;
+            ASSERT_TRUE(decode_transfer_roundtrip_store(written.edited_output,
+                                                        &decoded));
+            EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                                 exif_key_view("ifd0", 0x010fU),
+                                                 "Keep camera"));
+            if (mode >= 2U) {
+                for (const uint16_t tag : tags) {
+                    EXPECT_EQ(
+                        decoded.find_all(exif_key_view("gpsifd", tag)).empty(),
+                        tag != 0U || mode == 2U);
+                }
+                if (mode == 2U) {
+                    EXPECT_TRUE(decoded.find_all(exif_key_view("ifd0", 0x8825U))
+                                    .empty());
+                } else {
+                    EXPECT_TRUE(
+                        store_has_any_text_entry(decoded,
+                                                 exif_key_view("gpsifd", 8U),
+                                                 "Retained satellites"));
+                }
+                continue;
+            }
+            for (size_t i = 0U; i < 4U; ++i) {
+                const std::array<std::string_view, 4> refs { "S", "E", "T",
+                                                             "N" };
+                EXPECT_TRUE(store_has_any_text_entry(
+                    decoded,
+                    exif_key_view("gpsifd", static_cast<uint16_t>(19U + 2U * i)),
+                    refs[i]));
+            }
+            EXPECT_TRUE(store_has_urational_scalar_entry(
+                decoded, exif_key_view("gpsifd", 24U), 35999U, 100U));
+            EXPECT_TRUE(store_has_urational_scalar_entry(
+                decoded, exif_key_view("gpsifd", 26U), 2469U, 20U));
+            const std::array<std::array<openmeta::URational, 3>, 2> expected {
+                { { { { 35U, 1U }, { 48U, 1U }, { 15U, 2U } } },
+                  { { { 139U, 1U }, { 34U, 1U }, { 221U, 4U } } } }
+            };
+            for (size_t i = 0U; i < expected.size(); ++i) {
+                const auto ids = decoded.find_all(
+                    exif_key_view("gpsifd",
+                                  static_cast<uint16_t>(20U + 2U * i)));
+                ASSERT_EQ(ids.size(), 1U);
+                const auto& value = decoded.entry(ids[0]).value;
+                ASSERT_EQ(value.kind, openmeta::MetaValueKind::Array);
+                ASSERT_EQ(value.elem_type,
+                          openmeta::MetaElementType::URational);
+                ASSERT_EQ(value.count, 3U);
+                const auto bytes = decoded.arena().span(value.data.span);
+                ASSERT_EQ(bytes.size(), sizeof(expected[i]));
+                EXPECT_EQ(std::memcmp(bytes.data(), expected[i].data(),
+                                      bytes.size()),
+                          0);
+            }
+        }
+    }
+}
+
 TEST(MetadataTransferApi, TiffGpsOmissionAndExplicitRemovalAreDistinct)
 {
     for (const bool bigtiff : { false, true }) {

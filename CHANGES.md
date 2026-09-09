@@ -1,5 +1,25 @@
 # OpenMeta Changes
 
+## 0.4.134 - 2026-09-09
+
+Changes compared with `0.4.133`.
+
+### Added
+
+- Added C++ `translate_xmp_gps_destination_metadata` and Python
+  `Document.translate_gps_destination_metadata` for exact destination latitude,
+  longitude, bearing/reference, and distance/unit writeback. Each group has an
+  independent flag and shares GPS conflict, removal, version, and limit rules.
+- Added coordinate bounds, rational precision, unit/reference compatibility,
+  JPEG/Classic TIFF/BigTIFF snapshot persistence, Python, and shared-consumer
+  checks. Existing primary GPS and navigation API contracts remain unchanged.
+
+### Fixed
+
+- Portable XMP now labels destination distance unit N as `Nautical miles`.
+  The reverse destination API accepts historical `Knots` as an alias for N
+  distance without converting the value. Speed unit N remains `knots`.
+
 ## 0.4.133 - 2026-09-09
 
 Changes compared with `0.4.132`.

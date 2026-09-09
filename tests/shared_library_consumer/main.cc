@@ -189,6 +189,30 @@ main()
                  == openmeta::MetadataGpsTranslationStatus::Ok
           && navigation_result.entries_added == 3U
           && navigation_translated.is_finalized();
+    const openmeta::MetadataAuthoringEntry destination_latitude {
+        openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                             "GPSDestLatitude"),
+        openmeta::make_value_view_text("35,48.125S",
+                                       openmeta::TextEncoding::Utf8),
+    };
+    openmeta::MetaStore destination_source;
+    const auto destination_authored = openmeta::create_metadata_store(
+        std::span<const openmeta::MetadataAuthoringEntry>(&destination_latitude,
+                                                          1U),
+        &destination_source);
+    openmeta::MetaStore destination_translated;
+    const auto destination_result
+        = openmeta::translate_xmp_gps_destination_metadata(
+            destination_source,
+            openmeta::MetadataGpsDestinationTranslationOptions {},
+            &destination_translated);
+    const bool destination_contract_matches
+        = destination_authored.ok()
+          && openmeta::kMetadataGpsDestinationTranslationContractVersion == 1U
+          && destination_result.status
+                 == openmeta::MetadataGpsTranslationStatus::Ok
+          && destination_result.entries_added == 3U
+          && destination_translated.is_finalized();
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
             std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
@@ -268,6 +292,7 @@ main()
                    || !iptc_contract_matches || !gps_contract_matches
                    || !structured_location_contract_matches
                    || !navigation_contract_matches
+                   || !destination_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()
                    || instance.valid()

@@ -904,7 +904,10 @@ Suggested delivery sequence:
    outside this bounded projection. Version 0.4.133 adds GPS UTC date/time and
    speed/track/image-direction writeback with exact fractions, explicit timezone
    normalization, reference pairs, and snapshot persistence. Receiver quality
-   metadata and destination GPS remain separate contracts.
+   metadata remains a separate contract. Version 0.4.134 adds destination
+   latitude/longitude, bearing/reference, and distance/unit writeback with exact
+   precision, paired transactions, historical unit-label compatibility, and
+   JPEG/Classic TIFF/BigTIFF persistence.
    See `docs/translation.md`.
 2. Retain the completed writer-baseline and compare-backed release gates while
    extending validated foreign `BMFF` graph shapes.

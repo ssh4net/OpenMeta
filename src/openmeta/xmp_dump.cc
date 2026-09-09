@@ -3663,7 +3663,7 @@ namespace {
                 switch (c) {
                 case 'K': return "Kilometers";
                 case 'M': return "Miles";
-                case 'N': return "Knots";
+                case 'N': return "Nautical miles";
                 default: return {};
                 }
             }
