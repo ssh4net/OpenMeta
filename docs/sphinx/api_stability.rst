@@ -248,6 +248,13 @@ Host-facing API map
        Independent flags, shared charset/resource limits, and cross-group
        atomicity. Existing subgroup/date contracts are unchanged. Python provides
        the same operation. See :doc:`translation`.
+   * - Structured location reconciliation: ``translate_xmp_structured_location_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Transactional v1 projection of one explicitly selected structured record
+       into five flat XMP/native IPTC pairs. Record kind/index, paired conflicts,
+       dirty leaf removal, text limits, and charset safety are explicit. Python
+       provides the same operation. See :doc:`translation`.
    * - Primary GPS translation: ``translate_xmp_gps_metadata(...)``
      - ``openmeta/metadata_translation.h``
      - Experimental

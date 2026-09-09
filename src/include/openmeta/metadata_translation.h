@@ -575,6 +575,9 @@ enum class MetadataDescriptiveTranslationStatus : uint8_t {
     EntryLimitExceeded,
     OperationLimitExceeded,
     InternalError,
+    AmbiguousLocation,
+    LocationNotFound,
+    UnsupportedSourceShape,
 };
 
 /// Transactional result details for one reverse descriptive translation.
@@ -663,6 +666,61 @@ struct MetadataLocationTranslationOptions final {
 MetadataDescriptiveTranslationResult
 translate_xmp_location_metadata(
     const MetaStore& source, const MetadataLocationTranslationOptions& options,
+    MetaStore* out_store);
+
+/// Experimental structured location to flat XMP and IPTC reconciliation.
+inline constexpr uint32_t kMetadataStructuredLocationTranslationContractVersion
+    = 1U;
+inline constexpr uint32_t kMetadataStructuredLocationTranslationMaxAddedEntries
+    = 11U;
+
+enum class MetadataStructuredLocationKind : uint8_t { Shown, Created };
+
+struct MetadataStructuredLocationTranslationOptions final {
+    MetadataStructuredLocationKind location_kind
+        = MetadataStructuredLocationKind::Shown;
+    /// Zero requires a single record; positive values select an exact XMP index.
+    uint32_t location_index = 0U;
+    MetadataDescriptiveTranslationSourceMode source_mode
+        = MetadataDescriptiveTranslationSourceMode::DirtyOnly;
+    MetadataDescriptiveTranslationConflictPolicy conflict_policy
+        = MetadataDescriptiveTranslationConflictPolicy::FailOnConflict;
+    bool city         = true;
+    bool sublocation  = true;
+    bool state        = true;
+    bool country      = true;
+    bool country_code = true;
+    uint32_t max_source_properties
+        = kMetadataDescriptiveTranslationMaxSourceProperties;
+    uint32_t max_added_entries
+        = kMetadataStructuredLocationTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataDescriptiveTranslationMaxOperations;
+    uint64_t max_total_text_bytes
+        = kMetadataDescriptiveTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Reconcile five text fields from one explicit structured location into
+ * flat legacy XMP and native IPTC-IIM in a single atomic transaction.
+ *
+ * Exact Iptc4xmpExt LocationShown[n] or LocationCreated[n] records are selected.
+ * The existing scalar LocationCreated resource form is accepted as index one.
+ * Created and Shown never fall back to each other. Multiple records require
+ * an explicit index. GPS, nested Address fields, names, IDs, and WorldRegion
+ * are retained but not projected. No record is merged with another record.
+ *
+ * City, Sublocation, ProvinceState, CountryName, and CountryCode use the flat
+ * location text limits and charset policy. Each flat XMP/native IPTC pair is
+ * one conflict group. PreserveExisting retains both if either exists; missing
+ * structured fields are untouched. Dirty field tombstones remove both under
+ * ReplaceExisting. Structure/array tombstones are not field-removal requests.
+ * Counters include both destinations and any UTF-8 marker. Failure leaves source
+ * and output unchanged; preparation may allocate. Existing APIs are unchanged.
+ */
+MetadataDescriptiveTranslationResult
+translate_xmp_structured_location_metadata(
+    const MetaStore& source,
+    const MetadataStructuredLocationTranslationOptions& options,
     MetaStore* out_store);
 
 /// Experimental reverse IPTC editorial translation contract version.

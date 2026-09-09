@@ -3,6 +3,7 @@
 #include "openmeta/compatibility_dump.h"
 #include "openmeta/container_scan.h"
 #include "openmeta/interop_import.h"
+#include "openmeta/meta_edit.h"
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_value.h"
 #include "openmeta/metadata_creation.h"
@@ -12015,6 +12016,211 @@ TEST(MetadataTransferApi,
 }
 
 TEST(MetadataTransferApi,
+     StructuredLocationPersistsBothDestinationsAndRemovesStaleValues)
+{
+    struct Field final {
+        std::string_view schema_ns;
+        std::string_view path;
+        std::string_view child;
+        uint16_t dataset;
+        std::string_view value;
+    };
+    static constexpr std::string_view kPhotoshopNs
+        = "http://ns.adobe.com/photoshop/1.0/";
+    static constexpr std::string_view kIptcNs
+        = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
+    static constexpr std::array<Field, 5U> kFields = {
+        Field { kPhotoshopNs, "City", "City", 90U, "\xe4\xba\xac\xe9\x83\xbd" },
+        Field { kIptcNs, "Location", "Sublocation", 92U, "Garden" },
+        Field { kPhotoshopNs, "State", "ProvinceState", 95U, "Kyoto" },
+        Field { kPhotoshopNs, "Country", "CountryName", 101U, "Japan" },
+        Field { kIptcNs, "CountryCode", "CountryCode", 100U, "JP" },
+    };
+    for (const bool remove : { false, true }) {
+        SCOPED_TRACE(remove ? "remove" : "replace");
+        openmeta::MetaStore source;
+        const openmeta::BlockId block = source.add_block(
+            openmeta::BlockInfo {});
+        ASSERT_NE(block, openmeta::kInvalidBlockId);
+        for (const Field& field : kFields) {
+            openmeta::Entry xmp;
+            xmp.key = openmeta::make_xmp_property_key(
+                source.arena(), "http://iptc.org/std/Iptc4xmpExt/2008-02-29/",
+                std::string("LocationShown[1]/") + std::string(field.child));
+            xmp.value = openmeta::make_text(source.arena(), field.value,
+                                            openmeta::TextEncoding::Utf8);
+            xmp.flags = openmeta::EntryFlags::Dirty;
+            if (remove) {
+                xmp.flags |= openmeta::EntryFlags::Deleted;
+            }
+            xmp.origin.block = block;
+            ASSERT_NE(source.add_entry(xmp), openmeta::kInvalidEntryId);
+            openmeta::Entry legacy;
+            legacy.key   = openmeta::make_xmp_property_key(source.arena(),
+                                                           field.schema_ns,
+                                                           field.path);
+            legacy.value = openmeta::make_text(source.arena(), "OLD",
+                                               openmeta::TextEncoding::Ascii);
+            legacy.origin.block = block;
+            ASSERT_NE(source.add_entry(legacy), openmeta::kInvalidEntryId);
+            openmeta::Entry native;
+            native.key   = openmeta::make_iptc_dataset_key(2U, field.dataset);
+            native.value = openmeta::make_text(source.arena(), "OLD",
+                                               openmeta::TextEncoding::Ascii);
+            native.origin.block = block;
+            ASSERT_NE(source.add_entry(native), openmeta::kInvalidEntryId);
+        }
+        openmeta::Entry caption;
+        caption.key   = openmeta::make_iptc_dataset_key(2U, 120U);
+        caption.value = openmeta::make_text(source.arena(), "Keep caption",
+                                            openmeta::TextEncoding::Ascii);
+        caption.origin.block = block;
+        ASSERT_NE(source.add_entry(caption), openmeta::kInvalidEntryId);
+        const std::array<std::byte, 8U> stale_iim = {
+            std::byte { 0x1cU }, std::byte { 2U },  std::byte { 90U },
+            std::byte { 0U },    std::byte { 3U },  std::byte { 'O' },
+            std::byte { 'L' },   std::byte { 'D' },
+        };
+        openmeta::Entry raw;
+        raw.key          = openmeta::make_photoshop_irb_key(0x0404U);
+        raw.value        = openmeta::make_bytes(source.arena(), stale_iim);
+        raw.origin.block = block;
+        ASSERT_NE(source.add_entry(raw), openmeta::kInvalidEntryId);
+        source.finalize();
+        openmeta::MetadataStructuredLocationTranslationOptions options;
+        options.conflict_policy = openmeta::
+            MetadataDescriptiveTranslationConflictPolicy::ReplaceExisting;
+        openmeta::MetaStore translated;
+        const auto translation
+            = openmeta::translate_xmp_structured_location_metadata(source,
+                                                                   options,
+                                                                   &translated);
+        ASSERT_EQ(translation.status,
+                  openmeta::MetadataDescriptiveTranslationStatus::Ok);
+        EXPECT_EQ(translation.groups_translated, 5U);
+        EXPECT_EQ(translation.entries_removed, remove ? 10U : 0U);
+        EXPECT_EQ(translation.utf8_charset_added, !remove);
+        for (const auto target : { openmeta::TransferTargetFormat::Jpeg,
+                                   openmeta::TransferTargetFormat::Tiff }) {
+            SCOPED_TRACE(target == openmeta::TransferTargetFormat::Jpeg
+                             ? "jpeg"
+                             : "tiff");
+            openmeta::PrepareTransferRequest request;
+            request.target_format     = target;
+            request.include_exif_app1 = target
+                                        == openmeta::TransferTargetFormat::Tiff;
+            request.include_xmp_app1   = true;
+            request.include_icc_app2   = false;
+            request.include_iptc_app13 = true;
+            auto snapshot = openmeta::build_transfer_source_snapshot(
+                translated);
+            if (target == openmeta::TransferTargetFormat::Tiff) {
+                // A decoded TIFF also retains its old XMP/IPTC carrier tags in EXIF.
+                const std::string_view old_xmp
+                    = "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>"
+                      "<rdf:Description xmlns:p='http://ns.adobe.com/photoshop/1.0/'>"
+                      "<p:City>OLD</p:City></rdf:Description></rdf:RDF>";
+                openmeta::MetaEdit carriers;
+                openmeta::Entry carrier;
+                carrier.key   = openmeta::make_exif_tag_key(carriers.arena(),
+                                                            "ifd0", 700U);
+                carrier.value = openmeta::make_bytes(
+                    carriers.arena(),
+                    std::as_bytes(std::span(old_xmp.data(), old_xmp.size())));
+                carriers.add_entry(carrier);
+                carrier.key   = openmeta::make_exif_tag_key(carriers.arena(),
+                                                            "ifd0", 33723U);
+                carrier.value = openmeta::make_bytes(carriers.arena(),
+                                                     stale_iim);
+                carriers.add_entry(carrier);
+                snapshot.store = openmeta::commit(
+                    snapshot.store,
+                    std::span<const openmeta::MetaEdit>(&carriers, 1U));
+            }
+            std::vector<std::byte> serialized;
+            ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(snapshot,
+                                                                   &serialized)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::TransferSourceSnapshot restored;
+            ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(serialized,
+                                                                     &restored)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::PreparedTransferBundle bundle;
+            ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(restored,
+                                                                     request,
+                                                                     &bundle)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            const std::vector<std::byte> input
+                = target == openmeta::TransferTargetFormat::Jpeg
+                      ? make_jpeg_with_segments({})
+                      : make_minimal_tiff_little_endian();
+            openmeta::ExecutePreparedTransferOptions execute;
+            execute.edit_requested = true;
+            execute.edit_apply     = true;
+            openmeta::PreparedTransferBundle seed_bundle;
+            ASSERT_EQ(openmeta::prepare_metadata_for_target(source, request,
+                                                            &seed_bundle)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            const auto seed = openmeta::execute_prepared_transfer(&seed_bundle,
+                                                                  input,
+                                                                  execute);
+            ASSERT_EQ(seed.edit_apply.status, openmeta::TransferStatus::Ok);
+            const auto result = openmeta::execute_prepared_transfer(
+                &bundle, seed.edited_output, execute);
+            ASSERT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok);
+            ASSERT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+            openmeta::MetaStore decoded;
+            ASSERT_TRUE(decode_transfer_roundtrip_store(result.edited_output,
+                                                        &decoded));
+            openmeta::MetaStore native_iim;
+            const openmeta::MetaStore* native = &decoded;
+            if (target == openmeta::TransferTargetFormat::Tiff) {
+                const auto iptc_tags = decoded.find_all(
+                    exif_key_view("ifd0", 0x83BBU));
+                ASSERT_EQ(iptc_tags.size(), 1U);
+                const auto payload = decoded.arena().span(
+                    decoded.entry(iptc_tags[0U]).value.data.span);
+                ASSERT_EQ(openmeta::decode_iptc_iim(payload, native_iim).status,
+                          openmeta::IptcIimDecodeStatus::Ok);
+                native_iim.finalize();
+                // The full reader visits TIFF IPTC through its IFD and carrier.
+                native = &native_iim;
+            }
+            EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                                 iptc_key_view(2U, 120U),
+                                                 "Keep caption"));
+            for (const Field& field : kFields) {
+                EXPECT_FALSE(store_has_any_text_entry(
+                    decoded, iptc_key_view(2U, field.dataset), "OLD"));
+                const auto flat_key
+                    = openmeta::make_xmp_property_key_view(field.schema_ns,
+                                                           field.path);
+                EXPECT_FALSE(
+                    store_has_any_text_entry(decoded, flat_key, "OLD"));
+                if (remove) {
+                    EXPECT_TRUE(decoded.find_all(flat_key).empty());
+                    EXPECT_TRUE(
+                        native->find_all(iptc_key_view(2U, field.dataset))
+                            .empty());
+                } else {
+                    EXPECT_TRUE(store_has_any_text_entry(decoded, flat_key,
+                                                         field.value));
+                    EXPECT_EQ(native->find_all(iptc_key_view(2U, field.dataset))
+                                  .size(),
+                              1U);
+                    EXPECT_TRUE(store_has_any_text_entry(
+                        *native, iptc_key_view(2U, field.dataset), field.value));
+                }
+            }
+        }
+    }
+}
+
+TEST(MetadataTransferApi,
      TranslatedXmpEditorialFieldsReplaceAndRemoveStaleIptcInJpegAndTiff)
 {
     struct Field final {
@@ -12508,6 +12714,69 @@ TEST(MetadataTransferApi,
             decoded, exif_key_view("exififd", 0x9204U), -1, 3));
         EXPECT_TRUE(store_has_urational_scalar_entry(
             decoded, exif_key_view("exififd", 0x920aU), 50U, 1U));
+    }
+}
+
+TEST(MetadataTransferApi, TiffExplicitXmpRemovalOverridesExifCarrier)
+{
+    const std::string_view old_xmp
+        = "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>"
+          "<rdf:Description xmlns:p='http://ns.adobe.com/photoshop/1.0/'>"
+          "<p:City>OLD</p:City></rdf:Description></rdf:RDF>";
+    openmeta::MetaStore source;
+    openmeta::Entry carrier;
+    carrier.key   = openmeta::make_exif_tag_key(source.arena(), "ifd0", 700U);
+    carrier.value = openmeta::make_bytes(
+        source.arena(),
+        std::as_bytes(std::span(old_xmp.data(), old_xmp.size())));
+    ASSERT_NE(source.add_entry(carrier), openmeta::kInvalidEntryId);
+    openmeta::Entry camera;
+    camera.key   = openmeta::make_exif_tag_key(source.arena(), "ifd0", 0x010fU);
+    camera.value = openmeta::make_text(source.arena(), "Retained camera",
+                                       openmeta::TextEncoding::Ascii);
+    ASSERT_NE(source.add_entry(camera), openmeta::kInvalidEntryId);
+    source.finalize();
+    openmeta::PrepareTransferRequest request;
+    request.target_format      = openmeta::TransferTargetFormat::Tiff;
+    request.include_exif_app1  = true;
+    request.include_xmp_app1   = false;
+    request.include_iptc_app13 = false;
+    request.include_icc_app2   = false;
+    for (const bool bigtiff : { false, true }) {
+        const auto input = bigtiff ? make_minimal_bigtiff_little_endian()
+                                   : make_minimal_tiff_little_endian();
+        for (const bool strip : { false, true }) {
+            SCOPED_TRACE(bigtiff);
+            SCOPED_TRACE(strip);
+            openmeta::PreparedTransferBundle bundle;
+            ASSERT_EQ(openmeta::prepare_metadata_for_target(source, request,
+                                                            &bundle)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::ExecutePreparedTransferOptions options;
+            options.edit_requested = true;
+            options.edit_apply     = true;
+            const auto seed
+                = openmeta::execute_prepared_transfer(&bundle, input, options);
+            ASSERT_EQ(seed.edit_apply.status, openmeta::TransferStatus::Ok);
+            options.strip_existing_xmp = strip;
+            const auto result          = openmeta::execute_prepared_transfer(
+                &bundle, seed.edited_output, options);
+            ASSERT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+            openmeta::MetaStore decoded;
+            ASSERT_TRUE(decode_transfer_roundtrip_store(result.edited_output,
+                                                        &decoded));
+            EXPECT_EQ(decoded.find_all(exif_key_view("ifd0", 700U)).empty(),
+                      strip);
+            EXPECT_EQ(decoded
+                          .find_all(openmeta::make_xmp_property_key_view(
+                              "http://ns.adobe.com/photoshop/1.0/", "City"))
+                          .empty(),
+                      strip);
+            EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                                 exif_key_view("ifd0", 0x010fU),
+                                                 "Retained camera"));
+        }
     }
 }
 

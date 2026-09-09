@@ -140,6 +140,31 @@ main()
                  == openmeta::MetadataGpsTranslationStatus::Ok
           && gps_translation.entries_added == 3U
           && gps_translated.is_finalized();
+    const openmeta::MetadataAuthoringEntry structured_location {
+        openmeta::make_xmp_property_key_view(
+            "http://iptc.org/std/Iptc4xmpExt/2008-02-29/",
+            "LocationShown[1]/City"),
+        openmeta::make_value_view_text("Kyoto", openmeta::TextEncoding::Utf8),
+    };
+    openmeta::MetaStore structured_location_source;
+    const auto structured_location_authored = openmeta::create_metadata_store(
+        std::span<const openmeta::MetadataAuthoringEntry>(&structured_location,
+                                                          1U),
+        &structured_location_source);
+    openmeta::MetaStore structured_location_translated;
+    const auto structured_location_result
+        = openmeta::translate_xmp_structured_location_metadata(
+            structured_location_source,
+            openmeta::MetadataStructuredLocationTranslationOptions {},
+            &structured_location_translated);
+    const bool structured_location_contract_matches
+        = structured_location_authored.ok()
+          && openmeta::kMetadataStructuredLocationTranslationContractVersion
+                 == 1U
+          && structured_location_result.status
+                 == openmeta::MetadataDescriptiveTranslationStatus::Ok
+          && structured_location_result.entries_added == 2U
+          && structured_location_translated.is_finalized();
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
             std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
@@ -217,6 +242,7 @@ main()
                    || !descriptive_translation_contract_matches
                    || !location_contract_matches || !editorial_contract_matches
                    || !iptc_contract_matches || !gps_contract_matches
+                   || !structured_location_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()
                    || instance.valid()

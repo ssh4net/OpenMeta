@@ -897,7 +897,11 @@ Suggested delivery sequence:
    overall parity claim. Version 0.4.131 adds primary GPS latitude/longitude and
    altitude/reference writeback, including exact rational precision and GPS
    version companions. Additional capture fields, GPS time/navigation/destination
-   data, and structured-location reconciliation remain separate feature batches.
+   data remain separate feature batches. Version 0.4.132 adds explicit selection
+   of one structured location and atomic five-field flat-XMP/IPTC reconciliation,
+   with record multiplicity, conflict, dirty removal, and persistence contracts.
+   Reverse construction of structured locations and geographic inference remain
+   outside this bounded projection.
    See `docs/translation.md`.
 2. Retain the completed writer-baseline and compare-backed release gates while
    extending validated foreign `BMFF` graph shapes.

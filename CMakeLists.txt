@@ -1028,6 +1028,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/metadata_editing_transfer_test.cc
     tests/metadata_translation_test.cc
     tests/metadata_translation_gps_test.cc
+    tests/metadata_translation_structured_location_test.cc
     tests/metadata_fuzzy_search_test.cc
     tests/metadata_interpretation_test.cc
     tests/metadata_query_test.cc

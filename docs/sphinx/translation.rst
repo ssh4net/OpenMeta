@@ -18,7 +18,8 @@ The APIs are experimental and versioned by
 ``kMetadataLocationTranslationContractVersion == 1`` and
 ``kMetadataEditorialTranslationContractVersion == 1`` and
 ``kMetadataIptcTranslationContractVersion == 1`` and
-``kMetadataGpsTranslationContractVersion == 1``.
+``kMetadataGpsTranslationContractVersion == 1`` and
+``kMetadataStructuredLocationTranslationContractVersion == 1``.
 
 Workflow
 --------
@@ -35,6 +36,7 @@ invoke it implicitly:
    ``translate_xmp_location_metadata(...)``,
    ``translate_xmp_editorial_metadata(...)``,
    ``translate_xmp_iptc_metadata(...)``, ``translate_xmp_gps_metadata(...)``,
+   ``translate_xmp_structured_location_metadata(...)``,
    or the required combination
    with explicit mapping and conflict options.
 3. Pass the returned finalized store to transfer preparation or a writer.
@@ -272,6 +274,123 @@ text/charset-safety bytes, and six added entries (five datasets plus one charset
 marker). Options can lower these limits. New entries copy source provenance;
 updates preserve the existing native entry's provenance. Translation is a
 preparation operation that may allocate; it is not an allocation-free replay API.
+
+Structured location reconciliation
+----------------------------------
+
+``translate_xmp_structured_location_metadata(...)`` accepts
+``MetadataStructuredLocationTranslationOptions`` and returns the shared
+``MetadataDescriptiveTranslationResult``. Contract version 1 selects one
+structured location and reconciles its five supported text fields into **both
+flat legacy XMP and native IPTC-IIM**. Existing flat-location and combined IPTC
+APIs keep their original mapping sets.
+
+The root namespace must be ``http://iptc.org/std/Iptc4xmpExt/2008-02-29/``.
+``location_kind`` defaults to ``MetadataStructuredLocationKind::Shown``;
+``Created`` requires an explicit choice. Shown and Created never fall back to
+each other. These properties distinguish the depicted place from the place
+where the camera was. Choosing Created authorizes copying that camera-location
+description into the legacy fields whose historical semantics are ambiguous.
+See the `IPTC Photo Metadata specification <https://www.iptc.org/std/photometadata/specification/IPTC-PhotoMetadata-2025.1.html>`_.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Structured child
+     - Flat XMP destination
+     - Native IPTC
+     - Maximum UTF-8 bytes
+   * - ``City``
+     - ``photoshop:City``
+     - 2:90
+     - 32
+   * - ``Sublocation``
+     - ``Iptc4xmpCore:Location``
+     - 2:92
+     - 32
+   * - ``ProvinceState``
+     - ``photoshop:State``
+     - 2:95
+     - 32
+   * - ``CountryName``
+     - ``photoshop:Country``
+     - 2:101
+     - 64
+   * - ``CountryCode``
+     - ``Iptc4xmpCore:CountryCode``
+     - 2:100
+     - 3
+
+
+Paths are ``LocationShown[n]/City``, ``LocationCreated[n]/City``, and the equivalent
+paths for the other four children. The existing scalar ``LocationCreated/City``
+resource form is accepted as record index 1. Mixed scalar and indexed Created
+forms fail. Indexes must be positive decimal uint32 values without leading
+zeros. ``location_index == 0`` selects the sole represented record when present;
+an absent root kind is a no-op, and multiple records fail with AmbiguousLocation.
+A positive option selects that exact index
+and fails with LocationNotFound if absent. It never selects the first record
+implicitly or merges records. Any represented child, including an unsupported
+child, counts for record selection. Selection precedes DirtyOnly filtering.
+
+XML decoding uses one-based RDF order; authored stores can have sparse indexes.
+Canonical unqualified child names and ``Iptc4xmpExt:``-qualified equivalents are
+accepted. Duplicate field sources are ambiguous, including equal values,
+qualified/unqualified aliases, or mixed active and dirty-deleted entries.
+Other namespaces, nested Address children, language/index qualifiers, location
+names and IDs, WorldRegion, and structured GPS fields are retained without
+projection. Nonstandard scalar LocationShown and malformed indexed paths fail
+with UnsupportedSourceShape. The API operates on decoded paths and does not
+infer a missing RDF container type.
+
+Defaults are DirtyOnly and FailOnConflict. Only the selected structured leaf
+flags trigger a field in DirtyOnly mode; dirty flat/native destinations do not.
+All selects clean active leaves too. Each flat XMP/native IPTC pair is one
+conflict group:
+
+- PreserveExisting retains both destinations if either already exists.
+- FailOnConflict requires each existing destination to match and fills a
+  missing counterpart. Mismatches and duplicate destinations fail atomically.
+- ReplaceExisting updates both destinations and removes duplicate entries.
+  A dirty structured leaf tombstone removes both corresponding destinations.
+
+Missing structured fields preserve existing destination fields. Clean
+tombstones and whole-structure/array tombstones do not request field deletion.
+This is a field patch operation; it does not establish geographic consistency
+between supplied fields and retained fields. Text must be nonempty valid
+UTF-8/XML text. Byte limits never truncate. Country codes require two or three
+uppercase ASCII letters; registry membership and name/code agreement remain
+caller responsibilities.
+
+Limits are 1024 inspected structured properties across the chosen root kind,
+4096 destination operations, 8 MiB of source text and charset-safety inspection,
+and 11 added entries: five flat XMP properties, five IPTC datasets, and a possible
+UTF-8 marker. Existing destination entries also count against the operation
+inspection limit. Each limit can be lowered. The shared IPTC charset policy
+rejects unsafe promotion of retained legacy high-bit values. Result entry
+counters include both destination families; group counters count five fields.
+``NativeConflict`` covers either destination family.
+
+The source stays immutable. Failure leaves the output unchanged; output/source
+aliasing is supported. New entries own copied source provenance, while updates
+retain existing destination provenance. Preparation may allocate.
+
+.. code-block:: python
+
+   translated = document.translate_structured_location_metadata(
+       location_kind=openmeta.MetadataStructuredLocationKind.Shown,
+       location_index=2,
+       source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All,
+       conflict_policy=openmeta.MetadataDescriptiveTranslationConflictPolicy.ReplaceExisting,
+   )
+
+
+The returned document is detached. Persist both XMP and IPTC from its snapshot
+to keep both destinations synchronized. For Python ``transfer_snapshot_file``,
+set ``xmp_include_existing=True``: that transfer API defaults to projecting native
+metadata only. This option retains the reconciled flat XMP and structured
+records. GPS translation is a separate explicit contract; structured location
+coordinates are not aliases for primary EXIF GPS.
 
 Editorial mappings
 ------------------
@@ -652,8 +771,9 @@ Scope
 -----
 
 This milestone is intentionally limited to exact creation-date, common
-technical and capture EXIF, target-bound orientation/stored dimensions, and
-common descriptive and flat IPTC Core location mappings. It does not yet
+technical and capture EXIF, target-bound orientation/stored dimensions, primary
+GPS, combined descriptive/editorial/workflow IPTC, flat IPTC Core locations,
+and selected structured-location reconciliation. It does not yet
 provide arbitrary EXIF/IPTC/XMP translation, broader target layout/storage
 projection, multilingual-alternative selection, timezone inference, numeric approximation or value
 repair, or automatic synchronization during transfer.

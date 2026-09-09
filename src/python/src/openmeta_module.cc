@@ -6366,6 +6366,61 @@ translate_location_metadata_document(
 }
 
 static std::shared_ptr<PyDocument>
+translate_structured_location_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataStructuredLocationKind location_kind, uint32_t location_index,
+    MetadataDescriptiveTranslationSourceMode source_mode,
+    MetadataDescriptiveTranslationConflictPolicy conflict_policy, bool city,
+    bool sublocation, bool state, bool country, bool country_code,
+    uint32_t max_source_properties, uint32_t max_added_entries,
+    uint32_t max_operations, uint64_t max_total_text_bytes)
+{
+    MetadataStructuredLocationTranslationOptions options;
+    options.location_kind         = location_kind;
+    options.location_index        = location_index;
+    options.source_mode           = source_mode;
+    options.conflict_policy       = conflict_policy;
+    options.city                  = city;
+    options.sublocation           = sublocation;
+    options.state                 = state;
+    options.country               = country;
+    options.country_code          = country_code;
+    options.max_source_properties = max_source_properties;
+    options.max_added_entries     = max_added_entries;
+    options.max_operations        = max_operations;
+    options.max_total_text_bytes  = max_total_text_bytes;
+    MetaStore translated;
+    MetadataDescriptiveTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_structured_location_metadata(source->store,
+                                                            options,
+                                                            &translated);
+    }
+    if (result.status != MetadataDescriptiveTranslationStatus::Ok) {
+        std::string message
+            = "metadata structured location translation failed: ";
+        message += metadata_descriptive_translation_status_name(result.status);
+        if (result.failed_mapping
+            != MetadataDescriptiveTranslationMapping::None) {
+            message += " for ";
+            message += metadata_descriptive_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
 translate_editorial_metadata_document(
     std::shared_ptr<PyDocument> source,
     MetadataDescriptiveTranslationSourceMode source_mode,
@@ -8661,7 +8716,22 @@ NB_MODULE(_openmeta, m)
         .value("OperationLimitExceeded",
                MetadataDescriptiveTranslationStatus::OperationLimitExceeded)
         .value("InternalError",
-               MetadataDescriptiveTranslationStatus::InternalError);
+               MetadataDescriptiveTranslationStatus::InternalError)
+        .value("AmbiguousLocation",
+               MetadataDescriptiveTranslationStatus::AmbiguousLocation)
+        .value("LocationNotFound",
+               MetadataDescriptiveTranslationStatus::LocationNotFound)
+        .value("UnsupportedSourceShape",
+               MetadataDescriptiveTranslationStatus::UnsupportedSourceShape);
+
+    nb::enum_<MetadataStructuredLocationKind>(m,
+                                              "MetadataStructuredLocationKind")
+        .value("Shown", MetadataStructuredLocationKind::Shown)
+        .value("Created", MetadataStructuredLocationKind::Created);
+    m.attr("METADATA_STRUCTURED_LOCATION_TRANSLATION_CONTRACT_VERSION")
+        = nb::int_(kMetadataStructuredLocationTranslationContractVersion);
+    m.attr("METADATA_STRUCTURED_LOCATION_TRANSLATION_MAX_ADDED_ENTRIES")
+        = nb::int_(kMetadataStructuredLocationTranslationMaxAddedEntries);
 
     m.attr("METADATA_DESCRIPTIVE_TRANSLATION_MAX_SOURCE_PROPERTIES") = nb::int_(
         kMetadataDescriptiveTranslationMaxSourceProperties);
@@ -9428,6 +9498,23 @@ NB_MODULE(_openmeta, m)
              "max_source_properties"_a
              = kMetadataDescriptiveTranslationMaxSourceProperties,
              "max_added_entries"_a = kMetadataLocationTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataDescriptiveTranslationMaxOperations,
+             "max_total_text_bytes"_a
+             = kMetadataDescriptiveTranslationMaxTotalTextBytes)
+        .def("translate_structured_location_metadata",
+             &translate_structured_location_metadata_document,
+             "location_kind"_a  = MetadataStructuredLocationKind::Shown,
+             "location_index"_a = 0U,
+             "source_mode"_a
+             = MetadataDescriptiveTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataDescriptiveTranslationConflictPolicy::FailOnConflict,
+             "city"_a = true, "sublocation"_a = true, "state"_a = true,
+             "country"_a = true, "country_code"_a = true,
+             "max_source_properties"_a
+             = kMetadataDescriptiveTranslationMaxSourceProperties,
+             "max_added_entries"_a
+             = kMetadataStructuredLocationTranslationMaxAddedEntries,
              "max_operations"_a = kMetadataDescriptiveTranslationMaxOperations,
              "max_total_text_bytes"_a
              = kMetadataDescriptiveTranslationMaxTotalTextBytes)

@@ -27,6 +27,8 @@ namespace {
         = "http://ns.adobe.com/photoshop/1.0/";
     static constexpr std::string_view kXmpNsIptcCore
         = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
+    static constexpr std::string_view kXmpNsIptcExt
+        = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/";
 
     struct MappingDescriptor final {
         MetadataDescriptiveTranslationMapping mapping
@@ -647,6 +649,95 @@ namespace {
         return true;
     }
 
+    struct StructuredLocationPath final {
+        std::string_view child;
+        uint32_t index = 0U;
+        bool scalar    = false;
+    };
+
+    static MetadataDescriptiveTranslationStatus
+    parse_location_path(std::string_view path, std::string_view root,
+                        StructuredLocationPath* out) noexcept
+    {
+        using Status = MetadataDescriptiveTranslationStatus;
+        if (!path.starts_with(root)) {
+            return Status::Ok;
+        }
+        path.remove_prefix(root.size());
+        if (path.empty() || (path.front() != '[' && path.front() != '/')) {
+            return Status::Ok;
+        }
+        if (path.front() == '/') {
+            if (root != "LocationCreated" || path.size() == 1U) {
+                return Status::UnsupportedSourceShape;
+            }
+            out->index  = 1U;
+            out->scalar = true;
+            out->child  = path.substr(1U);
+            return Status::Ok;
+        }
+        const size_t close = path.find(']');
+        if (close == std::string_view::npos || close < 2U || path[1U] == '0') {
+            return Status::UnsupportedSourceShape;
+        }
+        uint32_t index = 0U;
+        for (size_t i = 1U; i < close; ++i) {
+            const char c = path[i];
+            if (c < '0' || c > '9'
+                || index
+                       > (UINT32_MAX - static_cast<uint32_t>(c - '0')) / 10U) {
+                return Status::UnsupportedSourceShape;
+            }
+            index = index * 10U + static_cast<uint32_t>(c - '0');
+        }
+        path.remove_prefix(close + 1U);
+        if (!path.empty() && (path.front() != '/' || path.size() == 1U)) {
+            return Status::UnsupportedSourceShape;
+        }
+        out->index = index;
+        out->child = path.empty() ? path : path.substr(1U);
+        return Status::Ok;
+    }
+
+    static size_t location_field_index(std::string_view child) noexcept
+    {
+        static constexpr std::string_view prefix = "Iptc4xmpExt:";
+        if (child.starts_with(prefix)) {
+            child.remove_prefix(prefix.size());
+        }
+        static constexpr std::array<std::string_view, 5U> fields {
+            "City", "Sublocation", "ProvinceState", "CountryName", "CountryCode"
+        };
+        for (size_t i = 0U; i < fields.size(); ++i) {
+            if (child == fields[i]) {
+                return i;
+            }
+        }
+        return fields.size();
+    }
+
+    static bool append_flat_location_entry(MetaEdit* edit,
+                                           const MetaStore& source,
+                                           const MappingDescriptor& descriptor,
+                                           const SourceText& value)
+    {
+        Entry entry;
+        entry.key   = make_xmp_property_key(edit->arena(), descriptor.schema_ns,
+                                            descriptor.property_path);
+        entry.value = make_text(edit->arena(), value.text, TextEncoding::Utf8);
+        entry.origin = source.entry(value.entry_id).origin;
+        if (entry.origin.wire_type_name.size != 0U) {
+            entry.origin.wire_type_name = edit->arena().append(
+                source.arena().span(entry.origin.wire_type_name));
+        }
+        entry.flags = EntryFlags::Dirty;
+        if (edit->arena().limit_exceeded()) {
+            return false;
+        }
+        edit->add_entry(entry);
+        return true;
+    }
+
 }  // namespace
 
 static MetadataDescriptiveTranslationResult
@@ -924,6 +1015,321 @@ translate_xmp_location_metadata(
 }
 
 MetadataDescriptiveTranslationResult
+translate_xmp_structured_location_metadata(
+    const MetaStore& source,
+    const MetadataStructuredLocationTranslationOptions& options,
+    MetaStore* out_store)
+{
+    using Status = MetadataDescriptiveTranslationStatus;
+    using Policy = MetadataDescriptiveTranslationConflictPolicy;
+    using Kind   = MetadataStructuredLocationKind;
+    if (!out_store) {
+        return translation_error(Status::NullOutput);
+    }
+    if (!source.is_finalized()) {
+        return translation_error(Status::SourceNotFinalized);
+    }
+    if ((options.location_kind != Kind::Shown
+         && options.location_kind != Kind::Created)
+        || (options.source_mode
+                != MetadataDescriptiveTranslationSourceMode::DirtyOnly
+            && options.source_mode
+                   != MetadataDescriptiveTranslationSourceMode::All)
+        || (options.conflict_policy != Policy::PreserveExisting
+            && options.conflict_policy != Policy::FailOnConflict
+            && options.conflict_policy != Policy::ReplaceExisting)
+        || (!options.city && !options.sublocation && !options.state
+            && !options.country && !options.country_code)
+        || options.max_source_properties == 0U
+        || options.max_source_properties
+               > kMetadataDescriptiveTranslationMaxSourceProperties
+        || options.max_added_entries == 0U
+        || options.max_added_entries
+               > kMetadataStructuredLocationTranslationMaxAddedEntries
+        || options.max_operations == 0U
+        || options.max_operations > kMetadataDescriptiveTranslationMaxOperations
+        || options.max_total_text_bytes == 0U
+        || options.max_total_text_bytes
+               > kMetadataDescriptiveTranslationMaxTotalTextBytes) {
+        return translation_error(Status::InvalidOptions);
+    }
+
+    const std::string_view root = options.location_kind == Kind::Shown
+                                      ? "LocationShown"
+                                      : "LocationCreated";
+    uint32_t first_index        = 0U;
+    uint32_t inspected          = 0U;
+    bool multiple               = false;
+    bool scalar                 = false;
+    bool indexed                = false;
+    bool requested_found        = false;
+    for (EntryId id = 0U; id < source.entries().size(); ++id) {
+        const Entry& entry = source.entry(id);
+        if (entry.key.kind != MetaKeyKind::XmpProperty
+            || (any(entry.flags, EntryFlags::Deleted)
+                && !any(entry.flags, EntryFlags::Dirty))
+            || arena_text(source.arena(), entry.key.data.xmp_property.schema_ns)
+                   != kXmpNsIptcExt) {
+            continue;
+        }
+        StructuredLocationPath path;
+        const Status status = parse_location_path(
+            arena_text(source.arena(),
+                       entry.key.data.xmp_property.property_path),
+            root, &path);
+        if (status != Status::Ok) {
+            return translation_error(
+                status, MetadataDescriptiveTranslationMapping::None, id);
+        }
+        // Container tombstones do not select or remove their former child fields.
+        if (path.index == 0U
+            || (path.child.empty() && any(entry.flags, EntryFlags::Deleted))) {
+            continue;
+        }
+        if (++inspected > options.max_source_properties) {
+            return translation_error(Status::SourceLimitExceeded,
+                                     MetadataDescriptiveTranslationMapping::None,
+                                     id);
+        }
+        scalar  = scalar || path.scalar;
+        indexed = indexed || !path.scalar;
+        if (first_index == 0U) {
+            first_index = path.index;
+        }
+        multiple        = multiple || path.index != first_index;
+        requested_found = requested_found
+                          || path.index == options.location_index;
+    }
+    if (scalar && indexed) {
+        return translation_error(Status::UnsupportedSourceShape);
+    }
+    if (options.location_index == 0U && multiple) {
+        return translation_error(Status::AmbiguousLocation);
+    }
+    if (options.location_index != 0U && !requested_found) {
+        return translation_error(Status::LocationNotFound);
+    }
+    const uint32_t selected_index = options.location_index != 0U
+                                        ? options.location_index
+                                        : first_index;
+    const std::array enabled { options.city, options.sublocation, options.state,
+                               options.country, options.country_code };
+    struct FieldSource final {
+        EntryId first     = kInvalidEntryId;
+        EntryId duplicate = kInvalidEntryId;
+        bool dirty        = false;
+    };
+    std::array<FieldSource, 5U> fields {};
+    for (EntryId id = 0U; id < source.entries().size(); ++id) {
+        const Entry& entry = source.entry(id);
+        if (entry.key.kind != MetaKeyKind::XmpProperty
+            || (any(entry.flags, EntryFlags::Deleted)
+                && !any(entry.flags, EntryFlags::Dirty))
+            || arena_text(source.arena(), entry.key.data.xmp_property.schema_ns)
+                   != kXmpNsIptcExt) {
+            continue;
+        }
+        StructuredLocationPath path;
+        parse_location_path(
+            arena_text(source.arena(),
+                       entry.key.data.xmp_property.property_path),
+            root, &path);
+        if (path.index == 0U || path.index != selected_index) {
+            continue;
+        }
+        const size_t i = location_field_index(path.child);
+        if (i == fields.size() || !enabled[i]) {
+            continue;
+        }
+        FieldSource& field = fields[i];
+        field.dirty        = field.dirty || any(entry.flags, EntryFlags::Dirty);
+        if (field.first == kInvalidEntryId) {
+            field.first = id;
+        } else {
+            field.duplicate = id;
+        }
+    }
+
+    MetadataDescriptiveTranslationOptions text_options;
+    text_options.source_mode           = options.source_mode;
+    text_options.max_source_properties = options.max_source_properties;
+    text_options.max_total_text_bytes  = options.max_total_text_bytes;
+    text_options.max_operations        = options.max_operations;
+    std::array<PlannedMapping, 5U> plans;
+    std::array<std::vector<EntryId>, 5U> flat_entries;
+    MetadataDescriptiveTranslationResult result;
+    uint32_t matched_sources   = 0U;
+    uint64_t text_bytes        = 0U;
+    uint32_t native_properties = 0U;
+    for (size_t i = 0U; i < plans.size(); ++i) {
+        const FieldSource& field = fields[i];
+        if (field.first == kInvalidEntryId
+            || (options.source_mode
+                    == MetadataDescriptiveTranslationSourceMode::DirtyOnly
+                && !field.dirty)) {
+            continue;
+        }
+        if (field.duplicate != kInvalidEntryId) {
+            return translation_error(Status::AmbiguousSource,
+                                     kLocationMappings[i].mapping,
+                                     field.duplicate);
+        }
+        MappingDescriptor descriptor = kLocationMappings[i];
+        descriptor.schema_ns         = kXmpNsIptcExt;
+        descriptor.property_path     = arena_text(
+            source.arena(),
+            source.entry(field.first).key.data.xmp_property.property_path);
+        PlannedMapping& plan = plans[i];
+        result.status = collect_source_mapping(source, text_options, descriptor,
+                                               &matched_sources, &text_bytes,
+                                               &plan, &result);
+        plan.descriptor = &kLocationMappings[i];
+        if (result.status != Status::Ok) {
+            return result;
+        }
+        result.status = analyze_native_mapping(source, text_options,
+                                               &native_properties, &plan);
+        if (result.status != Status::Ok) {
+            result.failed_mapping = plan.descriptor->mapping;
+            return result;
+        }
+        for (EntryId id = 0U; id < source.entries().size(); ++id) {
+            const Entry& entry = source.entry(id);
+            uint32_t unused    = 0U;
+            if (!any(entry.flags, EntryFlags::Deleted)
+                && source_key_matches(source, entry, *plan.descriptor,
+                                      &unused)) {
+                if (native_properties >= options.max_operations) {
+                    return translation_error(Status::OperationLimitExceeded,
+                                             plan.descriptor->mapping);
+                }
+                ++native_properties;
+                flat_entries[i].push_back(id);
+            }
+        }
+        bool flat_exact = flat_entries[i].size() == plan.values.size();
+        if (flat_exact && !plan.values.empty()) {
+            const Entry& flat = source.entry(flat_entries[i][0U]);
+            flat_exact        = flat.value.kind == MetaValueKind::Text
+                         && entry_value_matches(source, flat,
+                                                plan.values[0U].text);
+        }
+        const bool existing = !plan.native_entries.empty()
+                              || !flat_entries[i].empty();
+        if (options.conflict_policy == Policy::PreserveExisting && existing) {
+            plan.preserved = true;
+            ++result.groups_preserved;
+            continue;
+        }
+        if (options.conflict_policy == Policy::FailOnConflict
+            && ((!plan.native_entries.empty() && !plan.exact)
+                || (!flat_entries[i].empty() && !flat_exact))) {
+            return translation_error(Status::NativeConflict,
+                                     plan.descriptor->mapping, field.first);
+        }
+        plan.apply = !plan.exact || !flat_exact;
+        if (!plan.apply) {
+            ++result.groups_unchanged;
+        }
+    }
+
+    bool add_charset       = false;
+    EntryId charset_source = kInvalidEntryId;
+    result.status          = plan_utf8_charset(source, plans,
+                                               options.max_total_text_bytes - text_bytes,
+                                               &add_charset, &charset_source);
+    if (result.status != Status::Ok) {
+        return result;
+    }
+    uint32_t added      = add_charset ? 1U : 0U;
+    uint32_t operations = added;
+    for (size_t i = 0U; i < plans.size(); ++i) {
+        const PlannedMapping& plan = plans[i];
+        if (!plan.apply) {
+            continue;
+        }
+        for (const bool flat : { false, true }) {
+            const std::vector<EntryId>& ids = flat ? flat_entries[i]
+                                                   : plan.native_entries;
+            if (plan.values.empty()) {
+                operations += static_cast<uint32_t>(ids.size());
+            } else if (ids.empty()) {
+                ++operations;
+                ++added;
+            } else {
+                const Entry& current = source.entry(ids[0U]);
+                const bool exact
+                    = (!flat || current.value.kind == MetaValueKind::Text)
+                      && entry_value_matches(source, current,
+                                             plan.values[0U].text);
+                operations += static_cast<uint32_t>(ids.size() - 1U)
+                              + (exact ? 0U : 1U);
+            }
+        }
+    }
+    if (added > options.max_added_entries
+        || source.entries().size()
+               > static_cast<size_t>(kInvalidEntryId) - added) {
+        return translation_error(Status::EntryLimitExceeded);
+    }
+    if (operations > options.max_operations) {
+        return translation_error(Status::OperationLimitExceeded);
+    }
+    MetaEdit edit;
+    edit.reserve_ops(operations);
+    for (size_t i = 0U; i < plans.size(); ++i) {
+        const PlannedMapping& plan = plans[i];
+        if (!plan.apply) {
+            continue;
+        }
+        for (const bool flat : { false, true }) {
+            const std::vector<EntryId>& ids = flat ? flat_entries[i]
+                                                   : plan.native_entries;
+            const size_t kept = plan.values.empty() || ids.empty() ? 0U : 1U;
+            if (kept != 0U) {
+                const Entry& current         = source.entry(ids[0U]);
+                const std::string_view value = plan.values[0U].text;
+                if ((flat && current.value.kind != MetaValueKind::Text)
+                    || !entry_value_matches(source, current, value)) {
+                    edit.set_value(ids[0U],
+                                   flat ? make_text(edit.arena(), value,
+                                                    TextEncoding::Utf8)
+                                        : make_iptc_value(edit.arena(), value));
+                    ++result.entries_updated;
+                }
+            }
+            for (size_t j = kept; j < ids.size(); ++j) {
+                edit.tombstone(ids[j]);
+                ++result.entries_removed;
+            }
+            if (!plan.values.empty() && ids.empty()) {
+                const bool appended
+                    = flat ? append_flat_location_entry(&edit, source,
+                                                        *plan.descriptor,
+                                                        plan.values[0U])
+                           : append_iptc_entry(&edit, source, *plan.descriptor,
+                                               plan.values[0U], 0U);
+                if (appended) {
+                    ++result.entries_added;
+                }
+            }
+        }
+        ++result.groups_translated;
+    }
+    if (add_charset
+        && append_utf8_charset_entry(&edit, source, charset_source)) {
+        ++result.entries_added;
+        result.utf8_charset_added = true;
+    }
+    if (edit.ops().size() != operations || result.entries_added != added
+        || edit.arena().limit_exceeded()) {
+        return translation_error(Status::InternalError);
+    }
+    *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    return result;
+}
+
+MetadataDescriptiveTranslationResult
 translate_xmp_editorial_metadata(
     const MetaStore& source, const MetadataEditorialTranslationOptions& options,
     MetaStore* out_store)
@@ -1049,6 +1455,12 @@ metadata_descriptive_translation_status_name(
         return "operation_limit_exceeded";
     case MetadataDescriptiveTranslationStatus::InternalError:
         return "internal_error";
+    case MetadataDescriptiveTranslationStatus::AmbiguousLocation:
+        return "ambiguous_location";
+    case MetadataDescriptiveTranslationStatus::LocationNotFound:
+        return "location_not_found";
+    case MetadataDescriptiveTranslationStatus::UnsupportedSourceShape:
+        return "unsupported_source_shape";
     }
     return "unknown";
 }

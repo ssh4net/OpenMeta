@@ -1,5 +1,28 @@
 # OpenMeta Changes
 
+## 0.4.132 - 2026-09-09
+
+Changes compared with `0.4.131`.
+
+### Added
+
+- Added versioned C++ `translate_xmp_structured_location_metadata` and Python
+  `Document.translate_structured_location_metadata`. One explicitly selected
+  LocationShown or LocationCreated record reconciles five text fields into
+  flat legacy XMP and native IPTC in one atomic transaction.
+- Added record-index and shape validation, paired destination conflict policies,
+  dirty leaf removal, shared text/charset limits, and owned provenance. Existing
+  flat-location and combined IPTC APIs retain their mapping sets and behavior.
+- Added structured-location unit and XML-decode coverage, JPEG/TIFF snapshot
+  persistence and removal tests, Python checks, and an installed shared consumer.
+
+### Fixed
+
+- Explicit TIFF metadata updates and XMP removal take precedence over stale
+  carrier tags copied through the EXIF payload. This prevents old TIFF XMP/IPTC
+  from restoring values that were reconciled or removed. EXIF-only transfer
+  retains its existing carrier-preservation behavior.
+
 ## 0.4.131 - 2026-09-09
 
 Changes compared with `0.4.130`.

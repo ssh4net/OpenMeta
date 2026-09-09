@@ -11311,6 +11311,10 @@ namespace {
         }
         for (size_t i = 0; i < parsed_exif.ifd0_updates.size(); ++i) {
             const TiffTagUpdate& src = parsed_exif.ifd0_updates[i];
+            // Prepared replacements/removals outrank old carrier tags copied via EXIF.
+            if (has_update_for_tag(updates, src.tag)) {
+                continue;
+            }
             bool replaced            = false;
             for (size_t j = 0; j < merged_updates.size(); ++j) {
                 if (merged_updates[j].tag == src.tag) {

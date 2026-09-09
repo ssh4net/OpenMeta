@@ -418,6 +418,52 @@ with tempfile.TemporaryDirectory() as temporary:
         raise AssertionError('invalid GPS latitude accepted')
     assert gps.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'structured.jpg'
+    xml = b'''<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">
+<rdf:Description xmlns:l=\"http://iptc.org/std/Iptc4xmpExt/2008-02-29/\">
+<l:LocationShown><rdf:Bag><rdf:li rdf:parseType=\"Resource\">
+<l:City>Kyoto</l:City><l:Sublocation>Garden</l:Sublocation><l:ProvinceState>Kyoto</l:ProvinceState>
+<l:CountryName>Japan</l:CountryName><l:CountryCode>JPN</l:CountryCode></rdf:li>
+<rdf:li rdf:parseType=\"Resource\"><l:City>Osaka</l:City></rdf:li></rdf:Bag></l:LocationShown>
+<l:LocationCreated rdf:parseType=\"Resource\"><l:City>Nara</l:City></l:LocationCreated>
+</rdf:Description></rdf:RDF>'''
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') +
+        packet + bytes.fromhex('ffd9'))
+    document = openmeta.read(str(path))
+    count = document.entry_count
+    assert openmeta.METADATA_STRUCTURED_LOCATION_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_STRUCTURED_LOCATION_TRANSLATION_MAX_ADDED_ENTRIES == 11
+    mode = openmeta.MetadataDescriptiveTranslationSourceMode.All
+    try:
+        document.translate_structured_location_metadata(source_mode=mode)
+    except ValueError as exc:
+        assert 'ambiguous_location' in str(exc)
+    else:
+        raise AssertionError('multiple structured locations silently selected')
+    assert document.translate_structured_location_metadata(location_index=1).entry_count == count
+    translated = document.translate_structured_location_metadata(location_index=1, source_mode=mode)
+    assert translated.entry_count == count + 10
+    assert translated.translate_structured_location_metadata(location_index=1, source_mode=mode).entry_count == count + 10
+    payload, _ = translated.dump_xmp_portable()
+    assert b'<photoshop:City>Kyoto</photoshop:City>' in payload
+    for selected in ('city', 'sublocation', 'state', 'country', 'country_code'):
+        one = document.translate_structured_location_metadata(location_index=1, source_mode=mode,
+            **{name: name == selected for name in ('city', 'sublocation', 'state', 'country', 'country_code')})
+        assert one.entry_count == count + 2
+    created = document.translate_structured_location_metadata(
+        location_kind=openmeta.MetadataStructuredLocationKind.Created, source_mode=mode)
+    payload, _ = created.dump_xmp_portable()
+    assert b'<photoshop:City>Nara</photoshop:City>' in payload
+    try:
+        document.translate_structured_location_metadata(location_index=9, source_mode=mode)
+    except ValueError as exc:
+        assert 'location_not_found' in str(exc)
+    else:
+        raise AssertionError('missing location index accepted')
+    assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 
