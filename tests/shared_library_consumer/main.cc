@@ -165,6 +165,30 @@ main()
                  == openmeta::MetadataDescriptiveTranslationStatus::Ok
           && structured_location_result.entries_added == 2U
           && structured_location_translated.is_finalized();
+    const openmeta::MetadataAuthoringEntry navigation_timestamp {
+        openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                             "GPSTimeStamp"),
+        openmeta::make_value_view_text("2024-03-01T00:30:12.125+01:00",
+                                       openmeta::TextEncoding::Utf8),
+    };
+    openmeta::MetaStore navigation_source;
+    const auto navigation_authored = openmeta::create_metadata_store(
+        std::span<const openmeta::MetadataAuthoringEntry>(&navigation_timestamp,
+                                                          1U),
+        &navigation_source);
+    openmeta::MetaStore navigation_translated;
+    const auto navigation_result
+        = openmeta::translate_xmp_gps_navigation_metadata(
+            navigation_source,
+            openmeta::MetadataGpsNavigationTranslationOptions {},
+            &navigation_translated);
+    const bool navigation_contract_matches
+        = navigation_authored.ok()
+          && openmeta::kMetadataGpsNavigationTranslationContractVersion == 1U
+          && navigation_result.status
+                 == openmeta::MetadataGpsTranslationStatus::Ok
+          && navigation_result.entries_added == 3U
+          && navigation_translated.is_finalized();
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
             std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
@@ -243,6 +267,7 @@ main()
                    || !location_contract_matches || !editorial_contract_matches
                    || !iptc_contract_matches || !gps_contract_matches
                    || !structured_location_contract_matches
+                   || !navigation_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()
                    || instance.valid()

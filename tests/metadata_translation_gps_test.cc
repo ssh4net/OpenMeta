@@ -579,4 +579,478 @@ TEST(MetadataGpsTranslation,
               3U);
 }
 
+namespace {
+    using NavigationOptions = MetadataGpsNavigationTranslationOptions;
+    constexpr std::array<std::string_view, 7> kNavigationPaths {
+        "GPSTimeStamp", "GPSSpeedRef",        "GPSSpeed",       "GPSTrackRef",
+        "GPSTrack",     "GPSImgDirectionRef", "GPSImgDirection"
+    };
+    constexpr std::array<std::string_view, 7> kNavigationValues {
+        "2024-03-01T00:30:12.125+01:00",
+        "K",
+        "12345/100",
+        "T",
+        "359.99",
+        "M",
+        "45.5"
+    };
+    constexpr std::array<uint16_t, 8> kNavigationTags { 7U,  29U, 12U, 13U,
+                                                        14U, 15U, 16U, 17U };
+
+    static MetaStore navigation(EntryFlags flags = EntryFlags::Dirty)
+    {
+        MetaStore store;
+        for (size_t i = 0U; i < kNavigationPaths.size(); ++i) {
+            xmp_text(store, kNavigationPaths[i], kNavigationValues[i], flags);
+        }
+        return store;
+    }
+
+    static void expect_navigation_failure(MetaStore& source, Status expected,
+                                          NavigationOptions options = {})
+    {
+        source.finalize();
+        MetaStore output;
+        native(output, 8U,
+               make_text(output.arena(), "sentinel", TextEncoding::Ascii));
+        output.finalize();
+        const size_t count = source.entries().size();
+        const auto result
+            = translate_xmp_gps_navigation_metadata(source, options, &output);
+        EXPECT_EQ(result.status, expected);
+        EXPECT_EQ(source.entries().size(), count);
+        ASSERT_EQ(output.entries().size(), 1U);
+        EXPECT_EQ(view(output, gps(output, 8U)->value.data.span), "sentinel");
+        const auto alias
+            = translate_xmp_gps_navigation_metadata(source, options, &source);
+        EXPECT_EQ(alias.status, expected);
+        EXPECT_EQ(source.entries().size(), count);
+    }
+}  // namespace
+
+TEST(MetadataGpsNavigation, WritesFourGroupsWithOwnedProvenanceAndIsIdempotent)
+{
+    MetaStore output;
+    {
+        MetaStore source = navigation();
+        source.finalize();
+        const auto result = translate_xmp_gps_navigation_metadata(source, {},
+                                                                  &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.source_properties, 7U);
+        EXPECT_EQ(result.groups_translated, 4U);
+        EXPECT_EQ(result.entries_added, 9U);
+        EXPECT_EQ(source.entries().size(), 7U);
+    }
+    expect_coordinate(output, 7U,
+                      { { { 23U, 1U }, { 30U, 1U }, { 97U, 8U } } });
+    ASSERT_NE(gps(output, 29U), nullptr);
+    EXPECT_EQ(view(output, gps(output, 29U)->value.data.span), "2024:02:29");
+    for (const uint16_t tag : kNavigationTags) {
+        ASSERT_NE(gps(output, tag), nullptr);
+        EXPECT_EQ(view(output, gps(output, tag)->origin.wire_type_name),
+                  "gps-source");
+    }
+    EXPECT_EQ(gps(output, 13U)->value.data.ur.numer, 2469U);
+    EXPECT_EQ(gps(output, 13U)->value.data.ur.denom, 20U);
+    EXPECT_EQ(gps(output, 17U)->value.data.ur.numer, 91U);
+    const auto again = translate_xmp_gps_navigation_metadata(output, {},
+                                                             &output);
+    EXPECT_EQ(again.status, Status::Ok);
+    EXPECT_EQ(again.groups_unchanged, 4U);
+    EXPECT_EQ(again.entries_added, 0U);
+}
+
+TEST(MetadataGpsNavigation, NormalizesOffsetsAcrossCalendarBoundaries)
+{
+    struct Case {
+        std::string_view input;
+        std::string_view date;
+        uint32_t hour;
+        uint32_t minute;
+    };
+    const std::array cases {
+        Case { "2024-01-01T00:30:00+01:00", "2023:12:31", 23U, 30U },
+        Case { "2023-12-31T23:30:00-02:00", "2024:01:01", 1U, 30U },
+        Case { "2000-03-01T00:00:00+00:30", "2000:02:29", 23U, 30U },
+        Case { "1900-03-01T00:00:00+00:30", "1900:02:28", 23U, 30U },
+        Case { "0001-01-01T00:00:00Z", "0001:01:01", 0U, 0U },
+        Case { "9999-12-31T23:59:00-00:00", "9999:12:31", 23U, 59U },
+        Case { "2024-01-01T00:00:00-23:59", "2024:01:01", 23U, 59U }
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.input);
+        MetaStore source;
+        xmp_text(source, "GPSTimeStamp", c.input);
+        source.finalize();
+        MetaStore output;
+        ASSERT_EQ(
+            translate_xmp_gps_navigation_metadata(source, {}, &output).status,
+            Status::Ok);
+        ASSERT_NE(gps(output, 29U), nullptr);
+        EXPECT_EQ(view(output, gps(output, 29U)->value.data.span), c.date);
+        expect_coordinate(output, 7U,
+                          { { { c.hour, 1U }, { c.minute, 1U }, { 0U, 1U } } });
+    }
+}
+
+TEST(MetadataGpsNavigation, RejectsIncompleteOrNoncanonicalTimestampSyntax)
+{
+    for (const std::string_view input :
+         { "2024-02-29", "12:34:56Z", "2024-02-29T12:34Z",
+           "2024-02-29T12:34:56", "2024-02-29 12:34:56Z",
+           "2024-02-29T12:34:56z", "2024-02-29T12:34:5Z",
+           "2024-02-29T12:34:56.Z", "2024-02-29T12:34:56Zjunk",
+           "2024-02-29T12:34:56+0900", "2024-02-29T12:34:056Z",
+           "2024-02-29T12:34:56.1e2Z" }) {
+        SCOPED_TRACE(input);
+        MetaStore source;
+        xmp_text(source, "GPSTimeStamp", input);
+        expect_navigation_failure(source, Status::InvalidSourceValue);
+    }
+}
+
+TEST(MetadataGpsNavigation, RejectsInvalidDatesLeapSecondsAndUtcYearOverflow)
+{
+    for (const std::string_view input :
+         { "2023-02-29T12:34:56Z", "0000-01-01T00:00:00Z",
+           "2024-13-01T00:00:00Z", "2024-01-00T00:00:00Z",
+           "2024-04-31T00:00:00Z", "2024-01-01T24:00:00Z",
+           "2024-01-01T23:60:00Z", "2024-01-01T23:59:60Z",
+           "2024-01-01T00:00:00+24:00", "2024-01-01T00:00:00-01:60",
+           "0001-01-01T00:00:00+00:01", "9999-12-31T23:59:00-00:01" }) {
+        SCOPED_TRACE(input);
+        MetaStore source;
+        xmp_text(source, "GPSTimeStamp", input);
+        expect_navigation_failure(source, Status::ValueOutOfRange);
+    }
+}
+
+TEST(MetadataGpsNavigation, TimestampFractionsAreExactAndNeverRounded)
+{
+    MetaStore source;
+    xmp_text(source, "GPSTimeStamp", "2024-01-01T00:00:00.0000000005Z");
+    source.finalize();
+    MetaStore output;
+    ASSERT_EQ(translate_xmp_gps_navigation_metadata(source, {}, &output).status,
+              Status::Ok);
+    expect_coordinate(output, 7U,
+                      { { { 0U, 1U }, { 0U, 1U }, { 1U, 2000000000U } } });
+    for (const std::string_view input : { "2024-01-01T00:00:00.0000000001Z",
+                                          "2024-01-01T00:00:59.123456789Z" }) {
+        source = MetaStore {};
+        xmp_text(source, "GPSTimeStamp", input);
+        expect_navigation_failure(source, Status::UnsupportedPrecision);
+    }
+    source = MetaStore {};
+    xmp_text(source, "GPSTimeStamp",
+             "2024-01-01T00:00:59.500000000000000000000Z");
+    source.finalize();
+    ASSERT_EQ(translate_xmp_gps_navigation_metadata(source, {}, &output).status,
+              Status::Ok);
+    expect_coordinate(output, 7U, { { { 0U, 1U }, { 0U, 1U }, { 119U, 2U } } });
+}
+
+TEST(MetadataGpsNavigation, AcceptsExactReferenceCodesAndPortableAliases)
+{
+    const std::array<std::string_view, 6> speeds { "K",    "M",   "N",
+                                                   "km/h", "mph", "knots" };
+    for (size_t i = 0U; i < speeds.size(); ++i) {
+        MetaStore source;
+        xmp_text(source, "GPSSpeedRef", speeds[i]);
+        xmp(source, "GPSSpeed", make_urational(3U, 2U));
+        source.finalize();
+        MetaStore output;
+        ASSERT_EQ(
+            translate_xmp_gps_navigation_metadata(source, {}, &output).status,
+            Status::Ok);
+        EXPECT_EQ(view(output, gps(output, 12U)->value.data.span),
+                  speeds[i % 3U]);
+    }
+    for (const bool image : { false, true }) {
+        const std::array<std::string_view, 4> refs { "T", "M", "True North",
+                                                     "Magnetic North" };
+        for (size_t i = 0U; i < refs.size(); ++i) {
+            MetaStore source;
+            xmp_text(source, image ? "GPSImgDirectionRef" : "GPSTrackRef",
+                     refs[i]);
+            xmp(source, image ? "GPSImgDirection" : "GPSTrack", make_u32(123U));
+            source.finalize();
+            MetaStore output;
+            ASSERT_EQ(translate_xmp_gps_navigation_metadata(source, {}, &output)
+                          .status,
+                      Status::Ok);
+            EXPECT_EQ(view(output,
+                           gps(output, image ? 16U : 14U)->value.data.span),
+                      refs[i % 2U]);
+        }
+    }
+}
+
+TEST(MetadataGpsNavigation,
+     ValidatesAnglesAndUnsignedRationalsWithoutConversion)
+{
+    for (const std::string_view input :
+         { "-1", "+1", "1e2", "1/0", "1.0/2", "1 km/h", " 1" }) {
+        MetaStore source;
+        xmp_text(source, "GPSSpeedRef", "K");
+        xmp_text(source, "GPSSpeed", input);
+        expect_navigation_failure(source, Status::InvalidSourceValue);
+    }
+    for (const std::string_view input : { "359.991", "360", "720/2" }) {
+        MetaStore source;
+        xmp_text(source, "GPSTrackRef", "T");
+        xmp_text(source, "GPSTrack", input);
+        expect_navigation_failure(source, Status::ValueOutOfRange);
+    }
+    for (const std::string_view ref : { "t", "True", " T", "T ", "North" }) {
+        MetaStore source;
+        xmp_text(source, "GPSTrackRef", ref);
+        xmp_text(source, "GPSTrack", "1/3");
+        expect_navigation_failure(source, Status::InvalidSourceValue);
+    }
+    MetaStore source;
+    xmp_text(source, "GPSSpeedRef", "K");
+    xmp(source, "GPSSpeed", make_f64_bits(0x3ff0000000000000ULL));
+    expect_navigation_failure(source, Status::InvalidSourceValue);
+    source = MetaStore {};
+    xmp_text(source, "GPSSpeedRef", "K");
+    xmp_text(source, "GPSSpeed", "4294967296");
+    expect_navigation_failure(source, Status::UnsupportedPrecision);
+}
+
+TEST(MetadataGpsNavigation,
+     DirtySelectionAndIndependentFlagsLeavePrimaryApiUnchanged)
+{
+    MetaStore source = navigation(EntryFlags::None);
+    source.finalize();
+    MetaStore output;
+    EXPECT_EQ(translate_xmp_gps_navigation_metadata(source, {}, &output)
+                  .entries_added,
+              0U);
+    MetadataGpsTranslationOptions primary;
+    primary.source_mode = MetadataGpsTranslationSourceMode::All;
+    EXPECT_EQ(translate_xmp_gps_metadata(source, primary, &output).entries_added,
+              0U);
+    for (size_t i = 0U; i < 4U; ++i) {
+        NavigationOptions options;
+        options.source_mode             = MetadataGpsTranslationSourceMode::All;
+        options.timestamp_to_exif       = i == 0U;
+        options.speed_to_exif           = i == 1U;
+        options.track_to_exif           = i == 2U;
+        options.image_direction_to_exif = i == 3U;
+        const auto result
+            = translate_xmp_gps_navigation_metadata(source, options, &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.groups_translated, 1U);
+        EXPECT_EQ(result.entries_added, 3U);
+        EXPECT_NE(gps(output, kNavigationTags[i * 2U]), nullptr);
+    }
+    source = MetaStore {};
+    xmp_text(source, "GPSSpeedRef", "M", EntryFlags::None);
+    xmp_text(source, "GPSSpeed", "25");
+    source.finalize();
+    EXPECT_EQ(translate_xmp_gps_navigation_metadata(source, {}, &output)
+                  .entries_added,
+              3U);
+}
+
+TEST(MetadataGpsNavigation, RequiresCompletePairsAndRejectsDuplicateSources)
+{
+    for (size_t i = 1U; i < kNavigationPaths.size(); ++i) {
+        MetaStore source;
+        xmp_text(source, kNavigationPaths[i], kNavigationValues[i]);
+        expect_navigation_failure(source, Status::IncompleteSource);
+    }
+    MetaStore source = navigation();
+    xmp_text(source, "GPSTrack", "359.99");
+    expect_navigation_failure(source, Status::AmbiguousSource);
+    source = MetaStore {};
+    xmp_text(source, "GPSSpeedRef", "K");
+    xmp_text(source, "GPSSpeed", "25", EntryFlags::Dirty | EntryFlags::Deleted);
+    expect_navigation_failure(source, Status::IncompleteSource);
+}
+
+TEST(MetadataGpsNavigation, ConflictsPreserveOrRepairTheWholeNativePair)
+{
+    for (const uint16_t tag : { 7U, 29U, 12U, 13U }) {
+        MetaStore source = navigation();
+        native(source, tag,
+               make_text(source.arena(), "old", TextEncoding::Ascii));
+        expect_navigation_failure(source, Status::NativeConflict);
+        NavigationOptions options;
+        options.conflict_policy = Policy::PreserveExisting;
+        MetaStore output;
+        const auto preserved
+            = translate_xmp_gps_navigation_metadata(source, options, &output);
+        ASSERT_EQ(preserved.status, Status::Ok);
+        EXPECT_EQ(preserved.groups_preserved, 1U);
+        const uint16_t other = tag == 7U    ? 29U
+                               : tag == 29U ? 7U
+                               : tag == 12U ? 13U
+                                            : 12U;
+        EXPECT_EQ(gps(output, other), nullptr);
+        options.conflict_policy = Policy::ReplaceExisting;
+        ASSERT_EQ(translate_xmp_gps_navigation_metadata(source, options, &output)
+                      .status,
+                  Status::Ok);
+        EXPECT_NE(gps(output, other), nullptr);
+    }
+}
+
+TEST(MetadataGpsNavigation,
+     ComparesEquivalentNativeRationalsAndRepairsDuplicates)
+{
+    MetaStore source;
+    xmp_text(source, "GPSSpeedRef", "K");
+    xmp_text(source, "GPSSpeed", "1.5");
+    native(source, 12U,
+           make_text(source.arena(), std::string_view("K\0", 2U),
+                     TextEncoding::Ascii));
+    native(source, 13U, make_urational(6U, 4U));
+    source.finalize();
+    MetaStore output;
+    const auto same = translate_xmp_gps_navigation_metadata(source, {},
+                                                            &output);
+    ASSERT_EQ(same.status, Status::Ok);
+    EXPECT_EQ(same.groups_unchanged, 1U);
+    EXPECT_EQ(same.entries_added, 1U);
+    source = MetaStore {};
+    xmp_text(source, "GPSSpeedRef", "K");
+    xmp_text(source, "GPSSpeed", "1.5");
+    native(source, 12U, make_text(source.arena(), "M", TextEncoding::Ascii));
+    native(source, 12U, make_text(source.arena(), "N", TextEncoding::Ascii));
+    native(source, 13U, make_urational(9U, 1U));
+    native(source, 13U, make_urational(10U, 1U));
+    source.finalize();
+    NavigationOptions options;
+    options.conflict_policy = Policy::ReplaceExisting;
+    const auto fixed = translate_xmp_gps_navigation_metadata(source, options,
+                                                             &output);
+    ASSERT_EQ(fixed.status, Status::Ok);
+    EXPECT_EQ(fixed.entries_removed, 2U);
+    EXPECT_EQ(gps_count(output, 12U), 1U);
+    EXPECT_EQ(gps_count(output, 13U), 1U);
+}
+
+TEST(MetadataGpsNavigation,
+     CompleteDirtyRemovalCleansVersionUnlessOtherGpsRemains)
+{
+    for (const bool unrelated : { false, true }) {
+        MetaStore source = navigation(EntryFlags::Dirty | EntryFlags::Deleted);
+        native(source, 0U,
+               make_u8_array(source.arena(),
+                             std::array<uint8_t, 4> { 2U, 3U, 0U, 0U }));
+        for (const uint16_t tag : kNavigationTags) {
+            native(source, tag, make_u32(99U));
+        }
+        if (unrelated) {
+            native(source, 8U,
+                   make_text(source.arena(), "retained", TextEncoding::Ascii));
+        }
+        source.finalize();
+        NavigationOptions options;
+        options.conflict_policy = Policy::ReplaceExisting;
+        MetaStore output;
+        const auto result
+            = translate_xmp_gps_navigation_metadata(source, options, &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.entries_removed, unrelated ? 8U : 9U);
+        EXPECT_EQ(gps(output, 0U) != nullptr, unrelated);
+        for (const uint16_t tag : kNavigationTags) {
+            EXPECT_EQ(gps(output, tag), nullptr);
+        }
+    }
+    MetaStore source = navigation(EntryFlags::Deleted);
+    native(source, 7U, make_u32(99U));
+    source.finalize();
+    MetaStore output;
+    EXPECT_EQ(translate_xmp_gps_navigation_metadata(source, {}, &output)
+                  .entries_removed,
+              0U);
+    EXPECT_NE(gps(output, 7U), nullptr);
+}
+
+TEST(MetadataGpsNavigation, TimeVersionPolicyDoesNotUpgradeExistingGps)
+{
+    for (const uint8_t minor : { 0U, 1U, 2U, 3U, 4U, 5U }) {
+        MetaStore source = navigation();
+        native(source, 0U,
+               make_u8_array(source.arena(),
+                             std::array<uint8_t, 4> { 2U, minor, 0U, 0U }));
+        source.finalize();
+        MetaStore output;
+        if (minor < 2U || minor > 4U) {
+            expect_navigation_failure(source, Status::UnsupportedGpsVersion);
+        } else {
+            ASSERT_EQ(translate_xmp_gps_navigation_metadata(source, {}, &output)
+                          .status,
+                      Status::Ok);
+            EXPECT_EQ(output.arena().span(gps(output, 0U)->value.data.span)[1],
+                      static_cast<std::byte>(minor));
+        }
+        NavigationOptions options;
+        options.timestamp_to_exif = false;
+        EXPECT_EQ(translate_xmp_gps_navigation_metadata(source, options, &output)
+                      .status,
+                  Status::Ok);
+    }
+    MetaStore source = navigation();
+    native(source, 0U, make_u32(2300U));
+    expect_navigation_failure(source, Status::NativeConflict);
+}
+
+TEST(MetadataGpsNavigation, ExactPathsIgnoreSplitDateAndUnrelatedNamespaces)
+{
+    MetaStore source;
+    xmp_text(source, "GPSDateStamp", "2024-02-29");
+    xmp_text(source, "GPSDateTime", "2024-02-29T01:02:03Z");
+    xmp_text(source, "GPSSpeed[1]", "100");
+    xmp_text(source, "GPSTimeStamp[@xml:lang=x-default]",
+             "2024-02-29T01:02:03Z");
+    xmp(source, "GPSSpeed", make_u32(3U), EntryFlags::Dirty, "foreign");
+    source.finalize();
+    MetaStore output;
+    EXPECT_EQ(translate_xmp_gps_navigation_metadata(source, {}, &output)
+                  .entries_added,
+              0U);
+}
+
+TEST(MetadataGpsNavigation, ResourceAndOptionLimitsLeaveOutputUnchanged)
+{
+    MetaStore source = navigation();
+    MetaStore output;
+    EXPECT_EQ(translate_xmp_gps_navigation_metadata(source, {}, nullptr).status,
+              Status::NullOutput);
+    EXPECT_EQ(translate_xmp_gps_navigation_metadata(source, {}, &output).status,
+              Status::SourceNotFinalized);
+    NavigationOptions options;
+    options.max_added_entries = 8U;
+    expect_navigation_failure(source, Status::EntryLimitExceeded, options);
+    options                = {};
+    options.max_operations = 8U;
+    expect_navigation_failure(source, Status::OperationLimitExceeded, options);
+    options                             = {};
+    options.max_text_bytes_per_property = 3U;
+    expect_navigation_failure(source, Status::ValueTooLong, options);
+    options                      = {};
+    options.max_total_text_bytes = 32U;
+    expect_navigation_failure(source, Status::SourceLimitExceeded, options);
+    std::array<NavigationOptions, 7> invalid {};
+    invalid[0].max_added_entries           = 10U;
+    invalid[1].max_operations              = 0U;
+    invalid[2].max_text_bytes_per_property = 129U;
+    invalid[3].max_total_text_bytes        = 897U;
+    invalid[4].source_mode = static_cast<MetadataGpsTranslationSourceMode>(99U);
+    invalid[5].conflict_policy     = static_cast<Policy>(99U);
+    invalid[6].timestamp_to_exif   = invalid[6].speed_to_exif
+        = invalid[6].track_to_exif = invalid[6].image_direction_to_exif = false;
+    for (const NavigationOptions& option : invalid) {
+        expect_navigation_failure(source, Status::InvalidOptions, option);
+    }
+    EXPECT_STREQ(metadata_gps_translation_mapping_name(
+                     MetadataGpsTranslationMapping::ExifGpsTimeStamp),
+                 "exif_gps_timestamp");
+}
+
 }  // namespace openmeta

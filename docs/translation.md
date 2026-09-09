@@ -17,7 +17,8 @@ The APIs are experimental and versioned by
 `kMetadataEditorialTranslationContractVersion == 1` and
 `kMetadataIptcTranslationContractVersion == 1` and
 `kMetadataGpsTranslationContractVersion == 1` and
-`kMetadataStructuredLocationTranslationContractVersion == 1`.
+`kMetadataStructuredLocationTranslationContractVersion == 1` and
+`kMetadataGpsNavigationTranslationContractVersion == 1`.
 
 ## Workflow
 
@@ -34,6 +35,7 @@ invoke it implicitly:
    `translate_xmp_editorial_metadata(...)`,
    `translate_xmp_iptc_metadata(...)`, `translate_xmp_gps_metadata(...)`,
    `translate_xmp_structured_location_metadata(...)`,
+   `translate_xmp_gps_navigation_metadata(...)`,
    or the required combination with
    explicit mapping and conflict options.
 3. Pass the returned finalized store to transfer preparation or a writer.
@@ -480,6 +482,98 @@ formatters can round native rational values; this reverse API cannot recover
 precision already lost before the XMP source was created. This contract covers
 primary position writeback, not all GPS metadata or complete ExifTool parity.
 
+## GPS Time And Navigation Writeback
+
+`translate_xmp_gps_navigation_metadata(...)` uses independent
+`MetadataGpsNavigationTranslationOptions` and the shared GPS result, source
+mode, conflict policy, and diagnostic enums. Contract version 1 adds four
+atomic groups. The existing primary GPS API retains its options and mapping set.
+
+| Exact EXIF XMP source | Native `gpsifd` fields | Flag |
+| --- | --- | --- |
+| `GPSTimeStamp` | TimeStamp (7) and DateStamp (29) | `timestamp_to_exif` |
+| `GPSSpeedRef` and `GPSSpeed` | SpeedRef (12) and Speed (13) | `speed_to_exif` |
+| `GPSTrackRef` and `GPSTrack` | TrackRef (14) and Track (15) | `track_to_exif` |
+| `GPSImgDirectionRef` and `GPSImgDirection` | ImgDirectionRef (16) and ImgDirection (17) | `image_direction_to_exif` |
+
+Sources must use the exact `http://ns.adobe.com/exif/1.0/` namespace and
+unindexed, unqualified paths. XMP combines the native GPS date and time into
+one GPSTimeStamp property. Split GPSDateStamp/time, GPSDateTime aliases,
+capture-date fallback, receiver status/quality, destination GPS, and structured
+IPTC locations are outside this contract. Field identities and unit/reference
+codes follow the [Adobe EXIF namespace](https://developer.adobe.com/xmp/docs/xmp-namespaces/exif/)
+and [CIPA EXIF/XMP mapping](https://cipa.jp/std/documents/e/DC-X010-2017.pdf).
+
+GPSTimeStamp requires text `YYYY-MM-DDTHH:MM:SS[.fraction]Z` or the same complete
+date/time followed by `+HH:MM` or `-HH:MM`. The timezone is mandatory. Numeric
+offsets through 23:59 normalize to UTC, including day/month/year rollover;
+both zero-offset signs mean UTC. Years must remain 0001 through 9999 after
+normalization. Gregorian calendar rules apply. Hours are 00-23, minutes 00-59,
+and seconds are less than 60. Leap seconds, partial dates/times, lowercase
+separators, whitespace, and inferred timezones are rejected.
+
+Output contains an ASCII `YYYY:MM:DD` date and an unsigned RATIONAL[3] time:
+integer UTC hours, integer UTC minutes, and reduced exact rational seconds.
+Fractions never round. Reduced numerator and denominator must each fit uint32;
+checked uint64 parser intermediates can also reject unsupported precision.
+Trailing decimal zeros do not consume precision. A supported fractional input
+can still fail when its whole-second numerator cannot fit uint32 after reduction.
+
+Speed and angles accept nonnegative integer scalars, unsigned rational scalars,
+or exact unsigned integer/decimal/fraction text, matching primary GPS altitude
+syntax. Floats, signed text, exponents, units inside numeric values, arrays,
+and zero denominators are rejected. Speed has no additional bound beyond the
+native rational capacity. Track and image direction are bounded by 359.99
+inclusive, without rounding or modulo reduction.
+
+Reference properties are text. Speed accepts `K`, `M`, or `N`, plus the exact
+existing OpenMeta portable aliases `km/h`, `mph`, and `knots`. Track and image
+direction accept `T` or `M`, plus `True North` and `Magnetic North`. Output uses
+the compact ASCII letter code. Case, spelling, and whitespace are exact; no
+localized names or other synonyms are accepted. Units and north references
+are preserved without conversion or inference from native metadata.
+
+All flags default to enabled, with DirtyOnly/FailOnConflict. A dirty reference
+or numeric member selects its complete active XMP pair, including a clean
+companion. Missing, duplicate, or mixed active/deleted members fail. A dirty
+timestamp tombstone removes both date and time; removing a navigation pair
+requires both members to be dirty tombstones. Clean tombstones are ignored.
+Missing groups preserve native fields.
+
+Each native pair uses the primary GPS conflict rules: PreserveExisting keeps
+the whole group if either member exists; FailOnConflict requires a complete
+matching pair; ReplaceExisting repairs partial pairs and removes duplicates.
+Native rational equivalence is exact by component. Native text may include
+its one trailing wire NUL. Existing equivalent values retain their encoding
+and provenance. All selected groups share one atomic transaction.
+
+An active timestamp requires native GPSVersionID 2.2.0.0 through 2.4.0.0 under
+this versioned contract. Older and unknown versions fail without an upgrade.
+Speed/track/direction retain any well-formed BYTE[4] version. Missing versions
+become 2.3.0.0 when selected active output needs one. Malformed or duplicate
+active versions fail. Removing the last GPS value also removes its version;
+unrelated GPS fields retain it. Source XMP GPSVersionID is not copied.
+
+Limits are nine added entries including GPSVersionID, 1024 native operations,
+128 text bytes per selected active property, and 896 total text bytes. Limits
+can be lowered. Failure leaves source and output unchanged, including when they
+alias. New entries own copied source provenance; preparation may allocate.
+
+```python
+translated = document.translate_gps_navigation_metadata(
+    source_mode=openmeta.MetadataGpsTranslationSourceMode.All,
+    conflict_policy=openmeta.MetadataGpsTranslationConflictPolicy.ReplaceExisting,
+)
+```
+
+Persist the detached result through a transfer snapshot with EXIF enabled.
+When retaining source XMP too, set `xmp_include_existing=True` and
+`xmp_conflict_policy=openmeta.XmpConflictPolicy.ExistingWins` in Python transfer
+helpers. Inclusion alone keeps the historical precedence of generated EXIF
+values, which can change reference spelling or timestamp formatting. ExistingWins
+preserves supplied XMP values over generated counterparts. The portable writer's
+native-only decimal formatting is not an exact arbitrary-rational round trip.
+
 ## Conflict And Removal Policy
 
 All translation APIs apply the following behaviors to each complete native
@@ -611,7 +705,7 @@ mapping, and source entry ID. The original `Document` is not mutated.
 
 This milestone is intentionally limited to exact creation-date, common
 technical and capture EXIF, target-bound orientation/stored dimensions, primary
-GPS, combined descriptive/editorial/workflow IPTC, flat IPTC Core locations,
+GPS coordinates/time/navigation, combined descriptive/editorial/workflow IPTC, flat IPTC Core locations,
 and selected structured-location reconciliation. It does not yet
 provide arbitrary EXIF/IPTC/XMP translation, broader target image-layout/storage
 projection,

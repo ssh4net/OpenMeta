@@ -845,6 +845,10 @@ enum class MetadataGpsTranslationMapping : uint8_t {
     ExifGpsLongitude,
     ExifGpsAltitude,
     GpsVersion,
+    ExifGpsTimeStamp,
+    ExifGpsSpeed,
+    ExifGpsTrack,
+    ExifGpsImgDirection,
 };
 enum class MetadataGpsTranslationStatus : uint8_t {
     Ok,
@@ -917,6 +921,55 @@ MetadataGpsTranslationResult
 translate_xmp_gps_metadata(const MetaStore& source,
                            const MetadataGpsTranslationOptions& options,
                            MetaStore* out_store);
+
+inline constexpr uint32_t kMetadataGpsNavigationTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataGpsNavigationTranslationMaxAddedEntries = 9U;
+inline constexpr uint64_t kMetadataGpsNavigationTranslationMaxTotalTextBytes
+    = 896U;
+
+struct MetadataGpsNavigationTranslationOptions final {
+    MetadataGpsTranslationSourceMode source_mode
+        = MetadataGpsTranslationSourceMode::DirtyOnly;
+    MetadataGpsTranslationConflictPolicy conflict_policy
+        = MetadataGpsTranslationConflictPolicy::FailOnConflict;
+    bool timestamp_to_exif       = true;
+    bool speed_to_exif           = true;
+    bool track_to_exif           = true;
+    bool image_direction_to_exif = true;
+    uint32_t max_added_entries
+        = kMetadataGpsNavigationTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataGpsTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataGpsTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataGpsNavigationTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Atomically translate GPS time, speed, track, and image direction.
+ *
+ * GPSTimeStamp requires a complete ISO date/time with an explicit timezone.
+ * Numeric offsets are normalized to UTC; fractional seconds stay exact.
+ * Output is GPSDateStamp plus GPSTimeStamp RATIONAL[3]. Leap seconds and
+ * partial dates/times are unsupported. Date output requires GPS 2.2 through
+ * 2.4; a missing native version defaults to 2.3.0.0.
+ *
+ * Speed/track/image direction require their complete XMP value/reference pair.
+ * Values use the primary GPS exact unsigned rational syntax. Angles are in
+ * [0, 359.99]. Canonical K/M/N and T/M references, plus the existing portable
+ * aliases km/h, mph, knots, True North, and Magnetic North, are accepted.
+ * Units and north references are retained without conversion or inference.
+ *
+ * Source selection, paired conflicts/removal, version cleanup, provenance,
+ * and failure atomicity follow the primary GPS contract. That API's options
+ * and mapping set are unchanged. Preparation may allocate.
+ */
+MetadataGpsTranslationResult
+translate_xmp_gps_navigation_metadata(
+    const MetaStore& source,
+    const MetadataGpsNavigationTranslationOptions& options,
+    MetaStore* out_store);
+
 const char*
 metadata_gps_translation_status_name(
     MetadataGpsTranslationStatus status) noexcept;

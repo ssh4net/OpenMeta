@@ -262,6 +262,13 @@ Host-facing API map
        Exact rational precision, paired source/native reconciliation, GPS version
        handling, and resource limits are explicit. Python provides the same
        operation. See :doc:`translation`.
+   * - GPS time/navigation translation: ``translate_xmp_gps_navigation_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Transactional v1 UTC date/time, speed/unit, track/reference, and image
+       direction/reference writeback. Exact precision, UTC rollover, version
+       support, paired conflicts/removal, and portable reference aliases are
+       explicit. Python provides the same operation. See :doc:`translation`.
    * - EXIF/TIFF orientation helpers: ``interpret_exif_orientation(...)``,
        ``exif_orientation_name(...)``,
        ``exif_orientation_rotation_degrees_cw(...)``,

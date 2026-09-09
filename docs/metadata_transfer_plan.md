@@ -896,12 +896,15 @@ Suggested delivery sequence:
    in the documented ExifTool copy inventory, with explicit exclusions and no
    overall parity claim. Version 0.4.131 adds primary GPS latitude/longitude and
    altitude/reference writeback, including exact rational precision and GPS
-   version companions. Additional capture fields, GPS time/navigation/destination
-   data remain separate feature batches. Version 0.4.132 adds explicit selection
+   version companions. Additional capture fields and destination GPS remain
+   separate feature batches. Version 0.4.132 adds explicit selection
    of one structured location and atomic five-field flat-XMP/IPTC reconciliation,
    with record multiplicity, conflict, dirty removal, and persistence contracts.
    Reverse construction of structured locations and geographic inference remain
-   outside this bounded projection.
+   outside this bounded projection. Version 0.4.133 adds GPS UTC date/time and
+   speed/track/image-direction writeback with exact fractions, explicit timezone
+   normalization, reference pairs, and snapshot persistence. Receiver quality
+   metadata and destination GPS remain separate contracts.
    See `docs/translation.md`.
 2. Retain the completed writer-baseline and compare-backed release gates while
    extending validated foreign `BMFF` graph shapes.

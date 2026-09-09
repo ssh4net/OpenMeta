@@ -139,7 +139,8 @@ model should stay compact:
        orientation and complete stored-dimension groups, 20 IPTC text/priority
        mappings with combined atomic writeback, primary GPS coordinate/altitude
        groups with exact rational precision and version handling, structured-location
-       record selection and paired flat-XMP/IPTC reconciliation,
+       record selection and paired flat-XMP/IPTC reconciliation, GPS UTC date/time
+       and navigation pairs,
        repeated-value reconciliation, exact rational conversion, safe
        ASCII/UTF-8 handling, tombstone propagation, resource limits, JPEG/TIFF
        round trips, and thin Python exposure are implemented.

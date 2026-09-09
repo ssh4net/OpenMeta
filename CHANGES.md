@@ -1,5 +1,23 @@
 # OpenMeta Changes
 
+## 0.4.133 - 2026-09-09
+
+Changes compared with `0.4.132`.
+
+### Added
+
+- Added versioned C++ `translate_xmp_gps_navigation_metadata` and Python
+  `Document.translate_gps_navigation_metadata`. Four atomic groups write GPS
+  UTC date/time, speed/unit, track/reference, and image direction/reference.
+- Added exact fractional seconds, explicit timezone normalization, calendar and
+  version checks, bounded unsigned rational parsing, and canonical/portable
+  reference spellings. Existing primary GPS options and mappings are unchanged.
+- Reused GPS transaction planning for both APIs, including paired conflicts,
+  dirty removal, version cleanup, limits, provenance, and failure atomicity.
+- Added date/navigation, JPEG/Classic TIFF/BigTIFF snapshot persistence/removal,
+  Python, and installed shared-consumer coverage. Documented exact contracts
+  and the limits of native-to-portable-XMP numeric formatting.
+
 ## 0.4.132 - 2026-09-09
 
 Changes compared with `0.4.131`.
