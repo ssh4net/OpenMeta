@@ -248,6 +248,13 @@ Host-facing API map
        Independent flags, shared charset/resource limits, and cross-group
        atomicity. Existing subgroup/date contracts are unchanged. Python provides
        the same operation. See :doc:`translation`.
+   * - Primary GPS translation: ``translate_xmp_gps_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Transactional v1 latitude/longitude and altitude/reference writeback.
+       Exact rational precision, paired source/native reconciliation, GPS version
+       handling, and resource limits are explicit. Python provides the same
+       operation. See :doc:`translation`.
    * - EXIF/TIFF orientation helpers: ``interpret_exif_orientation(...)``,
        ``exif_orientation_name(...)``,
        ``exif_orientation_rotation_degrees_cw(...)``,

@@ -3414,6 +3414,25 @@ namespace {
         return count;
     }
 
+    static bool gps_ifd_is_explicitly_removed(const MetaStore& store) noexcept
+    {
+        bool removed_value = false;
+        for (const Entry& entry : store.entries()) {
+            if (entry.key.kind != MetaKeyKind::ExifTag
+                || arena_string(store.arena(), entry.key.data.exif_tag.ifd)
+                       != "gpsifd") {
+                continue;
+            }
+            if (!any(entry.flags, EntryFlags::Deleted)) {
+                return false;
+            }
+            removed_value = removed_value
+                            || (entry.key.data.exif_tag.tag != 0U
+                                && any(entry.flags, EntryFlags::Dirty));
+        }
+        return removed_value;
+    }
+
     static bool transfer_target_supports_xmp_blocks(
         TransferTargetFormat target_format) noexcept
     {
@@ -7208,7 +7227,8 @@ namespace {
         const MetaStore& store, TransferPolicyAction makernote_policy,
         bool include_subifds, bool inject_minimal_dng_version,
         bool honor_wire_type_hints, uint64_t max_output_bytes,
-        bool collect_patch_source_slots) noexcept
+        bool collect_patch_source_slots,
+        bool explicit_empty_gps_ifd = false) noexcept
     {
         ExifPackBuild out;
 
@@ -7308,6 +7328,12 @@ namespace {
 
         maybe_add_synthetic_dng_version(&ifd0, inject_minimal_dng_version,
                                         saw_dng_version);
+
+        // A present empty GPS IFD carries explicit TIFF directory removal.
+        // Ordinary absence must continue to preserve the target GPS directory.
+        if (explicit_empty_gps_ifd && gpsifd.entries.empty()) {
+            gpsifd.present = true;
+        }
 
         if (interopifd.present) {
             exififd.present = true;
@@ -11274,6 +11300,15 @@ namespace {
         remove_target_local_tiff_storage_updates(&parsed_exif.ifd0_updates);
 
         std::vector<TiffTagUpdate> merged_updates = updates;
+        const bool clear_gps_ifd                  = parsed_exif.gps_ifd.present
+                                   && parsed_exif.gps_ifd.entries.empty();
+        if (clear_gps_ifd) {
+            parsed_exif.gps_ifd.present = false;
+            TiffTagUpdate removal;
+            removal.tag    = 0x8825U;
+            removal.remove = true;
+            merged_updates.push_back(std::move(removal));
+        }
         for (size_t i = 0; i < parsed_exif.ifd0_updates.size(); ++i) {
             const TiffTagUpdate& src = parsed_exif.ifd0_updates[i];
             bool replaced            = false;
@@ -11296,8 +11331,8 @@ namespace {
         const bool need_subifd_ptr    = !parsed_exif.subifds.empty();
         const bool inspect_existing_exif_ifd = need_exif_ptr
                                                || strip_existing_xmp;
-        const bool inspect_existing_gps_ifd = need_gps_ptr
-                                              || strip_existing_xmp;
+        const bool inspect_existing_gps_ifd
+            = !clear_gps_ifd && (need_gps_ptr || strip_existing_xmp);
         const bool inspect_existing_subifds = need_subifd_ptr
                                               || strip_existing_xmp;
         uint64_t existing_exif_ifd_off = 0U;
@@ -13167,7 +13202,10 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                                                          MetaKeyKind::ExifTag);
     const uint32_t iptc_dataset_count
         = count_kind_entries(prepared_store, MetaKeyKind::IptcDataset);
-    const bool has_exif = exif_entry_count > 0U
+    const bool explicit_empty_gps_ifd = transfer_target_is_tiff_family(
+                                            request.target_format)
+                                        && gps_ifd_is_explicitly_removed(store);
+    const bool has_exif = exif_entry_count > 0U || explicit_empty_gps_ifd
                           || request.target_format == TransferTargetFormat::Dng;
     const bool has_iptc = iptc_dataset_count > 0U
                           || has_kind(prepared_store,
@@ -13652,7 +13690,7 @@ prepare_metadata_for_target_impl(const MetaStore& store,
             prepared_store, effective_makernote,
             transfer_target_is_tiff_family(request.target_format),
             request.target_format == TransferTargetFormat::Dng, true,
-            kMaxJpegExifTiffBytes, false);
+            kMaxJpegExifTiffBytes, false, explicit_empty_gps_ifd);
         if (exif_build.produced && !exif_build.tiff_payload.empty()) {
             const uint32_t block_index = static_cast<uint32_t>(
                 bundle.blocks.size());

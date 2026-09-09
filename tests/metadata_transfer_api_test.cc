@@ -12512,6 +12512,262 @@ TEST(MetadataTransferApi,
 }
 
 TEST(MetadataTransferApi,
+     TranslatedGpsCreatesReplacesAndRemovesNativePairsInJpegAndTiff)
+{
+    static constexpr std::string_view kExifNs = "http://ns.adobe.com/exif/1.0/";
+    const std::array<std::string_view, 4> paths { "GPSLatitude", "GPSLongitude",
+                                                  "GPSAltitude",
+                                                  "GPSAltitudeRef" };
+    const std::array<std::string_view, 4> values { "35,48.125N",
+                                                   "139,34,55.25W", "2469/20",
+                                                   "1" };
+    for (const auto format : { openmeta::TransferTargetFormat::Jpeg,
+                               openmeta::TransferTargetFormat::Tiff }) {
+        for (const unsigned mode : { 0U, 1U, 2U }) {
+            SCOPED_TRACE(mode);
+            SCOPED_TRACE(static_cast<unsigned>(format));
+            openmeta::MetaStore source;
+            const auto block = source.add_block(openmeta::BlockInfo {});
+            for (size_t i = 0U; i < paths.size(); ++i) {
+                openmeta::Entry entry;
+                entry.key   = openmeta::make_xmp_property_key(source.arena(),
+                                                              kExifNs, paths[i]);
+                entry.value = openmeta::make_text(source.arena(), values[i],
+                                                  openmeta::TextEncoding::Utf8);
+                entry.flags = openmeta::EntryFlags::Dirty;
+                if (mode == 2U) {
+                    entry.flags |= openmeta::EntryFlags::Deleted;
+                }
+                entry.origin.block = block;
+                ASSERT_NE(source.add_entry(entry), openmeta::kInvalidEntryId);
+            }
+            openmeta::Entry camera;
+            camera.key   = openmeta::make_exif_tag_key(source.arena(), "ifd0",
+                                                       0x010fU);
+            camera.value = openmeta::make_text(source.arena(), "Keep camera",
+                                               openmeta::TextEncoding::Ascii);
+            camera.origin.block = block;
+            ASSERT_NE(source.add_entry(camera), openmeta::kInvalidEntryId);
+            if (mode != 0U) {
+                const std::array<uint8_t, 4> version { 2U, 3U, 0U, 0U };
+                const std::array<openmeta::URational, 3> old_coordinate {
+                    { { 1U, 1U }, { 2U, 1U }, { 3U, 1U } }
+                };
+                const std::array native_values {
+                    openmeta::make_u8_array(source.arena(), version),
+                    openmeta::make_text(source.arena(), "S",
+                                        openmeta::TextEncoding::Ascii),
+                    openmeta::make_urational_array(source.arena(),
+                                                   old_coordinate),
+                    openmeta::make_text(source.arena(), "E",
+                                        openmeta::TextEncoding::Ascii),
+                    openmeta::make_urational_array(source.arena(),
+                                                   old_coordinate),
+                    openmeta::make_u8(0U),
+                    openmeta::make_urational(9U, 1U)
+                };
+                for (uint16_t tag = 0U; tag < native_values.size(); ++tag) {
+                    openmeta::Entry entry;
+                    entry.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                              "gpsifd", tag);
+                    entry.value = native_values[tag];
+                    entry.origin.block = block;
+                    ASSERT_NE(source.add_entry(entry),
+                              openmeta::kInvalidEntryId);
+                }
+            }
+            source.finalize();
+            openmeta::PrepareTransferRequest request;
+            request.target_format      = format;
+            request.include_exif_app1  = true;
+            request.include_xmp_app1   = false;
+            request.include_icc_app2   = false;
+            request.include_iptc_app13 = false;
+            openmeta::ExecutePreparedTransferOptions execute;
+            execute.edit_requested = true;
+            execute.edit_apply     = true;
+            const auto empty = format == openmeta::TransferTargetFormat::Jpeg
+                                   ? make_jpeg_with_segments({})
+                                   : make_minimal_tiff_little_endian();
+            openmeta::PreparedTransferBundle seed_bundle;
+            ASSERT_EQ(openmeta::prepare_metadata_for_target(source, request,
+                                                            &seed_bundle)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            const auto seed = openmeta::execute_prepared_transfer(&seed_bundle,
+                                                                  empty,
+                                                                  execute);
+            ASSERT_EQ(seed.edit_apply.status, openmeta::TransferStatus::Ok);
+
+            openmeta::MetadataGpsTranslationOptions options;
+            options.conflict_policy
+                = openmeta::MetadataGpsTranslationConflictPolicy::ReplaceExisting;
+            openmeta::MetaStore translated;
+            const auto translation
+                = openmeta::translate_xmp_gps_metadata(source, options,
+                                                       &translated);
+            ASSERT_EQ(translation.status,
+                      openmeta::MetadataGpsTranslationStatus::Ok);
+            EXPECT_EQ(translation.entries_removed, mode == 2U ? 7U : 0U);
+            openmeta::PreparedTransferBundle bundle;
+            ASSERT_EQ(openmeta::prepare_metadata_for_target(translated, request,
+                                                            &bundle)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            const auto written = openmeta::execute_prepared_transfer(
+                &bundle, seed.edited_output, execute);
+            ASSERT_EQ(written.edit_apply.status, openmeta::TransferStatus::Ok);
+            openmeta::MetaStore decoded;
+            ASSERT_TRUE(decode_transfer_roundtrip_store(written.edited_output,
+                                                        &decoded));
+            EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                                 exif_key_view("ifd0", 0x010fU),
+                                                 "Keep camera"));
+            if (mode == 2U) {
+                for (uint16_t tag = 0U; tag <= 6U; ++tag) {
+                    EXPECT_TRUE(
+                        decoded.find_all(exif_key_view("gpsifd", tag)).empty());
+                }
+                EXPECT_TRUE(
+                    decoded.find_all(exif_key_view("ifd0", 0x8825U)).empty());
+                continue;
+            }
+            EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                                 exif_key_view("gpsifd", 1U),
+                                                 "N"));
+            EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                                 exif_key_view("gpsifd", 3U),
+                                                 "W"));
+            EXPECT_TRUE(store_has_u8_scalar_entry(decoded,
+                                                  exif_key_view("gpsifd", 5U),
+                                                  1U));
+            EXPECT_TRUE(store_has_urational_scalar_entry(
+                decoded, exif_key_view("gpsifd", 6U), 2469U, 20U));
+            for (const uint16_t tag : { 2U, 4U }) {
+                const auto ids = decoded.find_all(exif_key_view("gpsifd", tag));
+                ASSERT_EQ(ids.size(), 1U);
+                const auto& entry = decoded.entry(ids[0]);
+                ASSERT_EQ(entry.value.kind, openmeta::MetaValueKind::Array);
+                ASSERT_EQ(entry.value.elem_type,
+                          openmeta::MetaElementType::URational);
+                ASSERT_EQ(entry.value.count, 3U);
+                const std::array<openmeta::URational, 3> expected
+                    = tag == 2U
+                          ? std::array<openmeta::URational, 3> { { { 35U, 1U },
+                                                                   { 48U, 1U },
+                                                                   { 15U,
+                                                                     2U } } }
+                          : std::array<openmeta::URational, 3> {
+                                { { 139U, 1U }, { 34U, 1U }, { 221U, 4U } }
+                            };
+                const auto bytes = decoded.arena().span(entry.value.data.span);
+                ASSERT_EQ(bytes.size(), sizeof(expected));
+                EXPECT_EQ(std::memcmp(bytes.data(), expected.data(),
+                                      bytes.size()),
+                          0);
+            }
+            const auto versions = decoded.find_all(exif_key_view("gpsifd", 0U));
+            ASSERT_EQ(versions.size(), 1U);
+            const auto& version = decoded.entry(versions[0]).value;
+            EXPECT_EQ(version.elem_type, openmeta::MetaElementType::U8);
+            EXPECT_EQ(version.count, 4U);
+            const auto bytes = decoded.arena().span(version.data.span);
+            ASSERT_EQ(bytes.size(), 4U);
+            EXPECT_EQ(bytes[1], std::byte { 3U });
+        }
+    }
+}
+
+TEST(MetadataTransferApi, TiffGpsOmissionAndExplicitRemovalAreDistinct)
+{
+    for (const bool bigtiff : { false, true }) {
+        const auto input = bigtiff ? make_minimal_gpsifd_bigtiff_little_endian()
+                                   : make_minimal_gpsifd_tiff_little_endian();
+        for (const unsigned mode : { 0U, 1U, 2U, 3U, 4U }) {
+            SCOPED_TRACE(bigtiff);
+            SCOPED_TRACE(mode);
+            openmeta::MetaStore source;
+            // Omission and clean tombstones preserve target GPS; dirty values clear it.
+            if (mode != 2U) {
+                openmeta::Entry camera;
+                camera.key = openmeta::make_exif_tag_key(source.arena(), "ifd0",
+                                                         0x010fU);
+                camera.value
+                    = openmeta::make_text(source.arena(), "Kept camera",
+                                          openmeta::TextEncoding::Ascii);
+                ASSERT_NE(source.add_entry(camera), openmeta::kInvalidEntryId);
+            }
+            if (mode != 0U) {
+                openmeta::Entry deleted;
+                deleted.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                            "gpsifd",
+                                                          mode == 3U ? 0U : 1U);
+                deleted.flags = openmeta::EntryFlags::Deleted;
+                if (mode != 1U) {
+                    deleted.flags |= openmeta::EntryFlags::Dirty;
+                }
+                ASSERT_NE(source.add_entry(deleted), openmeta::kInvalidEntryId);
+            }
+            if (mode == 4U) {
+                openmeta::Entry retained;
+                retained.key = openmeta::make_exif_tag_key(source.arena(),
+                                                           "gpsifd", 8U);
+                retained.value
+                    = openmeta::make_text(source.arena(), "Retained satellites",
+                                          openmeta::TextEncoding::Ascii);
+                ASSERT_NE(source.add_entry(retained),
+                          openmeta::kInvalidEntryId);
+            }
+            source.finalize();
+            openmeta::PrepareTransferRequest request;
+            request.target_format      = openmeta::TransferTargetFormat::Tiff;
+            request.include_exif_app1  = true;
+            request.include_xmp_app1   = false;
+            request.include_iptc_app13 = false;
+            request.include_icc_app2   = false;
+            openmeta::PreparedTransferBundle bundle;
+            ASSERT_EQ(openmeta::prepare_metadata_for_target(source, request,
+                                                            &bundle)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::ExecutePreparedTransferOptions options;
+            options.edit_requested = true;
+            options.edit_apply     = true;
+            const auto result
+                = openmeta::execute_prepared_transfer(&bundle, input, options);
+            ASSERT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+            openmeta::MetaStore decoded;
+            ASSERT_TRUE(decode_transfer_roundtrip_store(result.edited_output,
+                                                        &decoded));
+            if (mode == 2U) {
+                EXPECT_TRUE(
+                    decoded.find_all(exif_key_view("ifd0", 0x8825U)).empty());
+                EXPECT_TRUE(
+                    decoded.find_all(exif_key_view("gpsifd", 1U)).empty());
+                EXPECT_TRUE(
+                    decoded.find_all(exif_key_view("gpsifd", 5U)).empty());
+            } else {
+                EXPECT_FALSE(
+                    decoded.find_all(exif_key_view("ifd0", 0x8825U)).empty());
+                EXPECT_TRUE(store_has_any_text_entry(
+                    decoded, exif_key_view("ifd0", 0x010fU), "Kept camera"));
+                if (mode == 4U) {
+                    EXPECT_TRUE(
+                        store_has_any_text_entry(decoded,
+                                                 exif_key_view("gpsifd", 8U),
+                                                 "Retained satellites"));
+                    EXPECT_TRUE(
+                        decoded.find_all(exif_key_view("gpsifd", 1U)).empty());
+                } else {
+                    EXPECT_TRUE(store_has_any_text_entry(
+                        decoded, exif_key_view("gpsifd", 1U), "N"));
+                }
+            }
+        }
+    }
+}
+
+TEST(MetadataTransferApi,
      TranslatedTargetGeometrySurvivesNativeJpegAndTiffRoundTrip)
 {
     const std::array fields = {

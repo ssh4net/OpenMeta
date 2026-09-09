@@ -768,5 +768,103 @@ translate_xmp_iptc_metadata(const MetaStore& source,
                             const MetadataIptcTranslationOptions& options,
                             MetaStore* out_store);
 
+/// Experimental primary GPS position/altitude writeback contract.
+inline constexpr uint32_t kMetadataGpsTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataGpsTranslationMaxAddedEntries = 7U;
+inline constexpr uint32_t kMetadataGpsTranslationMaxOperations   = 1024U;
+inline constexpr uint32_t kMetadataGpsTranslationMaxTextBytesPerProperty = 128U;
+inline constexpr uint64_t kMetadataGpsTranslationMaxTotalTextBytes       = 512U;
+
+enum class MetadataGpsTranslationSourceMode : uint8_t { DirtyOnly, All };
+enum class MetadataGpsTranslationConflictPolicy : uint8_t {
+    PreserveExisting,
+    FailOnConflict,
+    ReplaceExisting,
+};
+enum class MetadataGpsTranslationMapping : uint8_t {
+    None,
+    ExifGpsLatitude,
+    ExifGpsLongitude,
+    ExifGpsAltitude,
+    GpsVersion,
+};
+enum class MetadataGpsTranslationStatus : uint8_t {
+    Ok,
+    NullOutput,
+    SourceNotFinalized,
+    InvalidOptions,
+    AmbiguousSource,
+    IncompleteSource,
+    InvalidSourceValue,
+    ValueOutOfRange,
+    UnsupportedPrecision,
+    UnsupportedGpsVersion,
+    ValueTooLong,
+    SourceLimitExceeded,
+    NativeConflict,
+    EntryLimitExceeded,
+    OperationLimitExceeded,
+    InternalError,
+};
+
+struct MetadataGpsTranslationOptions final {
+    MetadataGpsTranslationSourceMode source_mode
+        = MetadataGpsTranslationSourceMode::DirtyOnly;
+    MetadataGpsTranslationConflictPolicy conflict_policy
+        = MetadataGpsTranslationConflictPolicy::FailOnConflict;
+    bool latitude_to_exif      = true;
+    bool longitude_to_exif     = true;
+    bool altitude_to_exif      = true;
+    uint32_t max_added_entries = kMetadataGpsTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataGpsTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataGpsTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes = kMetadataGpsTranslationMaxTotalTextBytes;
+};
+
+struct MetadataGpsTranslationResult final {
+    MetadataGpsTranslationStatus status = MetadataGpsTranslationStatus::Ok;
+    MetadataGpsTranslationMapping failed_mapping
+        = MetadataGpsTranslationMapping::None;
+    EntryId failed_source_entry = kInvalidEntryId;
+    uint32_t source_properties  = 0U;
+    uint32_t groups_translated  = 0U;
+    uint32_t groups_preserved   = 0U;
+    uint32_t groups_unchanged   = 0U;
+    uint32_t entries_added      = 0U;
+    uint32_t entries_updated    = 0U;
+    uint32_t entries_removed    = 0U;
+};
+
+/**
+ * \brief Atomically translate primary exif:GPSLatitude, GPSLongitude, and
+ * GPSAltitude/GPSAltitudeRef XMP properties into native gpsifd entries.
+ *
+ * Coordinates accept unsigned degrees plus decimal minutes or integer minutes
+ * plus decimal seconds, separated by commas and followed by uppercase N/S or
+ * E/W. Output is exact normalized DMS RATIONAL[3] plus ASCII reference.
+ * Altitude is nonnegative exact text/integer/rational with a required XMP
+ * sea-level reference 0 or 1. GPS 2.4 uses native sea-level codes 2 or 3;
+ * GPS 2.0 through 2.3 use 0 or 1. No ellipsoid/datum conversion is performed.
+ *
+ * One dirty altitude member selects the complete active pair. Removing the
+ * altitude group requires both members to be dirty tombstones. Native groups
+ * reconcile as complete pairs. GPSVersionID is retained, or 2.3.0.0 is added
+ * when selected active output needs it. Removing the last GPS value also
+ * removes its version tag; unrelated GPS fields prevent that cleanup.
+ *
+ * Failure leaves source and output unchanged. Preparation may allocate.
+ */
+MetadataGpsTranslationResult
+translate_xmp_gps_metadata(const MetaStore& source,
+                           const MetadataGpsTranslationOptions& options,
+                           MetaStore* out_store);
+const char*
+metadata_gps_translation_status_name(
+    MetadataGpsTranslationStatus status) noexcept;
+const char*
+metadata_gps_translation_mapping_name(
+    MetadataGpsTranslationMapping mapping) noexcept;
+
 }  // namespace openmeta
 OPENMETA_PUBLIC_END

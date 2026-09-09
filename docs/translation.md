@@ -15,7 +15,8 @@ The APIs are experimental and versioned by
 `kMetadataDescriptiveTranslationContractVersion == 1` and
 `kMetadataLocationTranslationContractVersion == 1` and
 `kMetadataEditorialTranslationContractVersion == 1` and
-`kMetadataIptcTranslationContractVersion == 1`.
+`kMetadataIptcTranslationContractVersion == 1` and
+`kMetadataGpsTranslationContractVersion == 1`.
 
 ## Workflow
 
@@ -30,7 +31,8 @@ invoke it implicitly:
    `translate_xmp_descriptive_metadata(...)`,
    `translate_xmp_location_metadata(...)`,
    `translate_xmp_editorial_metadata(...)`,
-   `translate_xmp_iptc_metadata(...)`, or the required combination with
+   `translate_xmp_iptc_metadata(...)`, `translate_xmp_gps_metadata(...)`,
+   or the required combination with
    explicit mapping and conflict options.
 3. Pass the returned finalized store to transfer preparation or a writer.
 
@@ -294,6 +296,93 @@ assignments in ExifTool's
 checked on 2026-09-09. This is a field inventory, not semantic or behavioral
 parity: the two commented taxonomy mappings, Photoshop IPTCDigest, arbitrary
 IPTC datasets, and ExifTool's conversion/overwrite conventions are excluded.
+
+## Primary GPS Writeback
+
+`translate_xmp_gps_metadata(...)` accepts `MetadataGpsTranslationOptions`
+and returns `MetadataGpsTranslationResult`. Contract version 1 covers three
+primary EXIF GPS groups, each with an independent flag. It does not select
+structured IPTC locations, destination coordinates, GPS time, navigation data,
+or nonstandard standalone XMP latitude/longitude reference properties.
+
+| Exact `http://ns.adobe.com/exif/1.0/` XMP source | Native `gpsifd` fields | Flag |
+| --- | --- | --- |
+| `GPSLatitude` | LatitudeRef (1), Latitude (2) | `latitude_to_exif` |
+| `GPSLongitude` | LongitudeRef (3), Longitude (4) | `longitude_to_exif` |
+| `GPSAltitude` and `GPSAltitudeRef` | AltitudeRef (5), Altitude (6) | `altitude_to_exif` |
+
+Coordinates accept unsigned integer degrees followed by decimal minutes, or
+integer minutes and decimal seconds: `35,48.125N` or `139,34,55.25W`.
+Separators are commas; the final character must be uppercase N/S for latitude
+or E/W for longitude. Signs, whitespace, decimal degrees, exponent notation,
+and rational components are rejected. Latitude is bounded by 90 degrees and
+longitude by 180; minutes and seconds must be less than 60. At the maximum
+degree, all remaining components must be zero. Hemisphere is preserved at zero.
+
+The parser uses integer arithmetic and emits normalized integer degrees,
+integer minutes, and reduced rational seconds as RATIONAL[3], with an ASCII
+reference. Fractions must fit exact unsigned 32-bit numerator/denominator
+components; unsupported precision fails without rounding. Trailing decimal
+zeros do not consume precision. Parsing uses checked 64-bit intermediates;
+overflow also returns UnsupportedPrecision, even if further algebraic reduction
+could fit the native fields. Native equivalence compares typed components
+as rational numbers; it does not rearrange a different native DMS tuple into
+an equivalent whole angle. Use ReplaceExisting to canonicalize such tuples.
+
+Altitude uses a nonnegative unsigned rational, nonnegative integer scalar, or
+exact unsigned text (`123.45`, `2469/20`, or `0`). Floats, signed text, exponent
+notation, units, arrays, and zero denominators are rejected. A separate
+`GPSAltitudeRef` is mandatory. This contract uses the legacy Adobe XMP sea-level
+convention: text `0`/`1`, or an integer scalar 0/1. It does not infer a missing
+reference from the sign or from existing native metadata.
+
+GPSVersionID is structural companion metadata. A missing version becomes BYTE[4]
+`2.3.0.0` when a selected active result needs it. An existing version must be one
+well-formed BYTE[4] entry; malformed or duplicate active versions fail. Existing
+version bytes are retained. Altitude supports `2.0.0.0` through `2.4.0.0`:
+legacy versions use native sea-level references 0/1; version 2.4 uses 2/3 for the
+same meaning. Unknown versions fail altitude translation. No geoid, ellipsoid,
+horizontal datum, or unit conversion is performed, and native GPSVersionID is
+not upgraded. The XMP GPSVersionID property is not copied or used to infer an
+altitude convention. Callers with modern ellipsoidal-height XMP must not pass
+it under this legacy sea-level contract.
+
+Coordinate syntax and legacy XMP altitude semantics follow the
+[Adobe EXIF namespace](https://developer.adobe.com/xmp/docs/xmp-namespaces/exif/)
+and [CIPA's EXIF/XMP mapping](https://cipa.jp/std/documents/e/DC-X010-2017.pdf).
+The version-2.4 native reference distinction follows EXIF 3.0 section 4.6.7.1.6.
+
+Defaults are DirtyOnly and FailOnConflict. One dirty altitude member selects
+both active XMP members, including a clean companion. Missing, duplicate, or
+mixed active/deleted altitude members fail. A complete dirty altitude tombstone
+pair removes both native fields under ReplaceExisting; one coordinate tombstone
+removes its native value/reference pair. PreserveExisting preserves the existing
+native group as a unit when either field exists, even when the group is partial.
+FailOnConflict rejects mismatched or partial existing groups. ReplaceExisting
+updates fields and removes duplicates. If deletion removes the last GPS value,
+its version tag is also removed; unrelated GPS fields keep the version.
+
+The whole call is atomic. It leaves source and output unchanged on failure and
+copies provenance into output-owned storage. Calls may allocate during
+preparation. Limits are seven added entries including GPSVersionID, 1024 native
+operations, 128 text bytes per selected active source, and 512 total text bytes.
+Coordinates and altitude can be disabled independently; disabling every group
+is invalid. Existing translation APIs and their default mapping sets are unchanged.
+
+Python exposes the same C++ policy and diagnostics:
+
+```python
+translated = document.translate_gps_metadata(
+    source_mode=openmeta.MetadataGpsTranslationSourceMode.All,
+    conflict_policy=openmeta.MetadataGpsTranslationConflictPolicy.ReplaceExisting,
+)
+```
+
+Pass the detached result to transfer preparation to persist it. Portable XMP
+now writes all four GPSVersionID components. Its existing coordinate/altitude
+formatters can round native rational values; this reverse API cannot recover
+precision already lost before the XMP source was created. This contract covers
+primary position writeback, not all GPS metadata or complete ExifTool parity.
 
 ## Conflict And Removal Policy
 

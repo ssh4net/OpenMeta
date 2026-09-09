@@ -1507,7 +1507,7 @@ TEST(XmpDump, PortablePrintConvertsCommonExifEnumsAndValues)
               std::string_view::npos);
     EXPECT_NE(s.find("<exif:ShutterSpeedValue>1/64</exif:ShutterSpeedValue>"),
               std::string_view::npos);
-    EXPECT_NE(s.find("<exif:GPSVersionID>2</exif:GPSVersionID>"),
+    EXPECT_NE(s.find("<exif:GPSVersionID>2.3.0.0</exif:GPSVersionID>"),
               std::string_view::npos);
     EXPECT_NE(s.find("<exif:GPSLatitude>41,24.5N</exif:GPSLatitude>"),
               std::string_view::npos);

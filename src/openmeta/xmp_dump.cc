@@ -4429,13 +4429,17 @@ namespace {
         if (tag == 0x0000U && v.kind == MetaValueKind::Array
             && v.elem_type == MetaElementType::U8 && v.count > 0U) {
             const std::span<const std::byte> raw = arena.span(v.data.span);
-            if (!raw.empty()) {
+            if (v.count == 4U && raw.size() == 4U) {
                 char buf[16];
-                std::snprintf(buf, sizeof(buf), "%u",
-                              static_cast<unsigned>(
-                                  static_cast<uint8_t>(raw[0])));
+                std::snprintf(
+                    buf, sizeof(buf), "%u.%u.%u.%u",
+                    static_cast<unsigned>(static_cast<uint8_t>(raw[0])),
+                    static_cast<unsigned>(static_cast<uint8_t>(raw[1])),
+                    static_cast<unsigned>(static_cast<uint8_t>(raw[2])),
+                    static_cast<unsigned>(static_cast<uint8_t>(raw[3])));
                 return emit_portable_property_text(w, prefix, name, buf);
             }
+            return true;
         }
 
         URational ur {};

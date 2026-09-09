@@ -137,7 +137,8 @@ model should stay compact:
      - Medium-high, about 82-87% for the declared scope; exact date parsing,
        four technical and five typed capture EXIF mappings, target-validated
        orientation and complete stored-dimension groups, 20 IPTC text/priority
-       mappings with combined atomic writeback,
+       mappings with combined atomic writeback, primary GPS coordinate/altitude
+       groups with exact rational precision and version handling,
        repeated-value reconciliation, exact rational conversion, safe
        ASCII/UTF-8 handling, tombstone propagation, resource limits, JPEG/TIFF
        round trips, and thin Python exposure are implemented.

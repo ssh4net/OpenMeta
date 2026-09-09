@@ -372,6 +372,52 @@ xmlns:i=\"http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/\">
         raise AssertionError('invalid priority was accepted')
     assert batch.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    gps_path = Path(temporary) / 'gps.jpg'
+    xml = b'''<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">
+<rdf:Description xmlns:e=\"http://ns.adobe.com/exif/1.0/\">
+<e:GPSLatitude>35,48.125N</e:GPSLatitude><e:GPSLongitude>139,34,55.25W</e:GPSLongitude>
+<e:GPSAltitude>2469/20</e:GPSAltitude><e:GPSAltitudeRef>1</e:GPSAltitudeRef>
+</rdf:Description></rdf:RDF>'''
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    gps_path.write_bytes(bytes.fromhex('ffd8ffe1') +
+        (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    gps = openmeta.read(str(gps_path))
+    count = gps.entry_count
+    assert openmeta.METADATA_GPS_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_GPS_TRANSLATION_MAX_ADDED_ENTRIES == 7
+    assert gps.translate_gps_metadata().entry_count == count
+    translated = gps.translate_gps_metadata(source_mode=openmeta.MetadataGpsTranslationSourceMode.All)
+    assert translated.entry_count == count + 7
+    native, _ = translated.dump_xmp_portable(include_existing_xmp=False, include_iptc=False)
+    assert b'<exif:GPSLatitude>35,48.125N</exif:GPSLatitude>' in native
+    assert b'<exif:GPSVersionID>2.3.0.0</exif:GPSVersionID>' in native
+    assert translated.translate_gps_metadata(
+        source_mode=openmeta.MetadataGpsTranslationSourceMode.All).entry_count == count + 7
+    for selected in ('latitude_to_exif', 'longitude_to_exif', 'altitude_to_exif'):
+        one = gps.translate_gps_metadata(source_mode=openmeta.MetadataGpsTranslationSourceMode.All,
+            **{name: name == selected for name in ('latitude_to_exif', 'longitude_to_exif', 'altitude_to_exif')})
+        assert one.entry_count == count + 3
+    try:
+        gps.translate_gps_metadata(source_mode=openmeta.MetadataGpsTranslationSourceMode.All,
+            max_added_entries=6)
+    except ValueError as exc:
+        assert 'entry_limit_exceeded' in str(exc)
+    else:
+        raise AssertionError('GPS version was omitted from entry accounting')
+    xml = xml.replace(b'35,48.125N', b'91,0N')
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    gps_path.write_bytes(bytes.fromhex('ffd8ffe1') +
+        (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    invalid = openmeta.read(str(gps_path))
+    try:
+        invalid.translate_gps_metadata(source_mode=openmeta.MetadataGpsTranslationSourceMode.All)
+    except ValueError as exc:
+        assert 'value_out_of_range for exif_gps_latitude' in str(exc)
+    else:
+        raise AssertionError('invalid GPS latitude accepted')
+    assert gps.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

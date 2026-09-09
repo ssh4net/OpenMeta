@@ -894,8 +894,11 @@ Suggested delivery sequence:
    urgency, plus combined atomic writeback of all 20 supported text/priority
    groups. Together with the date API this covers the 24 active IPTC assignments
    in the documented ExifTool copy inventory, with explicit exclusions and no
-   overall parity claim. Additional capture fields, GPS, and structured-location
-   reconciliation remain separate feature batches. See `docs/translation.md`.
+   overall parity claim. Version 0.4.131 adds primary GPS latitude/longitude and
+   altitude/reference writeback, including exact rational precision and GPS
+   version companions. Additional capture fields, GPS time/navigation/destination
+   data, and structured-location reconciliation remain separate feature batches.
+   See `docs/translation.md`.
 2. Retain the completed writer-baseline and compare-backed release gates while
    extending validated foreign `BMFF` graph shapes.
 3. Continue the Nikon inventory beyond standard embedded-TIFF offsets, then

@@ -1,0 +1,783 @@
+// SPDX-License-Identifier: Apache-2.0
+
+#include "openmeta/metadata_translation.h"
+
+#include "openmeta/meta_edit.h"
+#include "openmeta/meta_flags.h"
+#include "openmeta/meta_key.h"
+#include "openmeta/meta_value.h"
+
+#include <array>
+#include <cstring>
+#include <limits>
+#include <span>
+#include <string_view>
+#include <utility>
+
+namespace openmeta {
+namespace {
+
+    using Status  = MetadataGpsTranslationStatus;
+    using Mapping = MetadataGpsTranslationMapping;
+    using Policy  = MetadataGpsTranslationConflictPolicy;
+
+    struct SourceProperty final {
+        EntryId first     = kInvalidEntryId;
+        EntryId duplicate = kInvalidEntryId;
+        bool dirty        = false;
+    };
+
+    struct GpsGroup final {
+        Mapping mapping = Mapping::None;
+        std::array<EntryId, 2> source_entries { kInvalidEntryId,
+                                                kInvalidEntryId };
+        std::array<EntryId, 2> native_entries { kInvalidEntryId,
+                                                kInvalidEntryId };
+        std::array<uint32_t, 2> native_counts {};
+        std::array<bool, 2> matches {};
+        std::array<URational, 3> coordinate {};
+        URational altitude { 0U, 1U };
+        char hemisphere      = 'N';
+        uint8_t altitude_ref = 0U;
+        uint16_t first_tag   = 0U;
+        bool selected        = false;
+        bool present         = false;
+        bool apply           = false;
+    };
+
+    struct Ratio final {
+        uint64_t numerator   = 0U;
+        uint64_t denominator = 1U;
+    };
+
+    static std::string_view text(const ByteArena& arena,
+                                 ByteSpan value) noexcept
+    {
+        const std::span<const std::byte> bytes = arena.span(value);
+        return { reinterpret_cast<const char*>(bytes.data()), bytes.size() };
+    }
+
+    static uint64_t gcd(uint64_t a, uint64_t b) noexcept
+    {
+        while (b != 0U) {
+            const uint64_t remainder = a % b;
+            a                        = b;
+            b                        = remainder;
+        }
+        return a;
+    }
+
+    static Status digits(std::string_view value, uint64_t* out) noexcept
+    {
+        if (value.empty()) {
+            return Status::InvalidSourceValue;
+        }
+        uint64_t number = 0U;
+        for (const char c : value) {
+            if (c < '0' || c > '9') {
+                return Status::InvalidSourceValue;
+            }
+            const uint64_t digit = static_cast<uint64_t>(c - '0');
+            if (number > (UINT64_MAX - digit) / 10U) {
+                return Status::UnsupportedPrecision;
+            }
+            number = number * 10U + digit;
+        }
+        *out = number;
+        return Status::Ok;
+    }
+
+    static Status decimal(std::string_view value, Ratio* out) noexcept
+    {
+        const size_t dot = value.find('.');
+        if (dot == std::string_view::npos) {
+            return digits(value, &out->numerator);
+        }
+        uint64_t whole = 0U;
+        Status status  = digits(value.substr(0U, dot), &whole);
+        if (status != Status::Ok) {
+            return status;
+        }
+        std::string_view fraction = value.substr(dot + 1U);
+        if (fraction.empty()) {
+            return Status::InvalidSourceValue;
+        }
+        for (const char c : fraction) {
+            if (c < '0' || c > '9') {
+                return Status::InvalidSourceValue;
+            }
+        }
+        while (!fraction.empty() && fraction.back() == '0') {
+            fraction.remove_suffix(1U);
+        }
+        uint64_t numerator   = 0U;
+        uint64_t denominator = 1U;
+        if (!fraction.empty()) {
+            status = digits(fraction, &numerator);
+            if (status != Status::Ok) {
+                return status;
+            }
+            for (size_t i = 0U; i < fraction.size(); ++i) {
+                if (denominator > UINT64_MAX / 10U) {
+                    return Status::UnsupportedPrecision;
+                }
+                denominator *= 10U;
+            }
+        }
+        if (whole > (UINT64_MAX - numerator) / denominator) {
+            return Status::UnsupportedPrecision;
+        }
+        out->numerator   = whole * denominator + numerator;
+        out->denominator = denominator;
+        return Status::Ok;
+    }
+
+    static Status rational32(Ratio value, URational* out) noexcept
+    {
+        if (value.denominator == 0U) {
+            return Status::InvalidSourceValue;
+        }
+        const uint64_t divisor = gcd(value.numerator, value.denominator);
+        value.numerator /= divisor;
+        value.denominator /= divisor;
+        if (value.numerator > UINT32_MAX || value.denominator > UINT32_MAX) {
+            return Status::UnsupportedPrecision;
+        }
+        *out = { static_cast<uint32_t>(value.numerator),
+                 static_cast<uint32_t>(value.denominator) };
+        return Status::Ok;
+    }
+
+    static bool integer(const MetaValue& value, uint64_t* out) noexcept
+    {
+        if (value.kind != MetaValueKind::Scalar || value.count != 1U) {
+            return false;
+        }
+        switch (value.elem_type) {
+        case MetaElementType::U8:
+        case MetaElementType::U16:
+        case MetaElementType::U32:
+        case MetaElementType::U64: *out = value.data.u64; return true;
+        case MetaElementType::I8:
+        case MetaElementType::I16:
+        case MetaElementType::I32:
+        case MetaElementType::I64:
+            if (value.data.i64 >= 0) {
+                *out = static_cast<uint64_t>(value.data.i64);
+                return true;
+            }
+            return false;
+        default: return false;
+        }
+    }
+
+    static Status altitude_value(const MetaStore& source,
+                                 const MetaValue& value,
+                                 URational* out) noexcept
+    {
+        Ratio ratio;
+        if (value.kind == MetaValueKind::Scalar && value.count == 1U
+            && value.elem_type == MetaElementType::URational) {
+            ratio = { value.data.ur.numer, value.data.ur.denom };
+        } else if (integer(value, &ratio.numerator)) {
+            // Integer values have an exact denominator of one.
+        } else if (value.kind == MetaValueKind::Text) {
+            const std::string_view input = text(source.arena(),
+                                                value.data.span);
+            const size_t slash           = input.find('/');
+            Status status;
+            if (slash == std::string_view::npos) {
+                status = decimal(input, &ratio);
+            } else {
+                status = digits(input.substr(0U, slash), &ratio.numerator);
+                if (status == Status::Ok) {
+                    status = digits(input.substr(slash + 1U),
+                                    &ratio.denominator);
+                }
+            }
+            if (status != Status::Ok) {
+                return status;
+            }
+        } else {
+            return Status::InvalidSourceValue;
+        }
+        return rational32(ratio, out);
+    }
+
+    static Status coordinate_value(const MetaStore& source,
+                                   const MetaValue& value, bool latitude,
+                                   GpsGroup* group) noexcept
+    {
+        if (value.kind != MetaValueKind::Text) {
+            return Status::InvalidSourceValue;
+        }
+        std::string_view input = text(source.arena(), value.data.span);
+        if (input.empty()) {
+            return Status::InvalidSourceValue;
+        }
+        group->hemisphere = input.back();
+        if (latitude ? (input.back() != 'N' && input.back() != 'S')
+                     : (input.back() != 'E' && input.back() != 'W')) {
+            return Status::InvalidSourceValue;
+        }
+        input.remove_suffix(1U);
+        const size_t first_comma = input.find(',');
+        if (first_comma == std::string_view::npos) {
+            return Status::InvalidSourceValue;
+        }
+        uint64_t degrees = 0U;
+        Status status    = digits(input.substr(0U, first_comma), &degrees);
+        if (status != Status::Ok) {
+            return status;
+        }
+        input.remove_prefix(first_comma + 1U);
+        const size_t second_comma = input.find(',');
+        uint64_t minutes          = 0U;
+        Ratio seconds;
+        if (second_comma == std::string_view::npos) {
+            Ratio minute_value;
+            status = decimal(input, &minute_value);
+            if (status != Status::Ok) {
+                return status;
+            }
+            minutes = minute_value.numerator / minute_value.denominator;
+            seconds.numerator = minute_value.numerator
+                                % minute_value.denominator;
+            seconds.denominator    = minute_value.denominator;
+            const uint64_t divisor = gcd(60U, seconds.denominator);
+            seconds.denominator /= divisor;
+            const uint64_t multiplier = 60U / divisor;
+            if (seconds.numerator > UINT64_MAX / multiplier) {
+                return Status::UnsupportedPrecision;
+            }
+            seconds.numerator *= multiplier;
+        } else {
+            status = digits(input.substr(0U, second_comma), &minutes);
+            if (status == Status::Ok) {
+                status = decimal(input.substr(second_comma + 1U), &seconds);
+            }
+            if (status != Status::Ok) {
+                return status;
+            }
+        }
+        const uint64_t maximum = latitude ? 90U : 180U;
+        if (degrees > maximum || minutes >= 60U
+            || seconds.numerator / seconds.denominator >= 60U
+            || (degrees == maximum
+                && (minutes != 0U || seconds.numerator != 0U))) {
+            return Status::ValueOutOfRange;
+        }
+        group->coordinate[0] = { static_cast<uint32_t>(degrees), 1U };
+        group->coordinate[1] = { static_cast<uint32_t>(minutes), 1U };
+        return rational32(seconds, &group->coordinate[2]);
+    }
+
+    static bool gps_tag(const MetaStore& store, const Entry& entry,
+                        uint16_t tag) noexcept
+    {
+        return entry.key.kind == MetaKeyKind::ExifTag
+               && entry.key.data.exif_tag.tag == tag
+               && text(store.arena(), entry.key.data.exif_tag.ifd) == "gpsifd";
+    }
+
+    static bool ratio_matches(URational a, URational b) noexcept
+    {
+        return a.denom != 0U && b.denom != 0U
+               && static_cast<uint64_t>(a.numer) * b.denom
+                      == static_cast<uint64_t>(b.numer) * a.denom;
+    }
+
+    static bool field_matches(const MetaStore& store, const MetaValue& value,
+                              const GpsGroup& group, size_t member) noexcept
+    {
+        if (group.first_tag == 5U) {
+            if (member == 0U) {
+                return value.kind == MetaValueKind::Scalar && value.count == 1U
+                       && value.elem_type == MetaElementType::U8
+                       && value.data.u64 == group.altitude_ref;
+            }
+            return value.kind == MetaValueKind::Scalar && value.count == 1U
+                   && value.elem_type == MetaElementType::URational
+                   && ratio_matches(value.data.ur, group.altitude);
+        }
+        if (member == 0U) {
+            if (value.kind != MetaValueKind::Text) {
+                return false;
+            }
+            std::string_view reference = text(store.arena(), value.data.span);
+            if (reference.size() == 2U && reference.back() == '\0') {
+                reference.remove_suffix(1U);
+            }
+            return reference.size() == 1U
+                   && reference.front() == group.hemisphere;
+        }
+        if (value.kind != MetaValueKind::Array || value.count != 3U
+            || value.elem_type != MetaElementType::URational) {
+            return false;
+        }
+        const std::span<const std::byte> bytes = store.arena().span(
+            value.data.span);
+        if (bytes.size() != 3U * sizeof(URational)) {
+            return false;
+        }
+        for (size_t i = 0U; i < 3U; ++i) {
+            URational actual;
+            std::memcpy(&actual, bytes.data() + i * sizeof(URational),
+                        sizeof(actual));
+            if (!ratio_matches(actual, group.coordinate[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static MetaValue native_value(ByteArena& arena, const GpsGroup& group,
+                                  size_t member)
+    {
+        if (group.first_tag == 5U) {
+            return member == 0U ? make_u8(group.altitude_ref)
+                                : make_urational(group.altitude.numer,
+                                                 group.altitude.denom);
+        }
+        if (member == 0U) {
+            return make_text(arena, std::string_view(&group.hemisphere, 1U),
+                             TextEncoding::Ascii);
+        }
+        return make_urational_array(arena, group.coordinate);
+    }
+
+    static void append_entry(const MetaStore& source, EntryId source_id,
+                             uint16_t tag, MetaValue value, MetaEdit* edit)
+    {
+        Entry entry;
+        entry.key    = make_exif_tag_key(edit->arena(), "gpsifd", tag);
+        entry.value  = value;
+        entry.origin = source.entry(source_id).origin;
+        if (entry.origin.wire_type_name.size != 0U) {
+            entry.origin.wire_type_name = edit->arena().append(
+                source.arena().span(entry.origin.wire_type_name));
+        }
+        entry.flags = EntryFlags::Dirty;
+        edit->add_entry(entry);
+    }
+
+    static MetadataGpsTranslationResult
+    error(Status status, Mapping mapping = Mapping::None,
+          EntryId entry = kInvalidEntryId) noexcept
+    {
+        MetadataGpsTranslationResult result;
+        result.status              = status;
+        result.failed_mapping      = mapping;
+        result.failed_source_entry = entry;
+        return result;
+    }
+
+}  // namespace
+
+MetadataGpsTranslationResult
+translate_xmp_gps_metadata(const MetaStore& source,
+                           const MetadataGpsTranslationOptions& options,
+                           MetaStore* out_store)
+{
+    if (!out_store) {
+        return error(Status::NullOutput);
+    }
+    if (!source.is_finalized()) {
+        return error(Status::SourceNotFinalized);
+    }
+    if (options.max_added_entries == 0U
+        || options.max_added_entries > kMetadataGpsTranslationMaxAddedEntries
+        || options.max_operations == 0U
+        || options.max_operations > kMetadataGpsTranslationMaxOperations
+        || options.max_text_bytes_per_property == 0U
+        || options.max_text_bytes_per_property
+               > kMetadataGpsTranslationMaxTextBytesPerProperty
+        || options.max_total_text_bytes == 0U
+        || options.max_total_text_bytes
+               > kMetadataGpsTranslationMaxTotalTextBytes
+        || (options.source_mode != MetadataGpsTranslationSourceMode::DirtyOnly
+            && options.source_mode != MetadataGpsTranslationSourceMode::All)
+        || (options.conflict_policy != Policy::PreserveExisting
+            && options.conflict_policy != Policy::FailOnConflict
+            && options.conflict_policy != Policy::ReplaceExisting)
+        || (!options.latitude_to_exif && !options.longitude_to_exif
+            && !options.altitude_to_exif)) {
+        return error(Status::InvalidOptions);
+    }
+
+    static constexpr std::array<std::string_view, 4> paths {
+        "GPSLatitude", "GPSLongitude", "GPSAltitude", "GPSAltitudeRef"
+    };
+    const std::array<bool, 3> enabled { options.latitude_to_exif,
+                                        options.longitude_to_exif,
+                                        options.altitude_to_exif };
+    std::array<SourceProperty, 4> properties {};
+    const std::span<const Entry> entries = source.entries();
+    for (EntryId id = 0U; id < entries.size(); ++id) {
+        const Entry& entry = entries[id];
+        const bool dirty   = any(entry.flags, EntryFlags::Dirty);
+        if (entry.key.kind != MetaKeyKind::XmpProperty
+            || (any(entry.flags, EntryFlags::Deleted) && !dirty)
+            || text(source.arena(), entry.key.data.xmp_property.schema_ns)
+                   != "http://ns.adobe.com/exif/1.0/") {
+            continue;
+        }
+        const std::string_view path
+            = text(source.arena(), entry.key.data.xmp_property.property_path);
+        for (size_t i = 0U; i < properties.size(); ++i) {
+            if (path != paths[i]) {
+                continue;
+            }
+            SourceProperty& property = properties[i];
+            property.dirty           = property.dirty || dirty;
+            if (property.first == kInvalidEntryId) {
+                property.first = id;
+            } else {
+                property.duplicate = id;
+            }
+        }
+    }
+
+    std::array<GpsGroup, 3> groups {};
+    MetadataGpsTranslationResult result;
+    uint64_t text_bytes  = 0U;
+    bool active_selected = false;
+    for (size_t i = 0U; i < groups.size(); ++i) {
+        GpsGroup& group = groups[i];
+        group.mapping   = static_cast<Mapping>(
+            static_cast<uint8_t>(Mapping::ExifGpsLatitude) + i);
+        group.first_tag    = static_cast<uint16_t>(1U + 2U * i);
+        const size_t count = i == 2U ? 2U : 1U;
+        bool found         = false;
+        bool dirty         = false;
+        for (size_t j = 0U; j < count; ++j) {
+            found = found || properties[i + j].first != kInvalidEntryId;
+            dirty = dirty || properties[i + j].dirty;
+        }
+        if (!enabled[i] || !found
+            || (options.source_mode
+                    == MetadataGpsTranslationSourceMode::DirtyOnly
+                && !dirty)) {
+            continue;
+        }
+        group.selected = true;
+        for (size_t j = 0U; j < count; ++j) {
+            const SourceProperty& property = properties[i + j];
+            if (property.duplicate != kInvalidEntryId) {
+                return error(Status::AmbiguousSource, group.mapping,
+                             property.duplicate);
+            }
+            if (property.first == kInvalidEntryId) {
+                return error(Status::IncompleteSource, group.mapping,
+                             properties[i].first);
+            }
+            const Entry& entry      = entries[property.first];
+            group.source_entries[j] = property.first;
+            ++result.source_properties;
+            const bool present = !any(entry.flags, EntryFlags::Deleted);
+            if (j == 0U) {
+                group.present = present;
+            } else if (group.present != present) {
+                return error(Status::IncompleteSource, group.mapping,
+                             property.first);
+            }
+            if (present && entry.value.kind == MetaValueKind::Text) {
+                const uint64_t size = entry.value.data.span.size;
+                if (size > options.max_text_bytes_per_property) {
+                    return error(Status::ValueTooLong, group.mapping,
+                                 property.first);
+                }
+                if (size > options.max_total_text_bytes
+                    || text_bytes > options.max_total_text_bytes - size) {
+                    return error(Status::SourceLimitExceeded, group.mapping,
+                                 property.first);
+                }
+                text_bytes += size;
+            }
+        }
+        if (i < 2U) {
+            group.source_entries[1] = group.source_entries[0];
+        }
+        if (!group.present) {
+            continue;
+        }
+        active_selected = true;
+        Status status;
+        if (i < 2U) {
+            status = coordinate_value(source,
+                                      entries[group.source_entries[0]].value,
+                                      i == 0U, &group);
+        } else {
+            status                 = altitude_value(source,
+                                                    entries[group.source_entries[0]].value,
+                                                    &group.altitude);
+            uint64_t reference     = 0U;
+            const MetaValue& value = entries[group.source_entries[1]].value;
+            if (status == Status::Ok) {
+                if (value.kind == MetaValueKind::Text) {
+                    const std::string_view reference_text
+                        = text(source.arena(), value.data.span);
+                    status = reference_text == "0" || reference_text == "1"
+                                 ? Status::Ok
+                                 : Status::InvalidSourceValue;
+                    if (status == Status::Ok) {
+                        reference = static_cast<uint64_t>(reference_text[0]
+                                                          - '0');
+                    }
+                } else if (!integer(value, &reference) || reference > 1U) {
+                    status = Status::InvalidSourceValue;
+                }
+                if (status != Status::Ok) {
+                    return error(status, group.mapping,
+                                 group.source_entries[1]);
+                }
+            }
+            group.altitude_ref = static_cast<uint8_t>(reference);
+            // Native reference precedes altitude; provenance follows each XMP member.
+            std::swap(group.source_entries[0], group.source_entries[1]);
+        }
+        if (status != Status::Ok) {
+            return error(status, group.mapping,
+                         i == 2U ? group.source_entries[1]
+                                 : group.source_entries[0]);
+        }
+    }
+
+    EntryId version_entry  = kInvalidEntryId;
+    uint32_t version_count = 0U;
+    std::array<uint8_t, 4> version { 2U, 3U, 0U, 0U };
+    for (EntryId id = 0U; id < entries.size(); ++id) {
+        if (!any(entries[id].flags, EntryFlags::Deleted)
+            && gps_tag(source, entries[id], 0U)) {
+            version_entry = id;
+            ++version_count;
+        }
+    }
+    if (active_selected && version_count != 0U) {
+        const MetaValue& value = entries[version_entry].value;
+        if (version_count != 1U || value.kind != MetaValueKind::Array
+            || value.elem_type != MetaElementType::U8 || value.count != 4U) {
+            return error(Status::NativeConflict, Mapping::GpsVersion);
+        }
+        const std::span<const std::byte> bytes = source.arena().span(
+            value.data.span);
+        if (bytes.size() != 4U) {
+            return error(Status::NativeConflict, Mapping::GpsVersion);
+        }
+        std::memcpy(version.data(), bytes.data(), version.size());
+    }
+    if (groups[2].selected && groups[2].present) {
+        if (version[0] != 2U || version[1] > 4U || version[2] != 0U
+            || version[3] != 0U) {
+            return error(Status::UnsupportedGpsVersion, Mapping::GpsVersion);
+        }
+        if (version[1] == 4U) {
+            groups[2].altitude_ref += 2U;
+        }
+    }
+
+    uint32_t added         = 0U;
+    uint32_t operations    = 0U;
+    bool need_version      = false;
+    bool removed_group     = false;
+    EntryId version_source = kInvalidEntryId;
+    for (GpsGroup& group : groups) {
+        if (!group.selected) {
+            continue;
+        }
+        for (EntryId id = 0U; id < entries.size(); ++id) {
+            if (any(entries[id].flags, EntryFlags::Deleted)) {
+                continue;
+            }
+            for (size_t j = 0U; j < 2U; ++j) {
+                if (!gps_tag(source, entries[id],
+                             static_cast<uint16_t>(group.first_tag + j))) {
+                    continue;
+                }
+                if (group.native_counts[j] >= options.max_operations) {
+                    return error(Status::OperationLimitExceeded, group.mapping);
+                }
+                if (group.native_counts[j]++ == 0U) {
+                    group.native_entries[j] = id;
+                    group.matches[j]
+                        = group.present
+                          && field_matches(source, entries[id].value, group, j);
+                }
+            }
+        }
+        const bool existing = group.native_counts[0] != 0U
+                              || group.native_counts[1] != 0U;
+        const bool exact = group.present
+                               ? group.native_counts[0] == 1U
+                                     && group.native_counts[1] == 1U
+                                     && group.matches[0] && group.matches[1]
+                               : !existing;
+        if (options.conflict_policy == Policy::PreserveExisting && existing) {
+            ++result.groups_preserved;
+            continue;
+        }
+        if (options.conflict_policy == Policy::FailOnConflict && existing
+            && !exact) {
+            return error(Status::NativeConflict, group.mapping,
+                         group.source_entries[0]);
+        }
+        if (exact) {
+            ++result.groups_unchanged;
+        } else {
+            group.apply = true;
+        }
+        if (group.present) {
+            need_version   = true;
+            version_source = group.source_entries[0];
+        } else if (group.apply) {
+            removed_group = true;
+        }
+        if (!group.apply) {
+            continue;
+        }
+        for (size_t j = 0U; j < 2U; ++j) {
+            if (!group.present) {
+                operations += group.native_counts[j];
+            } else if (group.native_counts[j] == 0U) {
+                ++added;
+                ++operations;
+            } else {
+                operations += group.native_counts[j] - 1U
+                              + (group.matches[j] ? 0U : 1U);
+            }
+        }
+    }
+    bool remove_version = removed_group;
+    if (remove_version) {
+        for (const Entry& entry : entries) {
+            if (any(entry.flags, EntryFlags::Deleted)
+                || entry.key.kind != MetaKeyKind::ExifTag
+                || text(source.arena(), entry.key.data.exif_tag.ifd) != "gpsifd"
+                || entry.key.data.exif_tag.tag == 0U) {
+                continue;
+            }
+            bool removed = false;
+            for (const GpsGroup& group : groups) {
+                removed = removed
+                          || (group.apply && !group.present
+                              && (entry.key.data.exif_tag.tag == group.first_tag
+                                  || entry.key.data.exif_tag.tag
+                                         == group.first_tag + 1U));
+            }
+            if (!removed) {
+                remove_version = false;
+            }
+        }
+        if (need_version) {
+            remove_version = false;
+        }
+    }
+    const bool add_version = need_version && version_count == 0U;
+    if (add_version) {
+        ++added;
+        ++operations;
+    }
+    if (remove_version) {
+        if (version_count > options.max_operations) {
+            return error(Status::OperationLimitExceeded, Mapping::GpsVersion);
+        }
+        operations += version_count;
+    }
+    if (added > options.max_added_entries
+        || entries.size() > static_cast<size_t>(kInvalidEntryId) - added) {
+        return error(Status::EntryLimitExceeded);
+    }
+    if (operations > options.max_operations) {
+        return error(Status::OperationLimitExceeded);
+    }
+
+    MetaEdit edit;
+    edit.reserve_ops(operations);
+    for (const GpsGroup& group : groups) {
+        if (!group.apply) {
+            continue;
+        }
+        for (size_t j = 0U; j < 2U; ++j) {
+            const uint16_t tag = static_cast<uint16_t>(group.first_tag + j);
+            for (EntryId id = 0U; id < entries.size(); ++id) {
+                if (any(entries[id].flags, EntryFlags::Deleted)
+                    || !gps_tag(source, entries[id], tag)) {
+                    continue;
+                }
+                if (!group.present || id != group.native_entries[j]) {
+                    edit.tombstone(id);
+                    ++result.entries_removed;
+                } else if (!group.matches[j]) {
+                    edit.set_value(id, native_value(edit.arena(), group, j));
+                    ++result.entries_updated;
+                }
+            }
+            if (group.present && group.native_counts[j] == 0U) {
+                append_entry(source, group.source_entries[j], tag,
+                             native_value(edit.arena(), group, j), &edit);
+                ++result.entries_added;
+            }
+        }
+        ++result.groups_translated;
+    }
+    if (add_version) {
+        append_entry(source, version_source, 0U,
+                     make_u8_array(edit.arena(), version), &edit);
+        ++result.entries_added;
+    }
+    if (remove_version) {
+        for (EntryId id = 0U; id < entries.size(); ++id) {
+            if (!any(entries[id].flags, EntryFlags::Deleted)
+                && gps_tag(source, entries[id], 0U)) {
+                edit.tombstone(id);
+                ++result.entries_removed;
+            }
+        }
+    }
+    if (edit.ops().size() != operations || result.entries_added != added
+        || edit.arena().limit_exceeded()) {
+        return error(Status::InternalError);
+    }
+    *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    return result;
+}
+
+const char*
+metadata_gps_translation_status_name(MetadataGpsTranslationStatus status) noexcept
+{
+    switch (status) {
+    case Status::Ok: return "ok";
+    case Status::NullOutput: return "null_output";
+    case Status::SourceNotFinalized: return "source_not_finalized";
+    case Status::InvalidOptions: return "invalid_options";
+    case Status::AmbiguousSource: return "ambiguous_source";
+    case Status::IncompleteSource: return "incomplete_source";
+    case Status::InvalidSourceValue: return "invalid_source_value";
+    case Status::ValueOutOfRange: return "value_out_of_range";
+    case Status::UnsupportedPrecision: return "unsupported_precision";
+    case Status::UnsupportedGpsVersion: return "unsupported_gps_version";
+    case Status::ValueTooLong: return "value_too_long";
+    case Status::SourceLimitExceeded: return "source_limit_exceeded";
+    case Status::NativeConflict: return "native_conflict";
+    case Status::EntryLimitExceeded: return "entry_limit_exceeded";
+    case Status::OperationLimitExceeded: return "operation_limit_exceeded";
+    case Status::InternalError: return "internal_error";
+    }
+    return "unknown";
+}
+
+const char*
+metadata_gps_translation_mapping_name(
+    MetadataGpsTranslationMapping mapping) noexcept
+{
+    switch (mapping) {
+    case Mapping::None: return "none";
+    case Mapping::ExifGpsLatitude: return "exif_gps_latitude";
+    case Mapping::ExifGpsLongitude: return "exif_gps_longitude";
+    case Mapping::ExifGpsAltitude: return "exif_gps_altitude";
+    case Mapping::GpsVersion: return "gps_version";
+    }
+    return "unknown";
+}
+
+}  // namespace openmeta

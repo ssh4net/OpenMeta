@@ -1,5 +1,29 @@
 # OpenMeta Changes
 
+## 0.4.131 - 2026-09-09
+
+Changes compared with `0.4.130`.
+
+### Added
+
+- Added versioned C++ `translate_xmp_gps_metadata` and Python
+  `Document.translate_gps_metadata` for primary latitude, longitude, and
+  altitude/reference writeback. Exact rational conversion, independent group
+  flags, dirty-pair selection, conflicts, deletion, and resource limits share
+  one transaction. GPS version companions are retained or created explicitly.
+- Added hemisphere and coordinate-boundary tests, precision/type checks, paired
+  reconciliation and atomicity tests, GPS-version handling, native JPEG/TIFF
+  persistence, Python coverage, and an installed shared-consumer check.
+
+### Fixed
+
+- TIFF/DNG preparation carries explicit removal of the final GPS directory
+  through the prepared EXIF payload. The TIFF writer removes the old GPS
+  pointer while retaining unrelated IFD0 fields. Omitted GPS metadata continues
+  to preserve the target GPS directory.
+- Portable XMP now emits all four GPSVersionID components, instead of only the
+  first byte.
+
 ## 0.4.130 - 2026-09-09
 
 Changes compared with `0.4.129`.
