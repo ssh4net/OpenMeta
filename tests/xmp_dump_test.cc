@@ -10981,6 +10981,18 @@ TEST(XmpDump, PortableMapsIptcToPhotoshopAndIptcCoreProperties)
     e11.origin.order_in_block = 11;
     (void)store.add_entry(e11);
 
+    Entry urgency;
+    urgency.key          = make_iptc_dataset_key(2U, 10U);
+    urgency.value        = make_text(store.arena(), "5", TextEncoding::Ascii);
+    urgency.origin.block = block;
+    (void)store.add_entry(urgency);
+    Entry jobtitle;
+    jobtitle.key          = make_iptc_dataset_key(2U, 85U);
+    jobtitle.value        = make_text(store.arena(), "Photographer",
+                                      TextEncoding::Ascii);
+    jobtitle.origin.block = block;
+    (void)store.add_entry(jobtitle);
+
     store.finalize();
 
     XmpPortableOptions opts;
@@ -11003,6 +11015,12 @@ TEST(XmpDump, PortableMapsIptcToPhotoshopAndIptcCoreProperties)
         std::string_view::npos);
     EXPECT_NE(s.find("<photoshop:Category>ART</photoshop:Category>"),
               std::string_view::npos);
+    EXPECT_NE(s.find("<photoshop:Urgency>5</photoshop:Urgency>"),
+              std::string_view::npos);
+    EXPECT_NE(
+        s.find(
+            "<photoshop:AuthorsPosition>Photographer</photoshop:AuthorsPosition>"),
+        std::string_view::npos);
     EXPECT_NE(s.find("<photoshop:City>Paris</photoshop:City>"),
               std::string_view::npos);
     EXPECT_NE(s.find("<Iptc4xmpCore:Location>Louvre</Iptc4xmpCore:Location>"),

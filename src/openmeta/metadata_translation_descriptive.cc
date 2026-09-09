@@ -88,6 +88,29 @@ namespace {
             kXmpNsPhotoshop, "TransmissionReference", 103U, 32U, false },
     };
 
+    static constexpr std::array<MappingDescriptor, 5U> kWorkflowMappings = {
+        MappingDescriptor {
+            MetadataDescriptiveTranslationMapping::PhotoshopAuthorsPosition,
+            kXmpNsPhotoshop, "AuthorsPosition", 85U, 32U, false },
+        MappingDescriptor {
+            MetadataDescriptiveTranslationMapping::PhotoshopCaptionWriter,
+            kXmpNsPhotoshop, "CaptionWriter", 122U, 32U, false },
+        MappingDescriptor {
+            MetadataDescriptiveTranslationMapping::PhotoshopCategory,
+            kXmpNsPhotoshop, "Category", 15U, 3U, false },
+        MappingDescriptor {
+            MetadataDescriptiveTranslationMapping::PhotoshopSupplementalCategories,
+            kXmpNsPhotoshop, "SupplementalCategories", 20U, 32U, true },
+        MappingDescriptor {
+            MetadataDescriptiveTranslationMapping::PhotoshopUrgency,
+            kXmpNsPhotoshop, "Urgency", 10U, 1U, false },
+    };
+
+    static constexpr size_t kIptcMappingCount = kMappings.size()
+                                                + kLocationMappings.size()
+                                                + kEditorialMappings.size()
+                                                + kWorkflowMappings.size();
+
     struct SourceText final {
         EntryId entry_id = kInvalidEntryId;
         uint32_t index   = 0U;
@@ -213,6 +236,35 @@ namespace {
         return result;
     }
 
+    static std::string_view urgency_scalar_text(const MetaValue& value) noexcept
+    {
+        if (value.kind != MetaValueKind::Scalar || value.count != 1U) {
+            return {};
+        }
+        uint64_t number = 0U;
+        switch (value.elem_type) {
+        case MetaElementType::U8:
+        case MetaElementType::U16:
+        case MetaElementType::U32:
+        case MetaElementType::U64: number = value.data.u64; break;
+        case MetaElementType::I8:
+        case MetaElementType::I16:
+        case MetaElementType::I32:
+        case MetaElementType::I64:
+            if (value.data.i64 < 1) {
+                return {};
+            }
+            number = static_cast<uint64_t>(value.data.i64);
+            break;
+        default: return {};
+        }
+        if (number < 1U || number > 8U) {
+            return {};
+        }
+        static constexpr std::string_view kDigits = "12345678";
+        return kDigits.substr(static_cast<size_t>(number - 1U), 1U);
+    }
+
     static MetadataDescriptiveTranslationStatus
     collect_source_mapping(const MetaStore& source,
                            const MetadataDescriptiveTranslationOptions& options,
@@ -275,13 +327,17 @@ namespace {
                 continue;
             }
             const Entry& entry = source.entry(candidate.entry_id);
-            if (entry.value.kind != MetaValueKind::Text) {
+            std::string_view text;
+            if (entry.value.kind == MetaValueKind::Text) {
+                text = arena_text(source.arena(), entry.value.data.span);
+            } else if (descriptor.mapping
+                       == MetadataDescriptiveTranslationMapping::PhotoshopUrgency) {
+                text = urgency_scalar_text(entry.value);
+            } else {
                 result->failed_mapping      = descriptor.mapping;
                 result->failed_source_entry = candidate.entry_id;
                 return MetadataDescriptiveTranslationStatus::InvalidSourceValue;
             }
-            const std::string_view text = arena_text(source.arena(),
-                                                     entry.value.data.span);
             if (text.empty() || !detail::metadata_logical_text_is_valid(text)) {
                 result->failed_mapping      = descriptor.mapping;
                 result->failed_source_entry = candidate.entry_id;
@@ -291,6 +347,24 @@ namespace {
                 result->failed_mapping      = descriptor.mapping;
                 result->failed_source_entry = candidate.entry_id;
                 return MetadataDescriptiveTranslationStatus::ValueTooLong;
+            }
+            if (descriptor.mapping
+                == MetadataDescriptiveTranslationMapping::PhotoshopCategory) {
+                for (const char c : text) {
+                    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) {
+                        result->failed_mapping      = descriptor.mapping;
+                        result->failed_source_entry = candidate.entry_id;
+                        return MetadataDescriptiveTranslationStatus::
+                            InvalidSourceValue;
+                    }
+                }
+            }
+            if (descriptor.mapping
+                    == MetadataDescriptiveTranslationMapping::PhotoshopUrgency
+                && (text.size() != 1U || text[0U] < '1' || text[0U] > '8')) {
+                result->failed_mapping      = descriptor.mapping;
+                result->failed_source_entry = candidate.entry_id;
+                return MetadataDescriptiveTranslationStatus::InvalidSourceValue;
             }
             if (descriptor.mapping
                 == MetadataDescriptiveTranslationMapping::IptcCountryCode) {
@@ -521,7 +595,8 @@ namespace {
 
     static bool append_iptc_entry(MetaEdit* edit, const MetaStore& source,
                                   const MappingDescriptor& descriptor,
-                                  const SourceText& value) noexcept
+                                  const SourceText& value,
+                                  uint32_t repeated_order) noexcept
     {
         if (!edit || value.entry_id >= source.entries().size()) {
             return false;
@@ -530,6 +605,10 @@ namespace {
         entry.key    = make_iptc_dataset_key(2U, descriptor.iptc_dataset);
         entry.value  = make_iptc_value(edit->arena(), value.text);
         entry.origin = source.entry(value.entry_id).origin;
+        if (descriptor.repeated) {
+            // Equal ranks retain append order, even after a UINT32_MAX rank.
+            entry.origin.order_in_block = repeated_order;
+        }
         if (entry.origin.wire_type_name.size > 0U) {
             entry.origin.wire_type_name = edit->arena().append(
                 source.arena().span(entry.origin.wire_type_name));
@@ -584,7 +663,7 @@ translate_iptc_text_mappings(
         return translation_error(
             MetadataDescriptiveTranslationStatus::SourceNotFinalized);
     }
-    if (mappings.empty() || mappings.size() > kMappings.size()
+    if (mappings.empty() || mappings.size() > kIptcMappingCount
         || options.max_source_properties == 0U
         || options.max_source_properties
                > kMetadataDescriptiveTranslationMaxSourceProperties
@@ -611,7 +690,7 @@ translate_iptc_text_mappings(
             MetadataDescriptiveTranslationStatus::InvalidOptions);
     }
 
-    std::array<PlannedMapping, kMappings.size()> plan_storage;
+    std::array<PlannedMapping, kIptcMappingCount> plan_storage;
     const std::span<PlannedMapping> plans(plan_storage.data(), mappings.size());
     uint32_t matched_sources  = 0U;
     uint64_t total_text_bytes = 0U;
@@ -749,9 +828,13 @@ translate_iptc_text_mappings(
             edit.tombstone(plan.native_entries[i]);
             ++result.entries_removed;
         }
+        const uint32_t repeated_order
+            = overlap == 0U ? 0U
+                            : source.entry(plan.native_entries[overlap - 1U])
+                                  .origin.order_in_block;
         for (size_t i = overlap; i < plan.values.size(); ++i) {
             if (append_iptc_entry(&edit, source, *plan.descriptor,
-                                  plan.values[i])) {
+                                  plan.values[i], repeated_order)) {
                 ++result.entries_added;
             }
         }
@@ -882,6 +965,61 @@ translate_xmp_editorial_metadata(
         std::span<const MappingDescriptor>(selected.data(), count), out_store);
 }
 
+MetadataDescriptiveTranslationResult
+translate_xmp_iptc_metadata(const MetaStore& source,
+                            const MetadataIptcTranslationOptions& options,
+                            MetaStore* out_store)
+{
+    const std::array<bool, kIptcMappingCount> enabled = {
+        options.title_to_iptc_object_name,
+        options.description_to_iptc_caption,
+        options.creators_to_iptc_bylines,
+        options.keywords_to_iptc_keywords,
+        options.copyright_to_iptc_copyright,
+        options.credit_to_iptc_credit,
+        options.source_to_iptc_source,
+        options.city_to_iptc,
+        options.sublocation_to_iptc,
+        options.state_to_iptc,
+        options.country_to_iptc,
+        options.country_code_to_iptc,
+        options.headline_to_iptc,
+        options.instructions_to_iptc,
+        options.transmission_reference_to_iptc,
+        options.authors_position_to_iptc,
+        options.caption_writer_to_iptc,
+        options.category_to_iptc,
+        options.supplemental_categories_to_iptc,
+        options.urgency_to_iptc,
+    };
+    const std::array<std::span<const MappingDescriptor>, 4U> groups = {
+        kMappings,
+        kLocationMappings,
+        kEditorialMappings,
+        kWorkflowMappings,
+    };
+    std::array<MappingDescriptor, kIptcMappingCount> selected;
+    size_t count = 0U;
+    size_t index = 0U;
+    for (const std::span<const MappingDescriptor> group : groups) {
+        for (const MappingDescriptor& descriptor : group) {
+            if (enabled[index++]) {
+                selected[count++] = descriptor;
+            }
+        }
+    }
+    MetadataDescriptiveTranslationOptions text_options;
+    text_options.source_mode           = options.source_mode;
+    text_options.conflict_policy       = options.conflict_policy;
+    text_options.max_source_properties = options.max_source_properties;
+    text_options.max_added_entries     = options.max_added_entries;
+    text_options.max_operations        = options.max_operations;
+    text_options.max_total_text_bytes  = options.max_total_text_bytes;
+    return translate_iptc_text_mappings(
+        source, text_options,
+        std::span<const MappingDescriptor>(selected.data(), count), out_store);
+}
+
 const char*
 metadata_descriptive_translation_status_name(
     MetadataDescriptiveTranslationStatus status) noexcept
@@ -947,6 +1085,16 @@ metadata_descriptive_translation_mapping_name(
         return "photoshop_instructions";
     case MetadataDescriptiveTranslationMapping::PhotoshopTransmissionReference:
         return "photoshop_transmission_reference";
+    case MetadataDescriptiveTranslationMapping::PhotoshopAuthorsPosition:
+        return "photoshop_authors_position";
+    case MetadataDescriptiveTranslationMapping::PhotoshopCaptionWriter:
+        return "photoshop_caption_writer";
+    case MetadataDescriptiveTranslationMapping::PhotoshopCategory:
+        return "photoshop_category";
+    case MetadataDescriptiveTranslationMapping::PhotoshopSupplementalCategories:
+        return "photoshop_supplemental_categories";
+    case MetadataDescriptiveTranslationMapping::PhotoshopUrgency:
+        return "photoshop_urgency";
     }
     return "unknown";
 }

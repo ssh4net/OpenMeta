@@ -136,8 +136,8 @@ model should stay compact:
        flat IPTC Core locations, and editorial fields into native EXIF/IPTC groups.
      - Medium-high, about 82-87% for the declared scope; exact date parsing,
        four technical and five typed capture EXIF mappings, target-validated
-       orientation and complete stored-dimension groups, seven descriptive,
-       five location and three editorial IPTC mappings,
+       orientation and complete stored-dimension groups, 20 IPTC text/priority
+       mappings with combined atomic writeback,
        repeated-value reconciliation, exact rational conversion, safe
        ASCII/UTF-8 handling, tombstone propagation, resource limits, JPEG/TIFF
        round trips, and thin Python exposure are implemented.

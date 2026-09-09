@@ -299,6 +299,79 @@ with tempfile.TemporaryDirectory() as temporary:
     else:
         raise AssertionError('oversized editorial identifier was accepted')
 
+with tempfile.TemporaryDirectory() as temporary:
+    batch_path = Path(temporary) / 'iptc.jpg'
+    xml = b'''<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">
+<rdf:Description xmlns:p=\"http://ns.adobe.com/photoshop/1.0/\"
+xmlns:dc=\"http://purl.org/dc/elements/1.1/\"
+xmlns:i=\"http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/\">
+<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">Title</rdf:li></rdf:Alt></dc:title>
+<dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">Caption</rdf:li></rdf:Alt></dc:description>
+<dc:rights><rdf:Alt><rdf:li xml:lang=\"x-default\">Copyright</rdf:li></rdf:Alt></dc:rights>
+<dc:creator><rdf:Seq><rdf:li>Alice</rdf:li></rdf:Seq></dc:creator>
+<dc:subject><rdf:Bag><rdf:li>Garden</rdf:li></rdf:Bag></dc:subject>
+<p:Credit>Credit</p:Credit><p:Source>Source</p:Source>
+<p:City>Kyoto</p:City><i:Location>Garden</i:Location><p:State>Kyoto</p:State>
+<p:Country>Japan</p:Country><i:CountryCode>JP</i:CountryCode>
+<p:Headline>Garden opens</p:Headline><p:Instructions>Contact editor</p:Instructions>
+<p:TransmissionReference>JOB-42</p:TransmissionReference>
+<p:AuthorsPosition>Photographer</p:AuthorsPosition><p:CaptionWriter>Editor</p:CaptionWriter>
+<p:Category>ART</p:Category><p:Urgency>5</p:Urgency>
+<p:SupplementalCategories><rdf:Bag><rdf:li>Painting</rdf:li><rdf:li>Gallery</rdf:li></rdf:Bag></p:SupplementalCategories>
+</rdf:Description></rdf:RDF>'''
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    batch_path.write_bytes(bytes.fromhex('ffd8ffe1') +
+        (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    batch = openmeta.read(str(batch_path))
+    count = batch.entry_count
+    assert batch.translate_iptc_metadata().entry_count == count
+    translated = batch.translate_iptc_metadata(
+        source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All)
+    assert openmeta.METADATA_IPTC_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_IPTC_TRANSLATION_MAX_ADDED_ENTRIES == 1025
+    assert translated.entry_count == count + 21
+    assert batch.entry_count == count
+    native, _ = translated.dump_xmp_portable(
+        include_existing_xmp=False, include_exif=False, include_iptc=True)
+    assert b'Photographer' in native and b'Editor' in native and b'ART' in native
+    assert b'Painting' in native and b'Gallery' in native
+    assert b'<photoshop:Urgency>5</photoshop:Urgency>' in native
+    assert translated.translate_iptc_metadata(
+        source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All).entry_count == count + 21
+    flags = ('title_to_iptc_object_name', 'description_to_iptc_caption',
+        'creators_to_iptc_bylines', 'keywords_to_iptc_keywords',
+        'copyright_to_iptc_copyright', 'credit_to_iptc_credit', 'source_to_iptc_source',
+        'city_to_iptc', 'sublocation_to_iptc', 'state_to_iptc', 'country_to_iptc',
+        'country_code_to_iptc', 'headline_to_iptc', 'instructions_to_iptc',
+        'transmission_reference_to_iptc', 'authors_position_to_iptc',
+        'caption_writer_to_iptc', 'category_to_iptc', 'supplemental_categories_to_iptc',
+        'urgency_to_iptc')
+    for selected in flags:
+        one = batch.translate_iptc_metadata(
+            source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All,
+            **{flag: flag == selected for flag in flags})
+        assert one.entry_count == count + (2 if selected == 'supplemental_categories_to_iptc' else 1), selected
+    try:
+        batch.translate_iptc_metadata(
+            source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All,
+            max_added_entries=20)
+    except ValueError as exc:
+        assert 'entry_limit_exceeded' in str(exc)
+    else:
+        raise AssertionError('combined IPTC entry limit was ignored')
+    xml = xml.replace(b'<p:Urgency>5</p:Urgency>', b'<p:Urgency>9</p:Urgency>')
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    batch_path.write_bytes(bytes.fromhex('ffd8ffe1') +
+        (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    invalid = openmeta.read(str(batch_path))
+    try:
+        invalid.translate_iptc_metadata(source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All)
+    except ValueError as exc:
+        assert 'invalid_source_value for photoshop_urgency' in str(exc)
+    else:
+        raise AssertionError('invalid priority was accepted')
+    assert batch.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

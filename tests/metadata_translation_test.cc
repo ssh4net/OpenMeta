@@ -2568,5 +2568,677 @@ namespace {
         }
     }
 
+    struct IptcBatchField final {
+        IptcTextField text;
+        bool MetadataIptcTranslationOptions::* enabled;
+    };
+
+    static constexpr std::array<IptcBatchField, 20U> kIptcBatchFields = {
+        IptcBatchField {
+            { kXmpNsDc, "title[@xml:lang=x-default]", 5U, 64U, "Title" },
+            &MetadataIptcTranslationOptions::title_to_iptc_object_name },
+        IptcBatchField {
+            { kXmpNsDc, "description[@xml:lang=x-default]", 120U, 2000U,
+              "Caption" },
+            &MetadataIptcTranslationOptions::description_to_iptc_caption },
+        IptcBatchField {
+            { kXmpNsDc, "creator[1]", 80U, 32U, "Alice" },
+            &MetadataIptcTranslationOptions::creators_to_iptc_bylines },
+        IptcBatchField {
+            { kXmpNsDc, "subject[1]", 25U, 64U, "Garden" },
+            &MetadataIptcTranslationOptions::keywords_to_iptc_keywords },
+        IptcBatchField {
+            { kXmpNsDc, "rights[@xml:lang=x-default]", 116U, 128U, "Copyright" },
+            &MetadataIptcTranslationOptions::copyright_to_iptc_copyright },
+        IptcBatchField {
+            { kLocationPhotoshopNs, "Credit", 110U, 32U, "Credit" },
+            &MetadataIptcTranslationOptions::credit_to_iptc_credit },
+        IptcBatchField {
+            { kLocationPhotoshopNs, "Source", 115U, 32U, "Source" },
+            &MetadataIptcTranslationOptions::source_to_iptc_source },
+        IptcBatchField { { kLocationPhotoshopNs, "City", 90U, 32U, "Kyoto" },
+                         &MetadataIptcTranslationOptions::city_to_iptc },
+        IptcBatchField { { kLocationIptcNs, "Location", 92U, 32U, "Garden" },
+                         &MetadataIptcTranslationOptions::sublocation_to_iptc },
+        IptcBatchField { { kLocationPhotoshopNs, "State", 95U, 32U, "Kyoto" },
+                         &MetadataIptcTranslationOptions::state_to_iptc },
+        IptcBatchField { { kLocationPhotoshopNs, "Country", 101U, 64U, "Japan" },
+                         &MetadataIptcTranslationOptions::country_to_iptc },
+        IptcBatchField { { kLocationIptcNs, "CountryCode", 100U, 3U, "JP" },
+                         &MetadataIptcTranslationOptions::country_code_to_iptc },
+        IptcBatchField {
+            { kLocationPhotoshopNs, "Headline", 105U, 256U, "Garden opens" },
+            &MetadataIptcTranslationOptions::headline_to_iptc },
+        IptcBatchField { { kLocationPhotoshopNs, "Instructions", 40U, 256U,
+                           "Contact editor" },
+                         &MetadataIptcTranslationOptions::instructions_to_iptc },
+        IptcBatchField {
+            { kLocationPhotoshopNs, "TransmissionReference", 103U, 32U,
+              "JOB-42" },
+            &MetadataIptcTranslationOptions::transmission_reference_to_iptc },
+        IptcBatchField {
+            { kLocationPhotoshopNs, "AuthorsPosition", 85U, 32U,
+              "Photographer" },
+            &MetadataIptcTranslationOptions::authors_position_to_iptc },
+        IptcBatchField {
+            { kLocationPhotoshopNs, "CaptionWriter", 122U, 32U, "Editor" },
+            &MetadataIptcTranslationOptions::caption_writer_to_iptc },
+        IptcBatchField { { kLocationPhotoshopNs, "Category", 15U, 3U, "ART" },
+                         &MetadataIptcTranslationOptions::category_to_iptc },
+        IptcBatchField {
+            { kLocationPhotoshopNs, "SupplementalCategories[1]", 20U, 32U,
+              "Painting" },
+            &MetadataIptcTranslationOptions::supplemental_categories_to_iptc },
+        IptcBatchField { { kLocationPhotoshopNs, "Urgency", 10U, 1U, "5" },
+                         &MetadataIptcTranslationOptions::urgency_to_iptc },
+    };
+
+    static MetadataIptcTranslationOptions no_iptc_mappings()
+    {
+        MetadataIptcTranslationOptions options;
+        for (const IptcBatchField& field : kIptcBatchFields) {
+            options.*field.enabled = false;
+        }
+        return options;
+    }
+
+    TEST(MetadataTranslation, IptcCombinedWritesTwentyGroupsAndOwnsProvenance)
+    {
+        MetaStore output;
+        {
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            for (const IptcBatchField& field : kIptcBatchFields) {
+                const IptcTextField& f = field.text;
+                ASSERT_NE(add_xmp_text(&source, block, f.schema_ns, f.path,
+                                       f.value, EntryFlags::Dirty, 0U,
+                                       "batch-wire"),
+                          kInvalidEntryId);
+            }
+            source.finalize();
+            const auto result = translate_xmp_iptc_metadata(source, {},
+                                                            &output);
+            ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+            EXPECT_EQ(result.groups_translated, 20U);
+            EXPECT_EQ(result.source_properties, 20U);
+            EXPECT_EQ(result.entries_added, 20U);
+            EXPECT_EQ(source.entries().size(), 20U);
+            MetaStore subgroup;
+            EXPECT_EQ(translate_xmp_descriptive_metadata(source, {}, &subgroup)
+                          .groups_translated,
+                      7U);
+            EXPECT_EQ(translate_xmp_location_metadata(source, {}, &subgroup)
+                          .groups_translated,
+                      5U);
+            EXPECT_EQ(translate_xmp_editorial_metadata(source, {}, &subgroup)
+                          .groups_translated,
+                      3U);
+            for (const Entry& entry : output.entries()) {
+                if (entry.key.kind != MetaKeyKind::IptcDataset) {
+                    continue;
+                }
+                EXPECT_EQ(entry.origin.block, block);
+                EXPECT_TRUE(any(entry.flags, EntryFlags::Dirty));
+                const auto wire = output.arena().span(
+                    entry.origin.wire_type_name);
+                EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                               wire.data()),
+                                           wire.size()),
+                          "batch-wire");
+            }
+        }
+        for (const IptcBatchField& field : kIptcBatchFields) {
+            EXPECT_TRUE(
+                active_iptc_text(output, field.text.dataset, field.text.value));
+            EXPECT_EQ(active_iptc_count(output, field.text.dataset), 1U);
+        }
+        const size_t count = output.entries().size();
+        const auto result  = translate_xmp_iptc_metadata(output, {}, &output);
+        EXPECT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+        EXPECT_EQ(result.groups_unchanged, 20U);
+        EXPECT_EQ(output.entries().size(), count);
+    }
+
+    TEST(MetadataTranslation, IptcCombinedFlagsAndSourceModesAreIndependent)
+    {
+        for (const IptcBatchField& selected : kIptcBatchFields) {
+            SCOPED_TRACE(selected.text.path);
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            for (const IptcBatchField& field : kIptcBatchFields) {
+                const IptcTextField& f = field.text;
+                add_xmp_text(&source, block, f.schema_ns, f.path,
+                             f.dataset == selected.text.dataset ? f.value : "",
+                             EntryFlags::None, 0U);
+            }
+            add_xmp_text(&source, block, "urn:wrong", selected.text.path,
+                         "Wrong", EntryFlags::Dirty, 0U);
+            add_xmp_text(&source, block, selected.text.schema_ns,
+                         std::string(selected.text.path) + "/qualifier",
+                         "Wrong", EntryFlags::Dirty, 0U);
+            source.finalize();
+            auto options              = no_iptc_mappings();
+            options.*selected.enabled = true;
+            MetaStore output;
+            auto result = translate_xmp_iptc_metadata(source, options, &output);
+            ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+            EXPECT_EQ(result.entries_added, 0U);
+            options.source_mode = MetadataDescriptiveTranslationSourceMode::All;
+            result = translate_xmp_iptc_metadata(source, options, &output);
+            ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+            EXPECT_EQ(result.groups_translated, 1U);
+            EXPECT_EQ(result.entries_added, 1U);
+            EXPECT_TRUE(active_iptc_text(output, selected.text.dataset,
+                                         selected.text.value));
+        }
+    }
+
+    TEST(MetadataTranslation,
+         IptcCombinedConflictsAndCharsetAreAtomicAcrossGroups)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        for (const IptcBatchField& field : kIptcBatchFields) {
+            const IptcTextField& f = field.text;
+            add_xmp_text(&source, block, f.schema_ns, f.path,
+                         f.dataset == 85U ? "Photographe"
+                                            "\xc3\xa9"
+                                          : f.value,
+                         EntryFlags::Dirty, 0U);
+            add_iptc_bytes(&source, block, f.dataset,
+                           f.dataset == 120U ? "\xe9" : "OLD", 1U);
+            add_iptc_bytes(&source, block, f.dataset, "Duplicate", 2U);
+        }
+        add_iptc_bytes(&source, block, 7U, "Keep status", 3U);
+        source.finalize();
+        MetaStore output;
+        const BlockId sentinel = output.add_block(BlockInfo {});
+        add_iptc_bytes(&output, sentinel, 5U, "Sentinel", 0U);
+        output.finalize();
+        MetadataIptcTranslationOptions options;
+        EXPECT_EQ(translate_xmp_iptc_metadata(source, options, &output).status,
+                  MetadataDescriptiveTranslationStatus::NativeConflict);
+        EXPECT_TRUE(active_iptc_text(output, 5U, "Sentinel"));
+        options.conflict_policy
+            = MetadataDescriptiveTranslationConflictPolicy::PreserveExisting;
+        auto result = translate_xmp_iptc_metadata(source, options, &output);
+        ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+        EXPECT_EQ(result.groups_preserved, 20U);
+        EXPECT_FALSE(result.utf8_charset_added);
+        EXPECT_EQ(active_iptc_count(output, 85U), 2U);
+        options.conflict_policy
+            = MetadataDescriptiveTranslationConflictPolicy::ReplaceExisting;
+        options.max_operations = 40U;
+        result = translate_xmp_iptc_metadata(source, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataDescriptiveTranslationStatus::OperationLimitExceeded);
+        EXPECT_EQ(active_iptc_count(output, 85U), 2U);
+        options.max_operations = kMetadataDescriptiveTranslationMaxOperations;
+        result = translate_xmp_iptc_metadata(source, options, &output);
+        ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+        EXPECT_EQ(result.entries_updated, 20U);
+        EXPECT_EQ(result.entries_removed, 20U);
+        EXPECT_EQ(result.entries_added, 1U);
+        EXPECT_TRUE(result.utf8_charset_added);
+        EXPECT_TRUE(active_iptc_record_text(output, 1U, 90U, "\x1b%G"));
+        EXPECT_TRUE(active_iptc_text(output, 120U, "Caption"));
+        EXPECT_TRUE(active_iptc_text(output, 7U, "Keep status"));
+        EXPECT_EQ(active_iptc_count(output, 85U), 1U);
+        // A retained unrelated legacy caption blocks promotion of the whole batch.
+        options.description_to_iptc_caption = false;
+        const auto rejected = translate_xmp_iptc_metadata(source, options,
+                                                          &output);
+        EXPECT_EQ(rejected.status,
+                  MetadataDescriptiveTranslationStatus::NativeEncodingConflict);
+        EXPECT_TRUE(active_iptc_text(output, 120U, "Caption"));
+    }
+
+    TEST(MetadataTranslation, IptcCombinedRemovesOnlyDirtySelectedGroups)
+    {
+        for (const bool dirty : { false, true }) {
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            for (const IptcBatchField& field : kIptcBatchFields) {
+                const IptcTextField& f = field.text;
+                add_xmp_text(&source, block, f.schema_ns, f.path, {},
+                             dirty ? EntryFlags::Dirty | EntryFlags::Deleted
+                                   : EntryFlags::Deleted,
+                             0U);
+                add_iptc_bytes(&source, block, f.dataset, f.value, 1U);
+                add_iptc_bytes(&source, block, f.dataset, f.value, 2U);
+            }
+            source.finalize();
+            MetadataIptcTranslationOptions options;
+            options.source_mode = MetadataDescriptiveTranslationSourceMode::All;
+            MetaStore output;
+            EXPECT_EQ(
+                translate_xmp_iptc_metadata(source, options, &output).status,
+                dirty ? MetadataDescriptiveTranslationStatus::NativeConflict
+                      : MetadataDescriptiveTranslationStatus::Ok);
+            options.conflict_policy
+                = MetadataDescriptiveTranslationConflictPolicy::PreserveExisting;
+            auto result = translate_xmp_iptc_metadata(source, options, &output);
+            ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+            EXPECT_EQ(active_iptc_count(output, 20U), 2U);
+            options.conflict_policy
+                = MetadataDescriptiveTranslationConflictPolicy::ReplaceExisting;
+            options.urgency_to_iptc = false;
+            result = translate_xmp_iptc_metadata(source, options, &output);
+            ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+            EXPECT_EQ(result.entries_removed, dirty ? 38U : 0U);
+            for (const IptcBatchField& field : kIptcBatchFields) {
+                EXPECT_EQ(active_iptc_count(output, field.text.dataset),
+                          dirty && field.text.dataset != 10U ? 0U : 2U);
+            }
+        }
+    }
+
+    TEST(MetadataTranslation, IptcWorkflowRejectsInvalidCategoryAndUrgency)
+    {
+        for (const std::string_view value :
+             { "", "0", "9", "A", " ", "05", "+5", "5.0", " 5" }) {
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            add_xmp_text(&source, block, kLocationPhotoshopNs, "Headline",
+                         "Valid", EntryFlags::Dirty, 0U);
+            const EntryId invalid
+                = add_xmp_text(&source, block, kLocationPhotoshopNs, "Urgency",
+                               value, EntryFlags::Dirty, 1U);
+            source.finalize();
+            MetaStore output;
+            const auto result = translate_xmp_iptc_metadata(source, {},
+                                                            &output);
+            EXPECT_EQ(
+                result.status,
+                value.size() > 1U
+                    ? MetadataDescriptiveTranslationStatus::ValueTooLong
+                    : MetadataDescriptiveTranslationStatus::InvalidSourceValue)
+                << value;
+            EXPECT_EQ(result.failed_source_entry, invalid);
+            EXPECT_EQ(result.failed_mapping,
+                      MetadataDescriptiveTranslationMapping::PhotoshopUrgency);
+            EXPECT_TRUE(output.entries().empty());
+        }
+        for (const std::string_view value :
+             { "A", "Art", "art", "", "ARTS", "A1", "A B", "\xc3\xa9" }) {
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            add_xmp_text(&source, block, kLocationPhotoshopNs, "Category",
+                         value, EntryFlags::Dirty, 0U);
+            source.finalize();
+            MetaStore output;
+            const auto result = translate_xmp_iptc_metadata(source, {},
+                                                            &output);
+            const bool valid = value == "A" || value == "Art" || value == "art";
+            EXPECT_EQ(
+                result.status,
+                valid ? MetadataDescriptiveTranslationStatus::Ok
+                : value.size() > 3U
+                    ? MetadataDescriptiveTranslationStatus::ValueTooLong
+                    : MetadataDescriptiveTranslationStatus::InvalidSourceValue)
+                << value;
+            if (valid) {
+                EXPECT_TRUE(active_iptc_text(output, 15U, value));
+            }
+        }
+    }
+
+    TEST(MetadataTranslation, IptcUrgencyAcceptsOnlySingleIntegerScalarsInRange)
+    {
+        for (const int number : { -1, 0, 1, 5, 8, 9, 10, 256 }) {
+            const std::array values = {
+                make_i8(static_cast<int8_t>(number)),
+                make_i16(static_cast<int16_t>(number)),
+                make_i32(number),
+                make_i64(number),
+                make_u8(static_cast<uint8_t>(number)),
+                make_u16(static_cast<uint16_t>(number)),
+                make_u32(static_cast<uint32_t>(number)),
+                make_u64(static_cast<uint64_t>(number)),
+            };
+            for (const MetaValue& value : values) {
+                MetaStore source;
+                const BlockId block = source.add_block(BlockInfo {});
+                add_xmp_value(&source, block, kLocationPhotoshopNs, "Urgency",
+                              value, EntryFlags::Dirty, 0U);
+                source.finalize();
+                MetaStore output;
+                const auto result = translate_xmp_iptc_metadata(source, {},
+                                                                &output);
+                const bool valid  = number >= 1 && number <= 8;
+                EXPECT_EQ(result.status,
+                          valid ? MetadataDescriptiveTranslationStatus::Ok
+                                : MetadataDescriptiveTranslationStatus::
+                                      InvalidSourceValue);
+                if (valid) {
+                    EXPECT_TRUE(
+                        active_iptc_text(output, 10U, std::to_string(number)));
+                    EXPECT_EQ(translate_xmp_iptc_metadata(output, {}, &output)
+                                  .groups_unchanged,
+                              1U);
+                }
+            }
+        }
+        for (const unsigned kind : { 0U, 1U, 2U, 3U, 4U, 5U }) {
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            MetaValue value     = make_u8(5U);
+            switch (kind) {
+            case 0U: value.count = 0U; break;
+            case 1U: value.count = 2U; break;
+            case 2U: value = make_f32_bits(0x40a00000U); break;
+            case 3U: value = make_urational(5U, 1U); break;
+            case 4U:
+                value = make_bytes(source.arena(),
+                                   std::as_bytes(std::span("5", 1U)));
+                break;
+            case 5U: value.kind = MetaValueKind::Array; break;
+            }
+            add_xmp_value(&source, block, kLocationPhotoshopNs, "Urgency",
+                          value, EntryFlags::Dirty, 0U);
+            source.finalize();
+            MetaStore output;
+            EXPECT_EQ(translate_xmp_iptc_metadata(source, {}, &output).status,
+                      MetadataDescriptiveTranslationStatus::InvalidSourceValue);
+        }
+    }
+
+    TEST(MetadataTranslation,
+         IptcWorkflowEnforcesUtf8ByteLimitsWithoutTruncation)
+    {
+        for (const IptcBatchField& field : kIptcBatchFields) {
+            const IptcTextField& f = field.text;
+            if (f.dataset != 85U && f.dataset != 122U && f.dataset != 20U) {
+                continue;
+            }
+            for (const bool overflow : { false, true }) {
+                for (const bool utf8 : { false, true }) {
+                    MetaStore source;
+                    const BlockId block = source.add_block(BlockInfo {});
+                    std::string value(32U - (utf8 ? 2U : 0U)
+                                          + (overflow ? 1U : 0U),
+                                      'A');
+                    if (utf8) {
+                        value += "\xc3\xa9";
+                    }
+                    add_xmp_text(&source, block, kXmpNsDc,
+                                 "title[@xml:lang=x-default]", "Title",
+                                 EntryFlags::Dirty, 0U);
+                    const EntryId id = add_xmp_text(&source, block, f.schema_ns,
+                                                    f.path, value,
+                                                    EntryFlags::Dirty, 1U);
+                    source.finalize();
+                    MetaStore output;
+                    const BlockId sentinel = output.add_block(BlockInfo {});
+                    add_iptc_bytes(&output, sentinel, 5U, "Sentinel", 0U);
+                    output.finalize();
+                    const auto result = translate_xmp_iptc_metadata(source, {},
+                                                                    &output);
+                    EXPECT_EQ(
+                        result.status,
+                        overflow
+                            ? MetadataDescriptiveTranslationStatus::ValueTooLong
+                            : MetadataDescriptiveTranslationStatus::Ok);
+                    if (overflow) {
+                        EXPECT_EQ(result.failed_source_entry, id);
+                        EXPECT_EQ(output.entries().size(), 1U);
+                        EXPECT_TRUE(active_iptc_text(output, 5U, "Sentinel"));
+                    } else {
+                        EXPECT_TRUE(active_iptc_text(output, f.dataset, value));
+                        EXPECT_EQ(result.utf8_charset_added, utf8);
+                    }
+                }
+            }
+        }
+    }
+
+    TEST(MetadataTranslation,
+         IptcSupplementalCategoriesRetainIndexesAndMultiplicity)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        add_xmp_text(&source, block, kLocationPhotoshopNs,
+                     "SupplementalCategories[10]", "Last", EntryFlags::None,
+                     0U);
+        add_xmp_text(&source, block, kLocationPhotoshopNs,
+                     "SupplementalCategories[3]", "Same", EntryFlags::Dirty,
+                     1U);
+        add_xmp_text(&source, block, kLocationPhotoshopNs,
+                     "SupplementalCategories[1]", "Same", EntryFlags::None, 2U);
+        add_xmp_text(&source, block, kLocationPhotoshopNs,
+                     "SupplementalCategories[2]", "Removed",
+                     EntryFlags::Dirty | EntryFlags::Deleted, 3U);
+        add_xmp_text(&source, block, kLocationPhotoshopNs,
+                     "SupplementalCategories", "Unindexed", EntryFlags::Dirty,
+                     4U);
+        source.finalize();
+        MetaStore output;
+        const auto result = translate_xmp_iptc_metadata(source, {}, &output);
+        ASSERT_EQ(result.status, MetadataDescriptiveTranslationStatus::Ok);
+        EXPECT_EQ(result.source_properties, 4U);
+        EXPECT_EQ(result.entries_added, 3U);
+        const std::array expected = { "Same", "Same", "Last" };
+        size_t index              = 0U;
+        for (const Entry& entry : output.entries()) {
+            if (entry.key.kind != MetaKeyKind::IptcDataset) {
+                continue;
+            }
+            ASSERT_LT(index, expected.size());
+            const auto bytes = output.arena().span(entry.value.data.span);
+            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                           bytes.data()),
+                                       bytes.size()),
+                      expected[index++]);
+        }
+        EXPECT_EQ(index, 3U);
+        EXPECT_EQ(
+            translate_xmp_iptc_metadata(output, {}, &output).groups_unchanged,
+            1U);
+    }
+
+    TEST(MetadataTranslation,
+         IptcRepeatedGrowthRetainsNativeRanksAndAppendOrder)
+    {
+        struct Repeated final {
+            std::string_view ns;
+            std::string_view path;
+            uint16_t dataset;
+        };
+        const std::array fields = {
+            Repeated { kXmpNsDc, "creator", 80U },
+            Repeated { kXmpNsDc, "subject", 25U },
+            Repeated { kLocationPhotoshopNs, "SupplementalCategories", 20U },
+        };
+        for (const Repeated& field : fields) {
+            for (const bool existing : { false, true }) {
+                MetaStore source;
+                const BlockId block = source.add_block(BlockInfo {});
+                add_xmp_text(&source, block, field.ns,
+                             std::string(field.path) + "[10]", "Last",
+                             EntryFlags::None, 0U);
+                add_xmp_text(&source, block, field.ns,
+                             std::string(field.path) + "[3]", "Middle",
+                             EntryFlags::Dirty, 1U);
+                add_xmp_text(&source, block, field.ns,
+                             std::string(field.path) + "[1]", "First",
+                             EntryFlags::None, 2U);
+                if (existing) {
+                    add_iptc_bytes(&source, block, field.dataset, "OLD second",
+                                   UINT32_MAX);
+                    add_iptc_bytes(&source, block, field.dataset, "OLD first",
+                                   UINT32_MAX - 1U);
+                }
+                source.finalize();
+                MetaStore output;
+                MetadataIptcTranslationOptions options;
+                options.conflict_policy
+                    = MetadataDescriptiveTranslationConflictPolicy::
+                        ReplaceExisting;
+                auto result = translate_xmp_iptc_metadata(source, options,
+                                                          &output);
+                ASSERT_EQ(result.status,
+                          MetadataDescriptiveTranslationStatus::Ok);
+                EXPECT_EQ(result.entries_updated, existing ? 2U : 0U);
+                EXPECT_EQ(result.entries_added, existing ? 1U : 3U);
+                options.conflict_policy
+                    = MetadataDescriptiveTranslationConflictPolicy::FailOnConflict;
+                result = translate_xmp_iptc_metadata(output, options, &output);
+                ASSERT_EQ(result.status,
+                          MetadataDescriptiveTranslationStatus::Ok);
+                EXPECT_EQ(result.groups_unchanged, 1U);
+                if (field.dataset != 20U) {
+                    const auto subgroup
+                        = translate_xmp_descriptive_metadata(output, {},
+                                                             &output);
+                    EXPECT_EQ(subgroup.status,
+                              MetadataDescriptiveTranslationStatus::Ok);
+                    EXPECT_EQ(subgroup.groups_unchanged, 1U);
+                }
+                EXPECT_EQ(output.entries().back().origin.order_in_block,
+                          existing ? UINT32_MAX : 0U);
+            }
+        }
+    }
+
+    TEST(MetadataTranslation,
+         IptcWorkflowRejectsDuplicateSourcesAndMalformedText)
+    {
+        for (const IptcBatchField& field : kIptcBatchFields) {
+            const IptcTextField& f = field.text;
+            if (f.dataset != 85U && f.dataset != 122U && f.dataset != 15U
+                && f.dataset != 20U && f.dataset != 10U) {
+                continue;
+            }
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            add_xmp_text(&source, block, f.schema_ns, f.path, f.value,
+                         EntryFlags::None, 0U);
+            const EntryId duplicate
+                = add_xmp_text(&source, block, f.schema_ns,
+                               f.dataset == 20U ? "SupplementalCategories[01]"
+                                                : f.path,
+                               f.value, EntryFlags::Dirty, 1U);
+            source.finalize();
+            MetaStore output;
+            const auto result = translate_xmp_iptc_metadata(source, {},
+                                                            &output);
+            EXPECT_EQ(result.status,
+                      MetadataDescriptiveTranslationStatus::AmbiguousSource);
+            EXPECT_EQ(result.failed_source_entry, duplicate);
+            EXPECT_TRUE(output.entries().empty());
+        }
+        for (const std::string_view value :
+             { std::string_view(""), std::string_view("bad\0text", 8U),
+               std::string_view("\xc0\xaf", 2U),
+               std::string_view("\xed\xa0\x80", 3U) }) {
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            add_xmp_text(&source, block, kLocationPhotoshopNs, "CaptionWriter",
+                         value, EntryFlags::Dirty, 0U);
+            source.finalize();
+            MetaStore output;
+            EXPECT_EQ(translate_xmp_iptc_metadata(source, {}, &output).status,
+                      MetadataDescriptiveTranslationStatus::InvalidSourceValue);
+        }
+    }
+
+    TEST(MetadataTranslation, IptcCombinedResourceLimitsCoverEveryGroup)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        for (const IptcBatchField& field : kIptcBatchFields) {
+            add_xmp_text(&source, block, field.text.schema_ns, field.text.path,
+                         field.text.value, EntryFlags::Dirty, 0U);
+        }
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_iptc_metadata(source, {}, nullptr).status,
+                  MetadataDescriptiveTranslationStatus::NullOutput);
+        EXPECT_EQ(translate_xmp_iptc_metadata(source, {}, &output).status,
+                  MetadataDescriptiveTranslationStatus::SourceNotFinalized);
+        source.finalize();
+        for (unsigned mode = 0U; mode < 9U; ++mode) {
+            MetadataIptcTranslationOptions options;
+            auto expected = MetadataDescriptiveTranslationStatus::InvalidOptions;
+            switch (mode) {
+            case 0U:
+                options.max_source_properties = 19U;
+                expected
+                    = MetadataDescriptiveTranslationStatus::SourceLimitExceeded;
+                break;
+            case 1U:
+                options.max_added_entries = 19U;
+                expected
+                    = MetadataDescriptiveTranslationStatus::EntryLimitExceeded;
+                break;
+            case 2U:
+                options.max_operations = 19U;
+                expected
+                    = MetadataDescriptiveTranslationStatus::OperationLimitExceeded;
+                break;
+            case 3U:
+                options.max_total_text_bytes = 4U;
+                expected
+                    = MetadataDescriptiveTranslationStatus::SourceLimitExceeded;
+                break;
+            case 4U:
+                options.max_added_entries
+                    = kMetadataIptcTranslationMaxAddedEntries + 1U;
+                break;
+            case 5U:
+                options.source_mode
+                    = static_cast<MetadataDescriptiveTranslationSourceMode>(
+                        255U);
+                break;
+            case 6U:
+                options.conflict_policy
+                    = static_cast<MetadataDescriptiveTranslationConflictPolicy>(
+                        255U);
+                break;
+            case 7U: options = no_iptc_mappings(); break;
+            case 8U: options.max_operations = 0U; break;
+            }
+            EXPECT_EQ(
+                translate_xmp_iptc_metadata(source, options, &output).status,
+                expected)
+                << mode;
+            EXPECT_TRUE(output.entries().empty());
+        }
+    }
+
+    TEST(MetadataTranslation, IptcSupplementalCategoryLimitIncludesCharset)
+    {
+        for (const unsigned count : { 1024U, 1025U }) {
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            for (unsigned index = 1U; index <= count; ++index) {
+                add_xmp_text(&source, block, kLocationPhotoshopNs,
+                             "SupplementalCategories[" + std::to_string(index)
+                                 + "]",
+                             "\xc3\xa9", EntryFlags::Dirty, index);
+            }
+            source.finalize();
+            MetaStore output;
+            MetadataIptcTranslationOptions options;
+            options.max_added_entries = 1024U;
+            const auto result = translate_xmp_iptc_metadata(source, options,
+                                                            &output);
+            EXPECT_EQ(
+                result.status,
+                count == 1024U
+                    ? MetadataDescriptiveTranslationStatus::EntryLimitExceeded
+                    : MetadataDescriptiveTranslationStatus::SourceLimitExceeded);
+            EXPECT_TRUE(output.entries().empty());
+            if (count == 1024U) {
+                options.max_added_entries = 1025U;
+                const auto accepted
+                    = translate_xmp_iptc_metadata(source, options, &output);
+                ASSERT_EQ(accepted.status,
+                          MetadataDescriptiveTranslationStatus::Ok);
+                EXPECT_EQ(accepted.entries_added, 1025U);
+                EXPECT_TRUE(accepted.utf8_charset_added);
+            }
+        }
+    }
+
 }  // namespace
 }  // namespace openmeta

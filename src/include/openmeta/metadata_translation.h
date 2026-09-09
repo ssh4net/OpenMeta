@@ -531,6 +531,11 @@ enum class MetadataDescriptiveTranslationMapping : uint8_t {
     PhotoshopHeadline,
     PhotoshopInstructions,
     PhotoshopTransmissionReference,
+    PhotoshopAuthorsPosition,
+    PhotoshopCaptionWriter,
+    PhotoshopCategory,
+    PhotoshopSupplementalCategories,
+    PhotoshopUrgency,
 };
 
 /// Caller-selected bounded reverse descriptive mappings.
@@ -701,6 +706,67 @@ MetadataDescriptiveTranslationResult
 translate_xmp_editorial_metadata(
     const MetaStore& source, const MetadataEditorialTranslationOptions& options,
     MetaStore* out_store);
+
+/// Experimental combined IPTC text/priority translation contract version.
+inline constexpr uint32_t kMetadataIptcTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataIptcTranslationMaxAddedEntries = 1025U;
+
+/// All supported IPTC text/priority mappings in one transaction.
+struct MetadataIptcTranslationOptions final {
+    MetadataDescriptiveTranslationSourceMode source_mode
+        = MetadataDescriptiveTranslationSourceMode::DirtyOnly;
+    MetadataDescriptiveTranslationConflictPolicy conflict_policy
+        = MetadataDescriptiveTranslationConflictPolicy::FailOnConflict;
+
+    bool title_to_iptc_object_name       = true;
+    bool description_to_iptc_caption     = true;
+    bool creators_to_iptc_bylines        = true;
+    bool keywords_to_iptc_keywords       = true;
+    bool copyright_to_iptc_copyright     = true;
+    bool credit_to_iptc_credit           = true;
+    bool source_to_iptc_source           = true;
+    bool city_to_iptc                    = true;
+    bool sublocation_to_iptc             = true;
+    bool state_to_iptc                   = true;
+    bool country_to_iptc                 = true;
+    bool country_code_to_iptc            = true;
+    bool headline_to_iptc                = true;
+    bool instructions_to_iptc            = true;
+    bool transmission_reference_to_iptc  = true;
+    bool authors_position_to_iptc        = true;
+    bool caption_writer_to_iptc          = true;
+    bool category_to_iptc                = true;
+    bool supplemental_categories_to_iptc = true;
+    bool urgency_to_iptc                 = true;
+
+    uint32_t max_source_properties
+        = kMetadataDescriptiveTranslationMaxSourceProperties;
+    uint32_t max_added_entries = kMetadataIptcTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataDescriptiveTranslationMaxOperations;
+    uint64_t max_total_text_bytes
+        = kMetadataDescriptiveTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Translate 20 XMP text/priority groups into IPTC-IIM atomically.
+ *
+ * Includes the descriptive, location, and editorial mappings, plus Photoshop
+ * AuthorsPosition (2:85, 32 bytes), CaptionWriter (2:122, 32 bytes), Category
+ * (2:15, one to three ASCII letters), indexed SupplementalCategories (2:20,
+ * 32 bytes each), and Urgency (2:10, one digit from 1 to 8). Urgency also accepts
+ * a signed or unsigned integer scalar in that range. Repeated values retain
+ * numeric XMP index order and duplicates at distinct indexes.
+ *
+ * Source selection, conflicts, dirty removal, provenance, byte/resource limits,
+ * and charset safety share one transaction across all selected groups. Date
+ * fields use translate_xmp_creation_dates separately. The caller associates
+ * AuthorsPosition with the first creator; this operation does not infer that
+ * relationship or create a missing creator. Existing subgroup APIs are unchanged.
+ */
+MetadataDescriptiveTranslationResult
+translate_xmp_iptc_metadata(const MetaStore& source,
+                            const MetadataIptcTranslationOptions& options,
+                            MetaStore* out_store);
 
 }  // namespace openmeta
 OPENMETA_PUBLIC_END

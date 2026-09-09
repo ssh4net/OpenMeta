@@ -14,7 +14,8 @@ The APIs are experimental and versioned by
 `kMetadataGeometryTranslationContractVersion == 1` and
 `kMetadataDescriptiveTranslationContractVersion == 1` and
 `kMetadataLocationTranslationContractVersion == 1` and
-`kMetadataEditorialTranslationContractVersion == 1`.
+`kMetadataEditorialTranslationContractVersion == 1` and
+`kMetadataIptcTranslationContractVersion == 1`.
 
 ## Workflow
 
@@ -28,7 +29,8 @@ invoke it implicitly:
    `translate_xmp_image_geometry(...)`,
    `translate_xmp_descriptive_metadata(...)`,
    `translate_xmp_location_metadata(...)`,
-   `translate_xmp_editorial_metadata(...)`, or the required combination with
+   `translate_xmp_editorial_metadata(...)`,
+   `translate_xmp_iptc_metadata(...)`, or the required combination with
    explicit mapping and conflict options.
 3. Pass the returned finalized store to transfer preparation or a writer.
 
@@ -221,6 +223,77 @@ with `headline_to_iptc`, `instructions_to_iptc`, and
 `transmission_reference_to_iptc` flags. It returns a detached document and raises
 `ValueError` with mapping diagnostics on failure. For clean metadata read from
 a file, explicitly select `MetadataDescriptiveTranslationSourceMode.All`.
+
+## Combined IPTC Writeback
+
+`translate_xmp_iptc_metadata(...)` accepts `MetadataIptcTranslationOptions`
+and returns `MetadataDescriptiveTranslationResult`. It selects the seven
+descriptive, five location, and three editorial groups above, plus the five
+workflow mappings below. All 20 text/priority groups share one transaction,
+including charset promotion and resource accounting. The existing subgroup
+APIs retain their original options and mappings. Date/time fields remain in
+`translate_xmp_creation_dates(...)`; composing the two calls does not make
+them one transaction.
+
+| Exact Photoshop XMP source | Native IPTC-IIM destination | Contract |
+| --- | --- | --- |
+| `AuthorsPosition` | `By-lineTitle` (2:85) | Singleton text, at most 32 UTF-8 bytes |
+| `CaptionWriter` | `Writer-Editor` (2:122) | Singleton text, at most 32 UTF-8 bytes |
+| `Category` | `Category` (2:15) | One to three ASCII letters, case preserved |
+| `SupplementalCategories[n]` | Repeated `SupplementalCategories` (2:20) | Text, at most 32 UTF-8 bytes per value |
+| `Urgency` | `Urgency` (2:10) | One text digit from `1` to `8`, or a signed/unsigned integer scalar in that range |
+
+These contracts use the
+[Adobe Photoshop XMP namespace](https://developer.adobe.com/xmp/docs/xmp-namespaces/photoshop/),
+[IPTC IIM 4.2](https://www.iptc.org/std/IIM/4.2/specification/IIMV4.2.pdf), and
+[IPTC Photo Metadata 2025.1](https://www.iptc.org/std/photometadata/specification/IPTC-PhotoMetadata-2025.1.html).
+Category, Supplemental Categories, and Urgency are legacy IIM fields. This API
+supports their explicit writeback; it does not convert them to modern taxonomy.
+Category does not consult a provider registry. The caller must supply a creator
+and associate AuthorsPosition with the first creator. Translation neither
+infers that association nor creates a missing creator.
+
+Supplemental Categories use exact indexed paths with positive numeric indexes.
+Gaps are accepted. Values are written in index order, and equal values at
+different indexes remain separate datasets. Duplicate active indexes fail.
+New repeated native entries receive placement ranks that preserve that order;
+source block and wire provenance remain owned by the output. Updates retain
+the existing native ranks.
+An unindexed scalar or empty Bag is not a removal request; remove the indexed
+entries with dirty tombstones. Urgency emits an ASCII digit, never a binary
+integer. Values `0` and `9`, floats, rationals, arrays, and alternative textual
+spellings such as `05`, `+5`, or `5.0` are rejected. IPTC-to-portable-XMP
+projection now also carries native Urgency.
+
+All mappings default to enabled, with DirtyOnly/FailOnConflict policies.
+Each has an independent boolean flag. Disabling every mapping is invalid.
+Limits across the whole call are 1024 matched source properties, 1025 added
+entries (up to 1024 values plus one charset marker), 4096 operations, and
+8 MiB of inspected text/charset-safety bytes. Callers may lower these limits.
+
+A failure in any selected group leaves the source and output unchanged. This
+also permits a non-ASCII replacement when another selected group removes the
+legacy IPTC bytes that would otherwise block UTF-8 promotion. Preparation may
+allocate; it is not an allocation-free replay operation.
+
+Python exposes `Document.translate_iptc_metadata(...)` with the same flags,
+policies, limits, detached output, and ValueError diagnostics. For example:
+
+```python
+translated = document.translate_iptc_metadata(
+    source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All,
+    conflict_policy=openmeta.MetadataDescriptiveTranslationConflictPolicy.ReplaceExisting,
+    category_to_iptc=False,
+    urgency_to_iptc=False,
+)
+```
+
+The combined API and existing date API cover the 24 active IPTC destination
+assignments in ExifTool's
+[`xmp2iptc.args` inventory](https://raw.githubusercontent.com/exiftool/exiftool/master/arg_files/xmp2iptc.args)
+checked on 2026-09-09. This is a field inventory, not semantic or behavioral
+parity: the two commented taxonomy mappings, Photoshop IPTCDigest, arbitrary
+IPTC datasets, and ExifTool's conversion/overwrite conventions are excluded.
 
 ## Conflict And Removal Policy
 

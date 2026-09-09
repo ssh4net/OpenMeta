@@ -98,6 +98,26 @@ main()
                  == openmeta::MetadataDescriptiveTranslationStatus::Ok
           && editorial_translation.entries_added == 1U
           && editorial_translated.is_finalized();
+    const openmeta::MetadataAuthoringEntry iptc {
+        openmeta::make_xmp_property_key_view(
+            "http://ns.adobe.com/photoshop/1.0/", "Urgency"),
+        openmeta::make_value_view_u8(5U),
+    };
+    openmeta::MetaStore iptc_source;
+    const auto iptc_authored = openmeta::create_metadata_store(
+        std::span<const openmeta::MetadataAuthoringEntry>(&iptc, 1U),
+        &iptc_source);
+    openmeta::MetaStore iptc_translated;
+    const auto iptc_translation = openmeta::translate_xmp_iptc_metadata(
+        iptc_source, openmeta::MetadataIptcTranslationOptions {},
+        &iptc_translated);
+    const bool iptc_contract_matches
+        = iptc_authored.ok()
+          && openmeta::kMetadataIptcTranslationContractVersion == 1U
+          && iptc_translation.status
+                 == openmeta::MetadataDescriptiveTranslationStatus::Ok
+          && iptc_translation.entries_added == 1U
+          && iptc_translated.is_finalized();
     openmeta::MetaStore authored;
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
@@ -175,7 +195,7 @@ main()
                    || !translation_contract_matches
                    || !descriptive_translation_contract_matches
                    || !location_contract_matches || !editorial_contract_matches
-                   || !authoring_contract_matches
+                   || !iptc_contract_matches || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()
                    || instance.valid()
                    || created.code

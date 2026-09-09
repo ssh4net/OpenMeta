@@ -889,9 +889,13 @@ Suggested delivery sequence:
 1. Extend explicit native writeback beyond the completed date, technical,
    capture, geometry, descriptive, flat IPTC Core location, and editorial mappings.
    The 0.4.128 location batch covers five singleton fields; 0.4.129 adds
-   Headline, Instructions, and Transmission Reference. Remaining editorial
-   fields, additional capture fields, GPS, and structured-location reconciliation
-   remain separate bounded candidates. See `docs/translation.md`.
+   Headline, Instructions, and Transmission Reference. Version 0.4.130 adds
+   creator job title, caption writer, category, supplemental categories, and
+   urgency, plus combined atomic writeback of all 20 supported text/priority
+   groups. Together with the date API this covers the 24 active IPTC assignments
+   in the documented ExifTool copy inventory, with explicit exclusions and no
+   overall parity claim. Additional capture fields, GPS, and structured-location
+   reconciliation remain separate feature batches. See `docs/translation.md`.
 2. Retain the completed writer-baseline and compare-backed release gates while
    extending validated foreign `BMFF` graph shapes.
 3. Continue the Nikon inventory beyond standard embedded-TIFF offsets, then

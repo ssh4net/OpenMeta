@@ -1,5 +1,31 @@
 # OpenMeta Changes
 
+## 0.4.130 - 2026-09-09
+
+Changes compared with `0.4.129`.
+
+### Added
+
+- Added `translate_xmp_iptc_metadata` and Python `Document.translate_iptc_metadata`
+  for atomic writeback of all 20 supported IPTC text/priority groups, with
+  independent mapping flags and shared conflict, removal, charset, and resource
+  limits. Existing subgroup APIs retain their options and mappings.
+- Added Creator Job Title, Caption Writer, Category, Supplemental Categories,
+  and Urgency mappings. Category uses one to three ASCII letters. Urgency accepts
+  integer scalars or one text digit from 1 to 8 and emits an ASCII digit.
+  Supplemental Categories retain index order and repeated values.
+- Added native IPTC Urgency projection to portable XMP.
+- Added whole-batch transaction, selection, charset, resource, malformed-value,
+  repeated-value, and native JPEG/TIFF replacement/removal regressions, Python
+  coverage, and an installed shared consumer check for typed urgency.
+
+### Fixed
+
+- Repeated IPTC writeback assigns appended values a stable native placement
+  rank, preserving XMP index order when source traversal differs and when
+  existing native ranks reach UINT32_MAX. This also fixes repeated creator and
+  keyword idempotence and serialization order in descriptive translation.
+
 ## 0.4.129 - 2026-09-09
 
 Changes compared with `0.4.128`.

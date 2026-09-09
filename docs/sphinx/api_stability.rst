@@ -240,6 +240,14 @@ Host-facing API map
        writeback with independent editorial options. Reuses descriptive
        policies/results, exact singleton validation, UTF-8 safety, and resource
        limits. Python provides the same operation. See :doc:`translation`.
+   * - Combined IPTC translation: ``translate_xmp_iptc_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Transactional v1 writeback of 20 text/priority groups, adding creator job
+       title, caption writer, category, supplemental categories, and urgency.
+       Independent flags, shared charset/resource limits, and cross-group
+       atomicity. Existing subgroup/date contracts are unchanged. Python provides
+       the same operation. See :doc:`translation`.
    * - EXIF/TIFF orientation helpers: ``interpret_exif_orientation(...)``,
        ``exif_orientation_name(...)``,
        ``exif_orientation_rotation_degrees_cw(...)``,

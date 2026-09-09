@@ -1967,7 +1967,7 @@ namespace {
                    || name == "State" || name == "Country"
                    || name == "TransmissionReference" || name == "Headline"
                    || name == "Credit" || name == "Source"
-                   || name == "CaptionWriter";
+                   || name == "CaptionWriter" || name == "Urgency";
         }
 
         if (prefix == "Iptc4xmpCore") {
@@ -10243,6 +10243,10 @@ namespace {
         case 120U:  // Caption-Abstract
             *out_prefix = "dc";
             *out_name   = "description";
+            return true;
+        case 10U:  // Urgency
+            *out_prefix = "photoshop";
+            *out_name   = "Urgency";
             return true;
         case 15U:  // Category
             *out_prefix = "photoshop";

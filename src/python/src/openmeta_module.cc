@@ -6365,6 +6365,79 @@ translate_editorial_metadata_document(
     return document;
 }
 
+static std::shared_ptr<PyDocument>
+translate_iptc_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataDescriptiveTranslationSourceMode source_mode,
+    MetadataDescriptiveTranslationConflictPolicy conflict_policy,
+    bool title_to_iptc_object_name, bool description_to_iptc_caption,
+    bool creators_to_iptc_bylines, bool keywords_to_iptc_keywords,
+    bool copyright_to_iptc_copyright, bool credit_to_iptc_credit,
+    bool source_to_iptc_source, bool city_to_iptc, bool sublocation_to_iptc,
+    bool state_to_iptc, bool country_to_iptc, bool country_code_to_iptc,
+    bool headline_to_iptc, bool instructions_to_iptc,
+    bool transmission_reference_to_iptc, bool authors_position_to_iptc,
+    bool caption_writer_to_iptc, bool category_to_iptc,
+    bool supplemental_categories_to_iptc, bool urgency_to_iptc,
+    uint32_t max_source_properties, uint32_t max_added_entries,
+    uint32_t max_operations, uint64_t max_total_text_bytes)
+{
+    MetadataIptcTranslationOptions options;
+    options.source_mode                     = source_mode;
+    options.conflict_policy                 = conflict_policy;
+    options.title_to_iptc_object_name       = title_to_iptc_object_name;
+    options.description_to_iptc_caption     = description_to_iptc_caption;
+    options.creators_to_iptc_bylines        = creators_to_iptc_bylines;
+    options.keywords_to_iptc_keywords       = keywords_to_iptc_keywords;
+    options.copyright_to_iptc_copyright     = copyright_to_iptc_copyright;
+    options.credit_to_iptc_credit           = credit_to_iptc_credit;
+    options.source_to_iptc_source           = source_to_iptc_source;
+    options.city_to_iptc                    = city_to_iptc;
+    options.sublocation_to_iptc             = sublocation_to_iptc;
+    options.state_to_iptc                   = state_to_iptc;
+    options.country_to_iptc                 = country_to_iptc;
+    options.country_code_to_iptc            = country_code_to_iptc;
+    options.headline_to_iptc                = headline_to_iptc;
+    options.instructions_to_iptc            = instructions_to_iptc;
+    options.transmission_reference_to_iptc  = transmission_reference_to_iptc;
+    options.authors_position_to_iptc        = authors_position_to_iptc;
+    options.caption_writer_to_iptc          = caption_writer_to_iptc;
+    options.category_to_iptc                = category_to_iptc;
+    options.supplemental_categories_to_iptc = supplemental_categories_to_iptc;
+    options.urgency_to_iptc                 = urgency_to_iptc;
+    options.max_source_properties           = max_source_properties;
+    options.max_added_entries               = max_added_entries;
+    options.max_operations                  = max_operations;
+    options.max_total_text_bytes            = max_total_text_bytes;
+    MetaStore translated;
+    MetadataDescriptiveTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_iptc_metadata(source->store, options,
+                                             &translated);
+    }
+    if (result.status != MetadataDescriptiveTranslationStatus::Ok) {
+        std::string message = "metadata IPTC translation failed: ";
+        message += metadata_descriptive_translation_status_name(result.status);
+        if (result.failed_mapping
+            != MetadataDescriptiveTranslationMapping::None) {
+            message += " for ";
+            message += metadata_descriptive_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
 static std::string
 document_compatibility_dump(std::shared_ptr<PyDocument> d,
                             ExportNameStyle style, ExportNamePolicy name_policy,
@@ -6947,6 +7020,8 @@ NB_MODULE(_openmeta, m)
         kMetadataLocationTranslationContractVersion);
     m.attr("METADATA_EDITORIAL_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataEditorialTranslationContractVersion);
+    m.attr("METADATA_IPTC_TRANSLATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataIptcTranslationContractVersion);
 
     nb::enum_<ScanStatus>(m, "ScanStatus")
         .value("Ok", ScanStatus::Ok)
@@ -8432,9 +8507,20 @@ NB_MODULE(_openmeta, m)
                MetadataDescriptiveTranslationMapping::PhotoshopHeadline)
         .value("PhotoshopInstructions",
                MetadataDescriptiveTranslationMapping::PhotoshopInstructions)
-        .value("PhotoshopTransmissionReference",
-               MetadataDescriptiveTranslationMapping::
-                   PhotoshopTransmissionReference);
+        .value(
+            "PhotoshopTransmissionReference",
+            MetadataDescriptiveTranslationMapping::PhotoshopTransmissionReference)
+        .value("PhotoshopAuthorsPosition",
+               MetadataDescriptiveTranslationMapping::PhotoshopAuthorsPosition)
+        .value("PhotoshopCaptionWriter",
+               MetadataDescriptiveTranslationMapping::PhotoshopCaptionWriter)
+        .value("PhotoshopCategory",
+               MetadataDescriptiveTranslationMapping::PhotoshopCategory)
+        .value(
+            "PhotoshopSupplementalCategories",
+            MetadataDescriptiveTranslationMapping::PhotoshopSupplementalCategories)
+        .value("PhotoshopUrgency",
+               MetadataDescriptiveTranslationMapping::PhotoshopUrgency);
 
     nb::enum_<MetadataDescriptiveTranslationStatus>(
         m, "MetadataDescriptiveTranslationStatus")
@@ -8475,6 +8561,8 @@ NB_MODULE(_openmeta, m)
         kMetadataLocationTranslationMaxAddedEntries);
     m.attr("METADATA_EDITORIAL_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
         kMetadataEditorialTranslationMaxAddedEntries);
+    m.attr("METADATA_IPTC_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
+        kMetadataIptcTranslationMaxAddedEntries);
     m.def("metadata_descriptive_translation_status_name",
           &metadata_descriptive_translation_status_name, "status"_a);
     m.def("metadata_descriptive_translation_mapping_name",
@@ -9230,6 +9318,32 @@ NB_MODULE(_openmeta, m)
              = kMetadataDescriptiveTranslationMaxSourceProperties,
              "max_added_entries"_a
              = kMetadataEditorialTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataDescriptiveTranslationMaxOperations,
+             "max_total_text_bytes"_a
+             = kMetadataDescriptiveTranslationMaxTotalTextBytes)
+        .def("translate_iptc_metadata", &translate_iptc_metadata_document,
+             "source_mode"_a
+             = MetadataDescriptiveTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataDescriptiveTranslationConflictPolicy::FailOnConflict,
+             "title_to_iptc_object_name"_a   = true,
+             "description_to_iptc_caption"_a = true,
+             "creators_to_iptc_bylines"_a    = true,
+             "keywords_to_iptc_keywords"_a   = true,
+             "copyright_to_iptc_copyright"_a = true,
+             "credit_to_iptc_credit"_a = true, "source_to_iptc_source"_a = true,
+             "city_to_iptc"_a = true, "sublocation_to_iptc"_a = true,
+             "state_to_iptc"_a = true, "country_to_iptc"_a = true,
+             "country_code_to_iptc"_a = true, "headline_to_iptc"_a = true,
+             "instructions_to_iptc"_a           = true,
+             "transmission_reference_to_iptc"_a = true,
+             "authors_position_to_iptc"_a       = true,
+             "caption_writer_to_iptc"_a = true, "category_to_iptc"_a = true,
+             "supplemental_categories_to_iptc"_a = true,
+             "urgency_to_iptc"_a                 = true,
+             "max_source_properties"_a
+             = kMetadataDescriptiveTranslationMaxSourceProperties,
+             "max_added_entries"_a = kMetadataIptcTranslationMaxAddedEntries,
              "max_operations"_a = kMetadataDescriptiveTranslationMaxOperations,
              "max_total_text_bytes"_a
              = kMetadataDescriptiveTranslationMaxTotalTextBytes)
