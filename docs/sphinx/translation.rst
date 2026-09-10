@@ -253,6 +253,73 @@ text, distance/zoom special values, and focal-plane/subject arrays still need
 separate contracts. These twelve fields do not close arbitrary EXIF writeback.
 
 
+Exact capture rational writeback
+--------------------------------
+
+``translate_xmp_capture_rational_metadata(...)`` and Python
+``Document.translate_capture_rational_metadata(...)`` use
+``MetadataCaptureRationalTranslationOptions``, contract version 1, for four
+independent unsigned RATIONAL singletons. Exact unindexed source paths use
+``http://ns.adobe.com/exif/1.0/``.
+
+.. list-table::
+   :header-rows: 1
+
+   * - XMP path
+     - ExifIFD tag
+     - Value contract
+     - Flag
+   * - SubjectDistance
+     - 0x9206
+     - Meters; zero unknown; wire numerator UINT32_MAX infinity
+     - subject_distance_to_exif
+   * - DigitalZoomRatio
+     - 0xA404
+     - Nonnegative ratio; zero means digital zoom unused
+     - digital_zoom_ratio_to_exif
+   * - ExposureIndex
+     - 0xA215
+     - Positive exposure index
+     - exposure_index_to_exif
+   * - FlashEnergy
+     - 0xA20B
+     - Nonnegative BCPS energy; no Flash-state inference
+     - flash_energy_to_exif
+
+Sources accept scalar nonnegative integers, unsigned rationals, and the existing
+exact integer/decimal/scientific/fraction text grammar, including a leading plus.
+Signed rational and floating-point values, arrays, whitespace, unit suffixes,
+zero denominators, malformed numbers, and unsupported precision fail. Text must
+use Ascii, Utf8, or Unknown encoding. Checked uint64 parsing precedes reduction;
+the reduced numerator and denominator must fit uint32. No rounding occurs.
+
+SubjectDistance adds exact ``Unknown`` and ``Infinity`` labels. Integer/fraction text
+and typed integer/unsigned-rational inputs with numerator UINT32_MAX select
+infinity before reduction; their denominator must be positive and fit uint32.
+New unknown/infinity values use 0/1 and UINT32_MAX/1. Equivalent existing sentinel
+encodings retain their denominator. Decimal/scientific text denotes a finite
+number; if its reduced numerator would equal UINT32_MAX, translation fails to
+avoid encoding a finite distance as infinity. Other finite inputs that only
+reduce to that reserved numerator also fail. Native sentinel equivalence is
+checked before ordinary rational cross-multiplication.
+
+Defaults are DirtyOnly/FailOnConflict with all fields enabled. Missing sources
+retain native fields; eligible duplicates fail. PreserveExisting retains native
+values, FailOnConflict requires typed equivalence, and ReplaceExisting repairs
+values/types/duplicates or removes a dirty source tombstone's native field.
+All selected fields commit atomically, including source/output aliasing and
+owned provenance. Limits are four additions, 1024 operations, 128 source text
+bytes per property, and 512 total text bytes. Preparation may allocate.
+
+The canonical EXIF tags 0xA215 and 0xA20B are the only ExposureIndex/FlashEnergy
+targets; older TIFF/EP aliases remain untouched. No APEX conversion, unit
+conversion, version creation/upgrade, or geographic/flash-state inference occurs.
+Existing numeric and settings option layouts remain unchanged. Portable
+native-to-XMP numeric formatting may be approximate; retain original XMP with
+both ``xmp_include_existing=True`` and ``XmpConflictPolicy.ExistingWins`` when exact
+source spelling is needed.
+
+
 Target-bound image geometry
 ---------------------------
 

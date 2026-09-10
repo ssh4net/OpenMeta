@@ -294,6 +294,10 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpSaturation,
     XmpSharpness,
     XmpSubjectDistanceRange,
+    XmpSubjectDistance,
+    XmpDigitalZoomRatio,
+    XmpExposureIndex,
+    XmpFlashEnergy,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -447,6 +451,55 @@ MetadataCaptureTranslationResult
 translate_xmp_capture_settings_metadata(
     const MetaStore& source,
     const MetadataCaptureSettingsTranslationOptions& options,
+    MetaStore* out_store);
+
+/// Experimental exact capture-rational writeback contract.
+inline constexpr uint32_t kMetadataCaptureRationalTranslationContractVersion
+    = 1U;
+inline constexpr uint32_t kMetadataCaptureRationalTranslationMaxAddedEntries
+    = 4U;
+inline constexpr uint64_t kMetadataCaptureRationalTranslationMaxTotalTextBytes
+    = 512U;
+
+struct MetadataCaptureRationalTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    /// exif:SubjectDistance -> ExifIFD 0x9206 RATIONAL, meters.
+    bool subject_distance_to_exif = true;
+    /// exif:DigitalZoomRatio -> ExifIFD 0xa404 RATIONAL.
+    bool digital_zoom_ratio_to_exif = true;
+    /// exif:ExposureIndex -> ExifIFD 0xa215 RATIONAL.
+    bool exposure_index_to_exif = true;
+    /// exif:FlashEnergy -> ExifIFD 0xa20b RATIONAL, BCPS.
+    bool flash_energy_to_exif = true;
+    uint32_t max_added_entries
+        = kMetadataCaptureRationalTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataCaptureRationalTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Translate four exact unsigned capture rationals atomically.
+ *
+ * Accepts scalar integers, unsigned rationals, and exact decimal/scientific or
+ * fraction text. SubjectDistance zero means unknown; a wire numerator of
+ * UINT32_MAX means infinity. Exact Unknown/Infinity labels are also accepted.
+ * Decimal/scientific finite distances that would encode the infinity sentinel
+ * fail. DigitalZoomRatio zero means unused; ExposureIndex must be positive;
+ * FlashEnergy may be zero. Zero denominators and floating-point values fail.
+ * No units, APEX values, flash state, or EXIF versions are inferred or converted.
+ * Older TIFF/EP aliases are not targets. Preparation may allocate; failure leaves
+ * source and output unchanged, including aliased calls.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_capture_rational_metadata(
+    const MetaStore& source,
+    const MetadataCaptureRationalTranslationOptions& options,
     MetaStore* out_store);
 
 /// Experimental target-bound image-geometry translation contract version.

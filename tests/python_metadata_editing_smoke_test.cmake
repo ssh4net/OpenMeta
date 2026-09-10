@@ -637,6 +637,24 @@ with tempfile.TemporaryDirectory() as temporary:
         raise AssertionError('structured destination was inferred')
     assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'capture_rationals.jpg'
+    xml = b'<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:e=\"http://ns.adobe.com/exif/1.0/\"><e:SubjectDistance>4294967295/3</e:SubjectDistance><e:DigitalZoomRatio>0</e:DigitalZoomRatio><e:ExposureIndex>200</e:ExposureIndex><e:FlashEnergy>7/3</e:FlashEnergy></rdf:Description></rdf:RDF>'
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    document = openmeta.read(str(path))
+    count = document.entry_count
+    assert openmeta.METADATA_CAPTURE_RATIONAL_TRANSLATION_CONTRACT_VERSION == 1
+    assert document.translate_capture_rational_metadata().entry_count == count
+    translated = document.translate_capture_rational_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
+    assert translated.entry_count == count + 4
+    flags = ('subject_distance', 'digital_zoom_ratio', 'exposure_index', 'flash_energy')
+    for selected in flags:
+        one = document.translate_capture_rational_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All, **{name + '_to_exif': name == selected for name in flags})
+        assert one.entry_count == count + 1
+    assert translated.translate_capture_rational_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All).entry_count == count + 4
+    assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

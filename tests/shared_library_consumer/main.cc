@@ -292,6 +292,24 @@ main()
           && location_result.status
                  == openmeta::MetadataDescriptiveTranslationStatus::Ok
           && location_result.entries_added == 1U;
+    const openmeta::MetadataAuthoringEntry capture_rational_entry {
+        openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                             "SubjectDistance"),
+        openmeta::make_value_view_text("Infinity",
+                                       openmeta::TextEncoding::Ascii),
+    };
+    openmeta::MetaStore capture_rational_source;
+    const auto capture_rational_authored = openmeta::create_metadata_store(
+        std::span(&capture_rational_entry, 1U), &capture_rational_source);
+    openmeta::MetaStore capture_rational_output;
+    const auto capture_rational_result
+        = openmeta::translate_xmp_capture_rational_metadata(
+            capture_rational_source, {}, &capture_rational_output);
+    const bool capture_rational_contract_matches
+        = capture_rational_authored.ok()
+          && capture_rational_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && capture_rational_result.entries_added == 1U;
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
             std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
@@ -373,6 +391,7 @@ main()
                    || !navigation_contract_matches
                    || !destination_contract_matches || !quality_contract_matches
                    || !gps_text_contract_matches || !setting_contract_matches
+                   || !capture_rational_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()

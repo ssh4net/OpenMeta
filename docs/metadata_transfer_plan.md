@@ -913,9 +913,11 @@ Suggested delivery sequence:
    with explicit text encoding. Together the five GPS APIs cover all 32 native
    GPS IDs in the repository under bounded version/encoding/precision contracts.
    Version 0.4.137 adds twelve closed capture-setting enums and explicit
-   five-field flat-XMP-to-structured-location construction. Remaining capture
+   five-field flat-XMP-to-structured-location construction. Version 0.4.138
+   adds exact SubjectDistance, DigitalZoomRatio, ExposureIndex, and FlashEnergy
+   writeback with explicit sentinel rules. Remaining capture
    contracts include Flash, light sources, APEX, sensitivity, lens/spectral text,
-   distance/zoom special values, and focal-plane/subject arrays. Geographic
+   focal-plane/subject arrays and other rational fields. Geographic
    inference and arbitrary structured-location merging remain excluded.
    See `docs/translation.md`.
 2. Retain the completed writer-baseline and compare-backed release gates while

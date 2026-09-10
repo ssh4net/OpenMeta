@@ -1,5 +1,17 @@
 # OpenMeta Changes
 
+## 0.4.138 - 2026-09-10
+
+Changes compared with `0.4.137`.
+
+### Added
+
+- Added C++ and Python exact capture-rational writeback for SubjectDistance,
+  DigitalZoomRatio, ExposureIndex, and FlashEnergy, with bounded precision,
+  field-specific sentinel rules, typed conflicts, and atomic removal.
+- Added sentinel, numeric-limit, snapshot persistence, Python, and installed
+  shared-consumer regressions. Existing capture options remain unchanged.
+
 ## 0.4.137 - 2026-09-10
 
 Changes compared with `0.4.136`.

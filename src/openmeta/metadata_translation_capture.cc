@@ -39,6 +39,10 @@ namespace {
         Saturation,
         Sharpness,
         SubjectDistanceRange,
+        SubjectDistance,
+        DigitalZoomRatio,
+        ExposureIndex,
+        FlashEnergy,
     };
 
     enum class NumericParseStatus : uint8_t {
@@ -129,7 +133,8 @@ namespace {
 
     static NumericParseStatus parse_exact_ratio(std::string_view text,
                                                 bool allow_negative,
-                                                ExactRatio* out) noexcept
+                                                ExactRatio* out,
+                                                bool reduce = true) noexcept
     {
         if (!out || text.empty()) {
             return NumericParseStatus::Invalid;
@@ -256,9 +261,12 @@ namespace {
             }
         }
 
-        const uint64_t divisor = gcd_u64(parsed.numerator, parsed.denominator);
-        parsed.numerator /= divisor;
-        parsed.denominator /= divisor;
+        if (reduce) {
+            const uint64_t divisor = gcd_u64(parsed.numerator,
+                                             parsed.denominator);
+            parsed.numerator /= divisor;
+            parsed.denominator /= divisor;
+        }
         if (parsed.numerator == 0U) {
             parsed.negative = false;
         }
@@ -455,6 +463,70 @@ namespace {
         return MetadataCaptureTranslationStatus::Ok;
     }
 
+    static MetadataCaptureTranslationStatus parse_capture_rational_source(
+        const ByteArena& arena, const MetaValue& value,
+        NativeCaptureField field, MetaValue* out) noexcept
+    {
+        using Status = MetadataCaptureTranslationStatus;
+        ExactRatio ratio;
+        bool wire_numerator = true;
+        if (value.kind == MetaValueKind::Text) {
+            const std::string_view text = arena_text(arena, value.data.span);
+            if (field == NativeCaptureField::SubjectDistance
+                && text == "Unknown") {
+                *out = make_urational(0U, 1U);
+                return Status::Ok;
+            }
+            if (field == NativeCaptureField::SubjectDistance
+                && text == "Infinity") {
+                *out = make_urational(UINT32_MAX, 1U);
+                return Status::Ok;
+            }
+            wire_numerator = text.find_first_of(".eE")
+                             == std::string_view::npos;
+            const NumericParseStatus parsed = parse_exact_ratio(text, false,
+                                                                &ratio, false);
+            if (parsed != NumericParseStatus::Ok)
+                return numeric_status(parsed);
+        } else if (value.kind != MetaValueKind::Scalar || value.count != 1U) {
+            return Status::InvalidSourceValue;
+        } else if (value.elem_type == MetaElementType::URational) {
+            ratio.numerator   = value.data.ur.numer;
+            ratio.denominator = value.data.ur.denom;
+        } else if (!scalar_unsigned(value, &ratio.numerator)) {
+            int64_t integer = 0;
+            if (!scalar_signed(value, &integer))
+                return Status::InvalidSourceValue;
+            if (integer < 0)
+                return Status::ValueOutOfRange;
+            ratio.numerator = static_cast<uint64_t>(integer);
+        }
+        if (ratio.denominator == 0U)
+            return Status::InvalidNumericValue;
+        if (ratio.negative)
+            return Status::ValueOutOfRange;
+        // SubjectDistance sentinels refer to the wire numerator, before reduction.
+        if (field == NativeCaptureField::SubjectDistance && wire_numerator
+            && ratio.numerator == UINT32_MAX) {
+            if (ratio.denominator > UINT32_MAX)
+                return Status::ValueOutOfRange;
+            *out = make_urational(UINT32_MAX, 1U);
+            return Status::Ok;
+        }
+        const uint64_t divisor = gcd_u64(ratio.numerator, ratio.denominator);
+        ratio.numerator /= divisor;
+        ratio.denominator /= divisor;
+        if (ratio.numerator > UINT32_MAX || ratio.denominator > UINT32_MAX
+            || (field == NativeCaptureField::ExposureIndex
+                && ratio.numerator == 0U)
+            || (field == NativeCaptureField::SubjectDistance
+                && ratio.numerator == UINT32_MAX))
+            return Status::ValueOutOfRange;
+        *out = make_urational(static_cast<uint32_t>(ratio.numerator),
+                              static_cast<uint32_t>(ratio.denominator));
+        return Status::Ok;
+    }
+
     static bool xmp_path_matches(const MetaStore& store, const Entry& entry,
                                  std::string_view property_path) noexcept
     {
@@ -580,11 +652,16 @@ namespace {
         case NativeCaptureField::Saturation: tag = 0xa409U; break;
         case NativeCaptureField::Sharpness: tag = 0xa40aU; break;
         case NativeCaptureField::SubjectDistanceRange: tag = 0xa40cU; break;
+        case NativeCaptureField::SubjectDistance: tag = 0x9206U; break;
+        case NativeCaptureField::DigitalZoomRatio: tag = 0xa404U; break;
+        case NativeCaptureField::ExposureIndex: tag = 0xa215U; break;
+        case NativeCaptureField::FlashEnergy: tag = 0xa20bU; break;
         }
         return entry.key.data.exif_tag.tag == tag;
     }
 
-    static bool capture_value_matches(const MetaValue& actual,
+    static bool capture_value_matches(NativeCaptureField field,
+                                      const MetaValue& actual,
                                       const MetaValue& expected) noexcept
     {
         if (actual.kind != MetaValueKind::Scalar
@@ -597,6 +674,11 @@ namespace {
         case MetaElementType::URational:
             if (actual.data.ur.denom == 0U || expected.data.ur.denom == 0U) {
                 return false;
+            }
+            if (field == NativeCaptureField::SubjectDistance
+                && (actual.data.ur.numer == UINT32_MAX
+                    || expected.data.ur.numer == UINT32_MAX)) {
+                return actual.data.ur.numer == expected.data.ur.numer;
             }
             return static_cast<uint64_t>(actual.data.ur.numer)
                        * expected.data.ur.denom
@@ -629,7 +711,8 @@ namespace {
             }
             ++active_count;
             if (active_count == 1U && group->present) {
-                exact = capture_value_matches(entry.value, group->value);
+                exact = capture_value_matches(group->field, entry.value,
+                                              group->value);
             }
         }
         group->existing_any = active_count > 0U;
@@ -665,7 +748,8 @@ namespace {
             }
             ++active_count;
             if (active_count == 1U && group.present) {
-                first_matches = capture_value_matches(entry.value, group.value);
+                first_matches = capture_value_matches(group.field, entry.value,
+                                                      group.value);
             }
         }
         if (!group.present) {
@@ -699,6 +783,10 @@ namespace {
         case NativeCaptureField::Saturation: tag = 0xa409U; break;
         case NativeCaptureField::Sharpness: tag = 0xa40aU; break;
         case NativeCaptureField::SubjectDistanceRange: tag = 0xa40cU; break;
+        case NativeCaptureField::SubjectDistance: tag = 0x9206U; break;
+        case NativeCaptureField::DigitalZoomRatio: tag = 0xa404U; break;
+        case NativeCaptureField::ExposureIndex: tag = 0xa215U; break;
+        case NativeCaptureField::FlashEnergy: tag = 0xa20bU; break;
         }
         return make_exif_tag_key(arena, "exififd", tag);
     }
@@ -750,7 +838,7 @@ namespace {
                 continue;
             }
             first_active = id;
-            if (!capture_value_matches(entry.value, group.value)) {
+            if (!capture_value_matches(group.field, entry.value, group.value)) {
                 edit->set_value(id, group.value);
                 ++result->entries_updated;
             }
@@ -1237,6 +1325,115 @@ translate_xmp_capture_settings_metadata(
                                 options.max_operations, result, out_store);
 }
 
+MetadataCaptureTranslationResult
+translate_xmp_capture_rational_metadata(
+    const MetaStore& source,
+    const MetadataCaptureRationalTranslationOptions& options,
+    MetaStore* out_store)
+{
+    using Status = MetadataCaptureTranslationStatus;
+    using Mode   = MetadataCaptureTranslationSourceMode;
+    using Policy = MetadataCaptureTranslationConflictPolicy;
+    if (!out_store)
+        return capture_error(Status::NullOutput);
+    if (!source.is_finalized())
+        return capture_error(Status::SourceNotFinalized);
+    if ((options.source_mode != Mode::DirtyOnly
+         && options.source_mode != Mode::All)
+        || (options.conflict_policy != Policy::PreserveExisting
+            && options.conflict_policy != Policy::FailOnConflict
+            && options.conflict_policy != Policy::ReplaceExisting)
+        || (!options.subject_distance_to_exif
+            && !options.digital_zoom_ratio_to_exif
+            && !options.exposure_index_to_exif && !options.flash_energy_to_exif)
+        || options.max_added_entries == 0U
+        || options.max_added_entries
+               > kMetadataCaptureRationalTranslationMaxAddedEntries
+        || options.max_operations == 0U
+        || options.max_operations > kMetadataCaptureTranslationMaxOperations
+        || options.max_text_bytes_per_property == 0U
+        || options.max_text_bytes_per_property
+               > kMetadataCaptureTranslationMaxTextBytesPerProperty
+        || options.max_total_text_bytes == 0U
+        || options.max_total_text_bytes
+               > kMetadataCaptureRationalTranslationMaxTotalTextBytes)
+        return capture_error(Status::InvalidOptions);
+    struct Mapping final {
+        std::string_view path;
+        NativeCaptureField field;
+        MetadataCaptureTranslationMapping mapping;
+        bool enabled;
+    };
+    const std::array<Mapping, 4U> mappings { {
+        { "SubjectDistance", NativeCaptureField::SubjectDistance,
+          MetadataCaptureTranslationMapping::XmpSubjectDistance,
+          options.subject_distance_to_exif },
+        { "DigitalZoomRatio", NativeCaptureField::DigitalZoomRatio,
+          MetadataCaptureTranslationMapping::XmpDigitalZoomRatio,
+          options.digital_zoom_ratio_to_exif },
+        { "ExposureIndex", NativeCaptureField::ExposureIndex,
+          MetadataCaptureTranslationMapping::XmpExposureIndex,
+          options.exposure_index_to_exif },
+        { "FlashEnergy", NativeCaptureField::FlashEnergy,
+          MetadataCaptureTranslationMapping::XmpFlashEnergy,
+          options.flash_energy_to_exif },
+    } };
+    std::array<CapturePlannedGroup, 4U> groups {};
+    size_t count        = 0U;
+    uint64_t text_bytes = 0U;
+    MetadataCaptureTranslationResult result;
+    for (const Mapping& mapping : mappings) {
+        if (!mapping.enabled)
+            continue;
+        CaptureSource property;
+        Status status = find_capture_source(source,
+                                            std::span(&mapping.path, 1U),
+                                            options.source_mode, &property);
+        if (status == Status::Ok && !property.found)
+            continue;
+        CapturePlannedGroup group;
+        group.mapping      = mapping.mapping;
+        group.field        = mapping.field;
+        group.source_entry = property.entry_id;
+        if (status == Status::Ok && !property.deleted) {
+            const MetaValue& value = *property.value;
+            if (value.kind == MetaValueKind::Text) {
+                const std::string_view text = arena_text(source.arena(),
+                                                         value.data.span);
+                if (text.size() > options.max_text_bytes_per_property)
+                    status = Status::ValueTooLong;
+                else if (text.size() > options.max_total_text_bytes
+                         || text_bytes
+                                > options.max_total_text_bytes - text.size())
+                    status = Status::SourceLimitExceeded;
+                else if (value.text_encoding != TextEncoding::Ascii
+                         && value.text_encoding != TextEncoding::Utf8
+                         && value.text_encoding != TextEncoding::Unknown)
+                    status = Status::InvalidSourceValue;
+                else
+                    text_bytes += text.size();
+            }
+            if (status == Status::Ok)
+                status = parse_capture_rational_source(source.arena(), value,
+                                                       mapping.field,
+                                                       &group.value);
+            group.present = status == Status::Ok;
+        }
+        if (status != Status::Ok) {
+            result.status              = status;
+            result.failed_mapping      = mapping.mapping;
+            result.failed_source_entry = property.entry_id;
+            return result;
+        }
+        ++result.source_properties;
+        groups[count++] = group;
+    }
+    return apply_capture_groups(source, std::span(groups.data(), count),
+                                options.conflict_policy,
+                                options.max_added_entries,
+                                options.max_operations, result, out_store);
+}
+
 const char*
 metadata_capture_translation_status_name(
     MetadataCaptureTranslationStatus status) noexcept
@@ -1278,6 +1475,14 @@ metadata_capture_translation_mapping_name(
 {
     switch (mapping) {
     case MetadataCaptureTranslationMapping::None: return "none";
+    case MetadataCaptureTranslationMapping::XmpSubjectDistance:
+        return "xmp_subject_distance";
+    case MetadataCaptureTranslationMapping::XmpDigitalZoomRatio:
+        return "xmp_digital_zoom_ratio";
+    case MetadataCaptureTranslationMapping::XmpExposureIndex:
+        return "xmp_exposure_index";
+    case MetadataCaptureTranslationMapping::XmpFlashEnergy:
+        return "xmp_flash_energy";
     case MetadataCaptureTranslationMapping::XmpExposureProgram:
         return "xmp_exposure_program";
     case MetadataCaptureTranslationMapping::XmpMeteringMode:

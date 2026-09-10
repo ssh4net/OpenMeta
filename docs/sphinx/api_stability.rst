@@ -286,6 +286,10 @@ Host-facing API map
      - Experimental
      - Transactional v1 satellites, map datum, processing method, and area with explicit ASCII/Unicode encoding, version, conflict, and removal contracts.
        Python provides the same operation. See :doc:`translation`.
+   * - Capture rational translation: ``translate_xmp_capture_rational_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Four exact unsigned capture rationals with explicit sentinel, precision, conflict, and removal rules. See :doc:`translation`.
    * - Capture settings translation: ``translate_xmp_capture_settings_metadata(...)``
      - ``openmeta/metadata_translation.h``
      - Experimental

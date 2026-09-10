@@ -3586,3 +3586,331 @@ namespace {
     }
 }  // namespace
 }  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    using RationalOptions = MetadataCaptureRationalTranslationOptions;
+    constexpr std::array<std::string_view, 4> kRationalPaths {
+        "SubjectDistance", "DigitalZoomRatio", "ExposureIndex", "FlashEnergy"
+    };
+    constexpr std::array<uint16_t, 4> kRationalTags { 0x9206U, 0xa404U, 0xa215U,
+                                                      0xa20bU };
+    static MetaStore rational_source(EntryFlags flags = EntryFlags::Dirty)
+    {
+        MetaStore source;
+        constexpr std::array<std::string_view, 4> values { "3/2", "1.25", "2e2",
+                                                           "+5/2" };
+        for (size_t i = 0U; i < values.size(); ++i)
+            settings_xmp(source, kRationalPaths[i],
+                         make_text(source.arena(), values[i],
+                                   TextEncoding::Utf8),
+                         flags);
+        return source;
+    }
+    static void rational_failure(MetaStore& source, SettingsStatus expected,
+                                 const RationalOptions& options = {})
+    {
+        source.finalize();
+        MetaStore output;
+        settings_native(output, 0x9206U, make_urational(7U, 2U));
+        output.finalize();
+        const size_t count = source.entries().size();
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(source, options,
+                                                          &output)
+                      .status,
+                  expected);
+        ASSERT_EQ(output.entries().size(), 1U);
+        EXPECT_EQ(output.entry(0U).value.data.ur.numer, 7U);
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(source, options,
+                                                          &source)
+                      .status,
+                  expected);
+        EXPECT_EQ(source.entries().size(), count);
+    }
+    TEST(MetadataCaptureRational,
+         WritesFourExactCanonicalFieldsWithOwnedProvenance)
+    {
+        MetaStore output;
+        {
+            MetaStore source = rational_source();
+            source.finalize();
+            const auto result
+                = translate_xmp_capture_rational_metadata(source, {}, &output);
+            ASSERT_EQ(result.status, SettingsStatus::Ok);
+            EXPECT_EQ(result.source_properties, 4U);
+            EXPECT_EQ(result.entries_added, 4U);
+        }
+        constexpr std::array<URational, 4> expected {
+            { { 3U, 2U }, { 5U, 4U }, { 200U, 1U }, { 5U, 2U } }
+        };
+        for (size_t i = 0U; i < expected.size(); ++i) {
+            const Entry* entry = settings_find(output, kRationalTags[i]);
+            ASSERT_NE(entry, nullptr);
+            EXPECT_EQ(entry->value.elem_type, MetaElementType::URational);
+            EXPECT_EQ(entry->value.count, 1U);
+            EXPECT_EQ(entry->value.data.ur.numer, expected[i].numer);
+            EXPECT_EQ(entry->value.data.ur.denom, expected[i].denom);
+            const auto bytes = output.arena().span(
+                entry->origin.wire_type_name);
+            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                           bytes.data()),
+                                       bytes.size()),
+                      "settings-source");
+        }
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(output, {}, &output)
+                      .groups_unchanged,
+                  4U);
+        EXPECT_EQ(settings_find(output, 0x9215U), nullptr);
+        EXPECT_EQ(settings_find(output, 0x920bU), nullptr);
+    }
+    TEST(MetadataCaptureRational, SubjectDistanceSentinelsPrecedeReduction)
+    {
+        for (const MetaValue value :
+             { make_urational(UINT32_MAX, 3U),
+               make_urational(UINT32_MAX, UINT32_MAX), make_u32(UINT32_MAX) }) {
+            MetaStore source;
+            settings_xmp(source, "SubjectDistance", value);
+            source.finalize();
+            MetaStore output;
+            ASSERT_EQ(translate_xmp_capture_rational_metadata(source, {},
+                                                              &output)
+                          .status,
+                      SettingsStatus::Ok);
+            ASSERT_NE(settings_find(output, 0x9206U), nullptr);
+            EXPECT_EQ(settings_find(output, 0x9206U)->value.data.ur.numer,
+                      UINT32_MAX);
+            EXPECT_EQ(settings_find(output, 0x9206U)->value.data.ur.denom, 1U);
+        }
+        for (const std::string_view text :
+             { "Infinity", "4294967295", "4294967295/3" }) {
+            MetaStore source;
+            settings_xmp(source, "SubjectDistance",
+                         make_text(source.arena(), text, TextEncoding::Ascii));
+            settings_native(source, 0x9206U, make_urational(UINT32_MAX, 3U));
+            source.finalize();
+            MetaStore output;
+            const auto result
+                = translate_xmp_capture_rational_metadata(source, {}, &output);
+            EXPECT_EQ(result.status, SettingsStatus::Ok);
+            EXPECT_EQ(result.groups_unchanged, 1U);
+            EXPECT_EQ(settings_find(output, 0x9206U)->value.data.ur.denom, 3U);
+        }
+        for (const std::string_view text : { "Unknown", "0", "0/17" }) {
+            MetaStore source;
+            settings_xmp(source, "SubjectDistance",
+                         make_text(source.arena(), text, TextEncoding::Ascii));
+            source.finalize();
+            MetaStore output;
+            ASSERT_EQ(translate_xmp_capture_rational_metadata(source, {},
+                                                              &output)
+                          .status,
+                      SettingsStatus::Ok);
+            EXPECT_EQ(settings_find(output, 0x9206U)->value.data.ur.numer, 0U);
+            EXPECT_EQ(settings_find(output, 0x9206U)->value.data.ur.denom, 1U);
+        }
+    }
+    TEST(MetadataCaptureRational, FiniteDistanceCannotBecomeAnInfinitySentinel)
+    {
+        for (const std::string_view text : { "4294967295.0", "4.294967295e9",
+                                             "8589934590/2", "2147483647.5" }) {
+            MetaStore source;
+            settings_xmp(source, "SubjectDistance",
+                         make_text(source.arena(), text, TextEncoding::Ascii));
+            rational_failure(source, SettingsStatus::ValueOutOfRange);
+        }
+        MetaStore source;
+        settings_xmp(source, "SubjectDistance",
+                     make_text(source.arena(), "429496729.5",
+                               TextEncoding::Ascii));
+        source.finalize();
+        MetaStore output;
+        ASSERT_EQ(
+            translate_xmp_capture_rational_metadata(source, {}, &output).status,
+            SettingsStatus::Ok);
+        EXPECT_EQ(settings_find(output, 0x9206U)->value.data.ur.numer,
+                  858993459U);
+        EXPECT_EQ(settings_find(output, 0x9206U)->value.data.ur.denom, 2U);
+        source = MetaStore {};
+        settings_xmp(source, "SubjectDistance", make_u32(1431655765U));
+        settings_native(source, 0x9206U, make_urational(UINT32_MAX, 3U));
+        rational_failure(source, SettingsStatus::NativeConflict);
+    }
+    TEST(MetadataCaptureRational, ZeroRulesAndExactReductionAreFieldSpecific)
+    {
+        for (const size_t index : { 0U, 1U, 3U }) {
+            MetaStore source;
+            settings_xmp(source, kRationalPaths[index],
+                         make_urational(0U, 17U));
+            source.finalize();
+            MetaStore output;
+            ASSERT_EQ(translate_xmp_capture_rational_metadata(source, {},
+                                                              &output)
+                          .status,
+                      SettingsStatus::Ok);
+            EXPECT_EQ(settings_find(output, kRationalTags[index])
+                          ->value.data.ur.numer,
+                      0U);
+            EXPECT_EQ(settings_find(output, kRationalTags[index])
+                          ->value.data.ur.denom,
+                      1U);
+        }
+        MetaStore source;
+        settings_xmp(source, "ExposureIndex", make_u32(0U));
+        rational_failure(source, SettingsStatus::ValueOutOfRange);
+        source = MetaStore {};
+        settings_xmp(source, "ExposureIndex",
+                     make_text(source.arena(), "8589934590/2",
+                               TextEncoding::Ascii));
+        source.finalize();
+        MetaStore output;
+        ASSERT_EQ(
+            translate_xmp_capture_rational_metadata(source, {}, &output).status,
+            SettingsStatus::Ok);
+        EXPECT_EQ(settings_find(output, 0xa215U)->value.data.ur.numer,
+                  UINT32_MAX);
+    }
+    TEST(MetadataCaptureRational,
+         RejectsUnsupportedTypesEncodingsAndMalformedNumbers)
+    {
+        for (const MetaValue value :
+             { make_urational(0U, 0U), make_urational(UINT32_MAX, 0U) }) {
+            MetaStore source;
+            settings_xmp(source, "SubjectDistance", value);
+            rational_failure(source, SettingsStatus::InvalidNumericValue);
+        }
+        for (const MetaValue value :
+             { make_f64_bits(0x3ff0000000000000ULL), make_srational(1, 2) }) {
+            MetaStore source;
+            settings_xmp(source, "SubjectDistance", value);
+            rational_failure(source, SettingsStatus::InvalidSourceValue);
+        }
+        for (const std::string_view text : { " 1", "1 ", "1 m", "-1", "inf",
+                                             "unknown", "1/0", "NaN", ".5" }) {
+            MetaStore source;
+            settings_xmp(source, "SubjectDistance",
+                         make_text(source.arena(), text, TextEncoding::Ascii));
+            rational_failure(source, SettingsStatus::InvalidNumericValue);
+        }
+        for (const std::string_view text :
+             { "18446744073709551616", "1/4294967296", "1e20" }) {
+            MetaStore source;
+            settings_xmp(source, "FlashEnergy",
+                         make_text(source.arena(), text, TextEncoding::Ascii));
+            rational_failure(source, SettingsStatus::ValueOutOfRange);
+        }
+        MetaStore source;
+        settings_xmp(source, "DigitalZoomRatio",
+                     make_text(source.arena(), "1", TextEncoding::Utf16LE));
+        rational_failure(source, SettingsStatus::InvalidSourceValue);
+        source          = MetaStore {};
+        MetaValue count = make_u32(1U);
+        count.count     = 2U;
+        settings_xmp(source, "DigitalZoomRatio", count);
+        rational_failure(source, SettingsStatus::InvalidSourceValue);
+        source = MetaStore {};
+        settings_xmp(source, "DigitalZoomRatio", make_i32(-1));
+        rational_failure(source, SettingsStatus::ValueOutOfRange);
+    }
+    TEST(MetadataCaptureRational,
+         DirtyFlagsExactNamespacesAndLegacyTagsAreIndependent)
+    {
+        MetaStore source = rational_source(EntryFlags::None);
+        source.finalize();
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(source, {}, &output)
+                      .entries_added,
+                  0U);
+        RationalOptions options;
+        options.source_mode = MetadataCaptureTranslationSourceMode::All;
+        options.flash_energy_to_exif = false;
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(source, options,
+                                                          &output)
+                      .entries_added,
+                  3U);
+        source = MetaStore {};
+        settings_xmp(source, "SubjectDistance[1]", make_u32(1U));
+        settings_xmp(source, "SubjectDistance", make_u32(1U), EntryFlags::Dirty,
+                     "foreign");
+        settings_xmp(source, "ExposureIndex", make_u32(200U));
+        settings_native(source, 0x9215U, make_urational(99U, 1U));
+        source.finalize();
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(source, {}, &output)
+                      .entries_added,
+                  1U);
+        EXPECT_EQ(settings_find(output, 0x9215U)->value.data.ur.numer, 99U);
+        source = MetaStore {};
+        settings_xmp(source, "ExposureIndex", make_u32(100U));
+        settings_xmp(source, "ExposureIndex", make_u32(100U));
+        rational_failure(source, SettingsStatus::AmbiguousSource);
+    }
+    TEST(MetadataCaptureRational, ConflictsRepairDuplicatesAndRemoveAtomically)
+    {
+        MetaStore source = rational_source();
+        settings_native(source, 0xa404U, make_u32(1U));
+        settings_native(source, 0xa404U, make_urational(3U, 1U));
+        rational_failure(source, SettingsStatus::NativeConflict);
+        RationalOptions options;
+        options.conflict_policy = SettingsPolicy::PreserveExisting;
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(source, options,
+                                                          &output)
+                      .groups_preserved,
+                  1U);
+        options.conflict_policy = SettingsPolicy::ReplaceExisting;
+        const auto repaired
+            = translate_xmp_capture_rational_metadata(source, options, &output);
+        ASSERT_EQ(repaired.status, SettingsStatus::Ok);
+        EXPECT_EQ(repaired.entries_removed, 1U);
+        EXPECT_EQ(repaired.entries_updated, 1U);
+        EXPECT_EQ(settings_active_count(output, 0xa404U), 1U);
+        source = rational_source(EntryFlags::Dirty | EntryFlags::Deleted);
+        for (uint16_t tag : kRationalTags)
+            settings_native(source, tag, make_urational(1U, 1U));
+        settings_native(source, 0x829aU, make_urational(1U, 100U));
+        source.finalize();
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(source, options,
+                                                          &source)
+                      .entries_removed,
+                  4U);
+        for (uint16_t tag : kRationalTags)
+            EXPECT_EQ(settings_find(source, tag), nullptr);
+        EXPECT_NE(settings_find(source, 0x829aU), nullptr);
+    }
+    TEST(MetadataCaptureRational, BudgetsAndLateFailuresPreserveAliasedOutput)
+    {
+        MetaStore source = rational_source();
+        RationalOptions options;
+        options.max_added_entries = 3U;
+        rational_failure(source, SettingsStatus::EntryLimitExceeded, options);
+        options                = {};
+        options.max_operations = 3U;
+        rational_failure(source, SettingsStatus::OperationLimitExceeded,
+                         options);
+        options                      = {};
+        options.max_total_text_bytes = 2U;
+        rational_failure(source, SettingsStatus::SourceLimitExceeded, options);
+        options                             = {};
+        options.max_text_bytes_per_property = 2U;
+        rational_failure(source, SettingsStatus::ValueTooLong, options);
+        options                   = {};
+        options.max_added_entries = 5U;
+        rational_failure(source, SettingsStatus::InvalidOptions, options);
+        source = MetaStore {};
+        settings_xmp(source, "SubjectDistance", make_u32(1U));
+        settings_xmp(source, "FlashEnergy",
+                     make_text(source.arena(), "bad", TextEncoding::Ascii));
+        rational_failure(source, SettingsStatus::InvalidNumericValue);
+        EXPECT_EQ(settings_find(source, 0x9206U), nullptr);
+        MetaStore unfinalized;
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(unfinalized, {},
+                                                          nullptr)
+                      .status,
+                  SettingsStatus::NullOutput);
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(unfinalized, {},
+                                                          &output)
+                      .status,
+                  SettingsStatus::SourceNotFinalized);
+    }
+}  // namespace
+}  // namespace openmeta

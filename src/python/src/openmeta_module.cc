@@ -6476,6 +6476,57 @@ translate_capture_settings_metadata_document(
 }
 
 static std::shared_ptr<PyDocument>
+translate_capture_rational_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataCaptureTranslationSourceMode source_mode,
+    MetadataCaptureTranslationConflictPolicy conflict_policy,
+    bool subject_distance_to_exif, bool digital_zoom_ratio_to_exif,
+    bool exposure_index_to_exif, bool flash_energy_to_exif,
+    uint32_t max_added_entries, uint32_t max_operations,
+    uint32_t max_text_bytes_per_property, uint64_t max_total_text_bytes)
+{
+    MetadataCaptureRationalTranslationOptions options;
+    options.source_mode                 = source_mode;
+    options.conflict_policy             = conflict_policy;
+    options.subject_distance_to_exif    = subject_distance_to_exif;
+    options.digital_zoom_ratio_to_exif  = digital_zoom_ratio_to_exif;
+    options.exposure_index_to_exif      = exposure_index_to_exif;
+    options.flash_energy_to_exif        = flash_energy_to_exif;
+    options.max_added_entries           = max_added_entries;
+    options.max_operations              = max_operations;
+    options.max_text_bytes_per_property = max_text_bytes_per_property;
+    options.max_total_text_bytes        = max_total_text_bytes;
+
+    MetaStore translated;
+    MetadataCaptureTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_capture_rational_metadata(source->store, options,
+                                                         &translated);
+    }
+    if (result.status != MetadataCaptureTranslationStatus::Ok) {
+        std::string message = "metadata capture rational translation failed: ";
+        message += metadata_capture_translation_status_name(result.status);
+        if (result.failed_mapping != MetadataCaptureTranslationMapping::None) {
+            message += " for ";
+            message += metadata_capture_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
 translate_image_geometry_document(
     std::shared_ptr<PyDocument> source,
     const TransferTargetImageSpec& target_image_spec,
@@ -8921,7 +8972,23 @@ NB_MODULE(_openmeta, m)
                MetadataCaptureTranslationMapping::XmpSaturation)
         .value("XmpSharpness", MetadataCaptureTranslationMapping::XmpSharpness)
         .value("XmpSubjectDistanceRange",
-               MetadataCaptureTranslationMapping::XmpSubjectDistanceRange);
+               MetadataCaptureTranslationMapping::XmpSubjectDistanceRange)
+        .value("XmpSubjectDistance",
+               MetadataCaptureTranslationMapping::XmpSubjectDistance)
+        .value("XmpDigitalZoomRatio",
+               MetadataCaptureTranslationMapping::XmpDigitalZoomRatio)
+        .value("XmpExposureIndex",
+               MetadataCaptureTranslationMapping::XmpExposureIndex)
+        .value("XmpFlashEnergy",
+               MetadataCaptureTranslationMapping::XmpFlashEnergy);
+
+
+    m.attr("METADATA_CAPTURE_RATIONAL_TRANSLATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataCaptureRationalTranslationContractVersion);
+    m.attr("METADATA_CAPTURE_RATIONAL_TRANSLATION_MAX_ADDED_ENTRIES")
+        = nb::int_(kMetadataCaptureRationalTranslationMaxAddedEntries);
+    m.attr("METADATA_CAPTURE_RATIONAL_TRANSLATION_MAX_TOTAL_TEXT_BYTES")
+        = nb::int_(kMetadataCaptureRationalTranslationMaxTotalTextBytes);
 
     m.attr("METADATA_CAPTURE_SETTINGS_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataCaptureSettingsTranslationContractVersion);
@@ -9948,6 +10015,21 @@ NB_MODULE(_openmeta, m)
              = kMetadataCaptureTranslationMaxTextBytesPerProperty,
              "max_total_text_bytes"_a
              = kMetadataCaptureSettingsTranslationMaxTotalTextBytes)
+        .def("translate_capture_rational_metadata",
+             &translate_capture_rational_metadata_document,
+             "source_mode"_a = MetadataCaptureTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+             "subject_distance_to_exif"_a   = true,
+             "digital_zoom_ratio_to_exif"_a = true,
+             "exposure_index_to_exif"_a = true, "flash_energy_to_exif"_a = true,
+             "max_added_entries"_a
+             = kMetadataCaptureRationalTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataCaptureTranslationMaxOperations,
+             "max_text_bytes_per_property"_a
+             = kMetadataCaptureTranslationMaxTextBytesPerProperty,
+             "max_total_text_bytes"_a
+             = kMetadataCaptureRationalTranslationMaxTotalTextBytes)
         .def("translate_image_geometry", &translate_image_geometry_document,
              "target_image_spec"_a,
              "source_mode"_a = MetadataGeometryTranslationSourceMode::DirtyOnly,
