@@ -8,6 +8,7 @@
 #include <openmeta/metadata_translation.h>
 #include <openmeta/prepared_transfer_handoff.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -346,6 +347,34 @@ main()
           && light_source_result.status
                  == openmeta::MetadataCaptureTranslationStatus::Ok
           && light_source_result.entries_added == 1U;
+    const std::array<openmeta::MetadataAuthoringEntry, 3> sensitivity_entries
+        = { {
+            { openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                                   "PhotographicSensitivity"),
+              openmeta::make_value_view_text("65535",
+                                             openmeta::TextEncoding::Ascii) },
+            { openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                                   "SensitivityType"),
+              openmeta::make_value_view_text("3",
+                                             openmeta::TextEncoding::Ascii) },
+            { openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                                   "ISOSpeed"),
+              openmeta::make_value_view_text("102400",
+                                             openmeta::TextEncoding::Ascii) },
+        } };
+    openmeta::MetaStore sensitivity_source;
+    const auto sensitivity_authored
+        = openmeta::create_metadata_store(sensitivity_entries,
+                                          &sensitivity_source);
+    const auto sensitivity_result
+        = openmeta::translate_xmp_sensitivity_metadata(sensitivity_source, {},
+                                                       &sensitivity_source);
+    const bool sensitivity_contract_matches
+        = sensitivity_authored.ok()
+          && sensitivity_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && sensitivity_result.entries_added == 3U
+          && sensitivity_result.groups_translated == 1U;
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
             std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
@@ -429,6 +458,7 @@ main()
                    || !gps_text_contract_matches || !setting_contract_matches
                    || !capture_rational_contract_matches
                    || !flash_contract_matches || !light_source_contract_matches
+                   || !sensitivity_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()

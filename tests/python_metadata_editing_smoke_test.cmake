@@ -705,6 +705,37 @@ with tempfile.TemporaryDirectory() as temporary:
         assert restored.translate_light_source_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All).entry_count == restored.entry_count + 1
         assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'sensitivity.jpg'
+    fields = {'PhotographicSensitivity': 65535, 'SensitivityType': 7, 'StandardOutputSensitivity': 4294967295, 'RecommendedExposureIndex': 4294967295, 'ISOSpeed': 4294967295, 'ISOSpeedLatitudeyyy': 100, 'ISOSpeedLatitudezzz': 200}
+    for valid in (True, False):
+        fields['RecommendedExposureIndex'] = 4294967295 if valid else 100
+        xml = ('<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:e=\"http://cipa.jp/exif/1.0/\">' + ''.join('<e:' + key + '>' + str(value) + '</e:' + key + '>' for key, value in fields.items()) + '</rdf:Description></rdf:RDF>').encode()
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        document = openmeta.read(str(path))
+        count = document.entry_count
+        assert openmeta.METADATA_SENSITIVITY_TRANSLATION_CONTRACT_VERSION == 1
+        assert document.translate_sensitivity_metadata().entry_count == count
+        if not valid:
+            try:
+                document.translate_sensitivity_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
+            except ValueError as error:
+                assert 'invalid_numeric_value' in str(error) and 'xmp_sensitivity' in str(error)
+            else:
+                raise AssertionError('contradictory sensitivity group accepted')
+            continue
+        translated = document.translate_sensitivity_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
+        assert translated.entry_count == count + 7
+        assert translated.translate_sensitivity_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All).entry_count == count + 7
+        payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
+        assert b'<exifEX:ISOSpeed>4294967295</exifEX:ISOSpeed>' in payload
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        restored = openmeta.read(str(path))
+        assert restored.translate_sensitivity_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All).entry_count == restored.entry_count + 7
+        assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

@@ -36,6 +36,7 @@ namespace {
         = "http://ns.adobe.com/tiff/1.0/";
     static constexpr std::string_view kXmpNsExif
         = "http://ns.adobe.com/exif/1.0/";
+    static constexpr std::string_view kXmpNsExifEX = "http://cipa.jp/exif/1.0/";
     static constexpr std::string_view kXmpNsExifAux
         = "http://ns.adobe.com/exif/1.0/aux/";
     static constexpr std::string_view kXmpNsDc
@@ -1373,13 +1374,28 @@ namespace {
         return name;
     }
 
+    static bool
+    portable_has_sensitivity_type(const ByteArena& arena,
+                                  std::span<const Entry> entries) noexcept
+    {
+        for (const Entry& entry : entries) {
+            if (!any(entry.flags, EntryFlags::Deleted)
+                && entry.key.kind == MetaKeyKind::ExifTag
+                && entry.key.data.exif_tag.tag == 0x8830U
+                && arena_string(arena, entry.key.data.exif_tag.ifd)
+                       == "exififd")
+                return true;
+        }
+        return false;
+    }
+
     static std::string_view
     portable_property_name_for_exif_tag(std::string_view prefix,
                                         std::string_view ifd, uint16_t tag,
                                         std::string_view fallback_name) noexcept
     {
-        (void)ifd;
-        (void)tag;
+        if (prefix == "exifEX" && ifd == "exififd" && tag == 0x8827U)
+            return "PhotographicSensitivity";
         return canonical_portable_property_name(prefix, fallback_name);
     }
 
@@ -1420,6 +1436,10 @@ namespace {
         }
         if (ns == kXmpNsExif) {
             *out_prefix = "exif";
+            return true;
+        }
+        if (ns == kXmpNsExifEX) {
+            *out_prefix = "exifEX";
             return true;
         }
         if (ns == kXmpNsExifAux) {
@@ -1949,6 +1969,15 @@ namespace {
     {
         if (prefix == "tiff" || prefix == "exif") {
             return !name.empty();
+        }
+
+        if (prefix == "exifEX") {
+            return name == "PhotographicSensitivity"
+                   || name == "SensitivityType"
+                   || name == "StandardOutputSensitivity"
+                   || name == "RecommendedExposureIndex" || name == "ISOSpeed"
+                   || name == "ISOSpeedLatitudeyyy"
+                   || name == "ISOSpeedLatitudezzz";
         }
 
         if (prefix == "xmp") {
@@ -9965,6 +9994,11 @@ namespace {
         }
 
         const uint16_t tag = e.key.data.exif_tag.tag;
+        if (ifd == "exififd"
+            && ((tag >= 0x8830U && tag <= 0x8835U)
+                || (tag == 0x8827U
+                    && portable_has_sensitivity_type(arena, entries))))
+            prefix = "exifEX";
 
         const std::string_view tag_name = exif_tag_name(ifd, tag);
         if (tag_name.empty()) {
@@ -10558,6 +10592,11 @@ namespace {
                 }
 
                 const uint16_t tag = e.key.data.exif_tag.tag;
+                if (ifd == "exififd"
+                    && ((tag >= 0x8830U && tag <= 0x8835U)
+                        || (tag == 0x8827U
+                            && portable_has_sensitivity_type(arena, entries))))
+                    prefix = "exifEX";
                 if ((ifd == "gpsifd" || ifd.ends_with("_gpsifd"))
                     && (has_invalid_urational_value(arena, e.value)
                         || has_invalid_srational_value(arena, e.value))) {
@@ -13835,6 +13874,21 @@ dump_xmp_portable(const MetaStore& store, std::span<std::byte> out,
     for (size_t i = 0; i < kDecls.size(); ++i) {
         decls.push_back(kDecls[i]);
     }
+    bool uses_exif_ex = existing_xmp_namespace_is_used(arena, es, options,
+                                                       kXmpNsExifEX);
+    if (options.include_exif) {
+        for (const Entry& entry : es) {
+            if (!any(entry.flags, EntryFlags::Deleted)
+                && entry.key.kind == MetaKeyKind::ExifTag
+                && entry.key.data.exif_tag.tag >= 0x8830U
+                && entry.key.data.exif_tag.tag <= 0x8835U
+                && arena_string(arena, entry.key.data.exif_tag.ifd)
+                       == "exififd")
+                uses_exif_ex = true;
+        }
+    }
+    if (uses_exif_ex)
+        decls.push_back(XmpNsDecl { "exifEX", kXmpNsExifEX });
     if (existing_xmp_namespace_is_used(arena, es, options, kXmpNsPlus)) {
         decls.push_back(XmpNsDecl { "plus", kXmpNsPlus });
     }

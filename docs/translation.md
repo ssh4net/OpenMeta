@@ -148,7 +148,7 @@ active property, and 1536 total source text bytes. Limits may be lowered and
 never cause truncation. Preparation may allocate. EXIF versions are retained;
 the API does not create or upgrade version metadata.
 
-Capture coverage has no fixed all-tags denominator. APEX conversions, extended sensitivity groups, lens/spectral text, and
+Capture coverage has no fixed all-tags denominator. APEX conversions, lens/spectral text, and
 focal-plane/subject arrays still need separate contracts. These twelve fields
 do not close arbitrary EXIF writeback.
 
@@ -1141,3 +1141,73 @@ provide arbitrary EXIF/IPTC/XMP translation, broader target image-layout/storage
 projection,
 multilingual-alternative selection, timezone inference, numeric approximation
 or value repair, or automatic synchronization during transfer.
+
+## Sensitivity companion writeback
+
+`translate_xmp_sensitivity_metadata(...)` and Python
+`Document.translate_sensitivity_metadata(...)` use independent
+`MetadataSensitivityTranslationOptions`, contract version 1. The seven ExifIFD
+fields form one transaction and one result group:
+
+| XMP property in `http://cipa.jp/exif/1.0/` (`exifEX`) | Native tag | Type/range |
+| --- | --- | --- |
+| PhotographicSensitivity | 0x8827 | SHORT, 1..65535 |
+| SensitivityType | 0x8830 | SHORT, 0..7 |
+| StandardOutputSensitivity | 0x8831 | LONG, 1..4294967295 |
+| RecommendedExposureIndex | 0x8832 | LONG, 1..4294967295 |
+| ISOSpeed | 0x8833 | LONG, 1..4294967295 |
+| ISOSpeedLatitudeyyy | 0x8834 | LONG, 1..4294967295 |
+| ISOSpeedLatitudezzz | 0x8835 | LONG, 1..4294967295 |
+
+Input values are unsigned scalar integers or decimal integer text with optional
+leading `+`. Signed scalars, fractions, labels, zero sensitivity values, overflow,
+and malformed/indexed/qualified fields fail. This positive-value restriction is
+OpenMeta's bounded writeback policy. Exact namespaces are required. Legacy
+OpenMeta `exif:ISO`, `exif:ISOSpeedRatings`, and `exif:ISOSpeedRatings[1]` are
+base aliases; the six companion names in the older `exif` namespace are also
+accepted for historical portable packets. Duplicate properties or aliases fail
+even when equal. The existing ISO-only API retains its 1..65535 contract.
+
+An active group requires both base sensitivity and type. Type 0 means unknown;
+1 selects SOS, 2 REI, 3 ISO speed, 4 SOS+REI, 5 SOS+ISO, 6 REI+ISO, and 7 all
+three. Any supplied selected parameters must equal the base value below 65535,
+or use base 65535 for values at or above that limit. Plural selected parameters
+must equal each other as full LONG values, including above the SHORT limit.
+Unselected parameters may differ. Optional selected parameters may be absent;
+a marker without its extended value remains a marker. No type or missing
+high-range value is inferred. Latitude values require both latitude fields and
+ISOSpeed. EXIF versions and unrelated exposure fields are retained.
+
+Defaults are DirtyOnly/FailOnConflict. One dirty recognized member selects the
+whole group, including clean active companions. All selects active sources and
+dirty tombstones. No selected source retains the native group. Once selected,
+missing or deleted optional sources specify absent target fields. A dirty base
+tombstone with no active group members requests complete removal; an orphan
+companion tombstone or partial required pair fails. Source XMP entries remain
+available for caller-controlled serialization.
+
+PreserveExisting retains the complete native group if any member exists.
+FailOnConflict requires the entire group to be absent or exactly equivalent,
+including presence, SHORT/LONG types and duplicate counts. ReplaceExisting
+updates the group and removes stale/duplicate native members. Validation runs
+before all policies, and failures preserve separate or aliased output. Limits
+are seven added entries, 1024 operations, 128 text bytes per property and 896
+text bytes in total; callers may lower them. Preparation may allocate.
+
+Portable native output now uses `exifEX` for the six companions. A base
+with native SensitivityType uses `exifEX:PhotographicSensitivity`; an
+ISO-only base retains `exif:ISO`. These seven properties participate in
+the existing `CanonicalizeManaged` namespace policy. Complete generated
+groups round-trip through this API, including the full unsigned LONG range.
+Existing source XMP can be
+retained with ExistingWins; independently authored duplicate base aliases still
+require caller resolution. Snapshot persistence covers JPEG, Classic TIFF and
+BigTIFF creation, replacement and removal.
+
+The wire and companion rules follow the CIPA EXIF 2.32 English translation
+(section 4.6.6 and Annex G) and EXIF 2.31 XMP mapping tables. This bounded API
+is not a claim of complete current EXIF conformance or automatic reconciliation
+with every legacy ISO-array convention.
+
+References: [CIPA EXIF translation](https://cipa.jp/std/documents/e/DC-X008-Translation-2019-E.pdf),
+[CIPA EXIF metadata for XMP](https://cipa.jp/std/documents/e/DC-X010-2017.pdf).

@@ -45,6 +45,13 @@ namespace {
         FlashEnergy,
         Flash,
         LightSource,
+        SensitivityType,
+        StandardOutputSensitivity,
+        RecommendedExposureIndex,
+        ISOSpeed,
+        ISOSpeedLatitudeyyy,
+        ISOSpeedLatitudezzz,
+
     };
 
     enum class NumericParseStatus : uint8_t {
@@ -713,6 +720,14 @@ namespace {
         case NativeCaptureField::FlashEnergy: tag = 0xa20bU; break;
         case NativeCaptureField::Flash: tag = 0x9209U; break;
         case NativeCaptureField::LightSource: tag = 0x9208U; break;
+        case NativeCaptureField::SensitivityType: tag = 0x8830U; break;
+        case NativeCaptureField::StandardOutputSensitivity:
+            tag = 0x8831U;
+            break;
+        case NativeCaptureField::RecommendedExposureIndex: tag = 0x8832U; break;
+        case NativeCaptureField::ISOSpeed: tag = 0x8833U; break;
+        case NativeCaptureField::ISOSpeedLatitudeyyy: tag = 0x8834U; break;
+        case NativeCaptureField::ISOSpeedLatitudezzz: tag = 0x8835U; break;
         }
         return entry.key.data.exif_tag.tag == tag;
     }
@@ -727,7 +742,8 @@ namespace {
             return false;
         }
         switch (expected.elem_type) {
-        case MetaElementType::U16: return actual.data.u64 == expected.data.u64;
+        case MetaElementType::U16:
+        case MetaElementType::U32: return actual.data.u64 == expected.data.u64;
         case MetaElementType::URational:
             if (actual.data.ur.denom == 0U || expected.data.ur.denom == 0U) {
                 return false;
@@ -846,6 +862,14 @@ namespace {
         case NativeCaptureField::FlashEnergy: tag = 0xa20bU; break;
         case NativeCaptureField::Flash: tag = 0x9209U; break;
         case NativeCaptureField::LightSource: tag = 0x9208U; break;
+        case NativeCaptureField::SensitivityType: tag = 0x8830U; break;
+        case NativeCaptureField::StandardOutputSensitivity:
+            tag = 0x8831U;
+            break;
+        case NativeCaptureField::RecommendedExposureIndex: tag = 0x8832U; break;
+        case NativeCaptureField::ISOSpeed: tag = 0x8833U; break;
+        case NativeCaptureField::ISOSpeedLatitudeyyy: tag = 0x8834U; break;
+        case NativeCaptureField::ISOSpeedLatitudezzz: tag = 0x8835U; break;
         }
         return make_exif_tag_key(arena, "exififd", tag);
     }
@@ -1089,6 +1113,46 @@ namespace {
         *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
         return result;
     }
+
+    static constexpr std::array<std::string_view, 7> kSensitivityPaths
+        = { "PhotographicSensitivity",
+            "SensitivityType",
+            "StandardOutputSensitivity",
+            "RecommendedExposureIndex",
+            "ISOSpeed",
+            "ISOSpeedLatitudeyyy",
+            "ISOSpeedLatitudezzz" };
+
+    static int sensitivity_member(std::string_view ns, std::string_view path,
+                                  bool* malformed) noexcept
+    {
+        const bool standard = ns == "http://cipa.jp/exif/1.0/";
+        if (!standard && ns != kXmpNsExif)
+            return -1;
+        for (size_t i = standard ? 0U : 1U; i < kSensitivityPaths.size(); ++i) {
+            const auto name = kSensitivityPaths[i];
+            if (path == name)
+                return static_cast<int>(i);
+            if (path.starts_with(name) && path.size() > name.size()
+                && (path[name.size()] == '/' || path[name.size()] == '[')) {
+                *malformed = true;
+                return static_cast<int>(i);
+            }
+        }
+        if (!standard) {
+            if (path == "ISO" || path == "ISOSpeedRatings"
+                || path == "ISOSpeedRatings[1]")
+                return 0;
+            if (path.starts_with("ISO/") || path.starts_with("ISO[")
+                || path.starts_with("ISOSpeedRatings/")
+                || path.starts_with("ISOSpeedRatings[")) {
+                *malformed = true;
+                return 0;
+            }
+        }
+        return -1;
+    }
+
 
 }  // namespace
 
@@ -1792,6 +1856,209 @@ translate_xmp_light_source_metadata(
                                 options.max_operations, result, out_store);
 }
 
+MetadataCaptureTranslationResult
+translate_xmp_sensitivity_metadata(
+    const MetaStore& source,
+    const MetadataSensitivityTranslationOptions& options, MetaStore* out_store)
+{
+    using Status = MetadataCaptureTranslationStatus;
+    using Mode   = MetadataCaptureTranslationSourceMode;
+    using Policy = MetadataCaptureTranslationConflictPolicy;
+    if (!out_store)
+        return capture_error(Status::NullOutput);
+    if (!source.is_finalized())
+        return capture_error(Status::SourceNotFinalized);
+    if ((options.source_mode != Mode::DirtyOnly
+         && options.source_mode != Mode::All)
+        || (options.conflict_policy != Policy::PreserveExisting
+            && options.conflict_policy != Policy::FailOnConflict
+            && options.conflict_policy != Policy::ReplaceExisting)
+        || options.max_added_entries == 0U
+        || options.max_added_entries
+               > kMetadataSensitivityTranslationMaxAddedEntries
+        || options.max_operations == 0U
+        || options.max_operations > kMetadataCaptureTranslationMaxOperations
+        || options.max_text_bytes_per_property == 0U
+        || options.max_text_bytes_per_property
+               > kMetadataCaptureTranslationMaxTextBytesPerProperty
+        || options.max_total_text_bytes == 0U
+        || options.max_total_text_bytes
+               > kMetadataSensitivityTranslationMaxTotalTextBytes)
+        return capture_error(Status::InvalidOptions);
+
+    bool selected = false;
+    for (const Entry& entry : source.entries()) {
+        if (entry.key.kind != MetaKeyKind::XmpProperty)
+            continue;
+        const bool dirty = any(entry.flags, EntryFlags::Dirty);
+        if ((!dirty && any(entry.flags, EntryFlags::Deleted))
+            || (!dirty && options.source_mode == Mode::DirtyOnly))
+            continue;
+        bool malformed = false;
+        if (sensitivity_member(
+                arena_text(source.arena(),
+                           entry.key.data.xmp_property.schema_ns),
+                arena_text(source.arena(),
+                           entry.key.data.xmp_property.property_path),
+                &malformed)
+            >= 0)
+            selected = true;
+    }
+    if (!selected)
+        return apply_capture_groups(source, {}, Policy::ReplaceExisting,
+                                    options.max_added_entries,
+                                    options.max_operations, {}, out_store);
+
+    MetadataCaptureTranslationResult result;
+    result.failed_mapping = MetadataCaptureTranslationMapping::XmpSensitivity;
+    std::array<CaptureSource, 7> properties {};
+    for (EntryId id = 0U; id < source.entries().size(); ++id) {
+        const Entry& entry = source.entry(id);
+        if (entry.key.kind != MetaKeyKind::XmpProperty
+            || (any(entry.flags, EntryFlags::Deleted)
+                && !any(entry.flags, EntryFlags::Dirty)))
+            continue;
+        bool malformed   = false;
+        const int member = sensitivity_member(
+            arena_text(source.arena(), entry.key.data.xmp_property.schema_ns),
+            arena_text(source.arena(),
+                       entry.key.data.xmp_property.property_path),
+            &malformed);
+        if (member < 0)
+            continue;
+        result.failed_source_entry = id;
+        if (malformed) {
+            result.status = Status::UnsupportedSourceShape;
+            return result;
+        }
+        CaptureSource& property = properties[static_cast<size_t>(member)];
+        if (property.found) {
+            result.status = Status::AmbiguousSource;
+            return result;
+        }
+        property = { true, any(entry.flags, EntryFlags::Deleted), id,
+                     &entry.value };
+        ++result.source_properties;
+    }
+
+    constexpr std::array<NativeCaptureField, 7> fields
+        = { NativeCaptureField::Iso,
+            NativeCaptureField::SensitivityType,
+            NativeCaptureField::StandardOutputSensitivity,
+            NativeCaptureField::RecommendedExposureIndex,
+            NativeCaptureField::ISOSpeed,
+            NativeCaptureField::ISOSpeedLatitudeyyy,
+            NativeCaptureField::ISOSpeedLatitudezzz };
+    std::array<CapturePlannedGroup, 7> groups {};
+    std::array<uint64_t, 7> values {};
+    uint64_t text_bytes = 0U;
+    bool any_present    = false;
+    for (size_t i = 0U; i < groups.size(); ++i) {
+        const CaptureSource& property = properties[i];
+        CapturePlannedGroup& group    = groups[i];
+        group.mapping      = MetadataCaptureTranslationMapping::XmpSensitivity;
+        group.field        = fields[i];
+        group.source_entry = property.entry_id;
+        group.present      = property.found && !property.deleted;
+        if (!group.present)
+            continue;
+        any_present                = true;
+        result.failed_source_entry = property.entry_id;
+        const MetaValue& value     = *property.value;
+        if (value.kind == MetaValueKind::Text) {
+            std::string_view text = arena_text(source.arena(), value.data.span);
+            if (text.size() > options.max_text_bytes_per_property) {
+                result.status = Status::ValueTooLong;
+                return result;
+            }
+            text_bytes += text.size();
+            if (text_bytes > options.max_total_text_bytes) {
+                result.status = Status::SourceLimitExceeded;
+                return result;
+            }
+            if (!text.empty() && text.front() == '+')
+                text.remove_prefix(1U);
+            result.status = numeric_status(parse_digits(text, &values[i]));
+            if (result.status != Status::Ok)
+                return result;
+        } else if (value.count != 1U || !scalar_unsigned(value, &values[i])) {
+            result.status = Status::InvalidSourceValue;
+            return result;
+        }
+        const uint64_t maximum = i == 0U ? 65535U : (i == 1U ? 7U : UINT32_MAX);
+        if ((i != 1U && values[i] == 0U) || values[i] > maximum) {
+            result.status = Status::ValueOutOfRange;
+            return result;
+        }
+        group.value = i < 2U ? make_u16(static_cast<uint16_t>(values[i]))
+                             : make_u32(static_cast<uint32_t>(values[i]));
+    }
+    result.failed_source_entry = properties[0].found
+                                     ? properties[0].entry_id
+                                     : result.failed_source_entry;
+    if (any_present) {
+        if (!groups[0].present || !groups[1].present
+            || ((groups[5].present || groups[6].present)
+                && (!groups[4].present || !groups[5].present
+                    || !groups[6].present))) {
+            result.status = Status::IncompleteSource;
+            return result;
+        }
+        constexpr std::array<uint8_t, 8> masks = { 0U, 1U, 2U, 4U,
+                                                   3U, 5U, 6U, 7U };
+        const uint8_t mask      = masks[static_cast<size_t>(values[1])];
+        uint64_t selected_value = 0U;
+        for (size_t i = 2U; i <= 4U; ++i) {
+            if (!groups[i].present || (mask & (1U << (i - 2U))) == 0U)
+                continue;
+            const uint64_t bounded = values[i] >= 65535U ? 65535U : values[i];
+            if (bounded != values[0]
+                || (selected_value != 0U && selected_value != values[i])) {
+                result.status              = Status::InvalidNumericValue;
+                result.failed_source_entry = properties[i].entry_id;
+                return result;
+            }
+            selected_value = values[i];
+        }
+    } else if (!properties[0].found || !properties[0].deleted) {
+        result.status = Status::IncompleteSource;
+        return result;
+    }
+
+    bool existing = false;
+    bool exact    = true;
+    for (auto& group : groups) {
+        analyze_group(source, &group);
+        existing = existing || group.existing_any;
+        exact    = exact && group.exact_match;
+    }
+    if (existing && options.conflict_policy == Policy::FailOnConflict
+        && !exact) {
+        result.status = Status::NativeConflict;
+        return result;
+    }
+    result.failed_mapping      = MetadataCaptureTranslationMapping::None;
+    result.failed_source_entry = kInvalidEntryId;
+    if ((existing && options.conflict_policy == Policy::PreserveExisting)
+        || exact) {
+        if (existing && options.conflict_policy == Policy::PreserveExisting)
+            result.groups_preserved = 1U;
+        else
+            result.groups_unchanged = 1U;
+        return apply_capture_groups(source, {}, Policy::ReplaceExisting,
+                                    options.max_added_entries,
+                                    options.max_operations, result, out_store);
+    }
+    result = apply_capture_groups(source, groups, Policy::ReplaceExisting,
+                                  options.max_added_entries,
+                                  options.max_operations, result, out_store);
+    if (result.status == Status::Ok) {
+        result.groups_translated = 1U;
+        result.groups_unchanged  = 0U;
+    }
+    return result;
+}
+
 const char*
 metadata_capture_translation_status_name(
     MetadataCaptureTranslationStatus status) noexcept
@@ -1837,6 +2104,8 @@ metadata_capture_translation_mapping_name(
 {
     switch (mapping) {
     case MetadataCaptureTranslationMapping::None: return "none";
+    case MetadataCaptureTranslationMapping::XmpSensitivity:
+        return "xmp_sensitivity";
     case MetadataCaptureTranslationMapping::XmpFlash: return "xmp_flash";
     case MetadataCaptureTranslationMapping::XmpLightSource:
         return "xmp_light_source";

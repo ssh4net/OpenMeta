@@ -1,5 +1,22 @@
 # OpenMeta Changes
 
+## 0.4.141 - 2026-09-10
+
+Changes compared with `0.4.140`.
+
+### Added
+
+- Added C++ and Python complete sensitivity-group writeback with explicit
+  type/value relationships, unsigned LONG companions, latitude dependencies,
+  bounded inputs, whole-group conflict policy and atomic removal.
+- Added group validation, portable XMP, snapshot persistence, Python and
+  installed shared-consumer coverage while retaining the ISO-only contract.
+
+### Fixed
+
+- Portable native sensitivity companions now use the standard exifEX namespace.
+  Reverse translation also accepts earlier OpenMeta portable aliases.
+
 ## 0.4.140 - 2026-09-10
 
 Changes compared with `0.4.139`.

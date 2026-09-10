@@ -916,12 +916,15 @@ Suggested delivery sequence:
    five-field flat-XMP-to-structured-location construction. Version 0.4.138
    adds exact SubjectDistance, DigitalZoomRatio, ExposureIndex, and FlashEnergy
    writeback with explicit sentinel rules. Remaining capture
-   contracts include APEX, sensitivity, lens/spectral text,
+   contracts include APEX, lens/spectral text,
    focal-plane/subject arrays and other rational fields. Version 0.4.139 adds
    complete scalar/five-child Flash bitfield writeback with reserved-bit and
    whole-structure removal rules. Version 0.4.140 adds LightSource writeback
    for 32 defined codes, rejects ambiguous Daylight text, and preserves the
-   code 1/25 distinction in generated portable XMP. Geographic
+   code 1/25 distinction in generated portable XMP. Version 0.4.141 adds
+   a complete seven-tag sensitivity group, with explicit type relationships,
+   LONG companions, latitude dependencies and whole-group conflict/removal rules.
+   The capture APIs now cover 29 distinct native targets across six APIs. Geographic
    inference and arbitrary structured-location merging remain excluded.
    See `docs/translation.md`.
 2. Retain the completed writer-baseline and compare-backed release gates while

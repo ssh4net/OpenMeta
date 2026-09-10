@@ -4577,3 +4577,424 @@ namespace {
     }
 }  // namespace
 }  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    using SensitivityOptions = MetadataSensitivityTranslationOptions;
+    static constexpr std::string_view kSensitivityNs
+        = "http://cipa.jp/exif/1.0/";
+    static constexpr std::array<std::string_view, 7> kSensitivityNames
+        = { "PhotographicSensitivity",
+            "SensitivityType",
+            "StandardOutputSensitivity",
+            "RecommendedExposureIndex",
+            "ISOSpeed",
+            "ISOSpeedLatitudeyyy",
+            "ISOSpeedLatitudezzz" };
+    static constexpr std::array<uint16_t, 7> kSensitivityTags
+        = { 0x8827U, 0x8830U, 0x8831U, 0x8832U, 0x8833U, 0x8834U, 0x8835U };
+    static void sensitivity_source(MetaStore& source, uint16_t base = 400U,
+                                   uint16_t type = 7U, uint32_t extended = 400U,
+                                   EntryFlags flags = EntryFlags::Dirty)
+    {
+        for (size_t i = 0U; i < kSensitivityNames.size(); ++i)
+            settings_xmp(source, kSensitivityNames[i],
+                         make_u32(i == 0U ? base : (i == 1U ? type : extended)),
+                         flags, kSensitivityNs);
+    }
+    static void sensitivity_failure(MetaStore& source, SettingsStatus status,
+                                    const SensitivityOptions& options = {})
+    {
+        source.finalize();
+        const size_t size = source.entries().size();
+        MetaStore output;
+        settings_native(output, 0x9209U, make_u16(95U));
+        output.finalize();
+        EXPECT_EQ(
+            translate_xmp_sensitivity_metadata(source, options, &output).status,
+            status);
+        ASSERT_EQ(output.entries().size(), 1U);
+        EXPECT_EQ(settings_find(output, 0x9209U)->value.data.u64, 95U);
+        EXPECT_EQ(
+            translate_xmp_sensitivity_metadata(source, options, &source).status,
+            status);
+        EXPECT_EQ(source.entries().size(), size);
+        for (uint16_t tag : kSensitivityTags)
+            EXPECT_EQ(settings_find(source, tag), nullptr);
+    }
+    TEST(MetadataSensitivity, AllTypesAndLimitsRetainExactTypedValues)
+    {
+        constexpr std::array<uint32_t, 4> values = { 1U, 65534U, 65535U,
+                                                     UINT32_MAX };
+        for (uint16_t type = 0U; type <= 7U; ++type) {
+            for (uint32_t value : values) {
+                MetaStore source;
+                sensitivity_source(source,
+                                   static_cast<uint16_t>(
+                                       value >= 65535U ? 65535U : value),
+                                   type, value);
+                source.finalize();
+                const auto result
+                    = translate_xmp_sensitivity_metadata(source, {}, &source);
+                ASSERT_EQ(result.status, SettingsStatus::Ok)
+                    << type << ' ' << value;
+                EXPECT_EQ(result.groups_translated, 1U);
+                EXPECT_EQ(result.source_properties, 7U);
+                EXPECT_EQ(result.entries_added, 7U);
+                for (size_t i = 0U; i < kSensitivityTags.size(); ++i) {
+                    const auto* entry = settings_find(source,
+                                                      kSensitivityTags[i]);
+                    ASSERT_NE(entry, nullptr);
+                    EXPECT_EQ(entry->value.elem_type,
+                              i < 2U ? MetaElementType::U16
+                                     : MetaElementType::U32);
+                    EXPECT_EQ(entry->value.data.u64,
+                              i == 0U ? (value >= 65535U ? 65535U : value)
+                                      : (i == 1U ? type : value));
+                }
+                const auto repeated
+                    = translate_xmp_sensitivity_metadata(source, {}, &source);
+                EXPECT_EQ(repeated.status, SettingsStatus::Ok);
+                EXPECT_EQ(repeated.groups_unchanged, 1U);
+                EXPECT_EQ(repeated.groups_translated, 0U);
+            }
+        }
+    }
+    TEST(MetadataSensitivity,
+         TypeSelectsRelationshipsWithoutInferringMissingValues)
+    {
+        for (uint16_t type = 0U; type <= 7U; ++type) {
+            MetaStore minimal;
+            settings_xmp(minimal, kSensitivityNames[0], make_u16(65535U),
+                         EntryFlags::Dirty, kSensitivityNs);
+            settings_xmp(minimal, kSensitivityNames[1], make_u16(type),
+                         EntryFlags::Dirty, kSensitivityNs);
+            minimal.finalize();
+            ASSERT_EQ(translate_xmp_sensitivity_metadata(minimal, {}, &minimal)
+                          .status,
+                      SettingsStatus::Ok);
+            for (size_t i = 2U; i < kSensitivityTags.size(); ++i)
+                EXPECT_EQ(settings_find(minimal, kSensitivityTags[i]), nullptr);
+        }
+        MetaStore source;
+        settings_xmp(source, kSensitivityNames[0], make_u16(400U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        settings_xmp(source, kSensitivityNames[1], make_u16(1U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        settings_xmp(source, kSensitivityNames[2], make_u32(400U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        settings_xmp(source, kSensitivityNames[3], make_u32(800U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        source.finalize();
+        EXPECT_EQ(translate_xmp_sensitivity_metadata(source, {}, &source).status,
+                  SettingsStatus::Ok);
+        EXPECT_EQ(settings_find(source, 0x8832U)->value.data.u64, 800U);
+    }
+    TEST(MetadataSensitivity, RejectsIncompleteAndContradictoryGroupsAtomically)
+    {
+        for (size_t missing : { 0U, 1U, 4U, 5U, 6U }) {
+            MetaStore source;
+            for (size_t i = 0U; i < kSensitivityNames.size(); ++i) {
+                if (i != missing)
+                    settings_xmp(source, kSensitivityNames[i],
+                                 make_u32(i == 1U ? 7U : 400U),
+                                 EntryFlags::Dirty, kSensitivityNs);
+            }
+            sensitivity_failure(source, SettingsStatus::IncompleteSource);
+        }
+        for (uint32_t wrong : { 401U, 65536U }) {
+            MetaStore source;
+            for (size_t i = 0U; i < 4U; ++i)
+                settings_xmp(source, kSensitivityNames[i],
+                             make_u32(i == 0U ? (wrong > 65535U ? 65535U : 400U)
+                                              : (i == 1U ? 4U
+                                                         : (i == 2U ? wrong
+                                                                    : 400U))),
+                             EntryFlags::Dirty, kSensitivityNs);
+            sensitivity_failure(source, SettingsStatus::InvalidNumericValue);
+        }
+        MetaStore saturated;
+        settings_xmp(saturated, kSensitivityNames[0], make_u16(65535U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        settings_xmp(saturated, kSensitivityNames[1], make_u16(4U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        settings_xmp(saturated, kSensitivityNames[2], make_u32(100000U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        settings_xmp(saturated, kSensitivityNames[3], make_u32(200000U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        sensitivity_failure(saturated, SettingsStatus::InvalidNumericValue);
+    }
+    TEST(MetadataSensitivity,
+         DirtySelectionReadsCleanCompanionsAndIgnoresWrongNamespace)
+    {
+        MetaStore clean;
+        sensitivity_source(clean, 400U, 7U, 400U, EntryFlags::None);
+        settings_xmp(clean, "ISOSpeed", make_u32(800U), EntryFlags::Dirty,
+                     "urn:unrelated");
+        clean.finalize();
+        EXPECT_EQ(translate_xmp_sensitivity_metadata(clean, {}, &clean)
+                      .groups_translated,
+                  0U);
+        MetaEdit edit;
+        edit.set_value(0U, make_u16(400U));
+        MetaStore dirty = commit(clean, std::span<const MetaEdit>(&edit, 1U));
+        EXPECT_EQ(
+            translate_xmp_sensitivity_metadata(dirty, {}, &dirty).entries_added,
+            7U);
+        SensitivityOptions all;
+        all.source_mode = MetadataCaptureTranslationSourceMode::All;
+        EXPECT_EQ(translate_xmp_sensitivity_metadata(clean, all, &clean)
+                      .entries_added,
+                  7U);
+    }
+    TEST(MetadataSensitivity, StrictNumericShapesAliasesAndLimits)
+    {
+        for (size_t i = 0U; i < kSensitivityNames.size(); ++i) {
+            for (const std::string text :
+                 { std::string("-1"), std::string("1.5"),
+                   std::string("4294967296"), std::string("0") }) {
+                if (i == 1U && text == "0")
+                    continue;
+                MetaStore source;
+                for (size_t j = 0U; j < kSensitivityNames.size(); ++j)
+                    settings_xmp(source, kSensitivityNames[j],
+                                 j == i ? make_text(source.arena(), text,
+                                                    TextEncoding::Ascii)
+                                        : make_u32(j == 1U ? 7U : 400U),
+                                 EntryFlags::Dirty, kSensitivityNs);
+                sensitivity_failure(source,
+                                    text == "-1" || text == "1.5"
+                                        ? SettingsStatus::InvalidNumericValue
+                                        : SettingsStatus::ValueOutOfRange);
+            }
+        }
+        for (std::string_view path :
+             { "SensitivityType[1]", "ISOSpeed/a", "ISOSpeedRatings[2]",
+               "ISOSpeedRatings[01]" }) {
+            MetaStore source;
+            sensitivity_source(source);
+            settings_xmp(source, path, make_u16(7U), EntryFlags::Dirty,
+                         path.starts_with("ISOSpeedRatings") ? kSettingsNs
+                                                             : kSensitivityNs);
+            sensitivity_failure(source, SettingsStatus::UnsupportedSourceShape);
+        }
+        for (std::string_view alias :
+             { "ISO", "ISOSpeedRatings", "ISOSpeedRatings[1]" }) {
+            MetaStore source;
+            sensitivity_source(source);
+            settings_xmp(source, alias, make_u16(400U));
+            sensitivity_failure(source, SettingsStatus::AmbiguousSource);
+        }
+        MetaStore signed_value;
+        settings_xmp(signed_value, kSensitivityNames[0], make_i32(400),
+                     EntryFlags::Dirty, kSensitivityNs);
+        sensitivity_failure(signed_value, SettingsStatus::InvalidSourceValue);
+    }
+    TEST(MetadataSensitivity,
+         ConflictPolicyAppliesToWholeGroupAndRepairsStaleValues)
+    {
+        MetaStore source;
+        settings_xmp(source, kSensitivityNames[0], make_u16(400U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        settings_xmp(source, kSensitivityNames[1], make_u16(1U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        settings_native(source, 0x8827U, make_u16(400U));
+        settings_native(source, 0x8833U, make_u32(800U));
+        settings_native(source, 0x8833U, make_u16(800U));
+        settings_native(source, 0x9209U, make_u16(95U));
+        source.finalize();
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_sensitivity_metadata(source, {}, &output).status,
+                  SettingsStatus::NativeConflict);
+        EXPECT_TRUE(output.entries().empty());
+        SensitivityOptions options;
+        options.conflict_policy = SettingsPolicy::PreserveExisting;
+        EXPECT_EQ(translate_xmp_sensitivity_metadata(source, options, &output)
+                      .groups_preserved,
+                  1U);
+        EXPECT_EQ(settings_find(output, 0x8830U), nullptr);
+        EXPECT_EQ(settings_active_count(output, 0x8833U), 2U);
+        options.conflict_policy = SettingsPolicy::ReplaceExisting;
+        const auto result = translate_xmp_sensitivity_metadata(source, options,
+                                                               &source);
+        EXPECT_EQ(result.status, SettingsStatus::Ok);
+        EXPECT_EQ(result.entries_added, 1U);
+        EXPECT_EQ(result.entries_removed, 2U);
+        EXPECT_EQ(result.groups_translated, 1U);
+        EXPECT_EQ(settings_find(source, 0x8833U), nullptr);
+        EXPECT_EQ(settings_find(source, 0x9209U)->value.data.u64, 95U);
+    }
+    TEST(MetadataSensitivity,
+         BaseTombstoneRemovesGroupAndRejectsActiveCompanions)
+    {
+        MetaStore source;
+        settings_xmp(source, kSensitivityNames[0], make_u16(400U),
+                     EntryFlags::Dirty | EntryFlags::Deleted, kSensitivityNs);
+        for (size_t i = 0U; i < kSensitivityTags.size(); ++i)
+            settings_native(source, kSensitivityTags[i],
+                            i < 2U ? make_u16(1U) : make_u32(1U));
+        source.finalize();
+        SensitivityOptions options;
+        EXPECT_EQ(
+            translate_xmp_sensitivity_metadata(source, options, &source).status,
+            SettingsStatus::NativeConflict);
+        options.conflict_policy = SettingsPolicy::ReplaceExisting;
+        const auto result = translate_xmp_sensitivity_metadata(source, options,
+                                                               &source);
+        EXPECT_EQ(result.status, SettingsStatus::Ok);
+        EXPECT_EQ(result.entries_removed, 7U);
+        EXPECT_EQ(result.groups_translated, 1U);
+        MetaStore active;
+        settings_xmp(active, kSensitivityNames[0], make_u16(400U),
+                     EntryFlags::Dirty | EntryFlags::Deleted, kSensitivityNs);
+        settings_xmp(active, kSensitivityNames[1], make_u16(1U),
+                     EntryFlags::None, kSensitivityNs);
+        sensitivity_failure(active, SettingsStatus::IncompleteSource, options);
+        MetaStore orphan;
+        settings_xmp(orphan, kSensitivityNames[4], make_u32(400U),
+                     EntryFlags::Dirty | EntryFlags::Deleted, kSensitivityNs);
+        sensitivity_failure(orphan, SettingsStatus::IncompleteSource, options);
+    }
+    TEST(MetadataSensitivity,
+         ResourceFailuresAndInvalidOptionsLeaveOutputUntouched)
+    {
+        MetaStore source;
+        for (size_t i = 0U; i < kSensitivityNames.size(); ++i)
+            settings_xmp(source, kSensitivityNames[i],
+                         make_text(source.arena(), i == 1U ? "7" : "400",
+                                   TextEncoding::Ascii),
+                         EntryFlags::Dirty, kSensitivityNs);
+        SensitivityOptions options;
+        options.max_added_entries = 6U;
+        sensitivity_failure(source, SettingsStatus::EntryLimitExceeded,
+                            options);
+        options                = {};
+        options.max_operations = 6U;
+        sensitivity_failure(source, SettingsStatus::OperationLimitExceeded,
+                            options);
+        options                      = {};
+        options.max_total_text_bytes = 5U;
+        sensitivity_failure(source, SettingsStatus::SourceLimitExceeded,
+                            options);
+        options                             = {};
+        options.max_text_bytes_per_property = 2U;
+        sensitivity_failure(source, SettingsStatus::ValueTooLong, options);
+        options                   = {};
+        options.max_added_entries = 8U;
+        sensitivity_failure(source, SettingsStatus::InvalidOptions, options);
+        options                 = {};
+        options.conflict_policy = static_cast<SettingsPolicy>(255U);
+        sensitivity_failure(source, SettingsStatus::InvalidOptions, options);
+        MetaStore unfinalized;
+        EXPECT_EQ(
+            translate_xmp_sensitivity_metadata(unfinalized, {}, &source).status,
+            SettingsStatus::SourceNotFinalized);
+        EXPECT_EQ(translate_xmp_sensitivity_metadata(source, {}, nullptr).status,
+                  SettingsStatus::NullOutput);
+    }
+    TEST(MetadataSensitivity,
+         PortableExistingStandardGroupDoesNotCreateDuplicateBase)
+    {
+        MetaStore source;
+        sensitivity_source(source, 65535U, 7U, 102400U);
+        source.finalize();
+        ASSERT_EQ(translate_xmp_sensitivity_metadata(source, {}, &source).status,
+                  SettingsStatus::Ok);
+        XmpPortableOptions options;
+        options.include_existing_xmp = true;
+        options.conflict_policy      = XmpConflictPolicy::ExistingWins;
+        std::array<std::byte, 8192> bytes {};
+        const auto dumped = dump_xmp_portable(source, bytes, options);
+        ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+        MetaStore restored;
+        ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(), dumped.written),
+                                    restored)
+                      .status,
+                  XmpDecodeStatus::Ok);
+        restored.finalize();
+        SensitivityOptions all;
+        all.source_mode   = MetadataCaptureTranslationSourceMode::All;
+        const auto result = translate_xmp_sensitivity_metadata(restored, all,
+                                                               &restored);
+        EXPECT_EQ(result.status, SettingsStatus::Ok);
+        EXPECT_EQ(result.source_properties, 7U);
+        EXPECT_EQ(result.entries_added, 7U);
+    }
+
+    TEST(MetadataSensitivity,
+         PortableCanonicalizationReconcilesManagedCompanions)
+    {
+        MetaStore source;
+        for (size_t i = 0U; i < kSensitivityNames.size(); ++i) {
+            settings_xmp(source, kSensitivityNames[i],
+                         make_u32(i == 1U ? 7U : 100U), EntryFlags::None,
+                         kSensitivityNs);
+            settings_native(source, kSensitivityTags[i],
+                            i < 2U ? make_u16(i == 1U ? 7U : 200U)
+                                   : make_u32(200U));
+        }
+        source.finalize();
+        for (const bool canonical : { false, true }) {
+            XmpPortableOptions options;
+            options.include_existing_xmp = true;
+            options.conflict_policy      = XmpConflictPolicy::ExistingWins;
+            if (canonical)
+                options.existing_standard_namespace_policy
+                    = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+            std::array<std::byte, 8192> bytes {};
+            const auto dumped = dump_xmp_portable(source, bytes, options);
+            ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+            MetaStore restored;
+            ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(), dumped.written),
+                                        restored)
+                          .status,
+                      XmpDecodeStatus::Ok);
+            restored.finalize();
+            SensitivityOptions all;
+            all.source_mode = MetadataCaptureTranslationSourceMode::All;
+            ASSERT_EQ(translate_xmp_sensitivity_metadata(restored, all,
+                                                         &restored)
+                          .status,
+                      SettingsStatus::Ok);
+            for (size_t i = 0U; i < kSensitivityTags.size(); ++i)
+                EXPECT_EQ(settings_find(restored, kSensitivityTags[i])
+                              ->value.data.u64,
+                          i == 1U ? 7U : (canonical ? 200U : 100U));
+        }
+    }
+
+    TEST(MetadataSensitivity,
+         NativePortableRoundTripPreservesHighValuesAndNamespaces)
+    {
+        MetaStore source;
+        sensitivity_source(source, 65535U, 7U, UINT32_MAX);
+        source.finalize();
+        ASSERT_EQ(translate_xmp_sensitivity_metadata(source, {}, &source).status,
+                  SettingsStatus::Ok);
+        XmpPortableOptions options;
+        options.include_existing_xmp = false;
+        std::array<std::byte, 8192> bytes {};
+        const auto dumped = dump_xmp_portable(source, bytes, options);
+        ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+        const std::string_view xml(reinterpret_cast<const char*>(bytes.data()),
+                                   dumped.written);
+        EXPECT_NE(xml.find("<exifEX:ISOSpeed>4294967295</exifEX:ISOSpeed>"),
+                  std::string_view::npos);
+        MetaStore restored;
+        ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(), dumped.written),
+                                    restored)
+                      .status,
+                  XmpDecodeStatus::Ok);
+        restored.finalize();
+        SensitivityOptions all;
+        all.source_mode = MetadataCaptureTranslationSourceMode::All;
+        ASSERT_EQ(
+            translate_xmp_sensitivity_metadata(restored, all, &restored).status,
+            SettingsStatus::Ok);
+        for (size_t i = 0U; i < kSensitivityTags.size(); ++i)
+            EXPECT_EQ(
+                settings_find(restored, kSensitivityTags[i])->value.data.u64,
+                settings_find(source, kSensitivityTags[i])->value.data.u64);
+    }
+}  // namespace
+}  // namespace openmeta

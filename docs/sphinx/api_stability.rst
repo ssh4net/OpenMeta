@@ -290,6 +290,11 @@ Host-facing API map
      - ``openmeta/metadata_translation.h``
      - Experimental
      - One bounded LightSource SHORT with explicit code/label ambiguity, typed conflicts and removal. See :doc:`translation`.
+   * - Sensitivity translation: ``translate_xmp_sensitivity_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Seven-tag sensitivity group with explicit companions, LONG limits, whole-group conflicts and atomic removal. See :doc:`translation`.
+
    * - Flash translation: ``translate_xmp_flash_metadata(...)``
      - ``openmeta/metadata_translation.h``
      - Experimental

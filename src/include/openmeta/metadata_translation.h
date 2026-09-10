@@ -300,6 +300,7 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpFlashEnergy,
     XmpFlash,
     XmpLightSource,
+    XmpSensitivity,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -577,6 +578,53 @@ MetadataCaptureTranslationResult
 translate_xmp_light_source_metadata(
     const MetaStore& source,
     const MetadataLightSourceTranslationOptions& options, MetaStore* out_store);
+
+/// Experimental complete sensitivity-group writeback contract.
+inline constexpr uint32_t kMetadataSensitivityTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataSensitivityTranslationMaxAddedEntries = 7U;
+inline constexpr uint64_t kMetadataSensitivityTranslationMaxTotalTextBytes
+    = 896U;
+
+struct MetadataSensitivityTranslationOptions final {
+    /// DirtyOnly selects the group when any recognized member is Dirty;
+    /// active clean companions participate once the group is selected.
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    uint32_t max_added_entries = kMetadataSensitivityTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataSensitivityTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Translate one complete seven-tag EXIF sensitivity group.
+ *
+ * Accepts exact exifEX properties PhotographicSensitivity, SensitivityType,
+ * StandardOutputSensitivity, RecommendedExposureIndex, ISOSpeed,
+ * ISOSpeedLatitudeyyy and ISOSpeedLatitudezzz. Legacy OpenMeta exif:ISO and
+ * companion names, and single-member exif:ISOSpeedRatings, are accepted aliases.
+ * Duplicate aliases are ambiguous. Values are unsigned integer scalars or
+ * decimal integer text. PhotographicSensitivity is 1..65535, SensitivityType
+ * is 0..7, and optional LONG companions are 1..UINT32_MAX.
+ *
+ * Active groups require PhotographicSensitivity and SensitivityType. Supplied
+ * parameters selected by the type must agree, with values >=65535 represented
+ * by 65535 in the SHORT. Latitude values require both latitude tags and ISOSpeed.
+ * Missing optional sources mean absent target members. A base-property dirty
+ * tombstone with no active members removes the whole group under ReplaceExisting.
+ * PreserveExisting preserves any existing group; FailOnConflict requires the
+ * complete group to be absent or exactly equivalent. No type, high-range value,
+ * exposure setting or EXIF version is inferred. All seven tags share one result
+ * group and one transaction; cold preparation may allocate.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_sensitivity_metadata(
+    const MetaStore& source,
+    const MetadataSensitivityTranslationOptions& options, MetaStore* out_store);
 
 /// Experimental target-bound image-geometry translation contract version.
 inline constexpr uint32_t kMetadataGeometryTranslationContractVersion = 1U;
