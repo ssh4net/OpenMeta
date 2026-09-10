@@ -1832,4 +1832,304 @@ TEST(MetadataGpsQuality, ResourceAndOptionLimitsAreAtomic)
     expect_quality_failure(source, Status::InvalidOptions, options);
 }
 
+namespace {
+    using TextOptions = MetadataGpsTextTranslationOptions;
+    static constexpr std::array<uint16_t, 4> kTextTags { 8U, 18U, 27U, 28U };
+    static MetaStore gps_text(EntryFlags flags = EntryFlags::Dirty)
+    {
+        MetaStore store;
+        xmp_text(store, "GPSSatellites", "04 07 12", flags);
+        xmp_text(store, "GPSMapDatum", "WGS-84", flags);
+        xmp_text(store, "GPSProcessingMethod", "GPS WLAN", flags);
+        xmp_text(store, "GPSAreaInformation",
+                 "Tokyo \xe6\x9d\xb1\xe4\xba\xac \xf0\x9f\x8c\x90", flags);
+        return store;
+    }
+    static void expect_gps_text_failure(MetaStore& source, Status expected,
+                                        TextOptions options = {})
+    {
+        source.finalize();
+        const size_t count = source.entries().size();
+        MetaStore output;
+        native(output, 17U,
+               make_text(output.arena(), "sentinel", TextEncoding::Ascii));
+        output.finalize();
+        EXPECT_EQ(
+            translate_xmp_gps_text_metadata(source, options, &output).status,
+            expected);
+        EXPECT_EQ(source.entries().size(), count);
+        ASSERT_EQ(output.entries().size(), 1U);
+        ASSERT_NE(gps(output, 17U), nullptr);
+        EXPECT_EQ(view(output, gps(output, 17U)->value.data.span), "sentinel");
+        EXPECT_EQ(
+            translate_xmp_gps_text_metadata(source, options, &source).status,
+            expected);
+        EXPECT_EQ(source.entries().size(), count);
+    }
+    static MetaValue raw_text(MetaStore& store, std::string_view bytes)
+    {
+        return make_bytes(store.arena(),
+                          std::as_bytes(std::span(bytes.data(), bytes.size())));
+    }
+}  // namespace
+
+TEST(MetadataGpsText, WritesAsciiAndUnicodeWithOwnedBytesAndIsIdempotent)
+{
+    MetaStore output;
+    {
+        MetaStore source = gps_text();
+        source.finalize();
+        const auto result = translate_xmp_gps_text_metadata(source, {},
+                                                            &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.entries_added, 5U);
+        EXPECT_EQ(result.groups_translated, 4U);
+        EXPECT_EQ(result.source_properties, 4U);
+    }
+    for (const uint16_t tag : kTextTags) {
+        ASSERT_NE(gps(output, tag), nullptr);
+        EXPECT_EQ(view(output, gps(output, tag)->origin.wire_type_name),
+                  "gps-source");
+    }
+    EXPECT_EQ(view(output, gps(output, 8U)->value.data.span), "04 07 12");
+    EXPECT_EQ(view(output, gps(output, 18U)->value.data.span), "WGS-84");
+    ASSERT_EQ(gps(output, 27U)->value.kind, MetaValueKind::Bytes);
+    EXPECT_EQ(view(output, gps(output, 27U)->value.data.span),
+              std::string_view("ASCII\0\0\0GPS WLAN", 16U));
+    const std::string_view expected(
+        "UNICODE\0\xff\xfeT\0o\0k\0y\0o\0 \0\x71\x67\xac\x4e \0\x3c\xd8\x10\xdf",
+        32U);
+    EXPECT_EQ(view(output, gps(output, 28U)->value.data.span), expected);
+    const auto same = translate_xmp_gps_text_metadata(output, {}, &output);
+    EXPECT_EQ(same.status, Status::Ok);
+    EXPECT_EQ(same.groups_unchanged, 4U);
+}
+TEST(MetadataGpsText, RecognizesEquivalentAsciiAndBothUnicodeByteOrders)
+{
+    const std::array<std::string_view, 4> values {
+        std::string_view("ASCII\0\0\0GPS", 11U),
+        std::string_view("ASCII\0\0\0GPS\0", 12U),
+        std::string_view("UNICODE\0\xff\xfeG\0P\0S\0", 16U),
+        std::string_view("UNICODE\0\xfe\xff\0G\0P\0S\0\0", 18U)
+    };
+    for (const auto bytes : values) {
+        MetaStore source;
+        xmp_text(source, "GPSProcessingMethod", "GPS");
+        native(source, 27U, raw_text(source, bytes));
+        source.finalize();
+        MetaStore output;
+        const auto result = translate_xmp_gps_text_metadata(source, {},
+                                                            &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.groups_unchanged, 1U);
+        EXPECT_EQ(view(output, gps(output, 27U)->value.data.span), bytes);
+    }
+}
+TEST(MetadataGpsText, UnknownAndMalformedNativeEncodingNeverComparesEqual)
+{
+    const std::array<std::string_view, 7> invalid {
+        std::string_view("JIS\0\0\0\0\0GPS", 11U),
+        std::string_view("UNKNOWN!GPS", 11U),
+        std::string_view("UNICODE\0G\0P\0S\0", 14U),
+        std::string_view("UNICODE\0\xff\xfeG", 11U),
+        std::string_view("UNICODE\0\xff\xfe\0\xd8", 12U),
+        std::string_view("ASCII\0\0\0GPS\0\0", 13U),
+        std::string_view("ASCII\0\0\0\xff", 9U)
+    };
+    for (const auto bytes : invalid) {
+        MetaStore source;
+        xmp_text(source, "GPSProcessingMethod", "GPS");
+        native(source, 27U, raw_text(source, bytes));
+        expect_gps_text_failure(source, Status::NativeConflict);
+        TextOptions options;
+        options.conflict_policy = Policy::PreserveExisting;
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_gps_text_metadata(source, options, &output)
+                      .groups_preserved,
+                  1U);
+        EXPECT_EQ(view(output, gps(output, 27U)->value.data.span), bytes);
+        options.conflict_policy = Policy::ReplaceExisting;
+        ASSERT_EQ(
+            translate_xmp_gps_text_metadata(source, options, &output).status,
+            Status::Ok);
+        EXPECT_EQ(view(output, gps(output, 27U)->value.data.span),
+                  std::string_view("ASCII\0\0\0GPS", 11U));
+    }
+}
+TEST(MetadataGpsText, RejectsNonAsciiPlainTextInvalidUtf8AndControls)
+{
+    for (const auto path : { "GPSSatellites", "GPSMapDatum" }) {
+        MetaStore source;
+        xmp_text(source, path, "\xe6\x9d\xb1");
+        expect_gps_text_failure(source, Status::InvalidSourceValue);
+    }
+    for (const auto path : { "GPSSatellites", "GPSMapDatum",
+                             "GPSProcessingMethod", "GPSAreaInformation" }) {
+        for (const auto input :
+             { std::string_view("x\0y", 3U), std::string_view("\n"),
+               std::string_view("\xc0\xaf", 2U),
+               std::string_view("\xed\xa0\x80", 3U),
+               std::string_view("\xf4\x90\x80\x80", 4U),
+               std::string_view("\xc2\x85", 2U) }) {
+            MetaStore source;
+            xmp_text(source, path, input);
+            expect_gps_text_failure(source, Status::InvalidSourceValue);
+        }
+        MetaStore source;
+        xmp(source, path, make_u32(3U));
+        expect_gps_text_failure(source, Status::InvalidSourceValue);
+    }
+    MetaStore source;
+    xmp(source, "GPSAreaInformation",
+        make_text(source.arena(), "G\0", TextEncoding::Utf16LE));
+    expect_gps_text_failure(source, Status::InvalidSourceValue);
+}
+TEST(MetadataGpsText, EmptyTextAndWhitespaceAreValuesNotRemoval)
+{
+    for (const auto path : { "GPSSatellites", "GPSMapDatum",
+                             "GPSProcessingMethod", "GPSAreaInformation" }) {
+        for (const auto input : { "", " GPS " }) {
+            MetaStore source;
+            xmp_text(source, path, input);
+            source.finalize();
+            MetaStore output;
+            const auto result = translate_xmp_gps_text_metadata(source, {},
+                                                                &output);
+            ASSERT_EQ(result.status, Status::Ok);
+            EXPECT_EQ(result.entries_added, 2U);
+            EXPECT_EQ(translate_xmp_gps_text_metadata(output, {}, &output)
+                          .groups_unchanged,
+                      1U);
+        }
+    }
+}
+TEST(MetadataGpsText, TextLimitsDoNotTruncateAndIncludeWholeSource)
+{
+    MetaStore source;
+    xmp_text(source, "GPSMapDatum", std::string(4096U, 'A'));
+    source.finalize();
+    MetaStore output;
+    ASSERT_EQ(translate_xmp_gps_text_metadata(source, {}, &output).status,
+              Status::Ok);
+    EXPECT_EQ(gps(output, 18U)->value.data.span.size, 4096U);
+    source = MetaStore {};
+    xmp_text(source, "GPSMapDatum", std::string(4097U, 'A'));
+    expect_gps_text_failure(source, Status::ValueTooLong);
+    source = gps_text();
+    TextOptions options;
+    options.max_total_text_bytes = 10U;
+    expect_gps_text_failure(source, Status::SourceLimitExceeded, options);
+    options                   = {};
+    options.max_added_entries = 4U;
+    expect_gps_text_failure(source, Status::EntryLimitExceeded, options);
+    options                = {};
+    options.max_operations = 4U;
+    expect_gps_text_failure(source, Status::OperationLimitExceeded, options);
+    options                             = {};
+    options.max_text_bytes_per_property = 4097U;
+    expect_gps_text_failure(source, Status::InvalidOptions, options);
+    options                      = {};
+    options.max_total_text_bytes = 16385U;
+    expect_gps_text_failure(source, Status::InvalidOptions, options);
+}
+TEST(MetadataGpsText,
+     IndependentFlagsDirtyModeNamespacesAndDuplicatesAreExplicit)
+{
+    MetaStore source = gps_text(EntryFlags::None);
+    source.finalize();
+    MetaStore output;
+    EXPECT_EQ(translate_xmp_gps_text_metadata(source, {}, &output).entries_added,
+              0U);
+    for (size_t i = 0U; i < 4U; ++i) {
+        TextOptions options;
+        options.source_mode        = MetadataGpsTranslationSourceMode::All;
+        options.satellites_to_exif = i == 0U;
+        options.map_datum_to_exif  = i == 1U;
+        options.processing_method_to_exif = i == 2U;
+        options.area_information_to_exif  = i == 3U;
+        const auto result = translate_xmp_gps_text_metadata(source, options,
+                                                            &output);
+        EXPECT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.entries_added, 2U);
+    }
+    source = quality();
+    xmp_text(source, "GPSAreaInformation[1]", "GPS");
+    xmp(source, "GPSMapDatum", make_u32(3U), EntryFlags::Dirty, "foreign");
+    source.finalize();
+    EXPECT_EQ(translate_xmp_gps_text_metadata(source, {}, &output).entries_added,
+              0U);
+    source = gps_text();
+    xmp_text(source, "GPSMapDatum", "WGS-84");
+    expect_gps_text_failure(source, Status::AmbiguousSource);
+}
+TEST(MetadataGpsText, RemovalCleansLastVersionAndLeavesUnrelatedSingletons)
+{
+    for (const bool unrelated : { false, true }) {
+        MetaStore source = gps_text(EntryFlags::Dirty | EntryFlags::Deleted);
+        native(source, 0U,
+               make_u8_array(source.arena(),
+                             std::array<uint8_t, 4> { 2U, 3U, 0U, 0U }));
+        for (const uint16_t tag : kTextTags)
+            native(source, tag, make_u32(99U));
+        if (unrelated)
+            native(source, 9U,
+                   make_text(source.arena(), "A", TextEncoding::Ascii));
+        source.finalize();
+        TextOptions options;
+        options.conflict_policy = Policy::ReplaceExisting;
+        MetaStore output;
+        const auto result = translate_xmp_gps_text_metadata(source, options,
+                                                            &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.entries_removed, unrelated ? 4U : 5U);
+        EXPECT_EQ(gps(output, 0U) != nullptr, unrelated);
+        for (const uint16_t tag : kTextTags)
+            EXPECT_EQ(gps(output, tag), nullptr);
+    }
+    MetaStore source = gps_text(EntryFlags::Deleted);
+    native(source, 8U, make_u32(99U));
+    source.finalize();
+    MetaStore output;
+    EXPECT_EQ(
+        translate_xmp_gps_text_metadata(source, {}, &output).entries_removed,
+        0U);
+    EXPECT_NE(gps(output, 8U), nullptr);
+}
+TEST(MetadataGpsText, VersionChecksApplyOnlyToSelectedActiveEncodedFields)
+{
+    for (const uint8_t minor : { 0U, 1U, 2U, 3U, 4U, 5U }) {
+        MetaStore source = gps_text();
+        native(source, 0U,
+               make_u8_array(source.arena(),
+                             std::array<uint8_t, 4> { 2U, minor, 0U, 0U }));
+        source.finalize();
+        MetaStore output;
+        if (minor < 2U || minor > 4U)
+            expect_gps_text_failure(source, Status::UnsupportedGpsVersion);
+        else
+            EXPECT_EQ(
+                translate_xmp_gps_text_metadata(source, {}, &output).status,
+                Status::Ok);
+        TextOptions options;
+        options.processing_method_to_exif = false;
+        options.area_information_to_exif  = false;
+        EXPECT_EQ(
+            translate_xmp_gps_text_metadata(source, options, &output).status,
+            Status::Ok);
+    }
+}
+TEST(MetadataGpsText, LateFailureDoesNotApplyEarlierValidText)
+{
+    MetaStore source;
+    xmp_text(source, "GPSSatellites", "07");
+    xmp_text(source, "GPSAreaInformation", std::string_view("x\0y", 3U));
+    expect_gps_text_failure(source, Status::InvalidSourceValue);
+    MetaStore unfinalized;
+    MetaStore output;
+    EXPECT_EQ(translate_xmp_gps_text_metadata(unfinalized, {}, nullptr).status,
+              Status::NullOutput);
+    EXPECT_EQ(translate_xmp_gps_text_metadata(unfinalized, {}, &output).status,
+              Status::SourceNotFinalized);
+}
+
 }  // namespace openmeta

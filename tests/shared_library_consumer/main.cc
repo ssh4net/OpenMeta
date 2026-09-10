@@ -213,14 +213,14 @@ main()
                  == openmeta::MetadataGpsTranslationStatus::Ok
           && destination_result.entries_added == 3U
           && destination_translated.is_finalized();
-    const openmeta::MetadataAuthoringEntry quality_latitude {
+    const openmeta::MetadataAuthoringEntry quality_dop {
         openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
                                              "GPSDOP"),
         openmeta::make_value_view_text("7/3", openmeta::TextEncoding::Utf8),
     };
     openmeta::MetaStore quality_source;
     const auto quality_authored = openmeta::create_metadata_store(
-        std::span<const openmeta::MetadataAuthoringEntry>(&quality_latitude, 1U),
+        std::span<const openmeta::MetadataAuthoringEntry>(&quality_dop, 1U),
         &quality_source);
     openmeta::MetaStore quality_translated;
     const auto quality_result = openmeta::translate_xmp_gps_quality_metadata(
@@ -232,6 +232,26 @@ main()
           && quality_result.status == openmeta::MetadataGpsTranslationStatus::Ok
           && quality_result.entries_added == 2U
           && quality_translated.is_finalized();
+    const openmeta::MetadataAuthoringEntry gps_text_method {
+        openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                             "GPSProcessingMethod"),
+        openmeta::make_value_view_text("GPS", openmeta::TextEncoding::Utf8),
+    };
+    openmeta::MetaStore gps_text_source;
+    const auto gps_text_authored = openmeta::create_metadata_store(
+        std::span<const openmeta::MetadataAuthoringEntry>(&gps_text_method, 1U),
+        &gps_text_source);
+    openmeta::MetaStore gps_text_translated;
+    const auto gps_text_result = openmeta::translate_xmp_gps_text_metadata(
+        gps_text_source, openmeta::MetadataGpsTextTranslationOptions {},
+        &gps_text_translated);
+    const bool gps_text_contract_matches
+        = gps_text_authored.ok()
+          && openmeta::kMetadataGpsTextTranslationContractVersion == 1U
+          && gps_text_result.status
+                 == openmeta::MetadataGpsTranslationStatus::Ok
+          && gps_text_result.entries_added == 2U
+          && gps_text_translated.is_finalized();
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
             std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
@@ -312,7 +332,7 @@ main()
                    || !structured_location_contract_matches
                    || !navigation_contract_matches
                    || !destination_contract_matches || !quality_contract_matches
-                   || !authoring_contract_matches
+                   || !gps_text_contract_matches || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()
                    || instance.valid()
                    || created.code

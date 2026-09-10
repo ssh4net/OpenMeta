@@ -904,10 +904,15 @@ Suggested delivery sequence:
    outside this bounded projection. Version 0.4.133 adds GPS UTC date/time and
    speed/track/image-direction writeback with exact fractions, explicit timezone
    normalization, reference pairs, and snapshot persistence. Receiver quality
-   metadata remains a separate contract. Version 0.4.134 adds destination
+   metadata is covered by version 0.4.135. Version 0.4.134 adds destination
    latitude/longitude, bearing/reference, and distance/unit writeback with exact
    precision, paired transactions, historical unit-label compatibility, and
-   JPEG/Classic TIFF/BigTIFF persistence.
+   JPEG/Classic TIFF/BigTIFF persistence. Version 0.4.135 adds receiver status,
+   measure mode, DOP, differential correction, and horizontal error. Version
+   0.4.136 adds satellites, map datum, processing method, and area information,
+   with explicit text encoding. Together the five GPS APIs cover all 32 native
+   GPS IDs in the repository under bounded version/encoding/precision contracts.
+   Remaining capture fields and reverse structured locations stay separate.
    See `docs/translation.md`.
 2. Retain the completed writer-baseline and compare-backed release gates while
    extending validated foreign `BMFF` graph shapes.

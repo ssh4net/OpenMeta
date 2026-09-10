@@ -11113,3 +11113,45 @@ TEST(XmpDump, PortableDistinguishesNauticalMilesFromKnots)
             "<exif:GPSDestDistanceRef>Nautical miles</exif:GPSDestDistanceRef>"),
         std::string_view::npos);
 }
+
+
+TEST(XmpDump, PortableGpsEncodedTextPreservesUnicodeAndSkipsUnknownEncodings)
+{
+    const std::array<std::string_view, 4> inputs {
+        std::string_view("ASCII\0\0\0GPS & WLAN", 18U),
+        std::string_view("UNICODE\0\xff\xfe\x71\x67\xac\x4e", 14U),
+        std::string_view("JIS\0\0\0\0\0GPS", 11U),
+        std::string_view("UNICODE\0G\0P\0S\0", 14U)
+    };
+    for (size_t i = 0U; i < inputs.size(); ++i) {
+        openmeta::MetaStore store;
+        openmeta::Entry entry;
+        entry.key   = openmeta::make_exif_tag_key(store.arena(), "gpsifd", 27U);
+        entry.value = openmeta::make_bytes(
+            store.arena(),
+            std::as_bytes(std::span(inputs[i].data(), inputs[i].size())));
+        ASSERT_NE(store.add_entry(entry), openmeta::kInvalidEntryId);
+        store.finalize();
+        openmeta::XmpPortableOptions options;
+        options.include_exif         = true;
+        options.include_existing_xmp = false;
+        std::vector<std::byte> output(4096U);
+        const auto result = openmeta::dump_xmp_portable(store, output, options);
+        ASSERT_EQ(result.status, openmeta::XmpDumpStatus::Ok);
+        const std::string_view xml(reinterpret_cast<const char*>(output.data()),
+                                   result.written);
+        if (i == 0U)
+            EXPECT_NE(
+                xml.find(
+                    "<exif:GPSProcessingMethod>GPS &amp; WLAN</exif:GPSProcessingMethod>"),
+                std::string_view::npos);
+        else if (i == 1U)
+            EXPECT_NE(
+                xml.find(
+                    "<exif:GPSProcessingMethod>\xe6\x9d\xb1\xe4\xba\xac</exif:GPSProcessingMethod>"),
+                std::string_view::npos);
+        else
+            EXPECT_EQ(xml.find("<exif:GPSProcessingMethod>"),
+                      std::string_view::npos);
+    }
+}

@@ -4336,6 +4336,19 @@ namespace {
             return false;
         }
 
+        if (ifd == "gpsifd" && (tag == 0x001bU || tag == 0x001cU)) {
+            if (v.kind != MetaValueKind::Bytes) {
+                return true;
+            }
+            std::string decoded;
+            const auto status = interop_internal::decode_exif_prefixed_text_safe(
+                arena.span(v.data.span), &decoded);
+            if (status == interop_internal::SafeTextStatus::Error) {
+                return true;
+            }
+            return emit_portable_property_text_utf8(w, prefix, name, decoded);
+        }
+
         const std::string_view gps_ref_text
             = portable_gps_ref_text_override(arena, tag, v);
         if (!gps_ref_text.empty()) {

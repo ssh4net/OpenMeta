@@ -3,6 +3,7 @@
 #include "interop_safety_internal.h"
 
 #include <cstdio>
+#include <cstring>
 
 namespace openmeta::interop_internal {
 namespace {
@@ -318,6 +319,89 @@ decode_text_to_utf8_safe(std::span<const std::byte> bytes,
     set_safety_error(error, InteropSafetyReason::InvalidTextEncoding,
                      field_name, key_path, "unsupported text encoding");
     return SafeTextStatus::Error;
+}
+
+SafeTextStatus
+decode_exif_prefixed_text_safe(std::span<const std::byte> bytes,
+                               std::string* out) noexcept
+{
+    if (!out) {
+        return SafeTextStatus::Error;
+    }
+    out->clear();
+    if (bytes.size() < 8U) {
+        return SafeTextStatus::Error;
+    }
+    TextEncoding encoding;
+    std::span<const std::byte> payload = bytes.subspan(8U);
+    size_t unit                        = 1U;
+    if (std::memcmp(bytes.data(), "ASCII\0\0\0", 8U) == 0) {
+        encoding = TextEncoding::Ascii;
+    } else if (std::memcmp(bytes.data(), "UNICODE\0", 8U) == 0) {
+        if (payload.size() < 2U || payload.size() % 2U != 0U) {
+            return SafeTextStatus::Error;
+        }
+        if (payload[0] == std::byte { 0xff }
+            && payload[1] == std::byte { 0xfe }) {
+            encoding = TextEncoding::Utf16LE;
+        } else if (payload[0] == std::byte { 0xfe }
+                   && payload[1] == std::byte { 0xff }) {
+            encoding = TextEncoding::Utf16BE;
+        } else {
+            return SafeTextStatus::Error;
+        }
+        payload = payload.subspan(2U);
+        unit    = 2U;
+    } else {
+        return SafeTextStatus::Error;
+    }
+    if (payload.size() >= unit && payload.back() == std::byte { 0 }
+        && (unit == 1U || payload[payload.size() - 2U] == std::byte { 0 })) {
+        payload = payload.first(payload.size() - unit);
+    }
+    return decode_text_to_utf8_safe(payload, encoding, "GPS text", "Exif:GPS",
+                                    out, nullptr);
+}
+
+void
+encode_exif_prefixed_text_from_valid_utf8(std::string_view text,
+                                          std::string* out)
+{
+    bool ascii = true;
+    for (const unsigned char c : text) {
+        ascii = ascii && c < 0x80U;
+    }
+    if (ascii) {
+        out->assign("ASCII\0\0\0", 8U);
+        out->append(text);
+        return;
+    }
+    out->assign("UNICODE\0\xff\xfe", 10U);
+    out->reserve(10U + 2U * text.size());
+    for (size_t i = 0U; i < text.size();) {
+        const uint8_t first  = static_cast<uint8_t>(text[i++]);
+        const uint32_t count = first < 0x80U   ? 0U
+                               : first < 0xe0U ? 1U
+                               : first < 0xf0U ? 2U
+                                               : 3U;
+        uint32_t cp          = first
+                      & (count == 0U   ? 0x7fU
+                         : count == 1U ? 0x1fU
+                         : count == 2U ? 0x0fU
+                                       : 0x07U);
+        for (uint32_t j = 0U; j < count; ++j) {
+            cp = (cp << 6U) | (static_cast<uint8_t>(text[i++]) & 0x3fU);
+        }
+        if (cp > 0xffffU) {
+            cp -= 0x10000U;
+            const uint32_t high = 0xd800U + (cp >> 10U);
+            out->push_back(static_cast<char>(high & 0xffU));
+            out->push_back(static_cast<char>(high >> 8U));
+            cp = 0xdc00U + (cp & 0x3ffU);
+        }
+        out->push_back(static_cast<char>(cp & 0xffU));
+        out->push_back(static_cast<char>(cp >> 8U));
+    }
 }
 
 std::string

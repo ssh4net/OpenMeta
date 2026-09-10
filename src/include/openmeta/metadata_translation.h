@@ -858,6 +858,10 @@ enum class MetadataGpsTranslationMapping : uint8_t {
     ExifGpsDop,
     ExifGpsDifferential,
     ExifGpsHPositioningError,
+    ExifGpsSatellites,
+    ExifGpsMapDatum,
+    ExifGpsProcessingMethod,
+    ExifGpsAreaInformation,
 };
 enum class MetadataGpsTranslationStatus : uint8_t {
     Ok,
@@ -1065,6 +1069,47 @@ MetadataGpsTranslationResult
 translate_xmp_gps_quality_metadata(
     const MetaStore& source,
     const MetadataGpsQualityTranslationOptions& options, MetaStore* out_store);
+
+inline constexpr uint32_t kMetadataGpsTextTranslationContractVersion   = 1U;
+inline constexpr uint32_t kMetadataGpsTextTranslationMaxAddedEntries   = 5U;
+inline constexpr uint64_t kMetadataGpsTextTranslationMaxTotalTextBytes = 16384U;
+
+inline constexpr uint32_t kMetadataGpsTextTranslationMaxTextBytesPerProperty
+    = 4096U;
+
+struct MetadataGpsTextTranslationOptions final {
+    MetadataGpsTranslationSourceMode source_mode
+        = MetadataGpsTranslationSourceMode::DirtyOnly;
+    MetadataGpsTranslationConflictPolicy conflict_policy
+        = MetadataGpsTranslationConflictPolicy::FailOnConflict;
+    bool satellites_to_exif        = true;
+    bool map_datum_to_exif         = true;
+    bool processing_method_to_exif = true;
+    bool area_information_to_exif  = true;
+    uint32_t max_added_entries     = kMetadataGpsTextTranslationMaxAddedEntries;
+    uint32_t max_operations        = kMetadataGpsTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataGpsTextTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes = kMetadataGpsTextTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Atomically write satellite, datum, processing-method, and area text.
+ *
+ * Satellites/datum require ASCII. Method/area accept valid UTF-8 and write
+ * UNDEFINED with ASCII or UNICODE prefixes; Unicode output uses UTF-16LE BOM.
+ * Empty text is a value. NUL/control characters and malformed UTF-8 fail.
+ * Native equivalence recognizes ASCII and BOM-marked UTF-16, optionally with
+ * one terminator. JIS, unknown prefixes, and BOM-less Unicode are not guessed.
+ * Method/area require GPS 2.2 through 2.4; missing versions default to 2.3.0.0.
+ * No datum conversion or processing/receiver-state inference is performed.
+ * Singleton selection, removal, conflict, version, and atomicity follow the
+ * quality GPS contract. Preparation may allocate.
+ */
+MetadataGpsTranslationResult
+translate_xmp_gps_text_metadata(const MetaStore& source,
+                                const MetadataGpsTextTranslationOptions& options,
+                                MetaStore* out_store);
 
 const char*
 metadata_gps_translation_status_name(

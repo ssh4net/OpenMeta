@@ -1,5 +1,25 @@
 # OpenMeta Changes
 
+## 0.4.136 - 2026-09-10
+
+Changes compared with `0.4.135`.
+
+### Added
+
+- Added C++ and Python GPS text writeback for satellites, map datum, processing
+  method, and area information. This completes bounded writeback coverage of
+  the 32 standard native GPS tag IDs in the repository, including companions.
+- Added explicit ASCII and BOM-marked UTF-16 encoding, strict text validation,
+  native equivalence, singleton transactions, resource limits, and version rules.
+- Added Unicode/encoding regressions, container persistence, Python, and
+  installed shared-consumer checks.
+
+### Fixed
+
+- Portable XMP now decodes supported GPS processing/area text prefixes, escapes
+  their text, and preserves Unicode. Unsupported encoded forms are omitted
+  from projection while native data remains available.
+
 ## 0.4.135 - 2026-09-10
 
 Changes compared with `0.4.134`.

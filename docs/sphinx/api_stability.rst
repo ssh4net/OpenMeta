@@ -281,6 +281,11 @@ Host-facing API map
      - Experimental
      - Transactional v1 status, measurement mode, DOP, differential correction, and horizontal error with explicit enum, precision, version, and removal contracts.
        Python provides the same operation. See :doc:`translation`.
+   * - GPS text translation: ``translate_xmp_gps_text_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Transactional v1 satellites, map datum, processing method, and area with explicit ASCII/Unicode encoding, version, conflict, and removal contracts.
+       Python provides the same operation. See :doc:`translation`.
    * - EXIF/TIFF orientation helpers: ``interpret_exif_orientation(...)``,
        ``exif_orientation_name(...)``,
        ``exif_orientation_rotation_degrees_cw(...)``,

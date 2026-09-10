@@ -883,6 +883,78 @@ keep their scopes. Python returns a detached document for transfer preparation.
 Source XMP preservation still requires both ``xmp_include_existing=True`` and
 ``xmp_conflict_policy=openmeta.XmpConflictPolicy.ExistingWins`` during transfer.
 
+GPS text writeback
+------------------
+
+``translate_xmp_gps_text_metadata(...)`` and Python
+``Document.translate_gps_text_metadata(...)`` add four independent singleton
+mappings with ``MetadataGpsTextTranslationOptions``, contract version 1.
+Exact unindexed paths use ``http://ns.adobe.com/exif/1.0/``.
+
+.. list-table::
+   :header-rows: 1
+
+   * - XMP source
+     - Native tag/type
+     - Flag
+   * - ``GPSSatellites``
+     - 8 / ASCII
+     - ``satellites_to_exif``
+   * - ``GPSMapDatum``
+     - 18 / ASCII
+     - ``map_datum_to_exif``
+   * - ``GPSProcessingMethod``
+     - 27 / UNDEFINED encoded text
+     - ``processing_method_to_exif``
+   * - ``GPSAreaInformation``
+     - 28 / UNDEFINED encoded text
+     - ``area_information_to_exif``
+
+Satellites and datum require ASCII. Processing method and area accept valid
+UTF-8, including supplementary Unicode characters. Source Text values must
+use Ascii, Utf8, or Unknown encoding; Unknown is interpreted as UTF-8.
+Empty text is an active value, and spaces are retained exactly. NUL, C0/C1
+controls, malformed UTF-8, and unsupported source types/encodings fail.
+There is no truncation, Unicode normalization, datum conversion, receiver-state
+inference, or parsing of satellite lists or processing-method names.
+
+Method and area are stored as UNDEFINED bytes with an eight-byte character-code
+identifier. ASCII content uses the ASCII prefix; non-ASCII content uses the
+UNICODE prefix followed by a UTF-16LE byte-order marker and exact UTF-16 payload.
+Supplementary characters use surrogate pairs. New encoded payloads omit the
+optional terminator; ordinary ASCII fields receive their wire terminator during
+serialization. Native equivalent text accepts the ASCII prefix or UNICODE with
+an explicit LE/BE byte-order marker and at most one trailing terminator. JIS,
+unknown identifiers, malformed text, and Unicode without a byte-order marker
+are non-equivalent. FailOnConflict protects these native values; PreserveExisting
+keeps them, while ReplaceExisting replaces them with canonical new output.
+Portable XMP recognizes the same supported encoded forms and emits decoded
+text. Unsupported forms are omitted from native-to-XMP projection without
+modifying the original native entries.
+
+The v1 method/area version contract accepts GPS 2.2 through 2.4; earlier or
+unknown versions fail when an active encoded field is selected. Satellites and
+datum retain any well-formed native BYTE[4] version. Missing versions default
+to 2.3.0.0, with no upgrade or source-XMP version copy.
+
+Defaults are DirtyOnly/FailOnConflict and four enabled flags. Selection,
+singleton conflicts, duplicate repair, dirty tombstone removal, version cleanup,
+owned provenance, and source/output aliasing follow the quality GPS contract.
+All selected fields commit atomically. Empty strings do not request deletion.
+Limits are five added entries including version, 1024 native operations,
+4096 source text bytes per selected active property, and 16384 total text bytes.
+Encoded output is bounded by twice the source byte limit plus its prefix/BOM;
+encoding overhead does not consume the source-text budget. Limits may be lowered.
+Preparation may allocate.
+
+Python returns a detached document. Persist it through transfer preparation;
+retain source XMP using both ``xmp_include_existing=True`` and
+``xmp_conflict_policy=openmeta.XmpConflictPolicy.ExistingWins``. The five GPS
+translation APIs now cover the repository's 32 standard native GPS tag IDs,
+including paired companions and automatically maintained GPSVersionID. This
+is bounded writeback coverage; it does not imply support for every possible
+encoding, version, or arbitrary metadata synchronization policy.
+
 Conflict and removal policy
 ---------------------------
 
