@@ -3242,3 +3242,347 @@ namespace {
 
 }  // namespace
 }  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    using SettingsOptions = MetadataCaptureSettingsTranslationOptions;
+    using SettingsStatus  = MetadataCaptureTranslationStatus;
+    using SettingsPolicy  = MetadataCaptureTranslationConflictPolicy;
+    constexpr std::string_view kSettingsNs = "http://ns.adobe.com/exif/1.0/";
+    constexpr std::array<std::string_view, 12> kSettingsPaths {
+        "ExposureProgram",  "MeteringMode", "SensingMethod",
+        "CustomRendered",   "ExposureMode", "WhiteBalance",
+        "SceneCaptureType", "GainControl",  "Contrast",
+        "Saturation",       "Sharpness",    "SubjectDistanceRange"
+    };
+    constexpr std::array<uint16_t, 12> kSettingsTags { 0x8822, 0x9207, 0xa217,
+                                                       0xa401, 0xa402, 0xa403,
+                                                       0xa406, 0xa407, 0xa408,
+                                                       0xa409, 0xa40a, 0xa40c };
+    constexpr std::array<uint16_t, 12> kSettingsValues { 3, 5, 2, 1, 2, 1,
+                                                         3, 4, 2, 1, 2, 3 };
+    constexpr std::array<std::string_view, 12> kSettingsLabels {
+        "Aperture-priority AE",
+        "Multi-segment",
+        "One-chip color area",
+        "Custom",
+        "Auto bracket",
+        "Manual",
+        "Night scene",
+        "High gain down",
+        "High",
+        "Low",
+        "Hard",
+        "Distant"
+    };
+
+    static void settings_xmp(MetaStore& store, std::string_view path,
+                             MetaValue value,
+                             EntryFlags flags    = EntryFlags::Dirty,
+                             std::string_view ns = kSettingsNs)
+    {
+        Entry entry;
+        entry.key   = make_xmp_property_key(store.arena(), ns, path);
+        entry.value = value;
+        entry.flags = flags;
+        entry.origin.wire_type_name = store.arena().append_string(
+            "settings-source");
+        store.add_entry(entry);
+    }
+
+    static void settings_native(MetaStore& store, uint16_t tag, MetaValue value)
+    {
+        Entry entry;
+        entry.key   = make_exif_tag_key(store.arena(), "exififd", tag);
+        entry.value = value;
+        store.add_entry(entry);
+    }
+
+    static const Entry* settings_find(const MetaStore& store, uint16_t tag)
+    {
+        const auto ids = store.find_all(make_exif_tag_key_view("exififd", tag));
+        for (const EntryId id : ids) {
+            if (!any(store.entry(id).flags, EntryFlags::Deleted))
+                return &store.entry(id);
+        }
+        return nullptr;
+    }
+
+    static size_t settings_active_count(const MetaStore& store, uint16_t tag)
+    {
+        size_t count = 0U;
+        for (const EntryId id :
+             store.find_all(make_exif_tag_key_view("exififd", tag)))
+            if (!any(store.entry(id).flags, EntryFlags::Deleted))
+                ++count;
+        return count;
+    }
+
+    static MetaStore all_settings(bool labels      = false,
+                                  EntryFlags flags = EntryFlags::Dirty)
+    {
+        MetaStore source;
+        for (size_t i = 0U; i < kSettingsPaths.size(); ++i) {
+            settings_xmp(source, kSettingsPaths[i],
+                         labels ? make_text(source.arena(), kSettingsLabels[i],
+                                            TextEncoding::Utf8)
+                                : make_u32(kSettingsValues[i]),
+                         flags);
+        }
+        return source;
+    }
+
+    static void settings_failure(MetaStore& source, SettingsStatus expected,
+                                 const SettingsOptions& options = {})
+    {
+        source.finalize();
+        const size_t before = source.entries().size();
+        MetaStore output;
+        settings_native(output, 0x8822U, make_u16(77U));
+        output.finalize();
+        EXPECT_EQ(translate_xmp_capture_settings_metadata(source, options,
+                                                          &output)
+                      .status,
+                  expected);
+        ASSERT_EQ(output.entries().size(), 1U);
+        ASSERT_NE(settings_find(output, 0x8822U), nullptr);
+        EXPECT_EQ(settings_find(output, 0x8822U)->value.data.u64, 77U);
+        EXPECT_EQ(translate_xmp_capture_settings_metadata(source, options,
+                                                          &source)
+                      .status,
+                  expected);
+        EXPECT_EQ(source.entries().size(), before);
+    }
+
+    TEST(MetadataCaptureSettings, CreatesTwelveShortFieldsWithOwnedProvenance)
+    {
+        MetaStore output;
+        {
+            MetaStore source = all_settings(true);
+            source.finalize();
+            const auto result
+                = translate_xmp_capture_settings_metadata(source, {}, &output);
+            ASSERT_EQ(result.status, SettingsStatus::Ok);
+            EXPECT_EQ(result.entries_added, 12U);
+            EXPECT_EQ(result.source_properties, 12U);
+            EXPECT_EQ(result.groups_translated, 12U);
+        }
+        for (size_t i = 0U; i < kSettingsTags.size(); ++i) {
+            const Entry* entry = settings_find(output, kSettingsTags[i]);
+            ASSERT_NE(entry, nullptr);
+            EXPECT_EQ(entry->value.kind, MetaValueKind::Scalar);
+            EXPECT_EQ(entry->value.elem_type, MetaElementType::U16);
+            EXPECT_EQ(entry->value.count, 1U);
+            EXPECT_EQ(entry->value.data.u64, kSettingsValues[i]);
+            const auto bytes = output.arena().span(
+                entry->origin.wire_type_name);
+            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                           bytes.data()),
+                                       bytes.size()),
+                      "settings-source");
+        }
+        const auto same = translate_xmp_capture_settings_metadata(output, {},
+                                                                  &output);
+        EXPECT_EQ(same.status, SettingsStatus::Ok);
+        EXPECT_EQ(same.groups_unchanged, 12U);
+    }
+
+    TEST(MetadataCaptureSettings,
+         ClosedCodesIncludeUnknownAndOtherButRejectReservedValues)
+    {
+        const std::array<std::vector<uint16_t>, 12> accepted {
+            { { 0, 1, 2, 3, 4, 5, 6, 7, 8 },
+              { 0, 1, 2, 3, 4, 5, 6, 255 },
+              { 1, 2, 3, 4, 5, 7, 8 },
+              { 0, 1 },
+              { 0, 1, 2 },
+              { 0, 1 },
+              { 0, 1, 2, 3 },
+              { 0, 1, 2, 3, 4 },
+              { 0, 1, 2 },
+              { 0, 1, 2 },
+              { 0, 1, 2 },
+              { 0, 1, 2, 3 } }
+        };
+        for (size_t i = 0U; i < accepted.size(); ++i) {
+            for (const uint16_t code : accepted[i]) {
+                for (const bool as_text : { false, true }) {
+                    MetaStore source;
+                    settings_xmp(source, kSettingsPaths[i],
+                                 as_text ? make_text(source.arena(),
+                                                     std::to_string(code),
+                                                     TextEncoding::Ascii)
+                                         : make_i32(code));
+                    source.finalize();
+                    MetaStore output;
+                    ASSERT_EQ(translate_xmp_capture_settings_metadata(source,
+                                                                      {},
+                                                                      &output)
+                                  .status,
+                              SettingsStatus::Ok);
+                    ASSERT_NE(settings_find(output, kSettingsTags[i]), nullptr);
+                    EXPECT_EQ(
+                        settings_find(output, kSettingsTags[i])->value.data.u64,
+                        code);
+                }
+            }
+            MetaStore source;
+            settings_xmp(source, kSettingsPaths[i], make_u32(65536U));
+            settings_failure(source, SettingsStatus::ValueOutOfRange);
+        }
+        for (const auto item : { std::pair<size_t, uint16_t> { 0, 9 },
+                                 { 1, 7 },
+                                 { 2, 0 },
+                                 { 2, 6 },
+                                 { 5, 2 } }) {
+            MetaStore source;
+            settings_xmp(source, kSettingsPaths[item.first],
+                         make_u16(item.second));
+            settings_failure(source, SettingsStatus::ValueOutOfRange);
+        }
+    }
+
+    TEST(MetadataCaptureSettings,
+         RejectsCoercionUnsafeTextAndReadOnlyExtensions)
+    {
+        for (const std::string_view text :
+             { "1.0", "1/1", "1e0", "+1", "-1", " 1", "1 ", "manual", "Bulb",
+               "" }) {
+            MetaStore source;
+            settings_xmp(source, "ExposureProgram",
+                         make_text(source.arena(), text, TextEncoding::Utf8));
+            settings_failure(source, SettingsStatus::InvalidNumericValue);
+        }
+        for (const MetaValue value :
+             { make_f64_bits(0x3ff0000000000000ULL), make_urational(1, 1),
+               make_srational(1, 1) }) {
+            MetaStore source;
+            settings_xmp(source, "WhiteBalance", value);
+            settings_failure(source, SettingsStatus::InvalidSourceValue);
+        }
+        MetaStore source;
+        settings_xmp(source, "WhiteBalance", make_i32(-1));
+        settings_failure(source, SettingsStatus::ValueOutOfRange);
+        source = MetaStore {};
+        settings_xmp(source, "WhiteBalance",
+                     make_text(source.arena(), "1", TextEncoding::Utf16LE));
+        settings_failure(source, SettingsStatus::InvalidSourceValue);
+        source = MetaStore {};
+        settings_xmp(source, "WhiteBalance",
+                     make_text(source.arena(), std::string_view("1\0", 2),
+                               TextEncoding::Ascii));
+        settings_failure(source, SettingsStatus::InvalidNumericValue);
+    }
+
+    TEST(MetadataCaptureSettings, DirtySelectionFlagsNamespacesAndDuplicates)
+    {
+        MetaStore source = all_settings(false, EntryFlags::None);
+        source.finalize();
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_capture_settings_metadata(source, {}, &output)
+                      .entries_added,
+                  0U);
+        SettingsOptions options;
+        options.source_mode = MetadataCaptureTranslationSourceMode::All;
+        EXPECT_EQ(translate_xmp_capture_settings_metadata(source, options,
+                                                          &output)
+                      .entries_added,
+                  12U);
+        source = MetaStore {};
+        settings_xmp(source, "WhiteBalance", make_u16(1), EntryFlags::Dirty,
+                     "foreign");
+        settings_xmp(source, "WhiteBalance[1]", make_u16(1));
+        source.finalize();
+        EXPECT_EQ(translate_xmp_capture_settings_metadata(source, {}, &output)
+                      .entries_added,
+                  0U);
+        source = MetaStore {};
+        settings_xmp(source, "WhiteBalance", make_u16(1));
+        settings_xmp(source, "WhiteBalance", make_u16(1));
+        settings_failure(source, SettingsStatus::AmbiguousSource);
+        options                       = {};
+        options.white_balance_to_exif = false;
+        EXPECT_EQ(translate_xmp_capture_settings_metadata(source, options,
+                                                          &output)
+                      .status,
+                  SettingsStatus::Ok);
+    }
+
+    TEST(MetadataCaptureSettings, TypedEquivalenceDuplicateRepairAndRemoval)
+    {
+        MetaStore source = all_settings();
+        settings_native(source, 0xa403U, make_u32(1));
+        settings_native(source, 0xa403U, make_u16(0));
+        settings_failure(source, SettingsStatus::NativeConflict);
+        SettingsOptions options;
+        options.conflict_policy = SettingsPolicy::PreserveExisting;
+        MetaStore output;
+        const auto kept
+            = translate_xmp_capture_settings_metadata(source, options, &output);
+        EXPECT_EQ(kept.status, SettingsStatus::Ok);
+        EXPECT_EQ(kept.groups_preserved, 1U);
+        EXPECT_EQ(settings_active_count(output, 0xa403U), 2U);
+        options.conflict_policy = SettingsPolicy::ReplaceExisting;
+        const auto changed
+            = translate_xmp_capture_settings_metadata(source, options, &output);
+        EXPECT_EQ(changed.status, SettingsStatus::Ok);
+        EXPECT_EQ(changed.entries_updated, 1U);
+        EXPECT_EQ(changed.entries_removed, 1U);
+        EXPECT_EQ(settings_active_count(output, 0xa403U), 1U);
+        EXPECT_EQ(settings_find(output, 0xa403U)->value.elem_type,
+                  MetaElementType::U16);
+        source = all_settings(false, EntryFlags::Dirty | EntryFlags::Deleted);
+        for (const uint16_t tag : kSettingsTags)
+            settings_native(source, tag, make_u16(99));
+        settings_native(source, 0x829aU, make_urational(1, 100));
+        source.finalize();
+        const auto removed
+            = translate_xmp_capture_settings_metadata(source, options, &source);
+        EXPECT_EQ(removed.status, SettingsStatus::Ok);
+        EXPECT_EQ(removed.entries_removed, 12U);
+        for (const uint16_t tag : kSettingsTags)
+            EXPECT_EQ(settings_find(source, tag), nullptr);
+        EXPECT_NE(settings_find(source, 0x829aU), nullptr);
+    }
+
+    TEST(MetadataCaptureSettings,
+         BudgetsAndLateFailuresLeaveAliasedOutputUnchanged)
+    {
+        MetaStore source = all_settings();
+        SettingsOptions options;
+        options.max_added_entries = 11U;
+        settings_failure(source, SettingsStatus::EntryLimitExceeded, options);
+        options                = {};
+        options.max_operations = 11U;
+        settings_failure(source, SettingsStatus::OperationLimitExceeded,
+                         options);
+        source                       = all_settings(true);
+        options                      = {};
+        options.max_total_text_bytes = 5U;
+        settings_failure(source, SettingsStatus::SourceLimitExceeded, options);
+        source = MetaStore {};
+        settings_xmp(source, "ExposureProgram", make_u16(1));
+        settings_xmp(source, "SubjectDistanceRange", make_u16(9));
+        settings_failure(source, SettingsStatus::ValueOutOfRange);
+        EXPECT_EQ(settings_find(source, 0x8822U), nullptr);
+        source = MetaStore {};
+        settings_xmp(source, "WhiteBalance",
+                     make_text(source.arena(), std::string(129U, '1'),
+                               TextEncoding::Ascii));
+        settings_failure(source, SettingsStatus::ValueTooLong);
+        options                   = {};
+        options.max_added_entries = 13U;
+        settings_failure(source, SettingsStatus::InvalidOptions, options);
+        MetaStore unfinalized;
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_capture_settings_metadata(unfinalized, {},
+                                                          nullptr)
+                      .status,
+                  SettingsStatus::NullOutput);
+        EXPECT_EQ(translate_xmp_capture_settings_metadata(unfinalized, {},
+                                                          &output)
+                      .status,
+                  SettingsStatus::SourceNotFinalized);
+    }
+}  // namespace
+}  // namespace openmeta

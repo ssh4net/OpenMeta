@@ -3025,9 +3025,8 @@ namespace {
 
         uint32_t appended = 0U;
         for (const Entry& entry : src.entries()) {
-            if (any(entry.flags, EntryFlags::Deleted)) {
-                continue;
-            }
+            // Transfer preparation needs tombstones to distinguish explicit
+            // deletion from omission, including removal of an entire IFD.
             Entry copied;
             copied.key    = copy_meta_key_for_store(entry.key, src.arena(),
                                                     dst->arena());
@@ -3429,6 +3428,30 @@ namespace {
             removed_value = removed_value
                             || (entry.key.data.exif_tag.tag != 0U
                                 && any(entry.flags, EntryFlags::Dirty));
+        }
+        return removed_value;
+    }
+
+    static bool exif_ifd_is_explicitly_removed(const MetaStore& store) noexcept
+    {
+        bool removed_value = false;
+        for (const Entry& entry : store.entries()) {
+            if (entry.key.kind != MetaKeyKind::ExifTag) {
+                continue;
+            }
+            const std::string_view ifd
+                = arena_string(store.arena(), entry.key.data.exif_tag.ifd);
+            if (ifd == "interopifd" && !any(entry.flags, EntryFlags::Deleted)) {
+                return false;
+            }
+            if (ifd != "exififd") {
+                continue;
+            }
+            if (!any(entry.flags, EntryFlags::Deleted)) {
+                return false;
+            }
+            removed_value = removed_value
+                            || any(entry.flags, EntryFlags::Dirty);
         }
         return removed_value;
     }
@@ -7227,8 +7250,8 @@ namespace {
         const MetaStore& store, TransferPolicyAction makernote_policy,
         bool include_subifds, bool inject_minimal_dng_version,
         bool honor_wire_type_hints, uint64_t max_output_bytes,
-        bool collect_patch_source_slots,
-        bool explicit_empty_gps_ifd = false) noexcept
+        bool collect_patch_source_slots, bool explicit_empty_gps_ifd = false,
+        bool explicit_empty_exif_ifd = false) noexcept
     {
         ExifPackBuild out;
 
@@ -7333,6 +7356,10 @@ namespace {
         // Ordinary absence must continue to preserve the target GPS directory.
         if (explicit_empty_gps_ifd && gpsifd.entries.empty()) {
             gpsifd.present = true;
+        }
+        if (explicit_empty_exif_ifd && exififd.entries.empty()
+            && !interopifd.present) {
+            exififd.present = true;
         }
 
         if (interopifd.present) {
@@ -11300,6 +11327,15 @@ namespace {
         remove_target_local_tiff_storage_updates(&parsed_exif.ifd0_updates);
 
         std::vector<TiffTagUpdate> merged_updates = updates;
+        const bool clear_exif_ifd                 = parsed_exif.exif_ifd.present
+                                    && parsed_exif.exif_ifd.entries.empty();
+        if (clear_exif_ifd) {
+            parsed_exif.exif_ifd.present = false;
+            TiffTagUpdate removal;
+            removal.tag    = 0x8769U;
+            removal.remove = true;
+            merged_updates.push_back(std::move(removal));
+        }
         const bool clear_gps_ifd                  = parsed_exif.gps_ifd.present
                                    && parsed_exif.gps_ifd.entries.empty();
         if (clear_gps_ifd) {
@@ -11333,8 +11369,8 @@ namespace {
         bool need_exif_ptr            = parsed_exif.exif_ifd.present;
         bool need_gps_ptr             = parsed_exif.gps_ifd.present;
         const bool need_subifd_ptr    = !parsed_exif.subifds.empty();
-        const bool inspect_existing_exif_ifd = need_exif_ptr
-                                               || strip_existing_xmp;
+        const bool inspect_existing_exif_ifd
+            = !clear_exif_ifd && (need_exif_ptr || strip_existing_xmp);
         const bool inspect_existing_gps_ifd
             = !clear_gps_ifd && (need_gps_ptr || strip_existing_xmp);
         const bool inspect_existing_subifds = need_subifd_ptr
@@ -13209,7 +13245,11 @@ prepare_metadata_for_target_impl(const MetaStore& store,
     const bool explicit_empty_gps_ifd = transfer_target_is_tiff_family(
                                             request.target_format)
                                         && gps_ifd_is_explicitly_removed(store);
+    const bool explicit_empty_exif_ifd
+        = transfer_target_is_tiff_family(request.target_format)
+          && exif_ifd_is_explicitly_removed(store);
     const bool has_exif = exif_entry_count > 0U || explicit_empty_gps_ifd
+                          || explicit_empty_exif_ifd
                           || request.target_format == TransferTargetFormat::Dng;
     const bool has_iptc = iptc_dataset_count > 0U
                           || has_kind(prepared_store,
@@ -13694,7 +13734,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
             prepared_store, effective_makernote,
             transfer_target_is_tiff_family(request.target_format),
             request.target_format == TransferTargetFormat::Dng, true,
-            kMaxJpegExifTiffBytes, false, explicit_empty_gps_ifd);
+            kMaxJpegExifTiffBytes, false, explicit_empty_gps_ifd,
+            explicit_empty_exif_ifd);
         if (exif_build.produced && !exif_build.tiff_payload.empty()) {
             const uint32_t block_index = static_cast<uint32_t>(
                 bundle.blocks.size());

@@ -286,6 +286,14 @@ Host-facing API map
      - Experimental
      - Transactional v1 satellites, map datum, processing method, and area with explicit ASCII/Unicode encoding, version, conflict, and removal contracts.
        Python provides the same operation. See :doc:`translation`.
+   * - Capture settings translation: ``translate_xmp_capture_settings_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Twelve closed SHORT camera-setting enums with atomic conflicts/removal and Python support. See :doc:`translation`.
+   * - Structured location construction: ``translate_xmp_location_to_structured_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Five flat XMP fields into an explicit Created/Shown record with dense indexes and atomic removal. See :doc:`translation`.
    * - EXIF/TIFF orientation helpers: ``interpret_exif_orientation(...)``,
        ``exif_orientation_name(...)``,
        ``exif_orientation_rotation_degrees_cw(...)``,

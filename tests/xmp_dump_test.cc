@@ -5700,7 +5700,7 @@ TEST(XmpDump, PortablePreservesIptc4xmpExtIndexedStructuredResources)
         s.find("xmlns:Iptc4xmpExt=\"http://iptc.org/std/Iptc4xmpExt/2008-02-29/\""),
         std::string_view::npos);
     EXPECT_NE(s.find("<Iptc4xmpExt:LocationShown>"), std::string_view::npos);
-    EXPECT_NE(s.find("<rdf:Seq>"), std::string_view::npos);
+    EXPECT_NE(s.find("<rdf:Bag>"), std::string_view::npos);
     EXPECT_NE(
         s.find("<Iptc4xmpExt:City>Paris</Iptc4xmpExt:City>"),
         std::string_view::npos);

@@ -1,5 +1,26 @@
 # OpenMeta Changes
 
+## 0.4.137 - 2026-09-10
+
+Changes compared with `0.4.136`.
+
+### Added
+
+- Added C++ and Python writeback for twelve closed capture-setting enums with
+  typed singleton conflicts, strict code/label validation, and atomic removal.
+- Added explicit flat-XMP-to-structured-location construction for five text
+  fields, with Created/Shown selection, dense record indexes, and safe removal.
+- Added unit, snapshot persistence, Python, and installed-consumer regressions.
+
+### Fixed
+
+- Portable indexed IPTC Extension locations now use RDF Bags.
+- Explicit removal of the last ExifIFD fields now removes the old TIFF/BigTIFF
+  pointer, including when destination XMP stripping is requested. Ordinary
+  omission still preserves the target ExifIFD.
+- High-level snapshot execution now retains source deletion markers during
+  preparation, matching the lower-level snapshot API.
+
 ## 0.4.136 - 2026-09-10
 
 Changes compared with `0.4.135`.

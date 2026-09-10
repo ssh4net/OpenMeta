@@ -4797,7 +4797,9 @@ namespace {
         if (prefix == "xmpTPg" && name == "Colorants") {
             return PortableIndexedProperty::Container::Seq;
         }
-        if (prefix == "Iptc4xmpExt" && name == "LocationId") {
+        if (prefix == "Iptc4xmpExt"
+            && (name == "LocationId" || name == "LocationShown"
+                || name == "LocationCreated")) {
             return PortableIndexedProperty::Container::Bag;
         }
         if (prefix == "Iptc4xmpExt"

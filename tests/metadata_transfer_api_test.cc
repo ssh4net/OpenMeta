@@ -17242,7 +17242,7 @@ TEST(MetadataTransferApi,
     EXPECT_TRUE(payload_contains_ascii(
         std::span<const std::byte>(bundle.blocks[0].payload.data(),
                                    bundle.blocks[0].payload.size()),
-        "<rdf:Seq>"));
+        "<rdf:Bag>"));
     EXPECT_TRUE(payload_contains_ascii(
         std::span<const std::byte>(bundle.blocks[0].payload.data(),
                                    bundle.blocks[0].payload.size()),
@@ -49630,3 +49630,311 @@ TEST(MetadataTransferApi,
 }
 
 }  // namespace
+
+TEST(MetadataTransferApi,
+     CaptureSettingsAndCreatedLocationsPersistSnapshotsAcrossContainers)
+{
+    const std::array<std::string_view, 12> settings_paths {
+        "ExposureProgram",  "MeteringMode", "SensingMethod",
+        "CustomRendered",   "ExposureMode", "WhiteBalance",
+        "SceneCaptureType", "GainControl",  "Contrast",
+        "Saturation",       "Sharpness",    "SubjectDistanceRange"
+    };
+    const std::array<uint16_t, 12> tags { 0x8822, 0x9207, 0xa217, 0xa401,
+                                          0xa402, 0xa403, 0xa406, 0xa407,
+                                          0xa408, 0xa409, 0xa40a, 0xa40c };
+    const std::array<uint16_t, 12> codes { 3, 5, 2, 1, 2, 1, 3, 4, 2, 1, 2, 3 };
+    const std::array<std::string_view, 5> flat_paths { "City", "Location",
+                                                       "State", "Country",
+                                                       "CountryCode" };
+    const std::array<std::string_view, 5> children {
+        "City", "Sublocation", "ProvinceState", "CountryName", "CountryCode"
+    };
+    const std::array<std::string_view, 5> texts { "\xe4\xba\xac\xe9\x83\xbd",
+                                                  "Garden & water", "Kyoto",
+                                                  "Japan", "JPN" };
+    constexpr std::string_view exif_ns = "http://ns.adobe.com/exif/1.0/";
+    constexpr std::string_view ps_ns   = "http://ns.adobe.com/photoshop/1.0/";
+    constexpr std::string_view core_ns
+        = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
+    constexpr std::string_view ext_ns
+        = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/";
+    for (const unsigned feature : { 0U, 1U, 2U }) {
+        const std::string root = feature == 1U ? "LocationShown[1]"
+                                               : "LocationCreated[1]";
+        for (const unsigned container : { 0U, 1U, 2U }) {
+            for (const unsigned mode : { 0U, 1U, 2U, 3U }) {
+                SCOPED_TRACE(feature);
+                SCOPED_TRACE(container);
+                SCOPED_TRACE(mode);
+                openmeta::MetaStore source;
+                const size_t count = feature == 0U ? settings_paths.size()
+                                                   : flat_paths.size();
+                for (size_t i = 0U; i < count; ++i) {
+                    openmeta::Entry entry;
+                    const auto ns   = feature == 0U
+                                          ? exif_ns
+                                          : ((i == 1U || i == 4U) ? core_ns
+                                                                  : ps_ns);
+                    const auto path = feature == 0U ? settings_paths[i]
+                                                    : flat_paths[i];
+                    entry.key = openmeta::make_xmp_property_key(source.arena(),
+                                                                ns, path);
+                    entry.value = feature == 0U
+                                      ? openmeta::make_u16(codes[i])
+                                      : openmeta::make_text(
+                                            source.arena(), texts[i],
+                                            openmeta::TextEncoding::Utf8);
+                    entry.flags = openmeta::EntryFlags::Dirty;
+                    if (mode >= 2U)
+                        entry.flags |= openmeta::EntryFlags::Deleted;
+                    ASSERT_NE(source.add_entry(entry),
+                              openmeta::kInvalidEntryId);
+                    if (mode != 0U) {
+                        openmeta::Entry native;
+                        native.key
+                            = feature == 0U
+                                  ? openmeta::make_exif_tag_key(source.arena(),
+                                                                "exififd",
+                                                                tags[i])
+                                  : openmeta::make_xmp_property_key(
+                                        source.arena(), ext_ns,
+                                        root + "/Iptc4xmpExt:"
+                                            + std::string(children[i]));
+                        native.value = feature == 0U
+                                           ? openmeta::make_u16(99U)
+                                           : openmeta::make_text(
+                                                 source.arena(), "OLD",
+                                                 openmeta::TextEncoding::Utf8);
+                        ASSERT_NE(source.add_entry(native),
+                                  openmeta::kInvalidEntryId);
+                    }
+                }
+                openmeta::Entry camera;
+                camera.key = openmeta::make_exif_tag_key(source.arena(), "ifd0",
+                                                         0x010fU);
+                camera.value
+                    = openmeta::make_text(source.arena(), "Retained camera",
+                                          openmeta::TextEncoding::Ascii);
+                ASSERT_NE(source.add_entry(camera), openmeta::kInvalidEntryId);
+                if (mode == 3U) {
+                    openmeta::Entry other;
+                    other.key
+                        = feature == 0U
+                              ? openmeta::make_exif_tag_key(source.arena(),
+                                                            "exififd", 0x829aU)
+                              : openmeta::make_xmp_property_key(
+                                    source.arena(), ext_ns,
+                                    root + "/Iptc4xmpExt:WorldRegion");
+                    other.value = feature == 0U
+                                      ? openmeta::make_urational(1U, 125U)
+                                      : openmeta::make_text(
+                                            source.arena(), "Asia",
+                                            openmeta::TextEncoding::Utf8);
+                    ASSERT_NE(source.add_entry(other),
+                              openmeta::kInvalidEntryId);
+                }
+                source.finalize();
+                openmeta::PrepareTransferRequest request;
+                request.target_format
+                    = container == 0U ? openmeta::TransferTargetFormat::Jpeg
+                                      : openmeta::TransferTargetFormat::Tiff;
+                request.include_exif_app1    = true;
+                request.include_xmp_app1     = feature != 0U;
+                request.include_icc_app2     = false;
+                request.include_iptc_app13   = false;
+                request.xmp_include_existing = true;
+                request.xmp_conflict_policy
+                    = openmeta::XmpConflictPolicy::ExistingWins;
+                openmeta::ExecutePreparedTransferOptions execute;
+                execute.edit_requested = true;
+                execute.edit_apply     = true;
+                const auto input = container == 0U ? make_jpeg_with_segments({})
+                                   : container == 1U
+                                       ? make_minimal_tiff_little_endian()
+                                       : make_minimal_bigtiff_little_endian();
+                openmeta::PreparedTransferBundle seed_bundle;
+                ASSERT_EQ(openmeta::prepare_metadata_for_target(source, request,
+                                                                &seed_bundle)
+                              .status,
+                          openmeta::TransferStatus::Ok);
+                const auto seed
+                    = openmeta::execute_prepared_transfer(&seed_bundle, input,
+                                                          execute);
+                ASSERT_EQ(seed.edit_apply.status, openmeta::TransferStatus::Ok);
+                openmeta::MetaStore translated;
+                if (feature == 0U) {
+                    openmeta::MetadataCaptureSettingsTranslationOptions options;
+                    options.conflict_policy
+                        = openmeta::MetadataCaptureTranslationConflictPolicy::
+                            ReplaceExisting;
+                    ASSERT_EQ(openmeta::translate_xmp_capture_settings_metadata(
+                                  source, options, &translated)
+                                  .status,
+                              openmeta::MetadataCaptureTranslationStatus::Ok);
+                } else {
+                    openmeta::MetadataLocationCreationTranslationOptions options;
+                    options.location_kind
+                        = feature == 1U
+                              ? openmeta::MetadataStructuredLocationKind::Shown
+                              : openmeta::MetadataStructuredLocationKind::Created;
+                    options.location_index = 1U;
+                    options.conflict_policy
+                        = openmeta::MetadataDescriptiveTranslationConflictPolicy::
+                            ReplaceExisting;
+                    ASSERT_EQ(
+                        openmeta::translate_xmp_location_to_structured_metadata(
+                            source, options, &translated)
+                            .status,
+                        openmeta::MetadataDescriptiveTranslationStatus::Ok);
+                }
+                const auto snapshot = openmeta::build_transfer_source_snapshot(
+                    translated);
+                std::vector<std::byte> serialized;
+                ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(
+                              snapshot, &serialized)
+                              .status,
+                          openmeta::TransferStatus::Ok);
+                openmeta::TransferSourceSnapshot restored;
+                ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(
+                              serialized, &restored)
+                              .status,
+                          openmeta::TransferStatus::Ok);
+                openmeta::PreparedTransferBundle bundle;
+                ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(
+                              restored, request, &bundle)
+                              .status,
+                          openmeta::TransferStatus::Ok);
+                const auto written = openmeta::execute_prepared_transfer(
+                    &bundle, seed.edited_output, execute);
+                ASSERT_EQ(written.edit_apply.status,
+                          openmeta::TransferStatus::Ok);
+                openmeta::MetaStore decoded;
+                ASSERT_TRUE(
+                    decode_transfer_roundtrip_store(written.edited_output,
+                                                    &decoded));
+                EXPECT_TRUE(
+                    store_has_any_text_entry(decoded,
+                                             exif_key_view("ifd0", 0x010fU),
+                                             "Retained camera"));
+                for (size_t i = 0U; i < count; ++i) {
+                    const std::string structured_path
+                        = feature == 0U ? std::string {}
+                                        : root + "/" + std::string(children[i]);
+                    const auto stable_key
+                        = feature == 0U ? exif_key_view("exififd", tags[i])
+                                        : openmeta::make_xmp_property_key_view(
+                                              ext_ns, structured_path);
+                    if (mode >= 2U)
+                        EXPECT_TRUE(decoded.find_all(stable_key).empty());
+                    else if (feature == 0U)
+                        EXPECT_TRUE(store_has_u16_scalar_entry(decoded,
+                                                               stable_key,
+                                                               codes[i]));
+                    else
+                        EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                                             stable_key,
+                                                             texts[i]));
+                }
+                if (mode == 3U) {
+                    if (feature == 0U)
+                        EXPECT_TRUE(store_has_urational_scalar_entry(
+                            decoded, exif_key_view("exififd", 0x829aU), 1U,
+                            125U));
+                    else
+                        EXPECT_TRUE(store_has_any_text_entry(
+                            decoded,
+                            openmeta::make_xmp_property_key_view(
+                                ext_ns, root + "/WorldRegion"),
+                            "Asia"));
+                }
+            }
+        }
+    }
+}
+
+TEST(MetadataTransferApi, EmptyExifIfdRemovalIsExplicitAndSurvivesXmpStripping)
+{
+    for (const bool bigtiff : { false, true }) {
+        const auto input
+            = bigtiff
+                  ? make_minimal_exififd_nested_interop_bigtiff_little_endian()
+                  : make_minimal_exififd_nested_interop_tiff_little_endian();
+        std::vector<std::byte> target;
+        ASSERT_TRUE(
+            bigtiff ? build_test_bigtiff_like_target_with_exif_aux_xmp_carrier(
+                          input, false, &target)
+                    : build_test_tiff_like_target_with_exif_aux_xmp_carrier(
+                          input, false, &target));
+        for (const bool clear : { false, true }) {
+            for (const bool strip : { false, true }) {
+                SCOPED_TRACE(bigtiff);
+                SCOPED_TRACE(clear);
+                SCOPED_TRACE(strip);
+                openmeta::MetaStore source;
+                openmeta::Entry camera;
+                camera.key = openmeta::make_exif_tag_key(source.arena(), "ifd0",
+                                                         0x010fU);
+                camera.value
+                    = openmeta::make_text(source.arena(), "Retained camera",
+                                          openmeta::TextEncoding::Ascii);
+                ASSERT_NE(source.add_entry(camera), openmeta::kInvalidEntryId);
+                if (clear) {
+                    openmeta::Entry removed;
+                    removed.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                                "exififd",
+                                                                0xa403U);
+                    removed.value = openmeta::make_u16(1U);
+                    removed.flags = openmeta::EntryFlags::Dirty
+                                    | openmeta::EntryFlags::Deleted;
+                    ASSERT_NE(source.add_entry(removed),
+                              openmeta::kInvalidEntryId);
+                }
+                source.finalize();
+                const auto snapshot = openmeta::build_transfer_source_snapshot(
+                    source);
+                openmeta::ExecutePreparedTransferSnapshotOptions options;
+                options.prepare.target_format
+                    = openmeta::TransferTargetFormat::Tiff;
+                options.prepare.include_exif_app1  = true;
+                options.prepare.include_xmp_app1   = false;
+                options.prepare.include_icc_app2   = false;
+                options.prepare.include_iptc_app13 = false;
+                options.execute.edit_requested     = true;
+                options.execute.edit_apply         = true;
+                if (strip) {
+                    options.xmp_writeback_mode
+                        = openmeta::XmpWritebackMode::SidecarOnly;
+                    options.xmp_destination_embedded_mode
+                        = openmeta::XmpDestinationEmbeddedMode::StripExisting;
+                }
+                const auto result
+                    = openmeta::execute_prepared_transfer_snapshot(snapshot,
+                                                                   target,
+                                                                   options);
+                ASSERT_EQ(result.prepared.prepare.status,
+                          openmeta::TransferStatus::Ok);
+                ASSERT_EQ(result.execute.edit_apply.status,
+                          openmeta::TransferStatus::Ok)
+                    << result.execute.edit_apply.message;
+                openmeta::MetaStore decoded;
+                ASSERT_TRUE(decode_transfer_roundtrip_store(
+                    result.execute.edited_output, &decoded));
+                EXPECT_EQ(
+                    decoded.find_all(exif_key_view("ifd0", 0x8769U)).empty(),
+                    clear);
+                EXPECT_TRUE(
+                    store_has_any_text_entry(decoded,
+                                             exif_key_view("ifd0", 0x010fU),
+                                             "Retained camera"));
+                if (clear) {
+                    EXPECT_TRUE(decoded.find_all(exif_key_view("exififd", 700U))
+                                    .empty());
+                    EXPECT_TRUE(
+                        decoded.find_all(exif_key_view("exififd", 0xa005U))
+                            .empty());
+                }
+            }
+        }
+    }
+}

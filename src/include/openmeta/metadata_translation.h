@@ -282,6 +282,18 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpIso,
     XmpFocalLength,
     XmpExposureCompensation,
+    XmpExposureProgram,
+    XmpMeteringMode,
+    XmpSensingMethod,
+    XmpCustomRendered,
+    XmpExposureMode,
+    XmpWhiteBalance,
+    XmpSceneCaptureType,
+    XmpGainControl,
+    XmpContrast,
+    XmpSaturation,
+    XmpSharpness,
+    XmpSubjectDistanceRange,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -371,6 +383,71 @@ metadata_capture_translation_status_name(
 const char*
 metadata_capture_translation_mapping_name(
     MetadataCaptureTranslationMapping mapping) noexcept;
+
+/// Experimental closed-enum capture-settings translation contract.
+inline constexpr uint32_t kMetadataCaptureSettingsTranslationContractVersion
+    = 1U;
+inline constexpr uint32_t kMetadataCaptureSettingsTranslationMaxAddedEntries
+    = 12U;
+inline constexpr uint64_t kMetadataCaptureSettingsTranslationMaxTotalTextBytes
+    = 1536U;
+
+struct MetadataCaptureSettingsTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    /// exif:ExposureProgram -> ExifIFD 0x8822 SHORT.
+    bool exposure_program_to_exif = true;
+    /// exif:MeteringMode -> ExifIFD 0x9207 SHORT.
+    bool metering_mode_to_exif = true;
+    /// exif:SensingMethod -> ExifIFD 0xa217 SHORT.
+    bool sensing_method_to_exif = true;
+    /// exif:CustomRendered -> ExifIFD 0xa401 SHORT.
+    bool custom_rendered_to_exif = true;
+    /// exif:ExposureMode -> ExifIFD 0xa402 SHORT.
+    bool exposure_mode_to_exif = true;
+    /// exif:WhiteBalance -> ExifIFD 0xa403 SHORT.
+    bool white_balance_to_exif = true;
+    /// exif:SceneCaptureType -> ExifIFD 0xa406 SHORT.
+    bool scene_capture_type_to_exif = true;
+    /// exif:GainControl -> ExifIFD 0xa407 SHORT.
+    bool gain_control_to_exif = true;
+    /// exif:Contrast -> ExifIFD 0xa408 SHORT.
+    bool contrast_to_exif = true;
+    /// exif:Saturation -> ExifIFD 0xa409 SHORT.
+    bool saturation_to_exif = true;
+    /// exif:Sharpness -> ExifIFD 0xa40a SHORT.
+    bool sharpness_to_exif = true;
+    /// exif:SubjectDistanceRange -> ExifIFD 0xa40c SHORT.
+    bool subject_distance_range_to_exif = true;
+    uint32_t max_added_entries
+        = kMetadataCaptureSettingsTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataCaptureSettingsTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Translate twelve exact exif-namespace camera-setting properties to
+ * native SHORT singletons using the capture transaction and conflict contract.
+ *
+ * Accepts scalar integers, unsigned decimal integer text, and exact existing
+ * OpenMeta labels for the documented closed code sets. SceneCaptureType also
+ * accepts portable "Night scene". Unknown codes, signs in text, floating point,
+ * rational/array values, qualifiers, and coercion are excluded. ExposureProgram
+ * is limited to 0..8; the read-only Bulb extension is not a writeback code.
+ * No exposure, white-balance, rendering, or sensor-state inference is performed.
+ * Existing capture option layouts and five numeric mappings are unchanged.
+ * Preparation may allocate. Failure leaves source and output unchanged.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_capture_settings_metadata(
+    const MetaStore& source,
+    const MetadataCaptureSettingsTranslationOptions& options,
+    MetaStore* out_store);
 
 /// Experimental target-bound image-geometry translation contract version.
 inline constexpr uint32_t kMetadataGeometryTranslationContractVersion = 1U;
@@ -674,7 +751,11 @@ inline constexpr uint32_t kMetadataStructuredLocationTranslationContractVersion
 inline constexpr uint32_t kMetadataStructuredLocationTranslationMaxAddedEntries
     = 11U;
 
-enum class MetadataStructuredLocationKind : uint8_t { Shown, Created };
+enum class MetadataStructuredLocationKind : uint8_t {
+    Shown,
+    Created,
+    Unspecified
+};
 
 struct MetadataStructuredLocationTranslationOptions final {
     MetadataStructuredLocationKind location_kind
@@ -722,6 +803,58 @@ translate_xmp_structured_location_metadata(
     const MetaStore& source,
     const MetadataStructuredLocationTranslationOptions& options,
     MetaStore* out_store);
+
+/// Experimental flat-XMP-to-structured-location construction contract.
+inline constexpr uint32_t kMetadataLocationCreationTranslationContractVersion
+    = 1U;
+inline constexpr uint32_t kMetadataLocationCreationTranslationMaxAddedEntries
+    = 5U;
+inline constexpr uint32_t kMetadataLocationCreationTranslationMaxIndex = 1024U;
+
+struct MetadataLocationCreationTranslationOptions final {
+    /// Both kind and index require explicit caller selection.
+    MetadataStructuredLocationKind location_kind
+        = MetadataStructuredLocationKind::Unspecified;
+    uint32_t location_index = 0U;
+    MetadataDescriptiveTranslationSourceMode source_mode
+        = MetadataDescriptiveTranslationSourceMode::DirtyOnly;
+    MetadataDescriptiveTranslationConflictPolicy conflict_policy
+        = MetadataDescriptiveTranslationConflictPolicy::FailOnConflict;
+    bool city         = true;
+    bool sublocation  = true;
+    bool state        = true;
+    bool country      = true;
+    bool country_code = true;
+    uint32_t max_source_properties
+        = kMetadataDescriptiveTranslationMaxSourceProperties;
+    uint32_t max_added_entries
+        = kMetadataLocationCreationTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataDescriptiveTranslationMaxOperations;
+    uint64_t max_total_text_bytes
+        = kMetadataDescriptiveTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Copy five exact flat legacy XMP location fields into one explicitly
+ * selected IPTC Extension LocationShown or LocationCreated record.
+ *
+ * Uses the flat location text limits and exact country-code contract. Native
+ * IPTC is not an implicit source. Missing fields retain destinations; dirty
+ * leaf tombstones remove selected leaves under ReplaceExisting. Unrelated
+ * fields and records remain untouched. No geographic or Created/Shown inference.
+ *
+ * Created permits index one only. Shown permits an existing record or append
+ * at the next dense index, bounded by 1024. Sparse/mixed or opaque container
+ * shapes fail. Removing an entire non-last record fails to prevent reindexing.
+ * Existing scalar Created resources retain their shape; new records use the
+ * indexed Bag form. All selected fields commit atomically; preparation may allocate.
+ */
+MetadataDescriptiveTranslationResult
+translate_xmp_location_to_structured_metadata(
+    const MetaStore& source,
+    const MetadataLocationCreationTranslationOptions& options,
+    MetaStore* out_store);
+
 
 /// Experimental reverse IPTC editorial translation contract version.
 inline constexpr uint32_t kMetadataEditorialTranslationContractVersion = 1U;

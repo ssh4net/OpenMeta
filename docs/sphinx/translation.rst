@@ -162,6 +162,97 @@ Portable and standard aliases target the same native singleton. If more than
 one eligible alias is present, the source is ambiguous and translation fails
 rather than selecting one.
 
+Capture settings writeback
+--------------------------
+
+``translate_xmp_capture_settings_metadata(...)`` and Python
+``Document.translate_capture_settings_metadata(...)`` add twelve independent
+SHORT singleton mappings with ``MetadataCaptureSettingsTranslationOptions``,
+contract version 1. Exact unindexed paths use ``http://ns.adobe.com/exif/1.0/``.
+
+.. list-table::
+   :header-rows: 1
+
+   * - XMP path
+     - ExifIFD tag
+     - Accepted codes
+     - Flag
+   * - ExposureProgram
+     - 0x8822
+     - 0..8
+     - exposure_program_to_exif
+   * - MeteringMode
+     - 0x9207
+     - 0..6, 255
+     - metering_mode_to_exif
+   * - SensingMethod
+     - 0xA217
+     - 1..5, 7, 8
+     - sensing_method_to_exif
+   * - CustomRendered
+     - 0xA401
+     - 0..1
+     - custom_rendered_to_exif
+   * - ExposureMode
+     - 0xA402
+     - 0..2
+     - exposure_mode_to_exif
+   * - WhiteBalance
+     - 0xA403
+     - 0..1
+     - white_balance_to_exif
+   * - SceneCaptureType
+     - 0xA406
+     - 0..3
+     - scene_capture_type_to_exif
+   * - GainControl
+     - 0xA407
+     - 0..4
+     - gain_control_to_exif
+   * - Contrast
+     - 0xA408
+     - 0..2
+     - contrast_to_exif
+   * - Saturation
+     - 0xA409
+     - 0..2
+     - saturation_to_exif
+   * - Sharpness
+     - 0xA40A
+     - 0..2
+     - sharpness_to_exif
+   * - SubjectDistanceRange
+     - 0xA40C
+     - 0..3
+     - subject_distance_range_to_exif
+
+Sources accept signed or unsigned scalar integers in the listed sets, unsigned
+decimal integer text, or exact existing OpenMeta enum labels. SceneCaptureType
+also accepts the portable label ``Night scene`` for code 3. Text must use Ascii,
+Utf8, or Unknown encoding. Case changes, whitespace, signs in text, decimals,
+fractions, floats, arrays, and unknown codes fail. ExposureProgram code 9/Bulb
+remains a read-only extension. No camera state or rendering behavior is inferred.
+
+Defaults are DirtyOnly/FailOnConflict with every field enabled. Eligible
+duplicate sources fail; clean sources are ignored in DirtyOnly, following the
+existing numeric capture contract. Native values must be one SHORT and equal
+to the selected code. PreserveExisting keeps existing fields, FailOnConflict
+protects non-equivalent values, and ReplaceExisting repairs types/duplicates.
+Dirty source tombstones remove the corresponding field under ReplaceExisting.
+All selected fields share one atomic transaction, including source/output
+aliasing and owned provenance. Existing numeric capture options remain unchanged.
+
+Limits are 12 added entries, 1024 operations, 128 source text bytes per selected
+active property, and 1536 total source text bytes. Limits may be lowered and
+never cause truncation. Preparation may allocate. EXIF versions are retained;
+the API does not create or upgrade version metadata.
+
+Capture coverage has no fixed all-tags denominator. Flash bitfields, light-source
+label ambiguity, APEX conversions, extended sensitivity groups, lens/spectral
+text, distance/zoom special values, and focal-plane/subject arrays still need
+separate contracts. These twelve fields do not close arbitrary EXIF writeback.
+
+
 Target-bound image geometry
 ---------------------------
 
@@ -393,6 +484,78 @@ set ``xmp_include_existing=True``: that transfer API defaults to projecting nati
 metadata only. This option retains the reconciled flat XMP and structured
 records. GPS translation is a separate explicit contract; structured location
 coordinates are not aliases for primary EXIF GPS.
+
+Structured location construction
+--------------------------------
+
+``translate_xmp_location_to_structured_metadata(...)`` and Python
+``Document.translate_location_to_structured_metadata(...)`` copy the five flat
+legacy XMP location fields into one selected IPTC Extension record.
+``MetadataLocationCreationTranslationOptions`` has contract version 1.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Exact flat source
+     - Selected structured child
+   * - photoshop:City
+     - City
+   * - Iptc4xmpCore:Location
+     - Sublocation
+   * - photoshop:State
+     - ProvinceState
+   * - photoshop:Country
+     - CountryName
+   * - Iptc4xmpCore:CountryCode
+     - CountryCode
+
+The caller must choose both ``location_kind`` (Shown or Created) and a positive
+``location_index``. C++ defaults to Unspecified/zero and rejects those values;
+Python requires both arguments. Created permits index one only. Shown permits
+an existing record or append at the next index. Existing indexes must be dense
+from one, with a maximum of 1024. Sparse indexes, mixed scalar/indexed Created
+records, opaque root/record placeholders, and competing nested or language-qualified shapes
+for a selected field fail. Other namespaces and nested Address fields are not
+aliases. No Created/Shown selection or geographic information is inferred.
+
+New records use indexed ``LocationShown[n]`` or ``LocationCreated[1]`` paths with
+IPTC Extension children. Existing scalar Created records retain their resource
+shape. Portable XMP emits indexed locations as RDF Bags. The decoder omits
+redundant child prefixes within the same namespace; record order and field
+values are preserved. RDF indexes identify current order, not stable record IDs.
+
+City, sublocation, and state use the existing 32-byte flat-location limit;
+country uses 64 bytes. CountryCode requires two or three uppercase ASCII
+letters, without checking country membership. Other fields require nonempty
+valid UTF-8 text, with Ascii/Utf8/Unknown source encoding. Existing flat location
+text validation applies. There is no normalization or truncation.
+
+Defaults are DirtyOnly/FailOnConflict with five enabled flags. Missing source
+fields retain destinations. Duplicate selected sources fail. Each destination
+leaf is a conflict group; PreserveExisting keeps it, FailOnConflict requires
+equivalence, and ReplaceExisting replaces it and removes duplicate aliases.
+A dirty flat-field tombstone removes that selected structured leaf. Unrelated
+fields and records remain untouched. Removal of an entire non-last record fails
+to prevent renumbering another record during serialization. Removing the last
+record is allowed. All selected changes commit atomically, including aliased
+source/output calls. Preparation may allocate.
+
+Limits are five additions, 1024 operations, 1024 total inspected destination
+properties plus selected source candidates, and the existing descriptive total
+text budget. Native IPTC fields and charset markers are not modified or used
+as implicit sources. Native-only callers must explicitly prepare flat XMP first.
+To persist the constructed XMP, transfer requires ``xmp_include_existing=True``
+and ``xmp_conflict_policy=openmeta.XmpConflictPolicy.ExistingWins``.
+
+Python example:
+
+.. code-block:: python
+
+   created = document.translate_location_to_structured_metadata(
+       openmeta.MetadataStructuredLocationKind.Shown, 1,
+       source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All,
+   )
+
 
 Editorial mappings
 ------------------

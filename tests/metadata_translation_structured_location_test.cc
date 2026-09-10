@@ -6,6 +6,7 @@
 #include "openmeta/meta_value.h"
 #include "openmeta/metadata_translation.h"
 #include "openmeta/xmp_decode.h"
+#include "openmeta/xmp_dump.h"
 
 #include <gtest/gtest.h>
 
@@ -507,4 +508,338 @@ xmlns:p="http://ns.adobe.com/photoshop/1.0/" xmlns:g="http://ns.adobe.com/exif/1
     expect_pair(output, 0U, "Osaka");
 }
 #endif
+}  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    using CreationOptions = MetadataLocationCreationTranslationOptions;
+    static CreationOptions
+    creation_options(MetadataStructuredLocationKind kind
+                     = MetadataStructuredLocationKind::Shown,
+                     uint32_t index = 1U)
+    {
+        CreationOptions options;
+        options.location_kind  = kind;
+        options.location_index = index;
+        return options;
+    }
+    static MetaStore creation_source(EntryFlags flags = EntryFlags::Dirty)
+    {
+        MetaStore source;
+        for (size_t i = 0U; i < kFlat.size(); ++i)
+            xmp(source, flat_ns(i), kFlat[i], kValues[i], flags);
+        return source;
+    }
+    static const Entry* creation_leaf(const MetaStore& store,
+                                      std::string_view path)
+    {
+        for (const auto id :
+             store.find_all(make_xmp_property_key_view(kExt, path)))
+            if (!any(store.entry(id).flags, EntryFlags::Deleted))
+                return &store.entry(id);
+        return nullptr;
+    }
+    static void creation_failure(MetaStore& source, Status status,
+                                 const CreationOptions& options)
+    {
+        source.finalize();
+        const auto count = source.entries().size();
+        MetaStore output;
+        xmp(output, kPs, "City", "Retained");
+        output.finalize();
+        EXPECT_EQ(translate_xmp_location_to_structured_metadata(source, options,
+                                                                &output)
+                      .status,
+                  status);
+        ASSERT_EQ(output.entries().size(), 1U);
+        EXPECT_EQ(view(output, output.entry(0U).value.data.span), "Retained");
+        EXPECT_EQ(translate_xmp_location_to_structured_metadata(source, options,
+                                                                &source)
+                      .status,
+                  status);
+        EXPECT_EQ(source.entries().size(), count);
+    }
+    TEST(MetadataLocationCreation,
+         RequiresExplicitDestinationAndCreatesOwnedFiveFieldRecord)
+    {
+        for (const auto kind : { MetadataStructuredLocationKind::Shown,
+                                 MetadataStructuredLocationKind::Created }) {
+            MetaStore output;
+            const auto options = creation_options(kind);
+            const std::string root
+                = kind == MetadataStructuredLocationKind::Shown
+                      ? "LocationShown[1]"
+                      : "LocationCreated[1]";
+            {
+                MetaStore source = creation_source();
+                creation_failure(source, Status::InvalidOptions, {});
+                const auto result
+                    = translate_xmp_location_to_structured_metadata(source,
+                                                                    options,
+                                                                    &output);
+                ASSERT_EQ(result.status, Status::Ok);
+                EXPECT_EQ(result.source_properties, 5U);
+                EXPECT_EQ(result.entries_added, 5U);
+                EXPECT_EQ(result.groups_translated, 5U);
+                EXPECT_FALSE(result.utf8_charset_added);
+            }
+            for (size_t i = 0U; i < kChildren.size(); ++i) {
+                const Entry* entry
+                    = creation_leaf(output, root + "/Iptc4xmpExt:"
+                                                + std::string(kChildren[i]));
+                ASSERT_NE(entry, nullptr);
+                EXPECT_EQ(view(output, entry->value.data.span), kValues[i]);
+                EXPECT_EQ(view(output, entry->origin.wire_type_name),
+                          "structured-location-source");
+                EXPECT_EQ(native_count(output, kDatasets[i]), 0U);
+            }
+            EXPECT_EQ(translate_xmp_location_to_structured_metadata(output,
+                                                                    options,
+                                                                    &output)
+                          .groups_unchanged,
+                      5U);
+        }
+    }
+    TEST(MetadataLocationCreation,
+         DirtyModeFlagsAndExactSourcesExcludeNativeInference)
+    {
+        MetaStore source = creation_source(EntryFlags::None);
+        source.finalize();
+        MetaStore output;
+        auto options = creation_options();
+        EXPECT_EQ(translate_xmp_location_to_structured_metadata(source, options,
+                                                                &output)
+                      .entries_added,
+                  0U);
+        options.source_mode = MetadataDescriptiveTranslationSourceMode::All;
+        options.city        = false;
+        EXPECT_EQ(translate_xmp_location_to_structured_metadata(source, options,
+                                                                &output)
+                      .entries_added,
+                  4U);
+        source = MetaStore {};
+        iptc(source, 90U, "Native only");
+        xmp(source, "foreign", "City", "Foreign");
+        xmp(source, kPs, "City[1]", "Indexed");
+        source.finalize();
+        EXPECT_EQ(translate_xmp_location_to_structured_metadata(source, options,
+                                                                &output)
+                      .entries_added,
+                  0U);
+        source = creation_source();
+        xmp(source, kPs, "City", "Duplicate");
+        creation_failure(source, Status::AmbiguousSource, creation_options());
+    }
+    TEST(MetadataLocationCreation,
+         ReconcilesSelectedRecordAndPreservesOtherPlacesAndFields)
+    {
+        MetaStore source = creation_source();
+        xmp(source, kExt, "LocationShown[1]/Iptc4xmpExt:City", "Other place",
+            EntryFlags::None);
+        xmp(source, kExt, "LocationShown[2]/Iptc4xmpExt:City", "Old",
+            EntryFlags::None);
+        xmp(source, kExt, "LocationShown[2]/City", "Duplicate",
+            EntryFlags::None);
+        xmp(source, kExt, "LocationShown[2]/Iptc4xmpExt:WorldRegion", "Asia",
+            EntryFlags::None);
+        xmp(source, kExt, "LocationCreated[1]/Iptc4xmpExt:City",
+            "Capture place", EntryFlags::None);
+        auto options = creation_options(MetadataStructuredLocationKind::Shown,
+                                        2U);
+        creation_failure(source, Status::NativeConflict, options);
+        MetaStore output;
+        options.conflict_policy = Policy::PreserveExisting;
+        EXPECT_EQ(translate_xmp_location_to_structured_metadata(source, options,
+                                                                &output)
+                      .groups_preserved,
+                  1U);
+        options.conflict_policy = Policy::ReplaceExisting;
+        const auto result
+            = translate_xmp_location_to_structured_metadata(source, options,
+                                                            &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.entries_removed, 1U);
+        EXPECT_EQ(result.entries_updated, 1U);
+        EXPECT_EQ(view(output,
+                       creation_leaf(output, "LocationShown[1]/Iptc4xmpExt:City")
+                           ->value.data.span),
+                  "Other place");
+        EXPECT_EQ(view(output,
+                       creation_leaf(output, "LocationShown[2]/Iptc4xmpExt:City")
+                           ->value.data.span),
+                  "Kyoto");
+        EXPECT_EQ(view(output,
+                       creation_leaf(output,
+                                     "LocationShown[2]/Iptc4xmpExt:WorldRegion")
+                           ->value.data.span),
+                  "Asia");
+        EXPECT_EQ(view(output,
+                       creation_leaf(output,
+                                     "LocationCreated[1]/Iptc4xmpExt:City")
+                           ->value.data.span),
+                  "Capture place");
+    }
+    TEST(MetadataLocationCreation, DenseAppendAndScalarCreatedShapeAreExplicit)
+    {
+        MetaStore source = creation_source();
+        xmp(source, kExt, "LocationShown[1]/City", "First", EntryFlags::None);
+        source.finalize();
+        MetaStore output;
+        auto options = creation_options(MetadataStructuredLocationKind::Shown,
+                                        2U);
+        ASSERT_EQ(translate_xmp_location_to_structured_metadata(source, options,
+                                                                &output)
+                      .status,
+                  Status::Ok);
+        EXPECT_NE(creation_leaf(output, "LocationShown[2]/Iptc4xmpExt:City"),
+                  nullptr);
+        options.location_index = 4U;
+        creation_failure(source, Status::LocationNotFound, options);
+        source = creation_source();
+        xmp(source, kExt, "LocationShown[2]/City", "Sparse", EntryFlags::None);
+        creation_failure(source, Status::UnsupportedSourceShape,
+                         creation_options());
+        source = creation_source();
+        xmp(source, kExt, "LocationCreated/WorldRegion", "Asia",
+            EntryFlags::None);
+        source.finalize();
+        options = creation_options(MetadataStructuredLocationKind::Created);
+        ASSERT_EQ(translate_xmp_location_to_structured_metadata(source, options,
+                                                                &output)
+                      .status,
+                  Status::Ok);
+        EXPECT_NE(creation_leaf(output, "LocationCreated/Iptc4xmpExt:City"),
+                  nullptr);
+        EXPECT_EQ(creation_leaf(output, "LocationCreated[1]/Iptc4xmpExt:City"),
+                  nullptr);
+        options.location_index = 2U;
+        creation_failure(source, Status::InvalidOptions, options);
+    }
+    TEST(MetadataLocationCreation,
+         RemovalRetainsUnknownFieldsAndDoesNotRenumberOtherRecords)
+    {
+        auto options            = creation_options();
+        options.conflict_policy = Policy::ReplaceExisting;
+        MetaStore source        = creation_source(EntryFlags::Dirty
+                                                  | EntryFlags::Deleted);
+        for (const auto child : kChildren)
+            xmp(source, kExt, "LocationShown[1]/" + std::string(child), "Old",
+                EntryFlags::None);
+        xmp(source, kExt, "LocationShown[1]/WorldRegion", "Asia",
+            EntryFlags::None);
+        source.finalize();
+        MetaStore output;
+        auto result = translate_xmp_location_to_structured_metadata(source,
+                                                                    options,
+                                                                    &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.entries_removed, 5U);
+        EXPECT_NE(creation_leaf(output, "LocationShown[1]/WorldRegion"),
+                  nullptr);
+        source = MetaStore {};
+        xmp(source, kPs, "City", "", EntryFlags::Dirty | EntryFlags::Deleted);
+        xmp(source, kExt, "LocationShown[1]/City", "First", EntryFlags::None);
+        xmp(source, kExt, "LocationShown[2]/City", "Second", EntryFlags::None);
+        creation_failure(source, Status::UnsupportedSourceShape, options);
+        options.location_index = 2U;
+        result = translate_xmp_location_to_structured_metadata(source, options,
+                                                               &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.entries_removed, 1U);
+        EXPECT_NE(creation_leaf(output, "LocationShown[1]/City"), nullptr);
+        EXPECT_EQ(creation_leaf(output, "LocationShown[2]/City"), nullptr);
+    }
+    TEST(MetadataLocationCreation, RejectsOpaqueMixedAndCompetingFieldShapes)
+    {
+        for (const std::string_view path :
+             { "LocationShown", "LocationShown[1]", "LocationShown[01]/City",
+               "LocationShown/City", "LocationShown[1]/City[@xml:lang=en]",
+               "LocationShown[1]/City/Nested" }) {
+            MetaStore source = creation_source();
+            xmp(source, kExt, path, "Opaque", EntryFlags::None);
+            creation_failure(source, Status::UnsupportedSourceShape,
+                             creation_options());
+        }
+        MetaStore source = creation_source();
+        xmp(source, kExt, "LocationCreated/City", "Scalar", EntryFlags::None);
+        xmp(source, kExt, "LocationCreated[1]/CountryName", "Indexed",
+            EntryFlags::None);
+        creation_failure(source, Status::UnsupportedSourceShape,
+                         creation_options(
+                             MetadataStructuredLocationKind::Created));
+    }
+    TEST(MetadataLocationCreation, LimitsAndLateInvalidTextAreAtomic)
+    {
+        MetaStore source          = creation_source();
+        auto options              = creation_options();
+        options.max_added_entries = 4U;
+        creation_failure(source, Status::EntryLimitExceeded, options);
+        options                = creation_options();
+        options.max_operations = 4U;
+        creation_failure(source, Status::OperationLimitExceeded, options);
+        options                      = creation_options();
+        options.max_total_text_bytes = 5U;
+        creation_failure(source, Status::SourceLimitExceeded, options);
+        options                       = creation_options();
+        options.max_source_properties = 4U;
+        creation_failure(source, Status::SourceLimitExceeded, options);
+        source = MetaStore {};
+        xmp(source, kPs, "City", "Valid");
+        xmp(source, kCore, "CountryCode", "jp");
+        creation_failure(source, Status::InvalidSourceValue,
+                         creation_options());
+        EXPECT_EQ(creation_leaf(source, "LocationShown[1]/Iptc4xmpExt:City"),
+                  nullptr);
+        source = MetaStore {};
+        xmp(source, kPs, "City", std::string(33U, 'A'));
+        creation_failure(source, Status::ValueTooLong, creation_options());
+        source = MetaStore {};
+        xmp(source, kPs, "City", "");
+        creation_failure(source, Status::InvalidSourceValue,
+                         creation_options());
+    }
+    TEST(MetadataLocationCreation,
+         PortableBagRoundTripRetainsUnicodeAndRecordIdentity)
+    {
+        for (const auto kind : { MetadataStructuredLocationKind::Shown,
+                                 MetadataStructuredLocationKind::Created }) {
+            MetaStore source;
+            xmp(source, kPs, "City", "\xe4\xba\xac\xe9\x83\xbd");
+            xmp(source, kCore, "Location", "Garden & water");
+            source.finalize();
+            const auto options = creation_options(kind);
+            ASSERT_EQ(translate_xmp_location_to_structured_metadata(source,
+                                                                    options,
+                                                                    &source)
+                          .status,
+                      Status::Ok);
+            XmpPortableOptions dump_options;
+            dump_options.include_existing_xmp = true;
+            dump_options.include_iptc         = false;
+            std::vector<std::byte> bytes(8192U);
+            const auto dumped = dump_xmp_portable(source, bytes, dump_options);
+            ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+            bytes.resize(dumped.written);
+            const std::string_view xml(reinterpret_cast<const char*>(
+                                           bytes.data()),
+                                       bytes.size());
+            SCOPED_TRACE(xml);
+            EXPECT_NE(xml.find("<rdf:Bag>"), std::string_view::npos);
+            EXPECT_NE(xml.find("Garden &amp; water"), std::string_view::npos);
+            MetaStore decoded;
+            ASSERT_EQ(decode_xmp_packet(bytes, decoded).status,
+                      XmpDecodeStatus::Ok);
+            decoded.finalize();
+            const std::string root
+                = kind == MetadataStructuredLocationKind::Shown
+                      ? "LocationShown[1]"
+                      : "LocationCreated[1]";
+            const Entry* city = creation_leaf(decoded, root + "/City");
+            ASSERT_NE(city, nullptr);
+            EXPECT_EQ(view(decoded, city->value.data.span),
+                      "\xe4\xba\xac\xe9\x83\xbd");
+            ASSERT_NE(creation_leaf(decoded, root + "/Sublocation"), nullptr);
+        }
+    }
+}  // namespace
 }  // namespace openmeta

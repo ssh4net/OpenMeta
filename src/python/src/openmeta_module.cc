@@ -6413,6 +6413,69 @@ translate_capture_metadata_document(
 }
 
 static std::shared_ptr<PyDocument>
+translate_capture_settings_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataCaptureTranslationSourceMode source_mode,
+    MetadataCaptureTranslationConflictPolicy conflict_policy,
+    bool exposure_program_to_exif, bool metering_mode_to_exif,
+    bool sensing_method_to_exif, bool custom_rendered_to_exif,
+    bool exposure_mode_to_exif, bool white_balance_to_exif,
+    bool scene_capture_type_to_exif, bool gain_control_to_exif,
+    bool contrast_to_exif, bool saturation_to_exif, bool sharpness_to_exif,
+    bool subject_distance_range_to_exif, uint32_t max_added_entries,
+    uint32_t max_operations, uint32_t max_text_bytes_per_property,
+    uint64_t max_total_text_bytes)
+{
+    MetadataCaptureSettingsTranslationOptions options;
+    options.source_mode                    = source_mode;
+    options.conflict_policy                = conflict_policy;
+    options.exposure_program_to_exif       = exposure_program_to_exif;
+    options.metering_mode_to_exif          = metering_mode_to_exif;
+    options.sensing_method_to_exif         = sensing_method_to_exif;
+    options.custom_rendered_to_exif        = custom_rendered_to_exif;
+    options.exposure_mode_to_exif          = exposure_mode_to_exif;
+    options.white_balance_to_exif          = white_balance_to_exif;
+    options.scene_capture_type_to_exif     = scene_capture_type_to_exif;
+    options.gain_control_to_exif           = gain_control_to_exif;
+    options.contrast_to_exif               = contrast_to_exif;
+    options.saturation_to_exif             = saturation_to_exif;
+    options.sharpness_to_exif              = sharpness_to_exif;
+    options.subject_distance_range_to_exif = subject_distance_range_to_exif;
+    options.max_added_entries              = max_added_entries;
+    options.max_operations                 = max_operations;
+    options.max_text_bytes_per_property    = max_text_bytes_per_property;
+    options.max_total_text_bytes           = max_total_text_bytes;
+
+    MetaStore translated;
+    MetadataCaptureTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_capture_settings_metadata(source->store, options,
+                                                         &translated);
+    }
+    if (result.status != MetadataCaptureTranslationStatus::Ok) {
+        std::string message = "metadata capture settings translation failed: ";
+        message += metadata_capture_translation_status_name(result.status);
+        if (result.failed_mapping != MetadataCaptureTranslationMapping::None) {
+            message += " for ";
+            message += metadata_capture_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
 translate_image_geometry_document(
     std::shared_ptr<PyDocument> source,
     const TransferTargetImageSpec& target_image_spec,
@@ -6604,6 +6667,60 @@ translate_structured_location_metadata_document(
     if (result.status != MetadataDescriptiveTranslationStatus::Ok) {
         std::string message
             = "metadata structured location translation failed: ";
+        message += metadata_descriptive_translation_status_name(result.status);
+        if (result.failed_mapping
+            != MetadataDescriptiveTranslationMapping::None) {
+            message += " for ";
+            message += metadata_descriptive_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
+translate_location_to_structured_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataStructuredLocationKind location_kind, uint32_t location_index,
+    MetadataDescriptiveTranslationSourceMode source_mode,
+    MetadataDescriptiveTranslationConflictPolicy conflict_policy, bool city,
+    bool sublocation, bool state, bool country, bool country_code,
+    uint32_t max_source_properties, uint32_t max_added_entries,
+    uint32_t max_operations, uint64_t max_total_text_bytes)
+{
+    MetadataLocationCreationTranslationOptions options;
+    options.location_kind         = location_kind;
+    options.location_index        = location_index;
+    options.source_mode           = source_mode;
+    options.conflict_policy       = conflict_policy;
+    options.city                  = city;
+    options.sublocation           = sublocation;
+    options.state                 = state;
+    options.country               = country;
+    options.country_code          = country_code;
+    options.max_source_properties = max_source_properties;
+    options.max_added_entries     = max_added_entries;
+    options.max_operations        = max_operations;
+    options.max_total_text_bytes  = max_total_text_bytes;
+    MetaStore translated;
+    MetadataDescriptiveTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_location_to_structured_metadata(source->store,
+                                                               options,
+                                                               &translated);
+    }
+    if (result.status != MetadataDescriptiveTranslationStatus::Ok) {
+        std::string message = "metadata location creation translation failed: ";
         message += metadata_descriptive_translation_status_name(result.status);
         if (result.failed_mapping
             != MetadataDescriptiveTranslationMapping::None) {
@@ -8782,7 +8899,36 @@ NB_MODULE(_openmeta, m)
         .value("XmpFocalLength",
                MetadataCaptureTranslationMapping::XmpFocalLength)
         .value("XmpExposureCompensation",
-               MetadataCaptureTranslationMapping::XmpExposureCompensation);
+               MetadataCaptureTranslationMapping::XmpExposureCompensation)
+        .value("XmpExposureProgram",
+               MetadataCaptureTranslationMapping::XmpExposureProgram)
+        .value("XmpMeteringMode",
+               MetadataCaptureTranslationMapping::XmpMeteringMode)
+        .value("XmpSensingMethod",
+               MetadataCaptureTranslationMapping::XmpSensingMethod)
+        .value("XmpCustomRendered",
+               MetadataCaptureTranslationMapping::XmpCustomRendered)
+        .value("XmpExposureMode",
+               MetadataCaptureTranslationMapping::XmpExposureMode)
+        .value("XmpWhiteBalance",
+               MetadataCaptureTranslationMapping::XmpWhiteBalance)
+        .value("XmpSceneCaptureType",
+               MetadataCaptureTranslationMapping::XmpSceneCaptureType)
+        .value("XmpGainControl",
+               MetadataCaptureTranslationMapping::XmpGainControl)
+        .value("XmpContrast", MetadataCaptureTranslationMapping::XmpContrast)
+        .value("XmpSaturation",
+               MetadataCaptureTranslationMapping::XmpSaturation)
+        .value("XmpSharpness", MetadataCaptureTranslationMapping::XmpSharpness)
+        .value("XmpSubjectDistanceRange",
+               MetadataCaptureTranslationMapping::XmpSubjectDistanceRange);
+
+    m.attr("METADATA_CAPTURE_SETTINGS_TRANSLATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataCaptureSettingsTranslationContractVersion);
+    m.attr("METADATA_CAPTURE_SETTINGS_TRANSLATION_MAX_ADDED_ENTRIES")
+        = nb::int_(kMetadataCaptureSettingsTranslationMaxAddedEntries);
+    m.attr("METADATA_CAPTURE_SETTINGS_TRANSLATION_MAX_TOTAL_TEXT_BYTES")
+        = nb::int_(kMetadataCaptureSettingsTranslationMaxTotalTextBytes);
 
     nb::enum_<MetadataCaptureTranslationStatus>(
         m, "MetadataCaptureTranslationStatus")
@@ -8988,7 +9134,15 @@ NB_MODULE(_openmeta, m)
     nb::enum_<MetadataStructuredLocationKind>(m,
                                               "MetadataStructuredLocationKind")
         .value("Shown", MetadataStructuredLocationKind::Shown)
-        .value("Created", MetadataStructuredLocationKind::Created);
+        .value("Created", MetadataStructuredLocationKind::Created)
+        .value("Unspecified", MetadataStructuredLocationKind::Unspecified);
+    m.attr("METADATA_LOCATION_CREATION_TRANSLATION_CONTRACT_VERSION")
+        = nb::int_(kMetadataLocationCreationTranslationContractVersion);
+    m.attr("METADATA_LOCATION_CREATION_TRANSLATION_MAX_ADDED_ENTRIES")
+        = nb::int_(kMetadataLocationCreationTranslationMaxAddedEntries);
+    m.attr("METADATA_LOCATION_CREATION_TRANSLATION_MAX_INDEX") = nb::int_(
+        kMetadataLocationCreationTranslationMaxIndex);
+
     m.attr("METADATA_STRUCTURED_LOCATION_TRANSLATION_CONTRACT_VERSION")
         = nb::int_(kMetadataStructuredLocationTranslationContractVersion);
     m.attr("METADATA_STRUCTURED_LOCATION_TRANSLATION_MAX_ADDED_ENTRIES")
@@ -9773,6 +9927,27 @@ NB_MODULE(_openmeta, m)
              = kMetadataCaptureTranslationMaxTextBytesPerProperty,
              "max_total_text_bytes"_a
              = kMetadataCaptureTranslationMaxTotalTextBytes)
+        .def("translate_capture_settings_metadata",
+             &translate_capture_settings_metadata_document,
+             "source_mode"_a = MetadataCaptureTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+             "exposure_program_to_exif"_a = true,
+             "metering_mode_to_exif"_a    = true,
+             "sensing_method_to_exif"_a   = true,
+             "custom_rendered_to_exif"_a  = true,
+             "exposure_mode_to_exif"_a = true, "white_balance_to_exif"_a = true,
+             "scene_capture_type_to_exif"_a = true,
+             "gain_control_to_exif"_a = true, "contrast_to_exif"_a = true,
+             "saturation_to_exif"_a = true, "sharpness_to_exif"_a = true,
+             "subject_distance_range_to_exif"_a = true,
+             "max_added_entries"_a
+             = kMetadataCaptureSettingsTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataCaptureTranslationMaxOperations,
+             "max_text_bytes_per_property"_a
+             = kMetadataCaptureTranslationMaxTextBytesPerProperty,
+             "max_total_text_bytes"_a
+             = kMetadataCaptureSettingsTranslationMaxTotalTextBytes)
         .def("translate_image_geometry", &translate_image_geometry_document,
              "target_image_spec"_a,
              "source_mode"_a = MetadataGeometryTranslationSourceMode::DirtyOnly,
@@ -9833,6 +10008,22 @@ NB_MODULE(_openmeta, m)
              = kMetadataDescriptiveTranslationMaxSourceProperties,
              "max_added_entries"_a
              = kMetadataStructuredLocationTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataDescriptiveTranslationMaxOperations,
+             "max_total_text_bytes"_a
+             = kMetadataDescriptiveTranslationMaxTotalTextBytes)
+        .def("translate_location_to_structured_metadata",
+             &translate_location_to_structured_metadata_document,
+             "location_kind"_a, "location_index"_a,
+             "source_mode"_a
+             = MetadataDescriptiveTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataDescriptiveTranslationConflictPolicy::FailOnConflict,
+             "city"_a = true, "sublocation"_a = true, "state"_a = true,
+             "country"_a = true, "country_code"_a = true,
+             "max_source_properties"_a
+             = kMetadataDescriptiveTranslationMaxSourceProperties,
+             "max_added_entries"_a
+             = kMetadataLocationCreationTranslationMaxAddedEntries,
              "max_operations"_a = kMetadataDescriptiveTranslationMaxOperations,
              "max_total_text_bytes"_a
              = kMetadataDescriptiveTranslationMaxTotalTextBytes)

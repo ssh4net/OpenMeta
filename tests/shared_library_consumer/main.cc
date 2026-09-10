@@ -252,6 +252,46 @@ main()
                  == openmeta::MetadataGpsTranslationStatus::Ok
           && gps_text_result.entries_added == 2U
           && gps_text_translated.is_finalized();
+    const openmeta::MetadataAuthoringEntry setting_entry {
+        openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                             "WhiteBalance"),
+        openmeta::make_value_view_text("Manual", openmeta::TextEncoding::Utf8),
+    };
+    openmeta::MetaStore setting_source;
+    const auto setting_authored
+        = openmeta::create_metadata_store(std::span(&setting_entry, 1U),
+                                          &setting_source);
+    openmeta::MetaStore setting_output;
+    const auto setting_result
+        = openmeta::translate_xmp_capture_settings_metadata(setting_source, {},
+                                                            &setting_output);
+    const bool setting_contract_matches
+        = setting_authored.ok()
+          && setting_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && setting_result.entries_added == 1U;
+    const openmeta::MetadataAuthoringEntry location_entry {
+        openmeta::make_xmp_property_key_view(
+            "http://ns.adobe.com/photoshop/1.0/", "City"),
+        openmeta::make_value_view_text("Kyoto", openmeta::TextEncoding::Utf8),
+    };
+    openmeta::MetaStore location_creation_source;
+    const auto location_creation_authored
+        = openmeta::create_metadata_store(std::span(&location_entry, 1U),
+                                          &location_creation_source);
+    openmeta::MetadataLocationCreationTranslationOptions location_options;
+    location_options.location_kind
+        = openmeta::MetadataStructuredLocationKind::Shown;
+    location_options.location_index = 1U;
+    openmeta::MetaStore location_output;
+    const auto location_result
+        = openmeta::translate_xmp_location_to_structured_metadata(
+            location_creation_source, location_options, &location_output);
+    const bool location_creation_contract_matches
+        = location_creation_authored.ok()
+          && location_result.status
+                 == openmeta::MetadataDescriptiveTranslationStatus::Ok
+          && location_result.entries_added == 1U;
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
             std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
@@ -332,7 +372,9 @@ main()
                    || !structured_location_contract_matches
                    || !navigation_contract_matches
                    || !destination_contract_matches || !quality_contract_matches
-                   || !gps_text_contract_matches || !authoring_contract_matches
+                   || !gps_text_contract_matches || !setting_contract_matches
+                   || !location_creation_contract_matches
+                   || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()
                    || instance.valid()
                    || created.code

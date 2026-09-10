@@ -600,6 +600,43 @@ with tempfile.TemporaryDirectory() as temporary:
         raise AssertionError('GPS text addition budget ignored')
     assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'capture_locations.jpg'
+    setting_names = ('ExposureProgram', 'MeteringMode', 'SensingMethod', 'CustomRendered', 'ExposureMode', 'WhiteBalance', 'SceneCaptureType', 'GainControl', 'Contrast', 'Saturation', 'Sharpness', 'SubjectDistanceRange')
+    codes = (3, 5, 2, 1, 2, 1, 3, 4, 2, 1, 2, 3)
+    flag_names = ('exposure_program', 'metering_mode', 'sensing_method', 'custom_rendered', 'exposure_mode', 'white_balance', 'scene_capture_type', 'gain_control', 'contrast', 'saturation', 'sharpness', 'subject_distance_range')
+    xml = ('<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:e=\"http://ns.adobe.com/exif/1.0/\" xmlns:p=\"http://ns.adobe.com/photoshop/1.0/\" xmlns:c=\"http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/\">' + ''.join('<e:' + name + '>' + str(code) + '</e:' + name + '>' for name, code in zip(setting_names, codes)) + '<p:City>Kyoto</p:City><c:Location>Garden</c:Location><p:State>Kyoto</p:State><p:Country>Japan</p:Country><c:CountryCode>JPN</c:CountryCode></rdf:Description></rdf:RDF>').encode()
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    document = openmeta.read(str(path))
+    count = document.entry_count
+    assert openmeta.METADATA_CAPTURE_SETTINGS_TRANSLATION_CONTRACT_VERSION == 1
+    assert document.translate_capture_settings_metadata().entry_count == count
+    translated = document.translate_capture_settings_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
+    assert translated.entry_count == count + 12
+    assert translated.translate_capture_settings_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All).entry_count == count + 12
+    for selected in flag_names:
+        one = document.translate_capture_settings_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All, **{name + '_to_exif': name == selected for name in flag_names})
+        assert one.entry_count == count + 1
+    payload, _ = translated.dump_xmp_portable()
+    for name in setting_names:
+        assert ('<exif:' + name + '>').encode() in payload
+    assert openmeta.METADATA_LOCATION_CREATION_TRANSLATION_CONTRACT_VERSION == 1
+    for kind, root in ((openmeta.MetadataStructuredLocationKind.Shown, b'LocationShown'), (openmeta.MetadataStructuredLocationKind.Created, b'LocationCreated')):
+        location = document.translate_location_to_structured_metadata(kind, 1, source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.All)
+        assert location.entry_count == count + 5
+        payload, _ = location.dump_xmp_portable(include_existing_xmp=True)
+        assert b'<Iptc4xmpExt:' + root + b'>' in payload
+        assert b'<rdf:Bag>' in payload
+        assert b'<Iptc4xmpExt:City>Kyoto</Iptc4xmpExt:City>' in payload
+    try:
+        document.translate_location_to_structured_metadata()
+    except TypeError:
+        pass
+    else:
+        raise AssertionError('structured destination was inferred')
+    assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

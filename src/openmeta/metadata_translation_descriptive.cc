@@ -13,6 +13,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <span>
 #include <string_view>
@@ -1325,6 +1326,258 @@ translate_xmp_structured_location_metadata(
         || edit.arena().limit_exceeded()) {
         return translation_error(Status::InternalError);
     }
+    *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    return result;
+}
+
+
+MetadataDescriptiveTranslationResult
+translate_xmp_location_to_structured_metadata(
+    const MetaStore& source,
+    const MetadataLocationCreationTranslationOptions& options,
+    MetaStore* out_store)
+{
+    using Status = MetadataDescriptiveTranslationStatus;
+    using Policy = MetadataDescriptiveTranslationConflictPolicy;
+    using Mode   = MetadataDescriptiveTranslationSourceMode;
+    using Kind   = MetadataStructuredLocationKind;
+    if (!out_store)
+        return translation_error(Status::NullOutput);
+    if (!source.is_finalized())
+        return translation_error(Status::SourceNotFinalized);
+    if ((options.location_kind != Kind::Shown
+         && options.location_kind != Kind::Created)
+        || options.location_index == 0U
+        || options.location_index > kMetadataLocationCreationTranslationMaxIndex
+        || (options.location_kind == Kind::Created
+            && options.location_index != 1U)
+        || (options.source_mode != Mode::DirtyOnly
+            && options.source_mode != Mode::All)
+        || (options.conflict_policy != Policy::PreserveExisting
+            && options.conflict_policy != Policy::FailOnConflict
+            && options.conflict_policy != Policy::ReplaceExisting)
+        || (!options.city && !options.sublocation && !options.state
+            && !options.country && !options.country_code)
+        || options.max_source_properties == 0U
+        || options.max_source_properties
+               > kMetadataDescriptiveTranslationMaxSourceProperties
+        || options.max_added_entries == 0U
+        || options.max_added_entries
+               > kMetadataLocationCreationTranslationMaxAddedEntries
+        || options.max_operations == 0U
+        || options.max_operations > kMetadataDescriptiveTranslationMaxOperations
+        || options.max_total_text_bytes == 0U
+        || options.max_total_text_bytes
+               > kMetadataDescriptiveTranslationMaxTotalTextBytes)
+        return translation_error(Status::InvalidOptions);
+
+    const std::string_view root = options.location_kind == Kind::Shown
+                                      ? "LocationShown"
+                                      : "LocationCreated";
+    std::array<bool, kMetadataLocationCreationTranslationMaxIndex + 1U>
+        records {};
+    uint32_t maximum_index       = 0U;
+    uint32_t inspected           = 0U;
+    uint32_t selected_properties = 0U;
+    bool scalar                  = false;
+    bool indexed                 = false;
+    std::array<std::vector<EntryId>, 5> destinations;
+    std::array<EntryId, 5> conflicting_shapes;
+    conflicting_shapes.fill(kInvalidEntryId);
+    for (EntryId id = 0U; id < source.entries().size(); ++id) {
+        const Entry& entry = source.entry(id);
+        if (entry.key.kind != MetaKeyKind::XmpProperty
+            || any(entry.flags, EntryFlags::Deleted)
+            || arena_text(source.arena(), entry.key.data.xmp_property.schema_ns)
+                   != kXmpNsIptcExt)
+            continue;
+        const std::string_view key
+            = arena_text(source.arena(),
+                         entry.key.data.xmp_property.property_path);
+        if (key == root)
+            return translation_error(Status::UnsupportedSourceShape,
+                                     MetadataDescriptiveTranslationMapping::None,
+                                     id);
+        StructuredLocationPath path;
+        const Status parsed = parse_location_path(key, root, &path);
+        if (parsed != Status::Ok)
+            return translation_error(
+                parsed, MetadataDescriptiveTranslationMapping::None, id);
+        if (path.index == 0U)
+            continue;
+        if (path.child.empty()
+            || path.index > kMetadataLocationCreationTranslationMaxIndex
+            || (options.location_kind == Kind::Created && path.index != 1U))
+            return translation_error(Status::UnsupportedSourceShape,
+                                     MetadataDescriptiveTranslationMapping::None,
+                                     id);
+        if (++inspected > options.max_source_properties)
+            return translation_error(Status::SourceLimitExceeded,
+                                     MetadataDescriptiveTranslationMapping::None,
+                                     id);
+        scalar              = scalar || path.scalar;
+        indexed             = indexed || !path.scalar;
+        records[path.index] = true;
+        if (path.index > maximum_index)
+            maximum_index = path.index;
+        if (path.index == options.location_index) {
+            ++selected_properties;
+            const size_t field = location_field_index(path.child);
+            if (field < destinations.size())
+                destinations[field].push_back(id);
+            else {
+                const size_t separator    = path.child.find_first_of("/[");
+                const size_t shaped_field = location_field_index(
+                    path.child.substr(0U, separator));
+                if (shaped_field < conflicting_shapes.size())
+                    conflicting_shapes[shaped_field] = id;
+            }
+        }
+    }
+    if (scalar && indexed)
+        return translation_error(Status::UnsupportedSourceShape);
+    for (uint32_t i = 1U; i <= maximum_index; ++i)
+        if (!records[i])
+            return translation_error(Status::UnsupportedSourceShape);
+    if (options.location_index > maximum_index + 1U)
+        return translation_error(Status::LocationNotFound);
+
+    const std::array enabled { options.city, options.sublocation, options.state,
+                               options.country, options.country_code };
+    const std::array<std::string_view, 5> children {
+        "City", "Sublocation", "ProvinceState", "CountryName", "CountryCode"
+    };
+    std::array<PlannedMapping, 5> plans;
+    MetadataDescriptiveTranslationOptions text_options;
+    text_options.source_mode           = options.source_mode;
+    text_options.max_source_properties = options.max_source_properties;
+    text_options.max_total_text_bytes  = options.max_total_text_bytes;
+    MetadataDescriptiveTranslationResult result;
+    uint32_t matched    = inspected;
+    uint64_t text_bytes = 0U;
+    uint32_t added      = 0U;
+    uint32_t operations = 0U;
+    uint32_t remaining  = selected_properties;
+    for (size_t i = 0U; i < plans.size(); ++i) {
+        if (!enabled[i])
+            continue;
+        PlannedMapping& plan = plans[i];
+        result.status        = collect_source_mapping(source, text_options,
+                                                      kLocationMappings[i], &matched,
+                                                      &text_bytes, &plan, &result);
+        if (result.status != Status::Ok)
+            return result;
+        if (!plan.eligible)
+            continue;
+        if (conflicting_shapes[i] != kInvalidEntryId)
+            return translation_error(Status::UnsupportedSourceShape,
+                                     plan.descriptor->mapping,
+                                     conflicting_shapes[i]);
+        // Text encoding is explicit even when the underlying bytes happen to be ASCII.
+        if (!plan.values.empty()) {
+            const auto encoding
+                = source.entry(plan.values[0U].entry_id).value.text_encoding;
+            if (encoding != TextEncoding::Ascii
+                && encoding != TextEncoding::Utf8
+                && encoding != TextEncoding::Unknown)
+                return translation_error(Status::InvalidSourceValue,
+                                         plan.descriptor->mapping,
+                                         plan.values[0U].entry_id);
+        }
+        const auto& ids = destinations[i];
+        bool exact      = ids.size() == plan.values.size();
+        if (exact && !plan.values.empty()) {
+            const Entry& target = source.entry(ids[0U]);
+            const auto encoding = target.value.text_encoding;
+            exact               = target.value.kind == MetaValueKind::Text
+                    && (encoding == TextEncoding::Ascii
+                        || encoding == TextEncoding::Utf8
+                        || encoding == TextEncoding::Unknown)
+                    && entry_value_matches(source, target,
+                                           plan.values[0U].text);
+        }
+        if (options.conflict_policy == Policy::PreserveExisting
+            && !ids.empty()) {
+            ++result.groups_preserved;
+            continue;
+        }
+        if (options.conflict_policy == Policy::FailOnConflict && !ids.empty()
+            && !exact)
+            return translation_error(Status::NativeConflict,
+                                     plan.descriptor->mapping);
+        if (exact) {
+            ++result.groups_unchanged;
+            continue;
+        }
+        plan.apply = true;
+        remaining -= static_cast<uint32_t>(ids.size());
+        remaining += static_cast<uint32_t>(plan.values.size());
+        operations += static_cast<uint32_t>(ids.size());
+        if (!plan.values.empty() && ids.empty()) {
+            ++operations;
+            ++added;
+        }
+    }
+    // RDF carries record order, not numeric keys; a hole would renumber other records.
+    if (remaining == 0U && options.location_index < maximum_index)
+        return translation_error(Status::UnsupportedSourceShape);
+    if (added > options.max_added_entries
+        || source.entries().size()
+               > static_cast<size_t>(kInvalidEntryId) - added)
+        return translation_error(Status::EntryLimitExceeded);
+    if (operations > options.max_operations)
+        return translation_error(Status::OperationLimitExceeded);
+
+    MetaEdit edit;
+    edit.reserve_ops(operations);
+    for (size_t i = 0U; i < plans.size(); ++i) {
+        const PlannedMapping& plan = plans[i];
+        if (!plan.apply)
+            continue;
+        const auto& ids = destinations[i];
+        size_t kept     = 0U;
+        if (!plan.values.empty()) {
+            const SourceText& value = plan.values[0U];
+            if (!ids.empty()) {
+                edit.set_value(ids[0U], make_text(edit.arena(), value.text,
+                                                  TextEncoding::Utf8));
+                ++result.entries_updated;
+                kept = 1U;
+            } else {
+                char path[96];
+                const int size
+                    = scalar
+                          ? std::snprintf(path, sizeof(path),
+                                          "%.*s/Iptc4xmpExt:%.*s",
+                                          static_cast<int>(root.size()),
+                                          root.data(),
+                                          static_cast<int>(children[i].size()),
+                                          children[i].data())
+                          : std::snprintf(path, sizeof(path),
+                                          "%.*s[%u]/Iptc4xmpExt:%.*s",
+                                          static_cast<int>(root.size()),
+                                          root.data(), options.location_index,
+                                          static_cast<int>(children[i].size()),
+                                          children[i].data());
+                if (size <= 0 || static_cast<size_t>(size) >= sizeof(path))
+                    return translation_error(Status::InternalError);
+                MappingDescriptor target = *plan.descriptor;
+                target.schema_ns         = kXmpNsIptcExt;
+                target.property_path
+                    = std::string_view(path, static_cast<size_t>(size));
+                if (append_flat_location_entry(&edit, source, target, value))
+                    ++result.entries_added;
+            }
+        }
+        for (size_t j = kept; j < ids.size(); ++j) {
+            edit.tombstone(ids[j]);
+            ++result.entries_removed;
+        }
+        ++result.groups_translated;
+    }
+    if (edit.ops().size() != operations || result.entries_added != added
+        || edit.arena().limit_exceeded())
+        return translation_error(Status::InternalError);
     *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
     return result;
 }
