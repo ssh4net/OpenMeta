@@ -4998,3 +4998,428 @@ namespace {
     }
 }  // namespace
 }  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    using CameraTextOptions = MetadataCameraTextTranslationOptions;
+    using CameraTextStatus  = MetadataTechnicalTranslationStatus;
+    using CameraTextPolicy  = MetadataTechnicalTranslationConflictPolicy;
+    static constexpr std::array<std::string_view, 6> kCameraTextNames
+        = { "SpectralSensitivity", "CameraOwnerName",
+            "BodySerialNumber",    "LensMake",
+            "LensModel",           "LensSerialNumber" };
+    static constexpr std::array<uint16_t, 6> kCameraTextTags
+        = { 0x8824U, 0xa430U, 0xa431U, 0xa433U, 0xa434U, 0xa435U };
+    static constexpr std::array<bool CameraTextOptions::*, 6> kCameraTextFlags
+        = { &CameraTextOptions::spectral_sensitivity_to_exif,
+            &CameraTextOptions::camera_owner_name_to_exif,
+            &CameraTextOptions::body_serial_number_to_exif,
+            &CameraTextOptions::lens_make_to_exif,
+            &CameraTextOptions::lens_model_to_exif,
+            &CameraTextOptions::lens_serial_number_to_exif };
+    static void camera_text_source(
+        MetaStore& source, std::string_view text = "  A & <B> \"C\" 'D'  ",
+        EntryFlags flags = EntryFlags::Dirty, bool legacy = false)
+    {
+        for (size_t i = 0U; i < kCameraTextNames.size(); ++i)
+            settings_xmp(source, kCameraTextNames[i],
+                         make_text(source.arena(), text, TextEncoding::Utf8),
+                         flags,
+                         i == 0U || legacy ? kSettingsNs : kSensitivityNs);
+    }
+    static std::string_view camera_text_value(const MetaStore& store,
+                                              uint16_t tag)
+    {
+        const Entry* entry = settings_find(store, tag);
+        if (!entry)
+            return {};
+        const auto bytes = store.arena().span(entry->value.data.span);
+        return { reinterpret_cast<const char*>(bytes.data()), bytes.size() };
+    }
+    static void camera_text_failure(MetaStore& source, CameraTextStatus status,
+                                    const CameraTextOptions& options = {})
+    {
+        source.finalize();
+        const size_t size = source.entries().size();
+        MetaStore output;
+        settings_native(output, 0x9209U, make_u16(95U));
+        output.finalize();
+        EXPECT_EQ(
+            translate_xmp_camera_text_metadata(source, options, &output).status,
+            status);
+        ASSERT_EQ(output.entries().size(), 1U);
+        EXPECT_EQ(settings_find(output, 0x9209U)->value.data.u64, 95U);
+        EXPECT_EQ(
+            translate_xmp_camera_text_metadata(source, options, &source).status,
+            status);
+        EXPECT_EQ(source.entries().size(), size);
+        for (uint16_t tag : kCameraTextTags)
+            EXPECT_EQ(settings_find(source, tag), nullptr);
+    }
+    TEST(MetadataCameraText,
+         BatchWritesSixIndependentAsciiFieldsWithOwnedProvenance)
+    {
+        for (const bool legacy : { false, true }) {
+            MetaStore source;
+            camera_text_source(source, "  A & <B> \"C\" 'D'  ",
+                               EntryFlags::Dirty, legacy);
+            settings_native(source, 0x829aU, make_urational(1U, 125U));
+            source.finalize();
+            MetaStore output;
+            const auto result = translate_xmp_camera_text_metadata(source, {},
+                                                                   &output);
+            ASSERT_EQ(result.status, CameraTextStatus::Ok);
+            EXPECT_EQ(result.source_properties, 6U);
+            EXPECT_EQ(result.groups_translated, 6U);
+            EXPECT_EQ(result.entries_added, 6U);
+            source = MetaStore {};
+            for (uint16_t tag : kCameraTextTags) {
+                ASSERT_NE(settings_find(output, tag), nullptr);
+                EXPECT_EQ(settings_find(output, tag)->value.kind,
+                          MetaValueKind::Text);
+                EXPECT_EQ(settings_find(output, tag)->value.text_encoding,
+                          TextEncoding::Ascii);
+                EXPECT_EQ(camera_text_value(output, tag),
+                          "  A & <B> \"C\" 'D'  ");
+                const auto wire = output.arena().span(
+                    settings_find(output, tag)->origin.wire_type_name);
+                EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                               wire.data()),
+                                           wire.size()),
+                          "settings-source");
+            }
+            EXPECT_NE(settings_find(output, 0x829aU), nullptr);
+            EXPECT_EQ(translate_xmp_camera_text_metadata(output, {}, &output)
+                          .groups_unchanged,
+                      6U);
+        }
+    }
+    TEST(MetadataCameraText,
+         SelectionModesAndIndividualSwitchesRetainOmittedFields)
+    {
+        for (size_t disabled = 0U; disabled < kCameraTextNames.size();
+             ++disabled) {
+            MetaStore source;
+            camera_text_source(source);
+            settings_native(source, kCameraTextTags[disabled],
+                            make_text(source.arena(), "retained",
+                                      TextEncoding::Ascii));
+            source.finalize();
+            CameraTextOptions options;
+            options.*kCameraTextFlags[disabled] = false;
+            const auto result
+                = translate_xmp_camera_text_metadata(source, options, &source);
+            EXPECT_EQ(result.status, CameraTextStatus::Ok);
+            EXPECT_EQ(result.entries_added, 5U);
+            EXPECT_EQ(camera_text_value(source, kCameraTextTags[disabled]),
+                      "retained");
+        }
+        MetaStore clean;
+        camera_text_source(clean, "clean", EntryFlags::None);
+        settings_xmp(clean, "LensMake[1]", make_u16(1U), EntryFlags::None,
+                     "urn:unrelated");
+        settings_xmp(clean, "SpectralSensitivity", make_u16(1U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        settings_xmp(clean, "Lens", make_u16(1U), EntryFlags::Dirty,
+                     "http://ns.adobe.com/exif/1.0/aux/");
+        clean.finalize();
+        EXPECT_EQ(translate_xmp_camera_text_metadata(clean, {}, &clean)
+                      .groups_translated,
+                  0U);
+        CameraTextOptions all;
+        all.source_mode = MetadataTechnicalTranslationSourceMode::All;
+        EXPECT_EQ(translate_xmp_camera_text_metadata(clean, all, &clean)
+                      .entries_added,
+                  6U);
+    }
+    TEST(MetadataCameraText,
+         RejectsNonPrintableEmptyAndWrongTypedSourcesAtomically)
+    {
+        const std::array<std::string, 7> invalid
+            = { "",     std::string("a\0b", 3), "a\nb",       "a\rb",
+                "a\tb", std::string(1, '\x7f'), "caf\xc3\xa9" };
+        for (size_t field = 0U; field < kCameraTextNames.size(); ++field) {
+            for (const auto& value : invalid) {
+                MetaStore source;
+                settings_xmp(source, kCameraTextNames[field],
+                             make_text(source.arena(), value,
+                                       TextEncoding::Utf8),
+                             EntryFlags::Dirty,
+                             field == 0U ? kSettingsNs : kSensitivityNs);
+                camera_text_failure(source,
+                                    value.empty()
+                                        ? CameraTextStatus::InvalidSourceValue
+                                        : CameraTextStatus::NonAsciiSource);
+            }
+            for (const auto encoding :
+                 { TextEncoding::Unknown, TextEncoding::Utf16LE,
+                   TextEncoding::Utf16BE }) {
+                MetaStore source;
+                settings_xmp(source, kCameraTextNames[field],
+                             make_text(source.arena(), "plain", encoding),
+                             EntryFlags::Dirty,
+                             field == 0U ? kSettingsNs : kSensitivityNs);
+                camera_text_failure(source,
+                                    CameraTextStatus::InvalidSourceValue);
+            }
+            MetaStore scalar;
+            settings_xmp(scalar, kCameraTextNames[field], make_u32(100U),
+                         EntryFlags::Dirty,
+                         field == 0U ? kSettingsNs : kSensitivityNs);
+            camera_text_failure(scalar, CameraTextStatus::InvalidSourceValue);
+        }
+    }
+    TEST(MetadataCameraText,
+         RejectsDuplicateAliasesAndMalformedShapesBeforePolicies)
+    {
+        for (size_t field = 0U; field < kCameraTextNames.size(); ++field) {
+            MetaStore duplicate;
+            camera_text_source(duplicate, "first");
+            settings_xmp(duplicate, kCameraTextNames[field],
+                         make_text(duplicate.arena(), "first",
+                                   TextEncoding::Ascii));
+            camera_text_failure(duplicate, CameraTextStatus::AmbiguousSource);
+            for (std::string_view suffix :
+                 { "[1]", "[@xml:lang=x-default]", "/nested" }) {
+                MetaStore source;
+                camera_text_source(source, "valid");
+                const std::string path = std::string(kCameraTextNames[field])
+                                         + std::string(suffix);
+                settings_xmp(source, path, make_u16(1U), EntryFlags::Dirty,
+                             field == 0U ? kSettingsNs : kSensitivityNs);
+                for (auto policy : { CameraTextPolicy::PreserveExisting,
+                                     CameraTextPolicy::FailOnConflict,
+                                     CameraTextPolicy::ReplaceExisting }) {
+                    CameraTextOptions options;
+                    options.conflict_policy = policy;
+                    camera_text_failure(source,
+                                        CameraTextStatus::UnsupportedSourceShape,
+                                        options);
+                }
+            }
+        }
+    }
+    TEST(MetadataCameraText,
+         PerFieldConflictsAndTypedDuplicateRepairAreOneTransaction)
+    {
+        MetaStore source;
+        camera_text_source(source, "new");
+        settings_native(source, kCameraTextTags[5],
+                        make_text(source.arena(), "old", TextEncoding::Ascii));
+        settings_native(source, kCameraTextTags[5], make_u16(42U));
+        source.finalize();
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_camera_text_metadata(source, {}, &output).status,
+                  CameraTextStatus::NativeConflict);
+        EXPECT_TRUE(output.entries().empty());
+        CameraTextOptions options;
+        options.conflict_policy = CameraTextPolicy::PreserveExisting;
+        const auto preserved
+            = translate_xmp_camera_text_metadata(source, options, &output);
+        EXPECT_EQ(preserved.entries_added, 5U);
+        EXPECT_EQ(preserved.groups_preserved, 1U);
+        EXPECT_EQ(settings_active_count(output, kCameraTextTags[5]), 2U);
+        options.conflict_policy = CameraTextPolicy::ReplaceExisting;
+        const auto replaced
+            = translate_xmp_camera_text_metadata(source, options, &source);
+        ASSERT_EQ(replaced.status, CameraTextStatus::Ok);
+        EXPECT_EQ(replaced.entries_added, 5U);
+        EXPECT_EQ(replaced.entries_updated, 1U);
+        EXPECT_EQ(replaced.entries_removed, 1U);
+        for (auto tag : kCameraTextTags)
+            EXPECT_EQ(camera_text_value(source, tag), "new");
+    }
+    TEST(MetadataCameraText,
+         NativeEncodingAndTerminalNulsHaveExplicitEquivalence)
+    {
+        for (size_t field = 0U; field < kCameraTextNames.size(); ++field) {
+            MetaStore source;
+            settings_xmp(source, kCameraTextNames[field],
+                         make_text(source.arena(), "exact", TextEncoding::Utf8),
+                         EntryFlags::Dirty,
+                         field == 0U ? kSettingsNs : kSensitivityNs);
+            settings_native(source, kCameraTextTags[field],
+                            make_text(source.arena(),
+                                      std::string_view("exact\0\0", 7U),
+                                      TextEncoding::Ascii));
+            source.finalize();
+            EXPECT_EQ(translate_xmp_camera_text_metadata(source, {}, &source)
+                          .groups_unchanged,
+                      1U);
+            MetaEdit edit;
+            edit.set_value(1U, make_u32(42U));
+            source = commit(source, std::span<const MetaEdit>(&edit, 1U));
+            EXPECT_EQ(
+                translate_xmp_camera_text_metadata(source, {}, &source).status,
+                CameraTextStatus::NativeConflict);
+            CameraTextOptions options;
+            options.conflict_policy = CameraTextPolicy::ReplaceExisting;
+            EXPECT_EQ(translate_xmp_camera_text_metadata(source, options,
+                                                         &source)
+                          .entries_updated,
+                      1U);
+            EXPECT_EQ(settings_find(source, kCameraTextTags[field])
+                          ->value.text_encoding,
+                      TextEncoding::Ascii);
+        }
+    }
+    TEST(MetadataCameraText,
+         DirtyTombstonesRemoveSelectedFieldsAndIgnorePayloads)
+    {
+        MetaStore source;
+        camera_text_source(source, "\n",
+                           EntryFlags::Dirty | EntryFlags::Deleted);
+        for (auto tag : kCameraTextTags)
+            settings_native(source, tag,
+                            make_text(source.arena(), "old",
+                                      TextEncoding::Ascii));
+        settings_native(source, 0x829aU, make_urational(1U, 125U));
+        source.finalize();
+        EXPECT_EQ(translate_xmp_camera_text_metadata(source, {}, &source).status,
+                  CameraTextStatus::NativeConflict);
+        CameraTextOptions options;
+        options.conflict_policy    = CameraTextPolicy::ReplaceExisting;
+        options.lens_model_to_exif = false;
+        const auto result = translate_xmp_camera_text_metadata(source, options,
+                                                               &source);
+        ASSERT_EQ(result.status, CameraTextStatus::Ok);
+        EXPECT_EQ(result.entries_removed, 5U);
+        EXPECT_EQ(camera_text_value(source, 0xa434U), "old");
+        EXPECT_NE(settings_find(source, 0x829aU), nullptr);
+        MetaStore clean;
+        camera_text_source(clean, "ignored", EntryFlags::Deleted);
+        for (auto tag : kCameraTextTags)
+            settings_native(clean, tag,
+                            make_text(clean.arena(), "old",
+                                      TextEncoding::Ascii));
+        clean.finalize();
+        options.source_mode = MetadataTechnicalTranslationSourceMode::All;
+        EXPECT_EQ(translate_xmp_camera_text_metadata(clean, options, &clean)
+                      .source_properties,
+                  0U);
+        for (auto tag : kCameraTextTags)
+            EXPECT_EQ(camera_text_value(clean, tag), "old");
+    }
+    TEST(MetadataCameraText,
+         BatchBudgetsAndApiPreconditionsFailWithoutPartialWrites)
+    {
+        MetaStore source;
+        camera_text_source(source, "123456");
+        CameraTextOptions options;
+        options.max_added_entries = 5U;
+        camera_text_failure(source, CameraTextStatus::EntryLimitExceeded,
+                            options);
+        options                = {};
+        options.max_operations = 5U;
+        camera_text_failure(source, CameraTextStatus::OperationLimitExceeded,
+                            options);
+        options                             = {};
+        options.max_text_bytes_per_property = 5U;
+        camera_text_failure(source, CameraTextStatus::ValueTooLong, options);
+        options                      = {};
+        options.max_total_text_bytes = 35U;
+        camera_text_failure(source, CameraTextStatus::SourceLimitExceeded,
+                            options);
+        options                   = {};
+        options.max_added_entries = 7U;
+        camera_text_failure(source, CameraTextStatus::InvalidOptions, options);
+        options = {};
+        for (auto flag : kCameraTextFlags)
+            options.*flag = false;
+        camera_text_failure(source, CameraTextStatus::InvalidOptions, options);
+        options = {};
+        options.source_mode
+            = static_cast<MetadataTechnicalTranslationSourceMode>(255U);
+        camera_text_failure(source, CameraTextStatus::InvalidOptions, options);
+        MetaStore unfinalized;
+        EXPECT_EQ(
+            translate_xmp_camera_text_metadata(unfinalized, {}, &source).status,
+            CameraTextStatus::SourceNotFinalized);
+        EXPECT_EQ(translate_xmp_camera_text_metadata(source, {}, nullptr).status,
+                  CameraTextStatus::NullOutput);
+        MetaStore maximum;
+        camera_text_source(maximum, std::string(4096, 'A'));
+        maximum.finalize();
+        EXPECT_EQ(translate_xmp_camera_text_metadata(maximum, {}, &maximum)
+                      .entries_added,
+                  6U);
+    }
+    TEST(MetadataCameraText,
+         PortableRoundTripRetainsPrintableAsciiAndManagedPolicy)
+    {
+        std::string printable;
+        for (unsigned c = 0x20; c <= 0x7e; ++c)
+            printable.push_back(static_cast<char>(c));
+        for (const bool existing : { false, true }) {
+            MetaStore source;
+            camera_text_source(source, printable);
+            source.finalize();
+            ASSERT_EQ(
+                translate_xmp_camera_text_metadata(source, {}, &source).status,
+                CameraTextStatus::Ok);
+            XmpPortableOptions options;
+            options.include_existing_xmp = existing;
+            options.conflict_policy      = XmpConflictPolicy::ExistingWins;
+            std::array<std::byte, 16384> bytes {};
+            const auto dumped = dump_xmp_portable(source, bytes, options);
+            ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+            const std::string_view xml(reinterpret_cast<const char*>(
+                                           bytes.data()),
+                                       dumped.written);
+            for (size_t i = 0U; i < kCameraTextNames.size(); ++i) {
+                const std::string element
+                    = std::string(i == 0U ? "<exif:" : "<exifEX:")
+                      + std::string(kCameraTextNames[i]) + ">";
+                EXPECT_NE(xml.find(element), std::string_view::npos);
+            }
+            MetaStore restored;
+            ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(), dumped.written),
+                                        restored)
+                          .status,
+                      XmpDecodeStatus::Ok);
+            restored.finalize();
+            CameraTextOptions all;
+            all.source_mode = MetadataTechnicalTranslationSourceMode::All;
+            ASSERT_EQ(translate_xmp_camera_text_metadata(restored, all,
+                                                         &restored)
+                          .status,
+                      CameraTextStatus::Ok);
+            for (auto tag : kCameraTextTags)
+                EXPECT_EQ(camera_text_value(restored, tag), printable);
+        }
+        for (const bool canonical : { false, true }) {
+            MetaStore source;
+            camera_text_source(source, "source");
+            for (auto tag : kCameraTextTags)
+                settings_native(source, tag,
+                                make_text(source.arena(), "native",
+                                          TextEncoding::Ascii));
+            source.finalize();
+            XmpPortableOptions options;
+            options.include_existing_xmp = true;
+            options.conflict_policy      = XmpConflictPolicy::ExistingWins;
+            if (canonical)
+                options.existing_standard_namespace_policy
+                    = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+            std::array<std::byte, 8192> bytes {};
+            const auto dumped = dump_xmp_portable(source, bytes, options);
+            ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+            MetaStore restored;
+            ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(), dumped.written),
+                                        restored)
+                          .status,
+                      XmpDecodeStatus::Ok);
+            restored.finalize();
+            CameraTextOptions all;
+            all.source_mode = MetadataTechnicalTranslationSourceMode::All;
+            ASSERT_EQ(translate_xmp_camera_text_metadata(restored, all,
+                                                         &restored)
+                          .status,
+                      CameraTextStatus::Ok);
+            for (auto tag : kCameraTextTags)
+                EXPECT_EQ(camera_text_value(restored, tag),
+                          canonical ? "native" : "source");
+        }
+    }
+}  // namespace
+}  // namespace openmeta

@@ -197,6 +197,19 @@ namespace {
         return s.substr(b, e - b);
     }
 
+    static std::string_view property_text_value(std::string_view ns,
+                                                std::string_view path,
+                                                std::string_view value) noexcept
+    {
+        if ((ns == kXmpNsExif && path == "SpectralSensitivity")
+            || ((ns == kXmpNsExif || ns == "http://cipa.jp/exif/1.0/")
+                && (path == "CameraOwnerName" || path == "BodySerialNumber"
+                    || path == "LensMake" || path == "LensModel"
+                    || path == "LensSerialNumber")))
+            return value;
+        return trim_ascii_ws(value);
+    }
+
     static bool is_ascii_ws_or_nul(char c) noexcept
     {
         return c == '\0' || is_ascii_ws(c);
@@ -736,7 +749,9 @@ namespace {
                     if (ap.uri == kRdfNs && ap.local == "resource") {
                         const std::string_view av(atts[i + 1],
                                                   std::strlen(atts[i + 1]));
-                        const std::string_view trimmed = trim_ascii_ws(av);
+                        const std::string_view trimmed
+                            = property_text_value(ctx->root_schema_ns,
+                                                  ctx->path, av);
                         (void)emit_property_text(ctx, ctx->root_schema_ns,
                                                  ctx->path, trimmed);
                         frame.emitted_resource_val = true;
@@ -784,7 +799,8 @@ namespace {
                 }
                 const std::string_view av(atts[i + 1],
                                           std::strlen(atts[i + 1]));
-                const std::string_view trimmed = trim_ascii_ws(av);
+                const std::string_view trimmed
+                    = property_text_value(ap.uri, ap.local, av);
                 if (ap.uri == kRdfNs) {
                     if (ap.local == "about" && !trimmed.empty()) {
                         (void)emit_property_text(ctx, kRdfNs, "About", trimmed);
@@ -819,7 +835,9 @@ namespace {
         if (ctx->description_depth > 0 && !ctx->path.empty()
             && !frame.emitted_resource_val && !frame.had_child_element) {
             if (frame.is_li || frame.is_nonrdf) {
-                const std::string_view trimmed = trim_ascii_ws(frame.text);
+                const std::string_view trimmed
+                    = property_text_value(ctx->root_schema_ns, ctx->path,
+                                          frame.text);
                 (void)emit_property_text(ctx, ctx->root_schema_ns, ctx->path,
                                          trimmed);
             } else if (frame.is_array_container && frame.li_counter == 0U) {

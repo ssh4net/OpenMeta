@@ -1510,3 +1510,95 @@ with every legacy ISO-array convention.
 
 References: `CIPA EXIF translation <https://cipa.jp/std/documents/e/DC-X008-Translation-2019-E.pdf>`_,
 `CIPA EXIF metadata for XMP <https://cipa.jp/std/documents/e/DC-X010-2017.pdf>`_.
+
+
+Camera, lens and spectral text writeback
+----------------------------------------
+
+``translate_xmp_camera_text_metadata(...)`` and Python
+``Document.translate_camera_text_metadata(...)`` use independent
+``MetadataCameraTextTranslationOptions`` and the existing technical source-mode,
+conflict-policy, result and diagnostic enums. Contract version 1 adds six
+independent native targets in one transaction.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Exact XMP property
+     - Native ExifIFD tag
+     - Option
+   * - ``exif:SpectralSensitivity``
+     - ``0x8824`` ASCII
+     - ``spectral_sensitivity_to_exif``
+   * - ``exifEX:CameraOwnerName``
+     - ``0xa430`` ASCII
+     - ``camera_owner_name_to_exif``
+   * - ``exifEX:BodySerialNumber``
+     - ``0xa431`` ASCII
+     - ``body_serial_number_to_exif``
+   * - ``exifEX:LensMake``
+     - ``0xa433`` ASCII
+     - ``lens_make_to_exif``
+   * - ``exifEX:LensModel``
+     - ``0xa434`` ASCII
+     - ``lens_model_to_exif``
+   * - ``exifEX:LensSerialNumber``
+     - ``0xa435`` ASCII
+     - ``lens_serial_number_to_exif``
+
+Here ``exif`` is ``http://ns.adobe.com/exif/1.0/`` and ``exifEX`` is
+``http://cipa.jp/exif/1.0/``. The five identity fields also accept the same property
+names in the historical OpenMeta ``exif`` namespace. Prefix spelling is irrelevant;
+namespace URI and property path must match. ``aux:Lens``, ``aux:SerialNumber``,
+``OwnerName``, generic ``Lens`` aliases and MakerNote identity inference are excluded.
+The tag types follow `Exif 2.32 <https://cipa.jp/std/documents/e/DC-X008-Translation-2019-E.pdf>`_;
+the canonical XMP identity mappings follow
+`CIPA metadata interchange guidance <https://cipa.jp/std/documents/e/DC-X010-2017.pdf>`_.
+
+An active value must be nonempty ``Text`` with ``Ascii`` or ``Utf8`` encoding, containing
+only printable ASCII bytes ``0x20..0x7e``. Leading/trailing spaces, punctuation and
+serial-number leading zeros are preserved. XMP decoding retains their boundary
+whitespace in description attributes, resource values and element text. Empty values, other value kinds or
+encodings fail with ``InvalidSourceValue``; NUL, controls, DEL and non-ASCII bytes
+fail with ``NonAsciiSource``. The bounded printable subset permits lossless
+portable XML round trips. No trimming, transliteration, Unicode conversion or
+ASTM spectral-curve grammar validation is performed. The latter remains the
+caller's responsibility; this API transports the supplied text.
+
+All six switches default to true. ``DirtyOnly`` selects each dirty property
+individually. ``All`` also selects active clean entries; deleted entries still
+require ``Dirty``. Missing or disabled properties retain native metadata. Eligible
+duplicates, including canonical/legacy alias pairs with equal values, fail with
+``AmbiguousSource``. Indexed, qualified or nested forms of a selected property fail
+with ``UnsupportedSourceShape``. A selected dirty tombstone ignores its payload and
+removes only that native field under ``ReplaceExisting``.
+
+Each field has its own conflict decision and result group. ``FailOnConflict``
+rejects a mismatch, ``PreserveExisting`` retains the conflicting field while other
+fields can translate, and ``ReplaceExisting`` updates the singleton and removes
+native duplicates. Native equivalence requires ``Text`` with ``Ascii`` or ``Utf8``
+encoding and matching bytes after native terminal NUL bytes are removed; byte
+blobs, numbers and other encodings are conflicts. New values use native ASCII.
+All source validation, conflict decisions and resource checks finish before one
+commit. Failure leaves separate or aliased output unchanged. Source provenance
+and text ownership survive the source store's lifetime.
+
+Limits are 6 added entries, 1024 edit operations, 4096 bytes per property and
+24576 total source-text bytes. Limits must be nonzero and at most those ceilings.
+At least one switch must be enabled. Existing technical and capture option
+layouts and existing enum values are unchanged.
+
+Portable native identity fields now use canonical ``exifEX`` names. That namespace
+is declared only when needed. Spectral sensitivity remains in ``exif``.
+``CanonicalizeManaged`` recognizes all six fields. If callers retain legacy source
+XMP along with generated canonical identity properties, both aliases can remain
+under ordinary preservation policies; reverse translation rejects their
+ambiguity. Use ``CanonicalizeManaged`` when replacing those managed aliases.
+
+Shared tests cover all six fields, conflict and removal transactions, source
+shapes and budgets, portable XML and namespace policies, serialized snapshots
+through JPEG/Classic TIFF/BigTIFF, the Python wrapper and an installed shared
+library consumer. Related fields are implemented and reviewed together, with
+focused checks during development and one final platform matrix per stable
+batch. ``LensSpecification``, ``ImageUniqueID``, APEX and focal-plane/subject arrays
+require separate value contracts.

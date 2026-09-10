@@ -164,6 +164,12 @@ enum class MetadataTechnicalTranslationMapping : uint8_t {
     TiffMake,
     TiffModel,
     XmpCreatorTool,
+    XmpSpectralSensitivity,
+    XmpCameraOwnerName,
+    XmpBodySerialNumber,
+    XmpLensMake,
+    XmpLensModel,
+    XmpLensSerialNumber,
 };
 
 /// Caller-selected bounded reverse technical mappings.
@@ -206,6 +212,7 @@ enum class MetadataTechnicalTranslationStatus : uint8_t {
     EntryLimitExceeded,
     OperationLimitExceeded,
     InternalError,
+    UnsupportedSourceShape,
 };
 
 /// Transactional result details for one reverse technical translation.
@@ -249,6 +256,52 @@ metadata_technical_translation_status_name(
 const char*
 metadata_technical_translation_mapping_name(
     MetadataTechnicalTranslationMapping mapping) noexcept;
+
+/// Experimental camera/lens/spectral ASCII writeback contract.
+inline constexpr uint32_t kMetadataCameraTextTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataCameraTextTranslationMaxAddedEntries = 6U;
+inline constexpr uint64_t kMetadataCameraTextTranslationMaxTotalTextBytes
+    = 24576U;
+
+struct MetadataCameraTextTranslationOptions final {
+    MetadataTechnicalTranslationSourceMode source_mode
+        = MetadataTechnicalTranslationSourceMode::DirtyOnly;
+    MetadataTechnicalTranslationConflictPolicy conflict_policy
+        = MetadataTechnicalTranslationConflictPolicy::FailOnConflict;
+    bool spectral_sensitivity_to_exif = true;
+    bool camera_owner_name_to_exif    = true;
+    bool body_serial_number_to_exif   = true;
+    bool lens_make_to_exif            = true;
+    bool lens_model_to_exif           = true;
+    bool lens_serial_number_to_exif   = true;
+    uint32_t max_added_entries = kMetadataCameraTextTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataTechnicalTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataTechnicalTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataCameraTextTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Translate six independent camera/lens/spectral text fields atomically.
+ *
+ * Exact exif:SpectralSensitivity and exifEX:CameraOwnerName, BodySerialNumber,
+ * LensMake, LensModel and LensSerialNumber map to their ExifIFD ASCII tags.
+ * The five exifEX fields also accept historical OpenMeta exif namespace aliases.
+ * Inputs must be nonempty printable ASCII (0x20..0x7e), stored as ASCII or UTF-8
+ * text. No trimming, Unicode conversion, identity inference or spectral grammar
+ * interpretation is performed. Eligible duplicates and structured/indexed forms
+ * fail. Missing or disabled sources retain native fields; dirty tombstones
+ * remove selected fields under ReplaceExisting. Native equivalence requires
+ * ASCII/UTF-8 Text with matching bytes, ignoring native terminal NUL bytes.
+ *
+ * Each field has its own conflict decision and result group; the entire call
+ * commits once, including aliased source/output. Preparation may allocate.
+ */
+MetadataTechnicalTranslationResult
+translate_xmp_camera_text_metadata(
+    const MetaStore& source,
+    const MetadataCameraTextTranslationOptions& options, MetaStore* out_store);
 
 /// Experimental reverse capture-EXIF translation contract version.
 inline constexpr uint32_t kMetadataCaptureTranslationContractVersion = 1U;

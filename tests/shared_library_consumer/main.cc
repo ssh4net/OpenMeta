@@ -375,6 +375,46 @@ main()
                  == openmeta::MetadataCaptureTranslationStatus::Ok
           && sensitivity_result.entries_added == 3U
           && sensitivity_result.groups_translated == 1U;
+    const std::array<openmeta::MetadataAuthoringEntry, 6> camera_text_entries
+        = { {
+            { openmeta::make_xmp_property_key_view(
+                  "http://ns.adobe.com/exif/1.0/", "SpectralSensitivity"),
+              openmeta::make_value_view_text("ASCII 001",
+                                             openmeta::TextEncoding::Utf8) },
+            { openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                                   "CameraOwnerName"),
+              openmeta::make_value_view_text("ASCII 001",
+                                             openmeta::TextEncoding::Utf8) },
+            { openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                                   "BodySerialNumber"),
+              openmeta::make_value_view_text("ASCII 001",
+                                             openmeta::TextEncoding::Utf8) },
+            { openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                                   "LensMake"),
+              openmeta::make_value_view_text("ASCII 001",
+                                             openmeta::TextEncoding::Utf8) },
+            { openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                                   "LensModel"),
+              openmeta::make_value_view_text("ASCII 001",
+                                             openmeta::TextEncoding::Utf8) },
+            { openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                                   "LensSerialNumber"),
+              openmeta::make_value_view_text("ASCII 001",
+                                             openmeta::TextEncoding::Utf8) },
+        } };
+    openmeta::MetaStore camera_text_source;
+    const auto camera_text_authored
+        = openmeta::create_metadata_store(camera_text_entries,
+                                          &camera_text_source);
+    const auto camera_text_result
+        = openmeta::translate_xmp_camera_text_metadata(camera_text_source, {},
+                                                       &camera_text_source);
+    const bool camera_text_contract_matches
+        = camera_text_authored.ok()
+          && camera_text_result.status
+                 == openmeta::MetadataTechnicalTranslationStatus::Ok
+          && camera_text_result.entries_added == 6U
+          && camera_text_result.groups_translated == 6U;
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
             std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
@@ -459,6 +499,7 @@ main()
                    || !capture_rational_contract_matches
                    || !flash_contract_matches || !light_source_contract_matches
                    || !sensitivity_contract_matches
+                   || !camera_text_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()

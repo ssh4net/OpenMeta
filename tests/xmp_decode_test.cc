@@ -111,6 +111,57 @@ TEST(XmpDecodeTest, DecodesAttributesArraysAndRdfResource)
 }
 
 
+TEST(XmpDecodeTest, CameraTextPreservesWhitespaceAcrossXmlFormsAndNamespaces)
+{
+    constexpr std::string_view names[]
+        = { "SpectralSensitivity", "CameraOwnerName",
+            "BodySerialNumber",    "LensMake",
+            "LensModel",           "LensSerialNumber" };
+    for (size_t i = 0U; i < 6U; ++i) {
+        for (const bool legacy : { false, true }) {
+            for (unsigned form = 0U; form < 3U; ++form) {
+                const std::string ns = i == 0U || legacy
+                                           ? "http://ns.adobe.com/exif/1.0/"
+                                           : "http://cipa.jp/exif/1.0/";
+                const std::string name(names[i]);
+                std::string xml
+                    = "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><rdf:Description xmlns:e='"
+                      + ns + "'";
+                if (form == 0U)
+                    xml += " e:" + name
+                           + "=' 001 &amp; value '><e:Unrelated> trimmed </e:Unrelated>";
+                else if (form == 1U)
+                    xml += "><e:" + name
+                           + " rdf:resource=' 001 &amp; value '/><e:Unrelated> trimmed </e:Unrelated>";
+                else
+                    xml += "><e:" + name + "> 001 &amp; value </e:" + name
+                           + "><e:Unrelated> trimmed </e:Unrelated>";
+                xml += "</rdf:Description></rdf:RDF>";
+                MetaStore store;
+                const auto bytes = std::as_bytes(
+                    std::span(xml.data(), xml.size()));
+                ASSERT_EQ(decode_xmp_packet(bytes, store).status,
+                          XmpDecodeStatus::Ok);
+                store.finalize();
+                expect_xmp_text_value(store, ns, name, " 001 & value ");
+                expect_xmp_text_value(store, ns, "Unrelated", "trimmed");
+            }
+        }
+    }
+    const std::string xml
+        = "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><rdf:Description xmlns:e='http://cipa.jp/exif/1.0/' xmlns:z='urn:unrelated'><e:LensMake>   </e:LensMake><e:LensModel>&#10;value&#9;</e:LensModel><z:LensModel> trimmed </z:LensModel></rdf:Description></rdf:RDF>";
+    MetaStore store;
+    ASSERT_EQ(decode_xmp_packet(std::as_bytes(std::span(xml.data(), xml.size())),
+                                store)
+                  .status,
+              XmpDecodeStatus::Ok);
+    store.finalize();
+    expect_xmp_text_value(store, "http://cipa.jp/exif/1.0/", "LensMake", "   ");
+    expect_xmp_text_value(store, "http://cipa.jp/exif/1.0/", "LensModel",
+                          "\nvalue\t");
+    expect_xmp_text_value(store, "urn:unrelated", "LensModel", "trimmed");
+}
+
 TEST(XmpDecodeTest, RejectsOversizedNamespaceBeforeArenaAmplification)
 {
     const std::string ns(256U, 'n');

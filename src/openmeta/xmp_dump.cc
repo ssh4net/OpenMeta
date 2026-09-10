@@ -1374,6 +1374,12 @@ namespace {
         return name;
     }
 
+    static bool portable_camera_text_tag(uint16_t tag) noexcept
+    {
+        return tag == 0xa430U || tag == 0xa431U || tag == 0xa433U
+               || tag == 0xa434U || tag == 0xa435U;
+    }
+
     static bool
     portable_has_sensitivity_type(const ByteArena& arena,
                                   std::span<const Entry> entries) noexcept
@@ -1977,7 +1983,9 @@ namespace {
                    || name == "StandardOutputSensitivity"
                    || name == "RecommendedExposureIndex" || name == "ISOSpeed"
                    || name == "ISOSpeedLatitudeyyy"
-                   || name == "ISOSpeedLatitudezzz";
+                   || name == "ISOSpeedLatitudezzz" || name == "CameraOwnerName"
+                   || name == "BodySerialNumber" || name == "LensMake"
+                   || name == "LensModel" || name == "LensSerialNumber";
         }
 
         if (prefix == "xmp") {
@@ -9995,7 +10003,8 @@ namespace {
 
         const uint16_t tag = e.key.data.exif_tag.tag;
         if (ifd == "exififd"
-            && ((tag >= 0x8830U && tag <= 0x8835U)
+            && (portable_camera_text_tag(tag)
+                || (tag >= 0x8830U && tag <= 0x8835U)
                 || (tag == 0x8827U
                     && portable_has_sensitivity_type(arena, entries))))
             prefix = "exifEX";
@@ -10593,7 +10602,8 @@ namespace {
 
                 const uint16_t tag = e.key.data.exif_tag.tag;
                 if (ifd == "exififd"
-                    && ((tag >= 0x8830U && tag <= 0x8835U)
+                    && (portable_camera_text_tag(tag)
+                        || (tag >= 0x8830U && tag <= 0x8835U)
                         || (tag == 0x8827U
                             && portable_has_sensitivity_type(arena, entries))))
                     prefix = "exifEX";
@@ -13880,8 +13890,9 @@ dump_xmp_portable(const MetaStore& store, std::span<std::byte> out,
         for (const Entry& entry : es) {
             if (!any(entry.flags, EntryFlags::Deleted)
                 && entry.key.kind == MetaKeyKind::ExifTag
-                && entry.key.data.exif_tag.tag >= 0x8830U
-                && entry.key.data.exif_tag.tag <= 0x8835U
+                && (portable_camera_text_tag(entry.key.data.exif_tag.tag)
+                    || (entry.key.data.exif_tag.tag >= 0x8830U
+                        && entry.key.data.exif_tag.tag <= 0x8835U))
                 && arena_string(arena, entry.key.data.exif_tag.ifd)
                        == "exififd")
                 uses_exif_ex = true;

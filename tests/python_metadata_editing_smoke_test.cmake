@@ -736,6 +736,49 @@ with tempfile.TemporaryDirectory() as temporary:
         assert restored.translate_sensitivity_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All).entry_count == restored.entry_count + 7
         assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'camera_text.jpg'
+    names = ('SpectralSensitivity', 'CameraOwnerName', 'BodySerialNumber', 'LensMake', 'LensModel', 'LensSerialNumber')
+    flags = ('spectral_sensitivity', 'camera_owner_name', 'body_serial_number', 'lens_make', 'lens_model', 'lens_serial_number')
+    mode = openmeta.MetadataTechnicalTranslationSourceMode.All
+    for value, valid in ((' 001 &amp; &lt;identity&gt; ', True), ('caf&#233;', False)):
+        xml = ('<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:e=\"http://ns.adobe.com/exif/1.0/\" xmlns:x=\"http://cipa.jp/exif/1.0/\">' + ''.join('<' + prefix + ':' + name + '>' + value + '</' + prefix + ':' + name + '>' for prefix, name in zip(('e', 'x', 'x', 'x', 'x', 'x'), names)) + '</rdf:Description></rdf:RDF>').encode()
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        document = openmeta.read(str(path))
+        count = document.entry_count
+        assert openmeta.METADATA_CAMERA_TEXT_TRANSLATION_CONTRACT_VERSION == 1
+        assert openmeta.METADATA_CAMERA_TEXT_TRANSLATION_MAX_ADDED_ENTRIES == 6
+        assert openmeta.METADATA_CAMERA_TEXT_TRANSLATION_MAX_TOTAL_TEXT_BYTES == 24576
+        assert document.translate_camera_text_metadata().entry_count == count
+        if not valid:
+            try:
+                document.translate_camera_text_metadata(source_mode=mode)
+            except ValueError as error:
+                assert 'non_ascii_source' in str(error) and 'xmp_spectral_sensitivity' in str(error)
+            else:
+                raise AssertionError('non-ASCII camera text accepted')
+            continue
+        translated = document.translate_camera_text_metadata(source_mode=mode)
+        assert translated.entry_count == count + 6
+        assert translated.translate_camera_text_metadata(source_mode=mode).entry_count == count + 6
+        for disabled in flags:
+            selected = document.translate_camera_text_metadata(source_mode=mode, **{disabled + '_to_exif': False})
+            assert selected.entry_count == count + 5
+        try:
+            document.translate_camera_text_metadata(source_mode=mode, max_added_entries=5)
+        except ValueError as error:
+            assert 'entry_limit_exceeded' in str(error)
+        else:
+            raise AssertionError('camera text batch budget ignored')
+        payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
+        assert b'<exifEX:LensModel> 001 &amp; &lt;identity&gt; </exifEX:LensModel>' in payload
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        restored = openmeta.read(str(path))
+        assert restored.translate_camera_text_metadata(source_mode=mode).entry_count == restored.entry_count + 6
+        assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

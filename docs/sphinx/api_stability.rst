@@ -294,6 +294,10 @@ Host-facing API map
      - ``openmeta/metadata_translation.h``
      - Experimental
      - Seven-tag sensitivity group with explicit companions, LONG limits, whole-group conflicts and atomic removal. See :doc:`translation`.
+   * - Camera/lens/spectral text translation: ``translate_xmp_camera_text_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - Six independent printable-ASCII fields in one transaction, with exact namespaces, explicit aliases, typed conflicts, bounds and removal. See :doc:`translation`.
 
    * - Flash translation: ``translate_xmp_flash_metadata(...)``
      - ``openmeta/metadata_translation.h``

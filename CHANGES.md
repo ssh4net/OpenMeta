@@ -1,5 +1,24 @@
 # OpenMeta Changes
 
+## 0.4.142 - 2026-09-10
+
+Changes compared with `0.4.141`.
+
+### Added
+
+- Added C++ and Python camera/lens/spectral text writeback for six independent
+  ASCII fields in one atomic batch, with exact source selection, explicit
+  legacy aliases, typed conflicts, removal and shared resource bounds.
+- Added combined portable-XMP, snapshot persistence, Python and installed
+  shared-consumer checks for all six fields.
+
+### Fixed
+
+- XMP decoding preserves leading and trailing whitespace for all six fields,
+  including description attributes, resource values and element text.
+- Portable camera and lens identity fields now use canonical exifEX names,
+  with conditional namespace emission and managed-property canonicalization.
+
 ## 0.4.141 - 2026-09-10
 
 Changes compared with `0.4.140`.

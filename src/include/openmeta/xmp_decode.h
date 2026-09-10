@@ -84,7 +84,10 @@ struct XmpDecodeResult final {
  * - \ref MetaKeyKind::XmpProperty (`schema_ns` URI + `property_path`)
  * - \ref MetaValueKind::Text (UTF-8)
  *
- * Duplicate properties are preserved.
+ * Duplicate properties are preserved. The six camera/lens/spectral ASCII
+ * writeback properties retain leading/trailing XML-decoded whitespace in their
+ * exact standard or supported legacy namespaces. Other text retains the
+ * existing ASCII-whitespace trimming behavior.
  */
 XmpDecodeResult
 decode_xmp_packet(std::span<const std::byte> xmp_bytes, MetaStore& store,
