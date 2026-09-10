@@ -675,6 +675,36 @@ with tempfile.TemporaryDirectory() as temporary:
         restored.translate_flash_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
         assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'light_source.jpg'
+    for value in ('1', '25', 'D65', 'Daylight LED', 'Warm white LED', 'Tungsten', 'Cloudy weather', 'Daylight'):
+        xml = ('<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:e=\"http://ns.adobe.com/exif/1.0/\"><e:LightSource>' + value + '</e:LightSource></rdf:Description></rdf:RDF>').encode()
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        document = openmeta.read(str(path))
+        count = document.entry_count
+        assert openmeta.METADATA_LIGHT_SOURCE_TRANSLATION_CONTRACT_VERSION == 1
+        assert document.translate_light_source_metadata().entry_count == count
+        if value == 'Daylight':
+            try:
+                document.translate_light_source_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
+            except ValueError as error:
+                assert 'ambiguous_source' in str(error) and 'xmp_light_source' in str(error)
+            else:
+                raise AssertionError('ambiguous LightSource was inferred')
+            continue
+        translated = document.translate_light_source_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
+        assert translated.entry_count == count + 1
+        assert translated.translate_light_source_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All).entry_count == count + 1
+        payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
+        if value in ('1', '25'):
+            assert ('<exif:LightSource>' + value + '</exif:LightSource>').encode() in payload
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        restored = openmeta.read(str(path))
+        assert restored.translate_light_source_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All).entry_count == restored.entry_count + 1
+        assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

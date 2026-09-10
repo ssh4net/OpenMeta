@@ -3478,7 +3478,7 @@ namespace {
             case 0x9208U:  // LightSource
                 switch (value) {
                 case 0U: return "Unknown";
-                case 1U: return "Daylight";
+                case 1U: return "1";
                 case 2U: return "Fluorescent";
                 case 3U: return "Tungsten (incandescent)";
                 case 4U: return "Flash";
@@ -3498,7 +3498,7 @@ namespace {
                 case 22U: return "D75";
                 case 23U: return "D50";
                 case 24U: return "ISO studio tungsten";
-                case 25U: return "Daylight";
+                case 25U: return "25";
                 case 26U: return "Day white";
                 case 27U: return "Cool white";
                 case 28U: return "White";

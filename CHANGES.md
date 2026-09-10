@@ -1,5 +1,21 @@
 # OpenMeta Changes
 
+## 0.4.140 - 2026-09-10
+
+Changes compared with `0.4.139`.
+
+### Added
+
+- Added C++ and Python LightSource writeback for 32 defined codes and unique
+  labels, with explicit ambiguity rejection, bounded inputs, typed conflicts,
+  atomic removal, and snapshot/portable round-trip coverage.
+
+### Fixed
+
+- Portable native LightSource values 1 and 25 now retain distinct numeric XMP
+  values instead of sharing the ambiguous Daylight label. Native display names
+  remain unchanged; existing ambiguous source XMP still requires an explicit code.
+
 ## 0.4.139 - 2026-09-10
 
 Changes compared with `0.4.138`.

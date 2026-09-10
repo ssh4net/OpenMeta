@@ -328,6 +328,24 @@ main()
           && flash_result.status
                  == openmeta::MetadataCaptureTranslationStatus::Ok
           && flash_result.entries_added == 1U;
+    const openmeta::MetadataAuthoringEntry light_source_entry {
+        openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                             "LightSource"),
+        openmeta::make_value_view_text("25", openmeta::TextEncoding::Ascii),
+    };
+    openmeta::MetaStore light_source_source;
+    const auto light_source_authored
+        = openmeta::create_metadata_store(std::span(&light_source_entry, 1U),
+                                          &light_source_source);
+    openmeta::MetaStore light_source_output;
+    const auto light_source_result
+        = openmeta::translate_xmp_light_source_metadata(light_source_source, {},
+                                                        &light_source_output);
+    const bool light_source_contract_matches
+        = light_source_authored.ok()
+          && light_source_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && light_source_result.entries_added == 1U;
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
             std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
@@ -410,7 +428,7 @@ main()
                    || !destination_contract_matches || !quality_contract_matches
                    || !gps_text_contract_matches || !setting_contract_matches
                    || !capture_rational_contract_matches
-                   || !flash_contract_matches
+                   || !flash_contract_matches || !light_source_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()

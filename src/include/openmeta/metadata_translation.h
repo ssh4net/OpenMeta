@@ -299,6 +299,7 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpExposureIndex,
     XmpFlashEnergy,
     XmpFlash,
+    XmpLightSource,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -541,6 +542,41 @@ MetadataCaptureTranslationResult
 translate_xmp_flash_metadata(const MetaStore& source,
                              const MetadataFlashTranslationOptions& options,
                              MetaStore* out_store);
+
+/// Experimental unambiguous LightSource writeback contract.
+inline constexpr uint32_t kMetadataLightSourceTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataLightSourceTranslationMaxAddedEntries = 1U;
+inline constexpr uint64_t kMetadataLightSourceTranslationMaxTotalTextBytes
+    = 128U;
+
+struct MetadataLightSourceTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    uint32_t max_added_entries = kMetadataLightSourceTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataLightSourceTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Translate one exact exif:LightSource to ExifIFD 0x9208 SHORT.
+ *
+ * Accepts scalar integers or unsigned decimal integer text for codes 0..4,
+ * 9..34, and 255. Exact unique OpenMeta labels and the explicit aliases Tungsten
+ * and Cloudy weather are accepted. Daylight is ambiguous between codes 1 and 25
+ * and fails even if native metadata could supply a preferred interpretation.
+ * No white-balance, Flash, illuminant, color-temperature or version inference is
+ * performed. Missing sources retain native values; dirty tombstones remove them
+ * under ReplaceExisting. All changes are atomic and preparation may allocate.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_light_source_metadata(
+    const MetaStore& source,
+    const MetadataLightSourceTranslationOptions& options, MetaStore* out_store);
 
 /// Experimental target-bound image-geometry translation contract version.
 inline constexpr uint32_t kMetadataGeometryTranslationContractVersion = 1U;

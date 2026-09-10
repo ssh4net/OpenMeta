@@ -6574,6 +6574,51 @@ translate_flash_metadata_document(
 }
 
 static std::shared_ptr<PyDocument>
+translate_light_source_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataCaptureTranslationSourceMode source_mode,
+    MetadataCaptureTranslationConflictPolicy conflict_policy,
+    uint32_t max_added_entries, uint32_t max_operations,
+    uint32_t max_text_bytes_per_property, uint64_t max_total_text_bytes)
+{
+    MetadataLightSourceTranslationOptions options;
+    options.source_mode                 = source_mode;
+    options.conflict_policy             = conflict_policy;
+    options.max_added_entries           = max_added_entries;
+    options.max_operations              = max_operations;
+    options.max_text_bytes_per_property = max_text_bytes_per_property;
+    options.max_total_text_bytes        = max_total_text_bytes;
+
+    MetaStore translated;
+    MetadataCaptureTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_light_source_metadata(source->store, options,
+                                                     &translated);
+    }
+    if (result.status != MetadataCaptureTranslationStatus::Ok) {
+        std::string message = "metadata light-source translation failed: ";
+        message += metadata_capture_translation_status_name(result.status);
+        if (result.failed_mapping != MetadataCaptureTranslationMapping::None) {
+            message += " for ";
+            message += metadata_capture_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
 translate_image_geometry_document(
     std::shared_ptr<PyDocument> source,
     const TransferTargetImageSpec& target_image_spec,
@@ -9028,7 +9073,9 @@ NB_MODULE(_openmeta, m)
                MetadataCaptureTranslationMapping::XmpExposureIndex)
         .value("XmpFlashEnergy",
                MetadataCaptureTranslationMapping::XmpFlashEnergy)
-        .value("XmpFlash", MetadataCaptureTranslationMapping::XmpFlash);
+        .value("XmpFlash", MetadataCaptureTranslationMapping::XmpFlash)
+        .value("XmpLightSource",
+               MetadataCaptureTranslationMapping::XmpLightSource);
 
 
     m.attr("METADATA_FLASH_TRANSLATION_CONTRACT_VERSION") = nb::int_(
@@ -9039,6 +9086,13 @@ NB_MODULE(_openmeta, m)
         kMetadataFlashTranslationMaxSourceProperties);
     m.attr("METADATA_FLASH_TRANSLATION_MAX_TOTAL_TEXT_BYTES") = nb::int_(
         kMetadataFlashTranslationMaxTotalTextBytes);
+
+    m.attr("METADATA_LIGHT_SOURCE_TRANSLATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataLightSourceTranslationContractVersion);
+    m.attr("METADATA_LIGHT_SOURCE_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
+        kMetadataLightSourceTranslationMaxAddedEntries);
+    m.attr("METADATA_LIGHT_SOURCE_TRANSLATION_MAX_TOTAL_TEXT_BYTES") = nb::int_(
+        kMetadataLightSourceTranslationMaxTotalTextBytes);
 
     m.attr("METADATA_CAPTURE_RATIONAL_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataCaptureRationalTranslationContractVersion);
@@ -10102,6 +10156,18 @@ NB_MODULE(_openmeta, m)
              = kMetadataCaptureTranslationMaxTextBytesPerProperty,
              "max_total_text_bytes"_a
              = kMetadataFlashTranslationMaxTotalTextBytes)
+        .def("translate_light_source_metadata",
+             &translate_light_source_metadata_document,
+             "source_mode"_a = MetadataCaptureTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+             "max_added_entries"_a
+             = kMetadataLightSourceTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataCaptureTranslationMaxOperations,
+             "max_text_bytes_per_property"_a
+             = kMetadataCaptureTranslationMaxTextBytesPerProperty,
+             "max_total_text_bytes"_a
+             = kMetadataLightSourceTranslationMaxTotalTextBytes)
         .def("translate_image_geometry", &translate_image_geometry_document,
              "target_image_spec"_a,
              "source_mode"_a = MetadataGeometryTranslationSourceMode::DirtyOnly,

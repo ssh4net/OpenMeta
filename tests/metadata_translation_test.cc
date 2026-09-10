@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "openmeta/exif_value_names.h"
 #include "openmeta/meta_edit.h"
 #include "openmeta/metadata_editing.h"
 #include "openmeta/metadata_transfer.h"
 #include "openmeta/metadata_translation.h"
+#include "openmeta/xmp_decode.h"
+#include "openmeta/xmp_dump.h"
 
 #include <gtest/gtest.h>
 
@@ -4205,6 +4208,372 @@ namespace {
         EXPECT_STREQ(metadata_capture_translation_mapping_name(
                          MetadataCaptureTranslationMapping::XmpFlash),
                      "xmp_flash");
+    }
+}  // namespace
+}  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    using LightOptions = MetadataLightSourceTranslationOptions;
+    constexpr std::array<uint16_t, 32> kLightCodes {
+        0U,  1U,  2U,  3U,  4U,  9U,  10U, 11U, 12U, 13U, 14U,
+        15U, 16U, 17U, 18U, 19U, 20U, 21U, 22U, 23U, 24U, 25U,
+        26U, 27U, 28U, 29U, 30U, 31U, 32U, 33U, 34U, 255U
+    };
+
+    static void light_failure(MetaStore& source, SettingsStatus expected,
+                              const LightOptions& options = {})
+    {
+        source.finalize();
+        MetaStore output;
+        settings_native(output, 0x9208U, make_u16(21U));
+        output.finalize();
+        const size_t count = source.entries().size();
+        const auto result = translate_xmp_light_source_metadata(source, options,
+                                                                &output);
+        EXPECT_EQ(result.status, expected);
+        ASSERT_EQ(output.entries().size(), 1U);
+        EXPECT_EQ(output.entry(0U).value.data.u64, 21U);
+        EXPECT_EQ(translate_xmp_light_source_metadata(source, options, &source)
+                      .status,
+                  expected);
+        EXPECT_EQ(source.entries().size(), count);
+    }
+
+    TEST(MetadataLightSource, ClosedCodeSetPreservesEveryDefinedInteger)
+    {
+        uint32_t accepted = 0U;
+        for (uint16_t code = 0U; code <= 256U; ++code) {
+            bool known = false;
+            for (const uint16_t candidate : kLightCodes)
+                known = known || code == candidate;
+            for (const bool text : { false, true }) {
+                MetaStore source;
+                settings_xmp(source, "LightSource",
+                             text ? make_text(source.arena(),
+                                              std::to_string(code),
+                                              TextEncoding::Ascii)
+                                  : make_u32(code));
+                if (!known) {
+                    light_failure(source, SettingsStatus::ValueOutOfRange);
+                    continue;
+                }
+                source.finalize();
+                MetaStore output;
+                const auto result
+                    = translate_xmp_light_source_metadata(source, {}, &output);
+                ASSERT_EQ(result.status, SettingsStatus::Ok) << code;
+                EXPECT_EQ(result.source_properties, 1U);
+                EXPECT_EQ(result.entries_added, 1U);
+                EXPECT_EQ(result.failed_mapping,
+                          MetadataCaptureTranslationMapping::None);
+                const Entry* native = settings_find(output, 0x9208U);
+                ASSERT_NE(native, nullptr);
+                EXPECT_EQ(native->value.kind, MetaValueKind::Scalar);
+                EXPECT_EQ(native->value.elem_type, MetaElementType::U16);
+                EXPECT_EQ(native->value.count, 1U);
+                EXPECT_EQ(native->value.data.u64, code);
+                EXPECT_EQ(translate_xmp_light_source_metadata(output, {},
+                                                              &output)
+                              .groups_unchanged,
+                          1U);
+            }
+            accepted += known ? 1U : 0U;
+        }
+        EXPECT_EQ(accepted, 32U);
+    }
+
+    TEST(MetadataLightSource, UniqueLabelsAndExplicitAliasesOwnTheirProvenance)
+    {
+        for (const uint16_t code : kLightCodes) {
+            if (code == 1U || code == 25U)
+                continue;
+            MetaStore output;
+            {
+                MetaStore source;
+                settings_xmp(source, "LightSource",
+                             make_text(source.arena(),
+                                       exif_light_source_name(code),
+                                       TextEncoding::Utf8));
+                source.finalize();
+                ASSERT_EQ(translate_xmp_light_source_metadata(source, {},
+                                                              &output)
+                              .status,
+                          SettingsStatus::Ok);
+            }
+            const Entry* native = settings_find(output, 0x9208U);
+            ASSERT_NE(native, nullptr);
+            EXPECT_EQ(native->value.data.u64, code);
+            const auto provenance = output.arena().span(
+                native->origin.wire_type_name);
+            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                           provenance.data()),
+                                       provenance.size()),
+                      "settings-source");
+        }
+        for (const bool cloudy : { false, true }) {
+            MetaStore source;
+            settings_xmp(source, "LightSource",
+                         make_text(source.arena(),
+                                   cloudy ? "Cloudy weather" : "Tungsten",
+                                   TextEncoding::Unknown));
+            source.finalize();
+            ASSERT_EQ(
+                translate_xmp_light_source_metadata(source, {}, &source).status,
+                SettingsStatus::Ok);
+            EXPECT_EQ(settings_find(source, 0x9208U)->value.data.u64,
+                      cloudy ? 10U : 3U);
+        }
+    }
+
+    TEST(MetadataLightSource, AmbiguousDaylightNeverUsesNativeOrCaptureHints)
+    {
+        for (const SettingsPolicy policy :
+             { SettingsPolicy::FailOnConflict, SettingsPolicy::PreserveExisting,
+               SettingsPolicy::ReplaceExisting }) {
+            for (const uint16_t native_code : { 1U, 25U, 255U }) {
+                MetaStore source;
+                settings_xmp(source, "LightSource",
+                             make_text(source.arena(), "Daylight",
+                                       TextEncoding::Ascii));
+                if (native_code != 255U)
+                    settings_native(source, 0x9208U, make_u16(native_code));
+                settings_native(source, 0xa403U, make_u16(0U));
+                settings_native(source, 0x9209U, make_u16(0U));
+                LightOptions options;
+                options.conflict_policy = policy;
+                light_failure(source, SettingsStatus::AmbiguousSource, options);
+                MetaStore output;
+                const auto result
+                    = translate_xmp_light_source_metadata(source, options,
+                                                          &output);
+                EXPECT_EQ(result.failed_mapping,
+                          MetadataCaptureTranslationMapping::XmpLightSource);
+                EXPECT_EQ(result.failed_source_entry, 0U);
+            }
+        }
+    }
+
+    TEST(MetadataLightSource, DirtySelectionNamespaceAndShapesAreExplicit)
+    {
+        MetaStore source;
+        settings_xmp(source, "LightSource", make_u16(25U), EntryFlags::None);
+        settings_xmp(source, "LightSource", make_u16(3U), EntryFlags::Dirty,
+                     "urn:foreign");
+        settings_xmp(source, "LightSourceExtra", make_u16(3U));
+        settings_native(source, 0x9209U, make_u16(95U));
+        settings_native(source, 0xa403U, make_u16(1U));
+        source.finalize();
+        MetaStore output;
+        ASSERT_EQ(
+            translate_xmp_light_source_metadata(source, {}, &output).status,
+            SettingsStatus::Ok);
+        EXPECT_EQ(settings_find(output, 0x9208U), nullptr);
+        LightOptions all;
+        all.source_mode = MetadataCaptureTranslationSourceMode::All;
+        ASSERT_EQ(
+            translate_xmp_light_source_metadata(source, all, &output).status,
+            SettingsStatus::Ok);
+        EXPECT_EQ(settings_find(output, 0x9208U)->value.data.u64, 25U);
+        EXPECT_EQ(settings_find(output, 0x9209U)->value.data.u64, 95U);
+        EXPECT_EQ(settings_find(output, 0xa403U)->value.data.u64, 1U);
+        for (const std::string_view path :
+             { "LightSource[1]", "LightSource/?xml:lang",
+               "LightSource/Value" }) {
+            MetaStore bad;
+            settings_xmp(bad, path, make_u16(1U));
+            light_failure(bad, SettingsStatus::UnsupportedSourceShape);
+        }
+        MetaStore duplicate;
+        settings_xmp(duplicate, "LightSource", make_u16(1U));
+        settings_xmp(duplicate, "LightSource", make_u16(1U));
+        light_failure(duplicate, SettingsStatus::AmbiguousSource);
+    }
+
+    TEST(MetadataLightSource, RejectsCoercionMalformedTextAndOverflow)
+    {
+        for (const std::string_view text :
+             { "", "daylight", "D65 ", " 21", "+21", "-1", "21.0", "2.1e1",
+               "21/1", "Tungsten (Incandescent)", "6500K" }) {
+            SCOPED_TRACE(text);
+            MetaStore source;
+            settings_xmp(source, "LightSource",
+                         make_text(source.arena(), text, TextEncoding::Ascii));
+            light_failure(source, SettingsStatus::InvalidNumericValue);
+        }
+        for (const std::string_view text :
+             { "65535", "18446744073709551616" }) {
+            MetaStore source;
+            settings_xmp(source, "LightSource",
+                         make_text(source.arena(), text, TextEncoding::Ascii));
+            light_failure(source, SettingsStatus::ValueOutOfRange);
+        }
+        for (const MetaValue value :
+             { make_i32(-1), make_u64(UINT64_MAX),
+               make_f64_bits(0x3ff0000000000000ULL), make_urational(1U, 1U),
+               make_srational(1, 1) }) {
+            MetaStore source;
+            settings_xmp(source, "LightSource", value);
+            light_failure(source,
+                          value.elem_type == MetaElementType::I32
+                                  || value.elem_type == MetaElementType::U64
+                              ? SettingsStatus::ValueOutOfRange
+                              : SettingsStatus::InvalidSourceValue);
+        }
+        MetaStore array;
+        MetaValue value = make_u16(1U);
+        value.count     = 2U;
+        settings_xmp(array, "LightSource", value);
+        light_failure(array, SettingsStatus::InvalidSourceValue);
+        MetaStore encoding;
+        settings_xmp(encoding, "LightSource",
+                     make_text(encoding.arena(), "D65", TextEncoding::Utf16LE));
+        light_failure(encoding, SettingsStatus::InvalidSourceValue);
+        MetaStore signed_value;
+        settings_xmp(signed_value, "LightSource", make_i32(25));
+        signed_value.finalize();
+        ASSERT_EQ(translate_xmp_light_source_metadata(signed_value, {},
+                                                      &signed_value)
+                      .status,
+                  SettingsStatus::Ok);
+        EXPECT_EQ(settings_find(signed_value, 0x9208U)->value.data.u64, 25U);
+    }
+
+    TEST(MetadataLightSource, NativeTypeConflictsAndDuplicateRepair)
+    {
+        MetaStore source;
+        settings_xmp(source, "LightSource", make_u16(25U));
+        settings_native(source, 0x9208U, make_u32(25U));
+        settings_native(source, 0x9208U, make_u16(1U));
+        light_failure(source, SettingsStatus::NativeConflict);
+        LightOptions options;
+        options.conflict_policy = SettingsPolicy::PreserveExisting;
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_light_source_metadata(source, options, &output)
+                      .groups_preserved,
+                  1U);
+        EXPECT_EQ(settings_active_count(output, 0x9208U), 2U);
+        options.conflict_policy = SettingsPolicy::ReplaceExisting;
+        const auto result = translate_xmp_light_source_metadata(source, options,
+                                                                &output);
+        ASSERT_EQ(result.status, SettingsStatus::Ok);
+        EXPECT_EQ(result.entries_updated, 1U);
+        EXPECT_EQ(result.entries_removed, 1U);
+        ASSERT_EQ(settings_active_count(output, 0x9208U), 1U);
+        EXPECT_EQ(settings_find(output, 0x9208U)->value.elem_type,
+                  MetaElementType::U16);
+        EXPECT_EQ(settings_find(output, 0x9208U)->value.data.u64, 25U);
+    }
+
+    TEST(MetadataLightSource,
+         ExplicitDeletionRetainsUnrelatedCaptureAndOmission)
+    {
+        MetaStore source;
+        settings_xmp(source, "LightSource",
+                     make_text(source.arena(), "Daylight", TextEncoding::Ascii),
+                     EntryFlags::Dirty | EntryFlags::Deleted);
+        settings_native(source, 0x9208U, make_u16(25U));
+        settings_native(source, 0x9208U, make_u16(1U));
+        settings_native(source, 0x9209U, make_u16(95U));
+        settings_native(source, 0xa403U, make_u16(1U));
+        settings_native(source, 0xa20bU, make_urational(7U, 3U));
+        light_failure(source, SettingsStatus::NativeConflict);
+        LightOptions options;
+        options.conflict_policy = SettingsPolicy::ReplaceExisting;
+        const auto result = translate_xmp_light_source_metadata(source, options,
+                                                                &source);
+        ASSERT_EQ(result.status, SettingsStatus::Ok);
+        EXPECT_EQ(result.entries_removed, 2U);
+        EXPECT_EQ(settings_find(source, 0x9208U), nullptr);
+        EXPECT_EQ(settings_find(source, 0x9209U)->value.data.u64, 95U);
+        EXPECT_EQ(settings_find(source, 0xa403U)->value.data.u64, 1U);
+        EXPECT_NE(settings_find(source, 0xa20bU), nullptr);
+        MetaStore omitted;
+        settings_native(omitted, 0x9208U, make_u16(25U));
+        settings_xmp(omitted, "LightSource", make_u16(1U), EntryFlags::Deleted);
+        omitted.finalize();
+        ASSERT_EQ(translate_xmp_light_source_metadata(omitted, options, &omitted)
+                      .status,
+                  SettingsStatus::Ok);
+        EXPECT_EQ(settings_find(omitted, 0x9208U)->value.data.u64, 25U);
+    }
+
+    TEST(MetadataLightSource, ResourceFailuresPreserveAliasedAndSeparateOutput)
+    {
+        MetaStore source;
+        settings_xmp(source, "LightSource",
+                     make_text(source.arena(), "D65", TextEncoding::Ascii));
+        LightOptions options;
+        options.max_text_bytes_per_property = 2U;
+        light_failure(source, SettingsStatus::ValueTooLong, options);
+        options                      = {};
+        options.max_total_text_bytes = 2U;
+        light_failure(source, SettingsStatus::SourceLimitExceeded, options);
+        options                   = {};
+        options.max_added_entries = 2U;
+        light_failure(source, SettingsStatus::InvalidOptions, options);
+        options             = {};
+        options.source_mode = static_cast<MetadataCaptureTranslationSourceMode>(
+            255U);
+        light_failure(source, SettingsStatus::InvalidOptions, options);
+        MetaStore duplicate;
+        settings_xmp(duplicate, "LightSource", make_u16(25U));
+        settings_native(duplicate, 0x9208U, make_u16(1U));
+        settings_native(duplicate, 0x9208U, make_u16(1U));
+        options                 = {};
+        options.conflict_policy = SettingsPolicy::ReplaceExisting;
+        options.max_operations  = 1U;
+        light_failure(duplicate, SettingsStatus::OperationLimitExceeded,
+                      options);
+        MetaStore unfinalized;
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_light_source_metadata(unfinalized, {}, nullptr)
+                      .status,
+                  SettingsStatus::NullOutput);
+        EXPECT_EQ(translate_xmp_light_source_metadata(unfinalized, {}, &output)
+                      .status,
+                  SettingsStatus::SourceNotFinalized);
+        EXPECT_STREQ(metadata_capture_translation_mapping_name(
+                         MetadataCaptureTranslationMapping::XmpLightSource),
+                     "xmp_light_source");
+    }
+
+    TEST(MetadataLightSource, NativePortableRoundTripRetainsEveryDefinedCode)
+    {
+        for (const uint16_t code : kLightCodes) {
+            MetaStore native;
+            settings_native(native, 0x9208U, make_u16(code));
+            native.finalize();
+            XmpPortableOptions options;
+            options.include_existing_xmp = false;
+            std::array<std::byte, 4096> bytes {};
+            const auto dumped = dump_xmp_portable(native, bytes, options);
+            ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+            const std::string_view xml(reinterpret_cast<const char*>(
+                                           bytes.data()),
+                                       dumped.written);
+            if (code == 1U || code == 25U) {
+                const std::string expected = "<exif:LightSource>"
+                                             + std::to_string(code)
+                                             + "</exif:LightSource>";
+                EXPECT_NE(xml.find(expected), std::string_view::npos);
+            }
+            MetaStore restored;
+            ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(), dumped.written),
+                                        restored)
+                          .status,
+                      XmpDecodeStatus::Ok);
+            restored.finalize();
+            LightOptions all;
+            all.source_mode = MetadataCaptureTranslationSourceMode::All;
+            ASSERT_EQ(translate_xmp_light_source_metadata(restored, all,
+                                                          &restored)
+                          .status,
+                      SettingsStatus::Ok)
+                << code;
+            ASSERT_NE(settings_find(restored, 0x9208U), nullptr);
+            EXPECT_EQ(settings_find(restored, 0x9208U)->value.data.u64, code);
+        }
     }
 }  // namespace
 }  // namespace openmeta

@@ -44,6 +44,7 @@ namespace {
         ExposureIndex,
         FlashEnergy,
         Flash,
+        LightSource,
     };
 
     enum class NumericParseStatus : uint8_t {
@@ -711,6 +712,7 @@ namespace {
         case NativeCaptureField::ExposureIndex: tag = 0xa215U; break;
         case NativeCaptureField::FlashEnergy: tag = 0xa20bU; break;
         case NativeCaptureField::Flash: tag = 0x9209U; break;
+        case NativeCaptureField::LightSource: tag = 0x9208U; break;
         }
         return entry.key.data.exif_tag.tag == tag;
     }
@@ -843,6 +845,7 @@ namespace {
         case NativeCaptureField::ExposureIndex: tag = 0xa215U; break;
         case NativeCaptureField::FlashEnergy: tag = 0xa20bU; break;
         case NativeCaptureField::Flash: tag = 0x9209U; break;
+        case NativeCaptureField::LightSource: tag = 0x9208U; break;
         }
         return make_exif_tag_key(arena, "exififd", tag);
     }
@@ -1656,6 +1659,139 @@ translate_xmp_flash_metadata(const MetaStore& source,
                                 options.max_operations, result, out_store);
 }
 
+MetadataCaptureTranslationResult
+translate_xmp_light_source_metadata(
+    const MetaStore& source,
+    const MetadataLightSourceTranslationOptions& options, MetaStore* out_store)
+{
+    using Status = MetadataCaptureTranslationStatus;
+    using Mode   = MetadataCaptureTranslationSourceMode;
+    using Policy = MetadataCaptureTranslationConflictPolicy;
+    if (!out_store)
+        return capture_error(Status::NullOutput);
+    if (!source.is_finalized())
+        return capture_error(Status::SourceNotFinalized);
+    if ((options.source_mode != Mode::DirtyOnly
+         && options.source_mode != Mode::All)
+        || (options.conflict_policy != Policy::PreserveExisting
+            && options.conflict_policy != Policy::FailOnConflict
+            && options.conflict_policy != Policy::ReplaceExisting)
+        || options.max_added_entries == 0U
+        || options.max_added_entries
+               > kMetadataLightSourceTranslationMaxAddedEntries
+        || options.max_operations == 0U
+        || options.max_operations > kMetadataCaptureTranslationMaxOperations
+        || options.max_text_bytes_per_property == 0U
+        || options.max_text_bytes_per_property
+               > kMetadataCaptureTranslationMaxTextBytesPerProperty
+        || options.max_total_text_bytes == 0U
+        || options.max_total_text_bytes
+               > kMetadataLightSourceTranslationMaxTotalTextBytes)
+        return capture_error(Status::InvalidOptions);
+
+    constexpr std::string_view path = "LightSource";
+    CaptureSource property;
+    Status status = find_capture_source(source, std::span(&path, 1U),
+                                        options.source_mode, &property);
+    MetadataCaptureTranslationResult result;
+    result.failed_mapping = MetadataCaptureTranslationMapping::XmpLightSource;
+    result.failed_source_entry = property.entry_id;
+    for (EntryId id = 0U; status == Status::Ok && id < source.entries().size();
+         ++id) {
+        const Entry& entry = source.entry(id);
+        if (entry.key.kind != MetaKeyKind::XmpProperty
+            || arena_text(source.arena(), entry.key.data.xmp_property.schema_ns)
+                   != kXmpNsExif)
+            continue;
+        const bool dirty = any(entry.flags, EntryFlags::Dirty);
+        if ((!dirty && options.source_mode == Mode::DirtyOnly)
+            || (!dirty && any(entry.flags, EntryFlags::Deleted)))
+            continue;
+        const std::string_view candidate
+            = arena_text(source.arena(),
+                         entry.key.data.xmp_property.property_path);
+        if (candidate.starts_with("LightSource/")
+            || candidate.starts_with("LightSource[")) {
+            status                     = Status::UnsupportedSourceShape;
+            result.failed_source_entry = id;
+        }
+    }
+    CapturePlannedGroup group;
+    group.mapping      = MetadataCaptureTranslationMapping::XmpLightSource;
+    group.field        = NativeCaptureField::LightSource;
+    group.source_entry = property.entry_id;
+    if (status == Status::Ok && property.found && !property.deleted) {
+        const MetaValue& value = *property.value;
+        uint64_t code          = 0U;
+        if (value.kind == MetaValueKind::Text) {
+            const std::string_view input = arena_text(source.arena(),
+                                                      value.data.span);
+            if (input.size() > options.max_text_bytes_per_property)
+                status = Status::ValueTooLong;
+            else if (input.size() > options.max_total_text_bytes)
+                status = Status::SourceLimitExceeded;
+            else if (value.text_encoding != TextEncoding::Ascii
+                     && value.text_encoding != TextEncoding::Utf8
+                     && value.text_encoding != TextEncoding::Unknown)
+                status = Status::InvalidSourceValue;
+            else {
+                const NumericParseStatus parsed = parse_digits(input, &code);
+                if (parsed != NumericParseStatus::Ok) {
+                    uint32_t matches = 0U;
+                    for (uint16_t candidate = 0U; candidate <= 255U;
+                         ++candidate) {
+                        if (!(candidate <= 4U
+                              || (candidate >= 9U && candidate <= 34U)
+                              || candidate == 255U))
+                            continue;
+                        const std::string_view label = exif_light_source_name(
+                            candidate);
+                        if ((!label.empty() && input == label)
+                            || (candidate == 3U && input == "Tungsten")
+                            || (candidate == 10U && input == "Cloudy weather")) {
+                            code = candidate;
+                            ++matches;
+                        }
+                    }
+                    if (matches > 1U)
+                        status = Status::AmbiguousSource;
+                    else if (matches == 0U)
+                        status = numeric_status(parsed);
+                }
+            }
+        } else if (value.kind != MetaValueKind::Scalar || value.count != 1U) {
+            status = Status::InvalidSourceValue;
+        } else if (!scalar_unsigned(value, &code)) {
+            int64_t signed_code = 0;
+            if (!scalar_signed(value, &signed_code))
+                status = Status::InvalidSourceValue;
+            else if (signed_code < 0)
+                status = Status::ValueOutOfRange;
+            else
+                code = static_cast<uint64_t>(signed_code);
+        }
+        if (status == Status::Ok
+            && !(code <= 4U || (code >= 9U && code <= 34U) || code == 255U))
+            status = Status::ValueOutOfRange;
+        if (status == Status::Ok) {
+            group.value   = make_u16(static_cast<uint16_t>(code));
+            group.present = true;
+        }
+    }
+    if (status != Status::Ok) {
+        result.status = status;
+        return result;
+    }
+    result.failed_mapping      = MetadataCaptureTranslationMapping::None;
+    result.failed_source_entry = kInvalidEntryId;
+    result.source_properties   = property.found ? 1U : 0U;
+    return apply_capture_groups(source,
+                                std::span(&group, property.found ? 1U : 0U),
+                                options.conflict_policy,
+                                options.max_added_entries,
+                                options.max_operations, result, out_store);
+}
+
 const char*
 metadata_capture_translation_status_name(
     MetadataCaptureTranslationStatus status) noexcept
@@ -1702,6 +1838,8 @@ metadata_capture_translation_mapping_name(
     switch (mapping) {
     case MetadataCaptureTranslationMapping::None: return "none";
     case MetadataCaptureTranslationMapping::XmpFlash: return "xmp_flash";
+    case MetadataCaptureTranslationMapping::XmpLightSource:
+        return "xmp_light_source";
     case MetadataCaptureTranslationMapping::XmpSubjectDistance:
         return "xmp_subject_distance";
     case MetadataCaptureTranslationMapping::XmpDigitalZoomRatio:

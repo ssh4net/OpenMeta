@@ -148,8 +148,7 @@ active property, and 1536 total source text bytes. Limits may be lowered and
 never cause truncation. Preparation may allocate. EXIF versions are retained;
 the API does not create or upgrade version metadata.
 
-Capture coverage has no fixed all-tags denominator. Light-source label ambiguity,
-APEX conversions, extended sensitivity groups, lens/spectral text, and
+Capture coverage has no fixed all-tags denominator. APEX conversions, extended sensitivity groups, lens/spectral text, and
 focal-plane/subject arrays still need separate contracts. These twelve fields
 do not close arbitrary EXIF writeback.
 
@@ -245,6 +244,55 @@ For portable XMP readback, use `include_existing_xmp=True` and
 structure or scalar spelling. Snapshot transfer uses `xmp_include_existing`
 and `xmp_conflict_policy` for the same choices. Native-only portable output
 continues to use the existing Flash projection.
+
+## LightSource writeback
+
+`translate_xmp_light_source_metadata(...)` and Python
+`Document.translate_light_source_metadata(...)` use
+`MetadataLightSourceTranslationOptions`, contract version 1, to write one
+ExifIFD LightSource (0x9208) SHORT from exact `exif:LightSource`.
+
+Accepted codes are `0..4`, `9..34`, and `255`: 32 values from the existing
+OpenMeta name table. This includes unknown (0), other (255), warm white
+fluorescent (16), and the newer light-source/LED codes 25..34. Undefined codes
+fail. No source means no change; the API does not create a default Unknown.
+
+Sources accept nonnegative signed or unsigned scalar integers, unsigned decimal
+integer text, and exact unique OpenMeta labels. Explicit aliases `Tungsten` and
+`Cloudy weather` map to 3 and 10. Numeric `1` and `25` remain distinct, while
+text `Daylight` returns `AmbiguousSource` because both codes use that display
+label. Native values, conflict policies, EXIF versions, white balance, Flash,
+DNG calibration illuminants and color temperature never resolve this ambiguity.
+Callers must supply an explicit numeric code when the source label is ambiguous.
+
+Text must use Ascii, Utf8, or Unknown encoding. Signs in text, whitespace,
+case changes, floating-point/scientific notation, fractions, arrays, unsupported
+encodings and unknown labels fail. Eligible indexed, qualified or nested
+LightSource paths return `UnsupportedSourceShape`. Foreign namespaces and other
+property names are ignored. Clean sources are ignored in default DirtyOnly mode;
+All selects active sources. Duplicate eligible sources fail.
+
+Native equivalence requires one SHORT with the selected code. Default
+FailOnConflict protects different values and wrong types. PreserveExisting
+retains native data; ReplaceExisting repairs types and duplicates. A dirty
+source tombstone removes native LightSource under ReplaceExisting. Tombstone
+contents are not parsed, so an ambiguous old label can still be explicitly
+removed. Clean tombstones are ignored. Source omission retains native metadata.
+
+Limits are one addition, 1024 operations, 128 text bytes per active property,
+and 128 total text bytes. Limits may be lowered; invalid settings fail. All
+changes share the existing atomic capture transaction, including aliased
+source/output and owned provenance. Preparation may allocate. Existing capture
+option layouts and EXIF version metadata are retained. This field operation
+does not claim full EXIF-version conformance or infer other capture metadata.
+
+Portable native-to-XMP output now emits numeric `1` and `25` for these two
+LightSource values, preserving their distinction. Other defined values retain
+the existing unique labels. Every defined native code survives portable dump,
+XMP decode and this reverse API. Existing XMP retained with ExistingWins keeps
+its original spelling, including ambiguous `Daylight`; previously lost numeric
+identity cannot be recovered from that text alone. Human-readable native names
+and DNG calibration-illuminant display names remain unchanged.
 
 ## Target-Bound Image Geometry
 

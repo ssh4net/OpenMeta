@@ -286,6 +286,10 @@ Host-facing API map
      - Experimental
      - Transactional v1 satellites, map datum, processing method, and area with explicit ASCII/Unicode encoding, version, conflict, and removal contracts.
        Python provides the same operation. See :doc:`translation`.
+   * - LightSource translation: ``translate_xmp_light_source_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental
+     - One bounded LightSource SHORT with explicit code/label ambiguity, typed conflicts and removal. See :doc:`translation`.
    * - Flash translation: ``translate_xmp_flash_metadata(...)``
      - ``openmeta/metadata_translation.h``
      - Experimental
