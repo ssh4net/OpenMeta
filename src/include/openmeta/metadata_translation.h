@@ -853,6 +853,11 @@ enum class MetadataGpsTranslationMapping : uint8_t {
     ExifGpsDestLongitude,
     ExifGpsDestBearing,
     ExifGpsDestDistance,
+    ExifGpsStatus,
+    ExifGpsMeasureMode,
+    ExifGpsDop,
+    ExifGpsDifferential,
+    ExifGpsHPositioningError,
 };
 enum class MetadataGpsTranslationStatus : uint8_t {
     Ok,
@@ -1018,6 +1023,48 @@ translate_xmp_gps_destination_metadata(
     const MetaStore& source,
     const MetadataGpsDestinationTranslationOptions& options,
     MetaStore* out_store);
+
+inline constexpr uint32_t kMetadataGpsQualityTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataGpsQualityTranslationMaxAddedEntries = 6U;
+inline constexpr uint64_t kMetadataGpsQualityTranslationMaxTotalTextBytes = 640U;
+
+struct MetadataGpsQualityTranslationOptions final {
+    MetadataGpsTranslationSourceMode source_mode
+        = MetadataGpsTranslationSourceMode::DirtyOnly;
+    MetadataGpsTranslationConflictPolicy conflict_policy
+        = MetadataGpsTranslationConflictPolicy::FailOnConflict;
+    bool status_to_exif           = true;
+    bool measure_mode_to_exif     = true;
+    bool dop_to_exif              = true;
+    bool differential_to_exif     = true;
+    bool horizontal_error_to_exif = true;
+    uint32_t max_added_entries = kMetadataGpsQualityTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataGpsTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataGpsTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataGpsQualityTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Atomically write receiver status, mode, DOP, correction, and accuracy.
+ *
+ * GPSStatus accepts A/V or Measurement Active/Measurement Void. Measure mode
+ * accepts integer 2/3 or their exact text forms. Differential accepts integer
+ * 0/1, their text forms, or No Correction/Differential Corrected. DOP and
+ * horizontal error use exact nonnegative rational syntax; horizontal error is
+ * in meters. Differential requires GPS 2.2 through 2.4; horizontal error
+ * requires GPS 2.3 through 2.4. Versions are never inferred from source XMP
+ * or upgraded; missing native versions default to 2.3.0.0.
+ *
+ * Each source is independent. One dirty tombstone removes its native field.
+ * Selection, conflict policy, version cleanup, provenance, limits, and failure
+ * atomicity follow the primary GPS contract. Preparation may allocate.
+ */
+MetadataGpsTranslationResult
+translate_xmp_gps_quality_metadata(
+    const MetaStore& source,
+    const MetadataGpsQualityTranslationOptions& options, MetaStore* out_store);
 
 const char*
 metadata_gps_translation_status_name(

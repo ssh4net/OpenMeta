@@ -1,5 +1,18 @@
 # OpenMeta Changes
 
+## 0.4.135 - 2026-09-10
+
+Changes compared with `0.4.134`.
+
+### Added
+
+- Added C++ and Python GPS receiver-quality writeback for status, measurement
+  mode, DOP, differential correction, and horizontal positioning error.
+- Extended atomic GPS transactions to typed singletons with independent flags,
+  explicit enum/version contracts, exact rationals, and version cleanup.
+- Added unit, JPEG/Classic TIFF/BigTIFF persistence, Python, and installed
+  shared-consumer checks while preserving existing GPS API scopes.
+
 ## 0.4.134 - 2026-09-09
 
 Changes compared with `0.4.133`.

@@ -534,6 +534,39 @@ with tempfile.TemporaryDirectory() as temporary:
         raise AssertionError('GPS destination addition budget ignored')
     assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'gps_quality.jpg'
+    xml = b'''<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">
+<rdf:Description xmlns:e=\"http://ns.adobe.com/exif/1.0/\">
+<e:GPSStatus>V</e:GPSStatus><e:GPSMeasureMode>3</e:GPSMeasureMode><e:GPSDOP>1.25</e:GPSDOP>
+<e:GPSDifferential>1</e:GPSDifferential><e:GPSHPositioningError>4.5</e:GPSHPositioningError>
+</rdf:Description></rdf:RDF>'''
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    document = openmeta.read(str(path))
+    count = document.entry_count
+    assert openmeta.METADATA_GPS_QUALITY_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_GPS_QUALITY_TRANSLATION_MAX_ADDED_ENTRIES == 6
+    assert openmeta.METADATA_GPS_QUALITY_TRANSLATION_MAX_TOTAL_TEXT_BYTES == 640
+    assert document.translate_gps_quality_metadata().entry_count == count
+    mode = openmeta.MetadataGpsTranslationSourceMode.All
+    translated = document.translate_gps_quality_metadata(source_mode=mode)
+    assert translated.entry_count == count + 6
+    assert translated.translate_gps_quality_metadata(source_mode=mode).entry_count == count + 6
+    payload, _ = translated.dump_xmp_portable()
+    assert b'<exif:GPSStatus>Measurement Void</exif:GPSStatus>' in payload
+    for selected in ('status_to_exif', 'measure_mode_to_exif', 'dop_to_exif', 'differential_to_exif', 'horizontal_error_to_exif'):
+        one = document.translate_gps_quality_metadata(source_mode=mode,
+            **{name: name == selected for name in ('status_to_exif', 'measure_mode_to_exif', 'dop_to_exif', 'differential_to_exif', 'horizontal_error_to_exif')})
+        assert one.entry_count == count + 2
+    try:
+        document.translate_gps_quality_metadata(source_mode=mode, max_added_entries=5)
+    except ValueError as exc:
+        assert 'entry_limit_exceeded' in str(exc)
+    else:
+        raise AssertionError('GPS quality addition budget ignored')
+    assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

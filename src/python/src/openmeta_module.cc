@@ -6206,6 +6206,58 @@ translate_gps_destination_metadata_document(
 }
 
 static std::shared_ptr<PyDocument>
+translate_gps_quality_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataGpsTranslationSourceMode source_mode,
+    MetadataGpsTranslationConflictPolicy conflict_policy, bool status_to_exif,
+    bool measure_mode_to_exif, bool dop_to_exif, bool differential_to_exif,
+    bool horizontal_error_to_exif, uint32_t max_added_entries,
+    uint32_t max_operations, uint32_t max_text_bytes_per_property,
+    uint64_t max_total_text_bytes)
+{
+    MetadataGpsQualityTranslationOptions options;
+    options.source_mode                 = source_mode;
+    options.conflict_policy             = conflict_policy;
+    options.status_to_exif              = status_to_exif;
+    options.measure_mode_to_exif        = measure_mode_to_exif;
+    options.dop_to_exif                 = dop_to_exif;
+    options.differential_to_exif        = differential_to_exif;
+    options.horizontal_error_to_exif    = horizontal_error_to_exif;
+    options.max_added_entries           = max_added_entries;
+    options.max_operations              = max_operations;
+    options.max_text_bytes_per_property = max_text_bytes_per_property;
+    options.max_total_text_bytes        = max_total_text_bytes;
+
+    MetaStore translated;
+    MetadataGpsTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_gps_quality_metadata(source->store, options,
+                                                    &translated);
+    }
+    if (result.status != MetadataGpsTranslationStatus::Ok) {
+        std::string message = "metadata gps quality translation failed: ";
+        message += metadata_gps_translation_status_name(result.status);
+        if (result.failed_mapping != MetadataGpsTranslationMapping::None) {
+            message += " for ";
+            message += metadata_gps_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
 translate_technical_metadata_document(
     std::shared_ptr<PyDocument> source,
     MetadataTechnicalTranslationSourceMode source_mode,
@@ -8569,7 +8621,15 @@ NB_MODULE(_openmeta, m)
         .value("ExifGpsDestBearing",
                MetadataGpsTranslationMapping::ExifGpsDestBearing)
         .value("ExifGpsDestDistance",
-               MetadataGpsTranslationMapping::ExifGpsDestDistance);
+               MetadataGpsTranslationMapping::ExifGpsDestDistance)
+        .value("ExifGpsStatus", MetadataGpsTranslationMapping::ExifGpsStatus)
+        .value("ExifGpsMeasureMode",
+               MetadataGpsTranslationMapping::ExifGpsMeasureMode)
+        .value("ExifGpsDop", MetadataGpsTranslationMapping::ExifGpsDop)
+        .value("ExifGpsDifferential",
+               MetadataGpsTranslationMapping::ExifGpsDifferential)
+        .value("ExifGpsHPositioningError",
+               MetadataGpsTranslationMapping::ExifGpsHPositioningError);
     m.attr("METADATA_GPS_NAVIGATION_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataGpsNavigationTranslationContractVersion);
     m.attr("METADATA_GPS_NAVIGATION_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
@@ -8582,6 +8642,12 @@ NB_MODULE(_openmeta, m)
         kMetadataGpsDestinationTranslationMaxAddedEntries);
     m.attr("METADATA_GPS_DESTINATION_TRANSLATION_MAX_TOTAL_TEXT_BYTES")
         = nb::int_(kMetadataGpsDestinationTranslationMaxTotalTextBytes);
+    m.attr("METADATA_GPS_QUALITY_TRANSLATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataGpsQualityTranslationContractVersion);
+    m.attr("METADATA_GPS_QUALITY_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
+        kMetadataGpsQualityTranslationMaxAddedEntries);
+    m.attr("METADATA_GPS_QUALITY_TRANSLATION_MAX_TOTAL_TEXT_BYTES") = nb::int_(
+        kMetadataGpsQualityTranslationMaxTotalTextBytes);
 
     nb::enum_<MetadataGpsTranslationStatus>(m, "MetadataGpsTranslationStatus")
         .value("Ok", MetadataGpsTranslationStatus::Ok)
@@ -9582,6 +9648,21 @@ NB_MODULE(_openmeta, m)
              = kMetadataGpsTranslationMaxTextBytesPerProperty,
              "max_total_text_bytes"_a
              = kMetadataGpsDestinationTranslationMaxTotalTextBytes)
+        .def("translate_gps_quality_metadata",
+             &translate_gps_quality_metadata_document,
+             "source_mode"_a = MetadataGpsTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataGpsTranslationConflictPolicy::FailOnConflict,
+             "status_to_exif"_a = true, "measure_mode_to_exif"_a = true,
+             "dop_to_exif"_a = true, "differential_to_exif"_a = true,
+             "horizontal_error_to_exif"_a = true,
+             "max_added_entries"_a
+             = kMetadataGpsQualityTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataGpsTranslationMaxOperations,
+             "max_text_bytes_per_property"_a
+             = kMetadataGpsTranslationMaxTextBytesPerProperty,
+             "max_total_text_bytes"_a
+             = kMetadataGpsQualityTranslationMaxTotalTextBytes)
         .def("translate_technical_metadata",
              &translate_technical_metadata_document,
              "source_mode"_a = MetadataTechnicalTranslationSourceMode::DirtyOnly,

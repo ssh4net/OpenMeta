@@ -1495,4 +1495,341 @@ TEST(MetadataGpsDestination,
               0U);
 }
 
+namespace {
+    using QualityOptions = MetadataGpsQualityTranslationOptions;
+    static constexpr std::array<uint16_t, 5> kQualityTags { 9U, 10U, 11U, 30U,
+                                                            31U };
+    static MetaStore quality(EntryFlags flags = EntryFlags::Dirty)
+    {
+        MetaStore store;
+        xmp_text(store, "GPSStatus", "Measurement Void", flags);
+        xmp_text(store, "GPSMeasureMode", "3", flags);
+        xmp_text(store, "GPSDOP", "1.25", flags);
+        xmp_text(store, "GPSDifferential", "Differential Corrected", flags);
+        xmp_text(store, "GPSHPositioningError", "4.5", flags);
+        return store;
+    }
+    static void expect_quality_failure(MetaStore& source, Status expected,
+                                       QualityOptions options = {})
+    {
+        source.finalize();
+        const size_t count = source.entries().size();
+        MetaStore output;
+        native(output, 8U,
+               make_text(output.arena(), "sentinel", TextEncoding::Ascii));
+        output.finalize();
+        EXPECT_EQ(
+            translate_xmp_gps_quality_metadata(source, options, &output).status,
+            expected);
+        EXPECT_EQ(source.entries().size(), count);
+        ASSERT_EQ(output.entries().size(), 1U);
+        ASSERT_NE(gps(output, 8U), nullptr);
+        EXPECT_EQ(view(output, gps(output, 8U)->value.data.span), "sentinel");
+        EXPECT_EQ(
+            translate_xmp_gps_quality_metadata(source, options, &source).status,
+            expected);
+        EXPECT_EQ(source.entries().size(), count);
+    }
+}  // namespace
+
+TEST(MetadataGpsQuality, WritesFiveTypedSingletonsAndOwnsProvenance)
+{
+    MetaStore output;
+    {
+        MetaStore source = quality();
+        source.finalize();
+        const auto result = translate_xmp_gps_quality_metadata(source, {},
+                                                               &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.entries_added, 6U);
+        EXPECT_EQ(result.groups_translated, 5U);
+        EXPECT_EQ(result.source_properties, 5U);
+        EXPECT_EQ(source.entries().size(), 5U);
+    }
+    for (const uint16_t tag : kQualityTags) {
+        ASSERT_NE(gps(output, tag), nullptr);
+        EXPECT_EQ(view(output, gps(output, tag)->origin.wire_type_name),
+                  "gps-source");
+    }
+    EXPECT_EQ(view(output, gps(output, 9U)->value.data.span), "V");
+    EXPECT_EQ(view(output, gps(output, 10U)->value.data.span), "3");
+    EXPECT_EQ(gps(output, 11U)->value.data.ur.numer, 5U);
+    EXPECT_EQ(gps(output, 11U)->value.data.ur.denom, 4U);
+    EXPECT_EQ(gps(output, 30U)->value.elem_type, MetaElementType::U16);
+    EXPECT_EQ(gps(output, 30U)->value.data.u64, 1U);
+    EXPECT_EQ(gps(output, 31U)->value.data.ur.numer, 9U);
+    EXPECT_EQ(gps(output, 31U)->value.data.ur.denom, 2U);
+    const auto same = translate_xmp_gps_quality_metadata(output, {}, &output);
+    EXPECT_EQ(same.status, Status::Ok);
+    EXPECT_EQ(same.groups_unchanged, 5U);
+    EXPECT_EQ(same.entries_added, 0U);
+}
+TEST(MetadataGpsQuality, ClosedEnumsAcceptCanonicalCodesAndPortableAliases)
+{
+    for (const auto status :
+         { "A", "V", "Measurement Active", "Measurement Void" }) {
+        MetaStore source;
+        xmp_text(source, "GPSStatus", status);
+        source.finalize();
+        MetaStore output;
+        ASSERT_EQ(translate_xmp_gps_quality_metadata(source, {}, &output).status,
+                  Status::Ok);
+        EXPECT_EQ(view(output, gps(output, 9U)->value.data.span),
+                  std::string_view(status) == "A"
+                          || std::string_view(status) == "Measurement Active"
+                      ? "A"
+                      : "V");
+    }
+    for (const auto mode : { make_u32(2U), make_i32(3) }) {
+        MetaStore source;
+        xmp(source, "GPSMeasureMode", mode);
+        source.finalize();
+        MetaStore output;
+        ASSERT_EQ(translate_xmp_gps_quality_metadata(source, {}, &output).status,
+                  Status::Ok);
+        EXPECT_EQ(gps(output, 10U)->value.kind, MetaValueKind::Text);
+    }
+    for (const auto value :
+         { "0", "1", "No Correction", "Differential Corrected" }) {
+        MetaStore source;
+        xmp_text(source, "GPSDifferential", value);
+        source.finalize();
+        MetaStore output;
+        ASSERT_EQ(translate_xmp_gps_quality_metadata(source, {}, &output).status,
+                  Status::Ok);
+        EXPECT_EQ(gps(output, 30U)->value.data.u64,
+                  std::string_view(value) == "0"
+                          || std::string_view(value) == "No Correction"
+                      ? 0U
+                      : 1U);
+    }
+}
+TEST(MetadataGpsQuality, RejectsUnspecifiedEnumCodesAndCoercion)
+{
+    for (const auto path :
+         { "GPSStatus", "GPSMeasureMode", "GPSDifferential" }) {
+        for (const auto value :
+             { "", "01", "2.0", "1/1", "active", " A", "A ", "4" }) {
+            MetaStore source;
+            xmp_text(source, path, value);
+            expect_quality_failure(source, Status::InvalidSourceValue);
+        }
+    }
+    for (const auto path : { "GPSMeasureMode", "GPSDifferential" }) {
+        MetaStore source;
+        xmp(source, path, make_u32(4U));
+        expect_quality_failure(source, Status::ValueOutOfRange);
+        source = MetaStore {};
+        xmp(source, path, make_urational(1U, 1U));
+        expect_quality_failure(source, Status::InvalidSourceValue);
+    }
+}
+TEST(MetadataGpsQuality, RationalFieldsPreserveExactNonnegativeValues)
+{
+    for (const auto path : { "GPSDOP", "GPSHPositioningError" }) {
+        for (const auto value : { make_u32(0U), make_urational(7U, 3U) }) {
+            MetaStore source;
+            xmp(source, path, value);
+            source.finalize();
+            MetaStore output;
+            ASSERT_EQ(
+                translate_xmp_gps_quality_metadata(source, {}, &output).status,
+                Status::Ok);
+            const auto& result
+                = gps(output, std::string_view(path) == "GPSDOP" ? 11U : 31U)
+                      ->value;
+            EXPECT_EQ(result.elem_type, MetaElementType::URational);
+            EXPECT_EQ(result.data.ur.numer,
+                      value.elem_type == MetaElementType::U32 ? 0U : 7U);
+            EXPECT_EQ(result.data.ur.denom,
+                      value.elem_type == MetaElementType::U32 ? 1U : 3U);
+        }
+        for (const auto value : { "-1", "+1", "1e2", "1/0", "1m" }) {
+            MetaStore source;
+            xmp_text(source, path, value);
+            expect_quality_failure(source, Status::InvalidSourceValue);
+        }
+        MetaStore source;
+        xmp_text(source, path, "4294967296");
+        expect_quality_failure(source, Status::UnsupportedPrecision);
+        source = MetaStore {};
+        xmp(source, path, make_f64_bits(0x3ff0000000000000ULL));
+        expect_quality_failure(source, Status::InvalidSourceValue);
+    }
+}
+TEST(MetadataGpsQuality, VersionRequirementsDoNotUpgradeNativeGps)
+{
+    for (const auto path : { "GPSDifferential", "GPSHPositioningError" }) {
+        const uint8_t minimum = std::string_view(path) == "GPSDifferential"
+                                    ? 2U
+                                    : 3U;
+        for (const uint8_t minor : { 0U, 1U, 2U, 3U, 4U, 5U }) {
+            MetaStore source;
+            xmp_text(source, path, "1");
+            native(source, 0U,
+                   make_u8_array(source.arena(),
+                                 std::array<uint8_t, 4> { 2U, minor, 0U, 0U }));
+            source.finalize();
+            if (minor < minimum || minor > 4U) {
+                expect_quality_failure(source, Status::UnsupportedGpsVersion);
+            } else {
+                MetaStore output;
+                ASSERT_EQ(translate_xmp_gps_quality_metadata(source, {}, &output)
+                              .status,
+                          Status::Ok);
+                EXPECT_EQ(output.arena().span(
+                              gps(output, 0U)->value.data.span)[1],
+                          static_cast<std::byte>(minor));
+            }
+        }
+    }
+    MetaStore source = quality();
+    native(source, 0U, make_u32(2300U));
+    expect_quality_failure(source, Status::NativeConflict);
+}
+TEST(MetadataGpsQuality, IndependentSelectionIgnoresOtherApisAndNamespaces)
+{
+    MetaStore source = quality(EntryFlags::None);
+    source.finalize();
+    MetaStore output;
+    EXPECT_EQ(
+        translate_xmp_gps_quality_metadata(source, {}, &output).entries_added,
+        0U);
+    for (size_t i = 0U; i < 5U; ++i) {
+        QualityOptions options;
+        options.source_mode          = MetadataGpsTranslationSourceMode::All;
+        options.status_to_exif       = i == 0U;
+        options.measure_mode_to_exif = i == 1U;
+        options.dop_to_exif          = i == 2U;
+        options.differential_to_exif = i == 3U;
+        options.horizontal_error_to_exif = i == 4U;
+        const auto result = translate_xmp_gps_quality_metadata(source, options,
+                                                               &output);
+        EXPECT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.entries_added, 2U);
+    }
+    source = position();
+    xmp_text(source, "GPSDOP[1]", "1");
+    xmp(source, "GPSStatus", make_u32(1U), EntryFlags::Dirty, "foreign");
+    source.finalize();
+    EXPECT_EQ(
+        translate_xmp_gps_quality_metadata(source, {}, &output).entries_added,
+        0U);
+}
+TEST(MetadataGpsQuality, DuplicateSourceAndLateErrorsLeaveWholeOutputUnchanged)
+{
+    MetaStore source = quality();
+    xmp_text(source, "GPSStatus", "A");
+    expect_quality_failure(source, Status::AmbiguousSource);
+    source = quality();
+    xmp_text(source, "GPSHPositioningError", "-1");
+    expect_quality_failure(source, Status::AmbiguousSource);
+    source = MetaStore {};
+    xmp_text(source, "GPSStatus", "A");
+    xmp_text(source, "GPSHPositioningError", "-1");
+    expect_quality_failure(source, Status::InvalidSourceValue);
+}
+TEST(MetadataGpsQuality, NativeConflictsPreserveOrRepairSingletonDuplicates)
+{
+    MetaStore source = quality();
+    native(source, 11U, make_urational(99U, 1U));
+    native(source, 11U, make_u32(3U));
+    expect_quality_failure(source, Status::NativeConflict);
+    QualityOptions options;
+    options.conflict_policy = Policy::PreserveExisting;
+    MetaStore output;
+    const auto kept = translate_xmp_gps_quality_metadata(source, options,
+                                                         &output);
+    ASSERT_EQ(kept.status, Status::Ok);
+    EXPECT_EQ(kept.groups_preserved, 1U);
+    EXPECT_EQ(gps_count(output, 11U), 2U);
+    options.conflict_policy = Policy::ReplaceExisting;
+    const auto fixed = translate_xmp_gps_quality_metadata(source, options,
+                                                          &output);
+    EXPECT_EQ(fixed.status, Status::Ok);
+    EXPECT_EQ(fixed.entries_removed, 1U);
+    EXPECT_EQ(gps_count(output, 11U), 1U);
+}
+TEST(MetadataGpsQuality, EquivalentTypedValuesRetainRepresentation)
+{
+    MetaStore source;
+    xmp_text(source, "GPSStatus", "A");
+    xmp_text(source, "GPSDOP", "1.5");
+    native(source, 9U,
+           make_text(source.arena(), std::string_view("A\0", 2U),
+                     TextEncoding::Ascii));
+    native(source, 11U, make_urational(6U, 4U));
+    source.finalize();
+    MetaStore output;
+    const auto same = translate_xmp_gps_quality_metadata(source, {}, &output);
+    ASSERT_EQ(same.status, Status::Ok);
+    EXPECT_EQ(same.groups_unchanged, 2U);
+    EXPECT_EQ(gps(output, 11U)->value.data.ur.numer, 6U);
+}
+TEST(MetadataGpsQuality, RemovalCleansVersionAndPreservesUnrelatedGps)
+{
+    for (const bool unrelated : { false, true }) {
+        MetaStore source = quality(EntryFlags::Dirty | EntryFlags::Deleted);
+        native(source, 0U,
+               make_u8_array(source.arena(),
+                             std::array<uint8_t, 4> { 2U, 3U, 0U, 0U }));
+        for (const uint16_t tag : kQualityTags)
+            native(source, tag, make_u32(99U));
+        if (unrelated)
+            native(source, 8U,
+                   make_text(source.arena(), "retained", TextEncoding::Ascii));
+        source.finalize();
+        QualityOptions options;
+        options.conflict_policy = Policy::ReplaceExisting;
+        MetaStore output;
+        const auto result = translate_xmp_gps_quality_metadata(source, options,
+                                                               &output);
+        ASSERT_EQ(result.status, Status::Ok);
+        EXPECT_EQ(result.entries_removed, unrelated ? 5U : 6U);
+        EXPECT_EQ(gps(output, 0U) != nullptr, unrelated);
+        for (const uint16_t tag : kQualityTags)
+            EXPECT_EQ(gps(output, tag), nullptr);
+    }
+    MetaStore source = quality(EntryFlags::Deleted);
+    native(source, 9U, make_u32(99U));
+    source.finalize();
+    MetaStore output;
+    EXPECT_EQ(
+        translate_xmp_gps_quality_metadata(source, {}, &output).entries_removed,
+        0U);
+    EXPECT_NE(gps(output, 9U), nullptr);
+}
+TEST(MetadataGpsQuality, ResourceAndOptionLimitsAreAtomic)
+{
+    MetaStore source = quality();
+    MetaStore output;
+    EXPECT_EQ(translate_xmp_gps_quality_metadata(source, {}, nullptr).status,
+              Status::NullOutput);
+    EXPECT_EQ(translate_xmp_gps_quality_metadata(source, {}, &output).status,
+              Status::SourceNotFinalized);
+    QualityOptions options;
+    options.max_added_entries = 5U;
+    expect_quality_failure(source, Status::EntryLimitExceeded, options);
+    options                = {};
+    options.max_operations = 5U;
+    expect_quality_failure(source, Status::OperationLimitExceeded, options);
+    options                             = {};
+    options.max_text_bytes_per_property = 3U;
+    expect_quality_failure(source, Status::ValueTooLong, options);
+    options                      = {};
+    options.max_total_text_bytes = 4U;
+    expect_quality_failure(source, Status::SourceLimitExceeded, options);
+    options                      = {};
+    options.max_total_text_bytes = 641U;
+    expect_quality_failure(source, Status::InvalidOptions, options);
+    options                   = {};
+    options.max_added_entries = 7U;
+    expect_quality_failure(source, Status::InvalidOptions, options);
+    options                = {};
+    options.status_to_exif = options.measure_mode_to_exif = options.dop_to_exif
+        = options.differential_to_exif = options.horizontal_error_to_exif
+        = false;
+    expect_quality_failure(source, Status::InvalidOptions, options);
+}
+
 }  // namespace openmeta

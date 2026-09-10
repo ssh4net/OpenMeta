@@ -213,6 +213,25 @@ main()
                  == openmeta::MetadataGpsTranslationStatus::Ok
           && destination_result.entries_added == 3U
           && destination_translated.is_finalized();
+    const openmeta::MetadataAuthoringEntry quality_latitude {
+        openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                             "GPSDOP"),
+        openmeta::make_value_view_text("7/3", openmeta::TextEncoding::Utf8),
+    };
+    openmeta::MetaStore quality_source;
+    const auto quality_authored = openmeta::create_metadata_store(
+        std::span<const openmeta::MetadataAuthoringEntry>(&quality_latitude, 1U),
+        &quality_source);
+    openmeta::MetaStore quality_translated;
+    const auto quality_result = openmeta::translate_xmp_gps_quality_metadata(
+        quality_source, openmeta::MetadataGpsQualityTranslationOptions {},
+        &quality_translated);
+    const bool quality_contract_matches
+        = quality_authored.ok()
+          && openmeta::kMetadataGpsQualityTranslationContractVersion == 1U
+          && quality_result.status == openmeta::MetadataGpsTranslationStatus::Ok
+          && quality_result.entries_added == 2U
+          && quality_translated.is_finalized();
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
             std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
@@ -292,7 +311,7 @@ main()
                    || !iptc_contract_matches || !gps_contract_matches
                    || !structured_location_contract_matches
                    || !navigation_contract_matches
-                   || !destination_contract_matches
+                   || !destination_contract_matches || !quality_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()
                    || instance.valid()

@@ -820,6 +820,69 @@ portable coordinate/rational formatting can be approximate; reverse translation
 cannot recover precision already lost from its input. Receiver status/quality,
 DOP, and geographic computation remain outside this contract.
 
+GPS receiver quality writeback
+------------------------------
+
+``translate_xmp_gps_quality_metadata(...)`` and Python
+``Document.translate_gps_quality_metadata(...)`` add five independent singleton
+mappings with ``MetadataGpsQualityTranslationOptions``, contract version 1.
+Exact unindexed paths use ``http://ns.adobe.com/exif/1.0/``.
+
+.. list-table::
+   :header-rows: 1
+
+   * - XMP source
+     - Native tag/type
+     - Flag
+   * - ``GPSStatus``
+     - 9 / ASCII
+     - ``status_to_exif``
+   * - ``GPSMeasureMode``
+     - 10 / ASCII
+     - ``measure_mode_to_exif``
+   * - ``GPSDOP``
+     - 11 / RATIONAL
+     - ``dop_to_exif``
+   * - ``GPSDifferential``
+     - 30 / SHORT
+     - ``differential_to_exif``
+   * - ``GPSHPositioningError``
+     - 31 / RATIONAL
+     - ``horizontal_error_to_exif``
+
+Status accepts exact A/V or Measurement Active/Measurement Void text. Measure
+mode accepts nonnegative integer 2/3 or exact text ``2``/``3``. Differential accepts
+integer 0/1, exact text ``0``/``1``, or No Correction/Differential Corrected. No other
+enum spellings, decimal/fraction coercion, or unknown codes are accepted.
+DOP and horizontal error use the existing exact nonnegative rational parser;
+floats, signed text, exponents, zero denominators, and unsupported precision fail.
+DOP is retained without calculating an accuracy estimate. Horizontal error is
+in meters; no unit conversion or receiver-state inference occurs. The field
+identities follow `CIPA EXIF/XMP mapping <https://cipa.jp/std/documents/e/DC-X010-2017.pdf>`_.
+
+The v1 version contract accepts GPS 2.2 through 2.4 for differential correction
+and GPS 2.3 through 2.4 for horizontal error. Earlier or unknown versions fail
+when the corresponding active field is selected. Other quality fields retain
+any well-formed native BYTE[4] version. Versions are never upgraded. A missing
+native version defaults to 2.3.0.0; source XMP GPSVersionID is not copied.
+
+Defaults are DirtyOnly/FailOnConflict and five enabled flags. One dirty source
+tombstone removes its native singleton. Missing fields and clean tombstones
+retain native data. Duplicate sources fail. PreserveExisting retains existing
+native values; FailOnConflict requires typed equivalence; ReplaceExisting
+repairs malformed values and duplicates. Native ASCII permits one trailing
+wire NUL; rational equivalence is exact. All five selected fields share one
+atomic transaction. Removing the last GPS field also removes its version,
+while unrelated GPS retains it. New entries own their provenance, and failures
+preserve source/output even when they alias.
+
+Limits are six added entries including version, 1024 operations, 128 text bytes
+per selected active source, and 640 total text bytes. Limits can be lowered.
+Preparation may allocate. Existing primary, navigation, and destination APIs
+keep their scopes. Python returns a detached document for transfer preparation.
+Source XMP preservation still requires both ``xmp_include_existing=True`` and
+``xmp_conflict_policy=openmeta.XmpConflictPolicy.ExistingWins`` during transfer.
+
 Conflict and removal policy
 ---------------------------
 

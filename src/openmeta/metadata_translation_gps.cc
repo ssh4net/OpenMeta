@@ -32,11 +32,15 @@ namespace {
         Coordinate,
         Altitude,
         Timestamp,
-        Rational
+        Rational,
+        SingleReference,
+        SingleRational,
+        SingleShort
     };
 
     struct GpsGroup final {
         GpsGroupKind kind = GpsGroupKind::Coordinate;
+        uint8_t native_count = 2U;
         Mapping mapping = Mapping::None;
         std::array<EntryId, 2> source_entries { kInvalidEntryId,
                                                 kInvalidEntryId };
@@ -350,6 +354,57 @@ namespace {
         return Status::Ok;
     }
 
+    static Status quality_value(const MetaStore& source, const MetaValue& value,
+                                GpsGroup* group) noexcept
+    {
+        if (group->kind == GpsGroupKind::SingleRational) {
+            return unsigned_rational_value(source, value, &group->magnitude);
+        }
+        const std::string_view input = value.kind == MetaValueKind::Text
+                                           ? text(source.arena(),
+                                                  value.data.span)
+                                           : std::string_view {};
+        if (group->mapping == Mapping::ExifGpsStatus) {
+            if (input == "A" || input == "Measurement Active") {
+                group->reference = 'A';
+            } else if (input == "V" || input == "Measurement Void") {
+                group->reference = 'V';
+            } else {
+                return Status::InvalidSourceValue;
+            }
+            return Status::Ok;
+        }
+        uint64_t number = 0U;
+        if (value.kind == MetaValueKind::Text) {
+            if (group->mapping == Mapping::ExifGpsMeasureMode) {
+                if (input != "2" && input != "3") {
+                    return Status::InvalidSourceValue;
+                }
+                number = static_cast<uint64_t>(input[0] - '0');
+            } else if (input == "0" || input == "No Correction") {
+                number = 0U;
+            } else if (input == "1" || input == "Differential Corrected") {
+                number = 1U;
+            } else {
+                return Status::InvalidSourceValue;
+            }
+        } else if (!integer(value, &number)) {
+            return Status::InvalidSourceValue;
+        }
+        if (group->mapping == Mapping::ExifGpsMeasureMode) {
+            if (number != 2U && number != 3U) {
+                return Status::ValueOutOfRange;
+            }
+            group->reference = static_cast<char>('0' + number);
+        } else {
+            if (number > 1U) {
+                return Status::ValueOutOfRange;
+            }
+            group->altitude_ref = static_cast<uint8_t>(number);
+        }
+        return Status::Ok;
+    }
+
     static Status distance_reference(const MetaStore& source,
                                      const MetaValue& value, char* out) noexcept
     {
@@ -458,6 +513,16 @@ namespace {
     static bool field_matches(const MetaStore& store, const MetaValue& value,
                               const GpsGroup& group, size_t member) noexcept
     {
+        if (group.kind == GpsGroupKind::SingleRational) {
+            return value.kind == MetaValueKind::Scalar && value.count == 1U
+                   && value.elem_type == MetaElementType::URational
+                   && ratio_matches(value.data.ur, group.magnitude);
+        }
+        if (group.kind == GpsGroupKind::SingleShort) {
+            return value.kind == MetaValueKind::Scalar && value.count == 1U
+                   && value.elem_type == MetaElementType::U16
+                   && value.data.u64 == group.altitude_ref;
+        }
         if (group.kind == GpsGroupKind::Timestamp && member == 1U) {
             if (value.kind != MetaValueKind::Text) {
                 return false;
@@ -518,6 +583,12 @@ namespace {
     static MetaValue native_value(ByteArena& arena, const GpsGroup& group,
                                   size_t member)
     {
+        if (group.kind == GpsGroupKind::SingleRational) {
+            return make_urational(group.magnitude.numer, group.magnitude.denom);
+        }
+        if (group.kind == GpsGroupKind::SingleShort) {
+            return make_u16(group.altitude_ref);
+        }
         if (group.kind == GpsGroupKind::Timestamp) {
             return member == 0U ? make_urational_array(arena, group.components)
                                 : make_text(arena,
@@ -605,13 +676,18 @@ namespace {
         for (GpsGroup& group : groups) {
             if (!group.selected || !group.present
                 || (group.mapping != Mapping::ExifGpsAltitude
-                    && group.mapping != Mapping::ExifGpsTimeStamp)) {
+                    && group.mapping != Mapping::ExifGpsTimeStamp
+                    && group.mapping != Mapping::ExifGpsDifferential
+                    && group.mapping != Mapping::ExifGpsHPositioningError)) {
                 continue;
             }
             if (version[0] != 2U || version[1] > 4U || version[2] != 0U
                 || version[3] != 0U
-                || (group.mapping == Mapping::ExifGpsTimeStamp
-                    && version[1] < 2U)) {
+                || ((group.mapping == Mapping::ExifGpsTimeStamp
+                     || group.mapping == Mapping::ExifGpsDifferential)
+                    && version[1] < 2U)
+                || (group.mapping == Mapping::ExifGpsHPositioningError
+                    && version[1] < 3U)) {
                 return error(Status::UnsupportedGpsVersion,
                              Mapping::GpsVersion);
             }
@@ -633,7 +709,7 @@ namespace {
                 if (any(entries[id].flags, EntryFlags::Deleted)) {
                     continue;
                 }
-                for (size_t j = 0U; j < 2U; ++j) {
+                for (size_t j = 0U; j < group.native_count; ++j) {
                     if (!gps_tag(source, entries[id], group.tags[j])) {
                         continue;
                     }
@@ -654,8 +730,10 @@ namespace {
                                   || group.native_counts[1] != 0U;
             const bool exact = group.present
                                    ? group.native_counts[0] == 1U
-                                         && group.native_counts[1] == 1U
-                                         && group.matches[0] && group.matches[1]
+                                         && group.matches[0]
+                                         && (group.native_count == 1U
+                                             || (group.native_counts[1] == 1U
+                                                 && group.matches[1]))
                                    : !existing;
             if (policy == Policy::PreserveExisting && existing) {
                 ++result.groups_preserved;
@@ -679,7 +757,7 @@ namespace {
             if (!group.apply) {
                 continue;
             }
-            for (size_t j = 0U; j < 2U; ++j) {
+            for (size_t j = 0U; j < group.native_count; ++j) {
                 if (!group.present) {
                     operations += group.native_counts[j];
                 } else if (group.native_counts[j] == 0U) {
@@ -707,8 +785,9 @@ namespace {
                         = removed
                           || (group.apply && !group.present
                               && (entry.key.data.exif_tag.tag == group.tags[0]
-                                  || entry.key.data.exif_tag.tag
-                                         == group.tags[1]));
+                                  || (group.native_count == 2U
+                                      && entry.key.data.exif_tag.tag
+                                             == group.tags[1])));
                 }
                 if (!removed) {
                     remove_version = false;
@@ -744,7 +823,7 @@ namespace {
             if (!group.apply) {
                 continue;
             }
-            for (size_t j = 0U; j < 2U; ++j) {
+            for (size_t j = 0U; j < group.native_count; ++j) {
                 const uint16_t tag = group.tags[j];
                 for (EntryId id = 0U; id < entries.size(); ++id) {
                     if (any(entries[id].flags, EntryFlags::Deleted)
@@ -1301,6 +1380,149 @@ translate_xmp_gps_destination_metadata(
                             result, out_store);
 }
 
+MetadataGpsTranslationResult
+translate_xmp_gps_quality_metadata(
+    const MetaStore& source,
+    const MetadataGpsQualityTranslationOptions& options, MetaStore* out_store)
+{
+    if (!out_store) {
+        return error(Status::NullOutput);
+    }
+    if (!source.is_finalized()) {
+        return error(Status::SourceNotFinalized);
+    }
+    if (options.max_added_entries == 0U
+        || options.max_added_entries
+               > kMetadataGpsQualityTranslationMaxAddedEntries
+        || options.max_operations == 0U
+        || options.max_operations > kMetadataGpsTranslationMaxOperations
+        || options.max_text_bytes_per_property == 0U
+        || options.max_text_bytes_per_property
+               > kMetadataGpsTranslationMaxTextBytesPerProperty
+        || options.max_total_text_bytes == 0U
+        || options.max_total_text_bytes
+               > kMetadataGpsQualityTranslationMaxTotalTextBytes
+        || (options.source_mode != MetadataGpsTranslationSourceMode::DirtyOnly
+            && options.source_mode != MetadataGpsTranslationSourceMode::All)
+        || (options.conflict_policy != Policy::PreserveExisting
+            && options.conflict_policy != Policy::FailOnConflict
+            && options.conflict_policy != Policy::ReplaceExisting)
+        || (!options.status_to_exif && !options.measure_mode_to_exif
+            && !options.dop_to_exif && !options.differential_to_exif
+            && !options.horizontal_error_to_exif)) {
+        return error(Status::InvalidOptions);
+    }
+    static constexpr std::array<std::string_view, 5> paths {
+        "GPSStatus", "GPSMeasureMode", "GPSDOP", "GPSDifferential",
+        "GPSHPositioningError"
+    };
+    static constexpr std::array<uint16_t, 5> tags { 9U, 10U, 11U, 30U, 31U };
+    const std::array<bool, 5> enabled { options.status_to_exif,
+                                        options.measure_mode_to_exif,
+                                        options.dop_to_exif,
+                                        options.differential_to_exif,
+                                        options.horizontal_error_to_exif };
+    std::array<SourceProperty, 5> properties {};
+    const std::span<const Entry> entries = source.entries();
+    for (EntryId id = 0U; id < entries.size(); ++id) {
+        const Entry& entry = entries[id];
+        const bool dirty   = any(entry.flags, EntryFlags::Dirty);
+        if (entry.key.kind != MetaKeyKind::XmpProperty
+            || (any(entry.flags, EntryFlags::Deleted) && !dirty)
+            || text(source.arena(), entry.key.data.xmp_property.schema_ns)
+                   != "http://ns.adobe.com/exif/1.0/") {
+            continue;
+        }
+        const std::string_view path
+            = text(source.arena(), entry.key.data.xmp_property.property_path);
+        for (size_t i = 0U; i < properties.size(); ++i) {
+            if (path == paths[i]) {
+                SourceProperty& property = properties[i];
+                property.dirty           = property.dirty || dirty;
+                if (property.first == kInvalidEntryId) {
+                    property.first = id;
+                } else {
+                    property.duplicate = id;
+                }
+            }
+        }
+    }
+    std::array<GpsGroup, 5> groups {};
+    MetadataGpsTranslationResult result;
+    uint64_t text_bytes = 0U;
+    for (size_t i = 0U; i < groups.size(); ++i) {
+        GpsGroup& group    = groups[i];
+        group.native_count = 1U;
+        group.kind         = i == 2U || i == 4U ? GpsGroupKind::SingleRational
+                             : i == 3U          ? GpsGroupKind::SingleShort
+                                                : GpsGroupKind::SingleReference;
+        group.mapping      = static_cast<Mapping>(
+            static_cast<uint8_t>(Mapping::ExifGpsStatus) + i);
+        group.tags[0]      = tags[i];
+        const size_t first = i;
+        const size_t count = 1U;
+        bool found         = false;
+        bool dirty         = false;
+        for (size_t j = 0U; j < count; ++j) {
+            found = found || properties[first + j].first != kInvalidEntryId;
+            dirty = dirty || properties[first + j].dirty;
+        }
+        if (!enabled[i] || !found
+            || (options.source_mode
+                    == MetadataGpsTranslationSourceMode::DirtyOnly
+                && !dirty)) {
+            continue;
+        }
+        group.selected = true;
+        for (size_t j = 0U; j < count; ++j) {
+            const SourceProperty& property = properties[first + j];
+            if (property.duplicate != kInvalidEntryId) {
+                return error(Status::AmbiguousSource, group.mapping,
+                             property.duplicate);
+            }
+            if (property.first == kInvalidEntryId) {
+                return error(Status::IncompleteSource, group.mapping,
+                             properties[first].first);
+            }
+            const Entry& entry      = entries[property.first];
+            group.source_entries[j] = property.first;
+            ++result.source_properties;
+            const bool present = !any(entry.flags, EntryFlags::Deleted);
+            if (j == 0U) {
+                group.present = present;
+            } else if (group.present != present) {
+                return error(Status::IncompleteSource, group.mapping,
+                             property.first);
+            }
+            if (present && entry.value.kind == MetaValueKind::Text) {
+                const uint64_t size = entry.value.data.span.size;
+                if (size > options.max_text_bytes_per_property) {
+                    return error(Status::ValueTooLong, group.mapping,
+                                 property.first);
+                }
+                if (size > options.max_total_text_bytes
+                    || text_bytes > options.max_total_text_bytes - size) {
+                    return error(Status::SourceLimitExceeded, group.mapping,
+                                 property.first);
+                }
+                text_bytes += size;
+            }
+        }
+        if (!group.present) {
+            continue;
+        }
+        const Status status
+            = quality_value(source, entries[group.source_entries[0]].value,
+                            &group);
+        if (status != Status::Ok) {
+            return error(status, group.mapping, group.source_entries[0]);
+        }
+    }
+    return apply_gps_groups(source, groups, options.conflict_policy,
+                            options.max_added_entries, options.max_operations,
+                            result, out_store);
+}
+
 const char*
 metadata_gps_translation_status_name(MetadataGpsTranslationStatus status) noexcept
 {
@@ -1343,6 +1565,11 @@ metadata_gps_translation_mapping_name(
     case Mapping::ExifGpsDestLongitude: return "exif_gps_dest_longitude";
     case Mapping::ExifGpsDestBearing: return "exif_gps_dest_bearing";
     case Mapping::ExifGpsDestDistance: return "exif_gps_dest_distance";
+    case Mapping::ExifGpsStatus: return "exif_gps_status";
+    case Mapping::ExifGpsMeasureMode: return "exif_gps_measure_mode";
+    case Mapping::ExifGpsDop: return "exif_gps_dop";
+    case Mapping::ExifGpsDifferential: return "exif_gps_differential";
+    case Mapping::ExifGpsHPositioningError: return "exif_gps_horizontal_error";
     }
     return "unknown";
 }
