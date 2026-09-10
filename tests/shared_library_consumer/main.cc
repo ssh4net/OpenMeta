@@ -310,6 +310,24 @@ main()
           && capture_rational_result.status
                  == openmeta::MetadataCaptureTranslationStatus::Ok
           && capture_rational_result.entries_added == 1U;
+    const openmeta::MetadataAuthoringEntry flash_entry {
+        openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                             "Flash"),
+        openmeta::make_value_view_text("95", openmeta::TextEncoding::Ascii),
+    };
+    openmeta::MetaStore flash_source;
+    const auto flash_authored
+        = openmeta::create_metadata_store(std::span(&flash_entry, 1U),
+                                          &flash_source);
+    openmeta::MetaStore flash_output;
+    const auto flash_result
+        = openmeta::translate_xmp_flash_metadata(flash_source, {},
+                                                 &flash_output);
+    const bool flash_contract_matches
+        = flash_authored.ok()
+          && flash_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && flash_result.entries_added == 1U;
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
             std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
@@ -392,6 +410,7 @@ main()
                    || !destination_contract_matches || !quality_contract_matches
                    || !gps_text_contract_matches || !setting_contract_matches
                    || !capture_rational_contract_matches
+                   || !flash_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()

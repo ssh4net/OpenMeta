@@ -1,5 +1,17 @@
 # OpenMeta Changes
 
+## 0.4.139 - 2026-09-10
+
+Changes compared with `0.4.138`.
+
+### Added
+
+- Added C++ and Python complete Flash writeback from a scalar or five-field
+  XMP structure, with explicit bit packing, reserved-bit rejection, bounded
+  inputs, typed conflicts, and atomic whole-field removal.
+- Added exhaustive defined-bit coverage, malformed/partial structure checks,
+  snapshot persistence, portable XMP, Python, and installed-consumer coverage.
+
 ## 0.4.138 - 2026-09-10
 
 Changes compared with `0.4.137`.

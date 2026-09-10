@@ -50060,3 +50060,117 @@ TEST(MetadataTransferApi, CaptureRationalSnapshotsPreserveExactValuesAndRemoval)
         }
     }
 }
+
+TEST(MetadataTransferApi, FlashSnapshotsPreserveBitsAndWholeRemoval)
+{
+    for (const unsigned container : { 0U, 1U, 2U }) {
+        for (const unsigned mode : { 0U, 1U, 2U, 3U }) {
+            SCOPED_TRACE(container);
+            SCOPED_TRACE(mode);
+            openmeta::MetaStore source;
+            constexpr std::array<std::string_view, 5> paths {
+                "Flash/Fired", "Flash/Function", "Flash/Mode",
+                "Flash/RedEyeMode", "Flash/Return"
+            };
+            constexpr std::array<uint16_t, 5> values { 1U, 0U, 3U, 1U, 3U };
+            for (size_t i = 0U; i < paths.size(); ++i) {
+                openmeta::Entry entry;
+                entry.key = openmeta::make_xmp_property_key(
+                    source.arena(), "http://ns.adobe.com/exif/1.0/", paths[i]);
+                entry.value = openmeta::make_u16(values[i]);
+                entry.flags = openmeta::EntryFlags::Dirty;
+                if (mode >= 2U)
+                    entry.flags |= openmeta::EntryFlags::Deleted;
+                ASSERT_NE(source.add_entry(entry), openmeta::kInvalidEntryId);
+            }
+            if (mode != 0U) {
+                openmeta::Entry entry;
+                entry.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                          "exififd", 0x9209U);
+                entry.value = openmeta::make_u16(0U);
+                ASSERT_NE(source.add_entry(entry), openmeta::kInvalidEntryId);
+            }
+            openmeta::Entry camera;
+            camera.key   = openmeta::make_exif_tag_key(source.arena(), "ifd0",
+                                                       0x010fU);
+            camera.value = openmeta::make_text(source.arena(),
+                                               "Retained camera",
+                                               openmeta::TextEncoding::Ascii);
+            ASSERT_NE(source.add_entry(camera), openmeta::kInvalidEntryId);
+            if (mode == 3U) {
+                camera.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                           "exififd", 0x829aU);
+                camera.value = openmeta::make_urational(1U, 125U);
+                ASSERT_NE(source.add_entry(camera), openmeta::kInvalidEntryId);
+            }
+            source.finalize();
+            openmeta::PrepareTransferRequest request;
+            request.target_format      = container == 0U
+                                             ? openmeta::TransferTargetFormat::Jpeg
+                                             : openmeta::TransferTargetFormat::Tiff;
+            request.include_exif_app1  = true;
+            request.include_xmp_app1   = false;
+            request.include_icc_app2   = false;
+            request.include_iptc_app13 = false;
+            openmeta::ExecutePreparedTransferOptions execute;
+            execute.edit_requested = true;
+            execute.edit_apply     = true;
+            const auto input = container == 0U ? make_jpeg_with_segments({})
+                               : container == 1U
+                                   ? make_minimal_tiff_little_endian()
+                                   : make_minimal_bigtiff_little_endian();
+            openmeta::PreparedTransferBundle seed_bundle;
+            ASSERT_EQ(openmeta::prepare_metadata_for_target(source, request,
+                                                            &seed_bundle)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            const auto seed = openmeta::execute_prepared_transfer(&seed_bundle,
+                                                                  input,
+                                                                  execute);
+            ASSERT_EQ(seed.edit_apply.status, openmeta::TransferStatus::Ok);
+            openmeta::MetadataFlashTranslationOptions options;
+            options.conflict_policy = openmeta::
+                MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+            openmeta::MetaStore translated;
+            ASSERT_EQ(openmeta::translate_xmp_flash_metadata(source, options,
+                                                             &translated)
+                          .status,
+                      openmeta::MetadataCaptureTranslationStatus::Ok);
+            const auto snapshot = openmeta::build_transfer_source_snapshot(
+                translated);
+            std::vector<std::byte> bytes;
+            ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(snapshot,
+                                                                   &bytes)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::TransferSourceSnapshot restored;
+            ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(bytes,
+                                                                     &restored)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::ExecutePreparedTransferSnapshotOptions high_level;
+            high_level.prepare = request;
+            high_level.execute = execute;
+            const auto written = openmeta::execute_prepared_transfer_snapshot(
+                restored, seed.edited_output, high_level);
+            ASSERT_EQ(written.execute.edit_apply.status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::MetaStore decoded;
+            ASSERT_TRUE(
+                decode_transfer_roundtrip_store(written.execute.edited_output,
+                                                &decoded));
+            EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                                 exif_key_view("ifd0", 0x010fU),
+                                                 "Retained camera"));
+            if (mode >= 2U)
+                EXPECT_TRUE(
+                    decoded.find_all(exif_key_view("exififd", 0x9209U)).empty());
+            else
+                EXPECT_TRUE(store_has_u16_scalar_entry(
+                    decoded, exif_key_view("exififd", 0x9209U), 95U));
+            if (mode == 3U)
+                EXPECT_TRUE(store_has_urational_scalar_entry(
+                    decoded, exif_key_view("exififd", 0x829aU), 1U, 125U));
+        }
+    }
+}

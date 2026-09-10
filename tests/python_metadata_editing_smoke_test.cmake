@@ -655,6 +655,26 @@ with tempfile.TemporaryDirectory() as temporary:
     assert translated.translate_capture_rational_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All).entry_count == count + 4
     assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'flash.jpg'
+    for body in (b'<e:Flash>95</e:Flash>', b'<e:Flash rdf:parseType=\"Resource\"><e:Fired>True</e:Fired><e:Function>False</e:Function><e:Mode>3</e:Mode><e:RedEyeMode>True</e:RedEyeMode><e:Return>3</e:Return></e:Flash>'):
+        xml = b'<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:e=\"http://ns.adobe.com/exif/1.0/\">' + body + b'</rdf:Description></rdf:RDF>'
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        document = openmeta.read(str(path))
+        count = document.entry_count
+        assert openmeta.METADATA_FLASH_TRANSLATION_CONTRACT_VERSION == 1
+        assert document.translate_flash_metadata().entry_count == count
+        translated = document.translate_flash_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
+        assert translated.entry_count == count + 1
+        assert translated.translate_flash_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All).entry_count == count + 1
+        payload, _ = translated.dump_xmp_portable(include_existing_xmp=True, conflict_policy=openmeta.XmpConflictPolicy.ExistingWins)
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        restored = openmeta.read(str(path))
+        restored.translate_flash_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
+        assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

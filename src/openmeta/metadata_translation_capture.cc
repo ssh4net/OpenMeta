@@ -43,6 +43,7 @@ namespace {
         DigitalZoomRatio,
         ExposureIndex,
         FlashEnergy,
+        Flash,
     };
 
     enum class NumericParseStatus : uint8_t {
@@ -527,6 +528,59 @@ namespace {
         return Status::Ok;
     }
 
+    static MetadataCaptureTranslationResult
+    flash_error(MetadataCaptureTranslationStatus status,
+                EntryId source = kInvalidEntryId) noexcept
+    {
+        MetadataCaptureTranslationResult result;
+        result.status         = status;
+        result.failed_mapping = MetadataCaptureTranslationMapping::XmpFlash;
+        result.failed_source_entry = source;
+        return result;
+    }
+
+    static MetadataCaptureTranslationStatus
+    parse_flash_integer(const ByteArena& arena, const MetaValue& value,
+                        bool scalar_flash, bool boolean_field,
+                        uint64_t* out) noexcept
+    {
+        using Status = MetadataCaptureTranslationStatus;
+        if (value.kind == MetaValueKind::Text) {
+            const std::string_view text = arena_text(arena, value.data.span);
+            if (boolean_field) {
+                if (text != "True" && text != "False" && text != "0"
+                    && text != "1")
+                    return Status::InvalidSourceValue;
+                *out = (text == "True" || text == "1") ? 1U : 0U;
+                return Status::Ok;
+            }
+            const NumericParseStatus status = parse_digits(text, out);
+            if (status == NumericParseStatus::Ok)
+                return Status::Ok;
+            if (scalar_flash) {
+                for (uint16_t code = 0U; code <= 127U; ++code) {
+                    const std::string_view label = exif_flash_name(code);
+                    if (!label.empty() && text == label) {
+                        *out = code;
+                        return Status::Ok;
+                    }
+                }
+            }
+            return numeric_status(status);
+        }
+        if (value.kind != MetaValueKind::Scalar || value.count != 1U)
+            return Status::InvalidSourceValue;
+        if (!scalar_unsigned(value, out)) {
+            int64_t signed_value = 0;
+            if (!scalar_signed(value, &signed_value))
+                return Status::InvalidSourceValue;
+            if (signed_value < 0)
+                return Status::ValueOutOfRange;
+            *out = static_cast<uint64_t>(signed_value);
+        }
+        return Status::Ok;
+    }
+
     static bool xmp_path_matches(const MetaStore& store, const Entry& entry,
                                  std::string_view property_path) noexcept
     {
@@ -656,6 +710,7 @@ namespace {
         case NativeCaptureField::DigitalZoomRatio: tag = 0xa404U; break;
         case NativeCaptureField::ExposureIndex: tag = 0xa215U; break;
         case NativeCaptureField::FlashEnergy: tag = 0xa20bU; break;
+        case NativeCaptureField::Flash: tag = 0x9209U; break;
         }
         return entry.key.data.exif_tag.tag == tag;
     }
@@ -787,6 +842,7 @@ namespace {
         case NativeCaptureField::DigitalZoomRatio: tag = 0xa404U; break;
         case NativeCaptureField::ExposureIndex: tag = 0xa215U; break;
         case NativeCaptureField::FlashEnergy: tag = 0xa20bU; break;
+        case NativeCaptureField::Flash: tag = 0x9209U; break;
         }
         return make_exif_tag_key(arena, "exififd", tag);
     }
@@ -1434,11 +1490,181 @@ translate_xmp_capture_rational_metadata(
                                 options.max_operations, result, out_store);
 }
 
+MetadataCaptureTranslationResult
+translate_xmp_flash_metadata(const MetaStore& source,
+                             const MetadataFlashTranslationOptions& options,
+                             MetaStore* out_store)
+{
+    using Status = MetadataCaptureTranslationStatus;
+    using Mode   = MetadataCaptureTranslationSourceMode;
+    using Policy = MetadataCaptureTranslationConflictPolicy;
+    if (!out_store)
+        return flash_error(Status::NullOutput);
+    if (!source.is_finalized())
+        return flash_error(Status::SourceNotFinalized);
+    if ((options.source_mode != Mode::DirtyOnly
+         && options.source_mode != Mode::All)
+        || (options.conflict_policy != Policy::PreserveExisting
+            && options.conflict_policy != Policy::FailOnConflict
+            && options.conflict_policy != Policy::ReplaceExisting)
+        || options.max_added_entries == 0U
+        || options.max_added_entries > kMetadataFlashTranslationMaxAddedEntries
+        || options.max_source_properties == 0U
+        || options.max_source_properties
+               > kMetadataFlashTranslationMaxSourceProperties
+        || options.max_operations == 0U
+        || options.max_operations > kMetadataCaptureTranslationMaxOperations
+        || options.max_text_bytes_per_property == 0U
+        || options.max_text_bytes_per_property
+               > kMetadataCaptureTranslationMaxTextBytesPerProperty
+        || options.max_total_text_bytes == 0U
+        || options.max_total_text_bytes
+               > kMetadataFlashTranslationMaxTotalTextBytes)
+        return flash_error(Status::InvalidOptions);
+
+    constexpr std::array<std::string_view, 5> names { "Fired", "Function",
+                                                      "Mode", "RedEyeMode",
+                                                      "Return" };
+    std::array<CaptureSource, 6> sources {};
+    Status shape_status  = Status::Ok;
+    EntryId bad_shape    = kInvalidEntryId;
+    EntryId first_source = kInvalidEntryId;
+    uint32_t inspected   = 0U;
+    bool eligible        = false;
+    for (EntryId id = 0U; id < source.entries().size(); ++id) {
+        const Entry& entry = source.entry(id);
+        if (entry.key.kind != MetaKeyKind::XmpProperty
+            || arena_text(source.arena(), entry.key.data.xmp_property.schema_ns)
+                   != kXmpNsExif)
+            continue;
+        const bool dirty   = any(entry.flags, EntryFlags::Dirty);
+        const bool deleted = any(entry.flags, EntryFlags::Deleted);
+        if (deleted && !dirty)
+            continue;
+        const std::string_view path
+            = arena_text(source.arena(),
+                         entry.key.data.xmp_property.property_path);
+        if (path != "Flash" && !path.starts_with("Flash/")
+            && !path.starts_with("Flash["))
+            continue;
+        if (++inspected > options.max_source_properties)
+            return flash_error(Status::SourceLimitExceeded, id);
+        if (first_source == kInvalidEntryId)
+            first_source = id;
+        eligible    = eligible || dirty || options.source_mode == Mode::All;
+        size_t slot = sources.size();
+        if (path == "Flash")
+            slot = 5U;
+        else if (path.starts_with("Flash/")) {
+            std::string_view child = path.substr(6U);
+            if (child.starts_with("exif:"))
+                child.remove_prefix(5U);
+            for (size_t i = 0U; i < names.size(); ++i)
+                if (child == names[i])
+                    slot = i;
+        }
+        if (slot == sources.size()) {
+            if (shape_status == Status::Ok) {
+                shape_status = Status::UnsupportedSourceShape;
+                bad_shape    = id;
+            }
+            continue;
+        }
+        if (sources[slot].found) {
+            if (shape_status == Status::Ok) {
+                shape_status = Status::AmbiguousSource;
+                bad_shape    = id;
+            }
+            continue;
+        }
+        sources[slot] = CaptureSource { true, deleted, id, &entry.value };
+    }
+    if (!eligible)
+        return apply_capture_groups(source, {}, options.conflict_policy,
+                                    options.max_added_entries,
+                                    options.max_operations, {}, out_store);
+    if (shape_status != Status::Ok)
+        return flash_error(shape_status, bad_shape);
+    uint32_t children         = 0U;
+    uint32_t deleted_children = 0U;
+    for (size_t i = 0U; i < names.size(); ++i) {
+        children += sources[i].found ? 1U : 0U;
+        deleted_children += sources[i].found && sources[i].deleted ? 1U : 0U;
+    }
+    const bool scalar = sources[5U].found;
+    if (scalar && children != 0U)
+        return flash_error(Status::AmbiguousSource, sources[5U].entry_id);
+    if (!scalar
+        && (children != 5U
+            || (deleted_children != 0U && deleted_children != 5U)))
+        return flash_error(Status::IncompleteSource, first_source);
+
+    CapturePlannedGroup group;
+    group.field        = NativeCaptureField::Flash;
+    group.mapping      = MetadataCaptureTranslationMapping::XmpFlash;
+    group.source_entry = scalar ? sources[5U].entry_id : sources[0U].entry_id;
+    group.present      = scalar ? !sources[5U].deleted : deleted_children == 0U;
+    std::array<uint64_t, 6> values {};
+    uint64_t text_bytes = 0U;
+    if (group.present) {
+        const size_t begin = scalar ? 5U : 0U;
+        const size_t end   = scalar ? 6U : 5U;
+        for (size_t i = begin; i < end; ++i) {
+            const MetaValue& value = *sources[i].value;
+            if (value.kind == MetaValueKind::Text) {
+                const std::string_view text = arena_text(source.arena(),
+                                                         value.data.span);
+                if (text.size() > options.max_text_bytes_per_property)
+                    return flash_error(Status::ValueTooLong,
+                                       sources[i].entry_id);
+                if (text.size() > options.max_total_text_bytes
+                    || text_bytes > options.max_total_text_bytes - text.size())
+                    return flash_error(Status::SourceLimitExceeded,
+                                       sources[i].entry_id);
+                if (value.text_encoding != TextEncoding::Ascii
+                    && value.text_encoding != TextEncoding::Utf8
+                    && value.text_encoding != TextEncoding::Unknown)
+                    return flash_error(Status::InvalidSourceValue,
+                                       sources[i].entry_id);
+                text_bytes += text.size();
+            }
+            const bool boolean_field = i == 0U || i == 1U || i == 3U;
+            const Status parsed = parse_flash_integer(source.arena(), value,
+                                                      scalar, boolean_field,
+                                                      &values[i]);
+            if (parsed != Status::Ok)
+                return flash_error(parsed, sources[i].entry_id);
+            if ((boolean_field && values[i] > 1U) || (i == 2U && values[i] > 3U)
+                || (i == 4U && (values[i] > 3U || values[i] == 1U)))
+                return flash_error(Status::ValueOutOfRange,
+                                   sources[i].entry_id);
+        }
+        const uint64_t code = scalar ? values[5U]
+                                     : values[0U] | (values[4U] << 1U)
+                                           | (values[2U] << 3U)
+                                           | (values[1U] << 5U)
+                                           | (values[3U] << 6U);
+        if (code > 127U || ((code >> 1U) & 3U) == 1U)
+            return flash_error(Status::ValueOutOfRange, group.source_entry);
+        group.value = make_u16(static_cast<uint16_t>(code));
+    }
+    MetadataCaptureTranslationResult result;
+    result.source_properties = scalar ? 1U : 5U;
+    return apply_capture_groups(source, std::span(&group, 1U),
+                                options.conflict_policy,
+                                options.max_added_entries,
+                                options.max_operations, result, out_store);
+}
+
 const char*
 metadata_capture_translation_status_name(
     MetadataCaptureTranslationStatus status) noexcept
 {
     switch (status) {
+    case MetadataCaptureTranslationStatus::IncompleteSource:
+        return "incomplete_source";
+    case MetadataCaptureTranslationStatus::UnsupportedSourceShape:
+        return "unsupported_source_shape";
     case MetadataCaptureTranslationStatus::Ok: return "ok";
     case MetadataCaptureTranslationStatus::NullOutput: return "null_output";
     case MetadataCaptureTranslationStatus::SourceNotFinalized:
@@ -1475,6 +1701,7 @@ metadata_capture_translation_mapping_name(
 {
     switch (mapping) {
     case MetadataCaptureTranslationMapping::None: return "none";
+    case MetadataCaptureTranslationMapping::XmpFlash: return "xmp_flash";
     case MetadataCaptureTranslationMapping::XmpSubjectDistance:
         return "xmp_subject_distance";
     case MetadataCaptureTranslationMapping::XmpDigitalZoomRatio:

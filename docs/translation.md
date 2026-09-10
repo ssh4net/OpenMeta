@@ -148,10 +148,10 @@ active property, and 1536 total source text bytes. Limits may be lowered and
 never cause truncation. Preparation may allocate. EXIF versions are retained;
 the API does not create or upgrade version metadata.
 
-Capture coverage has no fixed all-tags denominator. Flash bitfields, light-source
-label ambiguity, APEX conversions, extended sensitivity groups, lens/spectral
-text, distance/zoom special values, and focal-plane/subject arrays still need
-separate contracts. These twelve fields do not close arbitrary EXIF writeback.
+Capture coverage has no fixed all-tags denominator. Light-source label ambiguity,
+APEX conversions, extended sensitivity groups, lens/spectral text, and
+focal-plane/subject arrays still need separate contracts. These twelve fields
+do not close arbitrary EXIF writeback.
 
 
 ## Exact capture rational writeback
@@ -201,6 +201,50 @@ Existing numeric and settings option layouts remain unchanged. Portable
 native-to-XMP numeric formatting may be approximate; retain original XMP with
 both `xmp_include_existing=True` and `XmpConflictPolicy.ExistingWins` when exact
 source spelling is needed.
+
+## Complete Flash writeback
+
+`translate_xmp_flash_metadata(...)` and Python
+`Document.translate_flash_metadata(...)` use `MetadataFlashTranslationOptions`,
+contract version 1, to write one ExifIFD Flash (0x9209) SHORT. Select either an
+exact scalar `exif:Flash` or all five children in the EXIF namespace:
+
+- `Flash/Fired`: bit 0, Boolean.
+- `Flash/Return`: bits 1..2, codes 0, 2, or 3; code 1 is reserved.
+- `Flash/Mode`: bits 3..4, codes 0..3.
+- `Flash/Function`: bit 5, Boolean; True means no flash function.
+- `Flash/RedEyeMode`: bit 6, Boolean.
+
+Children also accept the `Flash/exif:Name` spelling. Boolean values accept
+integer 0/1 or exact text `True`, `False`, `0`, `1`. Mode and Return accept
+nonnegative scalar integers or unsigned decimal integer text. Scalar Flash
+accepts those integer forms or exact OpenMeta Flash labels. Bits 7 and above,
+reserved Return code 1, floats, rationals, arrays, whitespace, signs in text,
+case changes, and unknown labels fail. Text encodings are Ascii, Utf8, or Unknown.
+All 96 combinations of defined bits are accepted; physical consistency is not
+inferred from other capture fields.
+
+Defaults are DirtyOnly/FailOnConflict. One dirty child selects the complete
+structure, including its clean companions. A partial structure fails without
+borrowing missing bits from native EXIF. Duplicate child aliases, scalar plus
+structured sources, qualifiers, nested children, and indexed forms fail. Clean
+unselected sources are retained. A dirty scalar tombstone or all five dirty
+child tombstones removes native Flash under ReplaceExisting; partial child
+removal fails. Missing sources retain native Flash. FlashEnergy is independent.
+
+Native equivalence requires one SHORT with the same bits. PreserveExisting keeps
+native fields, FailOnConflict protects non-equivalent values, and ReplaceExisting
+repairs types/duplicates. All operations commit atomically, including aliased
+source/output and owned provenance. Limits are one added entry, 1024 operations,
+16 inspected Flash source properties, 128 text bytes per active property, and
+640 total text bytes. Limits may be lowered; preparation may allocate. Existing
+capture option layouts remain unchanged. EXIF version fields are retained.
+
+For portable XMP readback, use `include_existing_xmp=True` and
+`conflict_policy=XmpConflictPolicy.ExistingWins` to retain a complete source
+structure or scalar spelling. Snapshot transfer uses `xmp_include_existing`
+and `xmp_conflict_policy` for the same choices. Native-only portable output
+continues to use the existing Flash projection.
 
 ## Target-Bound Image Geometry
 

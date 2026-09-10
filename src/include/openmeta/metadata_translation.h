@@ -298,6 +298,7 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpDigitalZoomRatio,
     XmpExposureIndex,
     XmpFlashEnergy,
+    XmpFlash,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -340,6 +341,8 @@ enum class MetadataCaptureTranslationStatus : uint8_t {
     EntryLimitExceeded,
     OperationLimitExceeded,
     InternalError,
+    IncompleteSource,
+    UnsupportedSourceShape,
 };
 
 /// Transactional result details for one reverse capture translation.
@@ -501,6 +504,43 @@ translate_xmp_capture_rational_metadata(
     const MetaStore& source,
     const MetadataCaptureRationalTranslationOptions& options,
     MetaStore* out_store);
+
+/// Experimental complete Flash-bitfield writeback contract.
+inline constexpr uint32_t kMetadataFlashTranslationContractVersion     = 1U;
+inline constexpr uint32_t kMetadataFlashTranslationMaxAddedEntries     = 1U;
+inline constexpr uint32_t kMetadataFlashTranslationMaxSourceProperties = 16U;
+inline constexpr uint64_t kMetadataFlashTranslationMaxTotalTextBytes   = 640U;
+
+struct MetadataFlashTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    uint32_t max_added_entries = kMetadataFlashTranslationMaxAddedEntries;
+    uint32_t max_source_properties
+        = kMetadataFlashTranslationMaxSourceProperties;
+    uint32_t max_operations = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes = kMetadataFlashTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Write one complete ExifIFD Flash SHORT without inferring missing bits.
+ *
+ * Accepts either scalar exif:Flash (integer or exact OpenMeta label), or all five
+ * structured Fired, Function, Mode, RedEyeMode, and Return children. Function
+ * true means no flash function. One dirty child selects the complete active group
+ * in DirtyOnly mode. A dirty scalar tombstone or five dirty child tombstones
+ * removes the native tag; partial groups/deletion and competing shapes fail.
+ * Reserved high bits and Return code 1 fail. No physical-state consistency or
+ * exposure/FlashEnergy inference is performed. All conflicts and resource checks
+ * precede one atomic transaction. Preparation may allocate.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_flash_metadata(const MetaStore& source,
+                             const MetadataFlashTranslationOptions& options,
+                             MetaStore* out_store);
 
 /// Experimental target-bound image-geometry translation contract version.
 inline constexpr uint32_t kMetadataGeometryTranslationContractVersion = 1U;

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "openmeta/meta_edit.h"
 #include "openmeta/metadata_editing.h"
 #include "openmeta/metadata_transfer.h"
 #include "openmeta/metadata_translation.h"
@@ -3911,6 +3912,299 @@ namespace {
                                                           &output)
                       .status,
                   SettingsStatus::SourceNotFinalized);
+    }
+}  // namespace
+}  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    using FlashOptions = MetadataFlashTranslationOptions;
+    constexpr std::array<std::string_view, 5> kFlashChildren {
+        "Fired", "Function", "Mode", "RedEyeMode", "Return"
+    };
+    static MetaStore flash_source(uint16_t code, bool text = false,
+                                  EntryFlags flags = EntryFlags::Dirty,
+                                  bool qualified   = false)
+    {
+        MetaStore source;
+        const std::array<uint16_t, 5> values {
+            static_cast<uint16_t>(code & 1U),
+            static_cast<uint16_t>((code >> 5U) & 1U),
+            static_cast<uint16_t>((code >> 3U) & 3U),
+            static_cast<uint16_t>((code >> 6U) & 1U),
+            static_cast<uint16_t>((code >> 1U) & 3U)
+        };
+        for (size_t i = 0U; i < values.size(); ++i) {
+            std::string path = qualified ? "Flash/exif:" : "Flash/";
+            path += kFlashChildren[i];
+            const bool boolean_field = i == 0U || i == 1U || i == 3U;
+            const std::string value  = boolean_field
+                                           ? (values[i] ? "True" : "False")
+                                           : std::to_string(values[i]);
+            settings_xmp(source, path,
+                         text ? make_text(source.arena(), value,
+                                          TextEncoding::Utf8)
+                              : make_u16(values[i]),
+                         flags);
+        }
+        return source;
+    }
+    static void flash_failure(MetaStore& source, SettingsStatus expected,
+                              const FlashOptions& options = {})
+    {
+        source.finalize();
+        MetaStore output;
+        settings_native(output, 0x9209U, make_u16(25U));
+        output.finalize();
+        const size_t count = source.entries().size();
+        EXPECT_EQ(translate_xmp_flash_metadata(source, options, &output).status,
+                  expected);
+        ASSERT_EQ(output.entries().size(), 1U);
+        EXPECT_EQ(output.entry(0U).value.data.u64, 25U);
+        EXPECT_EQ(translate_xmp_flash_metadata(source, options, &source).status,
+                  expected);
+        EXPECT_EQ(source.entries().size(), count);
+    }
+    TEST(MetadataFlash, AllDefinedBitPatternsMatchScalarAndStructuredSources)
+    {
+        uint32_t accepted = 0U;
+        for (uint16_t code = 0U; code <= 127U; ++code) {
+            for (const bool structured : { false, true }) {
+                MetaStore source = structured ? flash_source(code)
+                                              : MetaStore {};
+                if (!structured)
+                    settings_xmp(source, "Flash", make_u16(code));
+                if (((code >> 1U) & 3U) == 1U) {
+                    flash_failure(source, SettingsStatus::ValueOutOfRange);
+                    continue;
+                }
+                source.finalize();
+                MetaStore output;
+                const auto result = translate_xmp_flash_metadata(source, {},
+                                                                 &output);
+                ASSERT_EQ(result.status, SettingsStatus::Ok);
+                EXPECT_EQ(result.source_properties, structured ? 5U : 1U);
+                EXPECT_EQ(result.entries_added, 1U);
+                const Entry* native = settings_find(output, 0x9209U);
+                ASSERT_NE(native, nullptr);
+                EXPECT_EQ(native->value.elem_type, MetaElementType::U16);
+                EXPECT_EQ(native->value.count, 1U);
+                EXPECT_EQ(native->value.data.u64, code);
+                EXPECT_EQ(translate_xmp_flash_metadata(output, {}, &output)
+                              .groups_unchanged,
+                          1U);
+            }
+            if (((code >> 1U) & 3U) != 1U)
+                ++accepted;
+        }
+        EXPECT_EQ(accepted, 96U);
+    }
+    TEST(MetadataFlash, CompleteTextAndFunctionAbsenceAreExplicit)
+    {
+        MetaStore output;
+        {
+            MetaStore source = flash_source(48U, true, EntryFlags::Dirty, true);
+            source.finalize();
+            ASSERT_EQ(translate_xmp_flash_metadata(source, {}, &output).status,
+                      SettingsStatus::Ok);
+        }
+        ASSERT_NE(settings_find(output, 0x9209U), nullptr);
+        EXPECT_EQ(settings_find(output, 0x9209U)->value.data.u64, 48U);
+        const auto bytes = output.arena().span(
+            settings_find(output, 0x9209U)->origin.wire_type_name);
+        EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(bytes.data()),
+                                   bytes.size()),
+                  "settings-source");
+        for (const std::string_view value : { "25", "Auto, fired" }) {
+            MetaStore source;
+            settings_xmp(source, "Flash",
+                         make_text(source.arena(), value, TextEncoding::Ascii));
+            source.finalize();
+            ASSERT_EQ(translate_xmp_flash_metadata(source, {}, &output).status,
+                      SettingsStatus::Ok);
+            EXPECT_EQ(settings_find(output, 0x9209U)->value.data.u64, 25U);
+        }
+    }
+    TEST(MetadataFlash,
+         DirtyChildSelectsCompleteCleanCompanionsWithoutNativeInference)
+    {
+        MetaStore source = flash_source(89U, true, EntryFlags::None);
+        source.finalize();
+        MetaStore output;
+        EXPECT_EQ(
+            translate_xmp_flash_metadata(source, {}, &output).entries_added,
+            0U);
+        MetaEdit edit;
+        edit.set_value(0U,
+                       make_text(edit.arena(), "True", TextEncoding::Ascii));
+        source            = commit(source, std::span(&edit, 1U));
+        const auto result = translate_xmp_flash_metadata(source, {}, &output);
+        ASSERT_EQ(result.status, SettingsStatus::Ok);
+        EXPECT_EQ(result.source_properties, 5U);
+        EXPECT_EQ(settings_find(output, 0x9209U)->value.data.u64, 89U);
+        source = MetaStore {};
+        settings_xmp(source, "Flash/Fired", make_u16(1U));
+        settings_native(source, 0x9209U, make_u16(25U));
+        flash_failure(source, SettingsStatus::IncompleteSource);
+        source = flash_source(25U, true, EntryFlags::None);
+        source.finalize();
+        FlashOptions options;
+        options.source_mode = MetadataCaptureTranslationSourceMode::All;
+        EXPECT_EQ(translate_xmp_flash_metadata(source, options, &output)
+                      .entries_added,
+                  1U);
+    }
+    TEST(MetadataFlash, RejectsAliasesDuplicatesAndCompetingStructures)
+    {
+        for (const std::string_view path :
+             { "Flash/Fired", "Flash/exif:Fired", "Flash" }) {
+            MetaStore source = flash_source(25U);
+            settings_xmp(source, path, make_u16(1U));
+            flash_failure(source, SettingsStatus::AmbiguousSource);
+        }
+        for (const std::string_view path :
+             { "Flash[1]/Fired", "Flash/Fired/Nested",
+               "Flash/Fired[@xml:lang=en]", "Flash/foreign:Fired",
+               "Flash/Unknown" }) {
+            MetaStore source = flash_source(25U);
+            settings_xmp(source, path, make_u16(1U));
+            flash_failure(source, SettingsStatus::UnsupportedSourceShape);
+        }
+        MetaStore source;
+        settings_xmp(source, "Flash", make_u16(25U), EntryFlags::Dirty,
+                     "foreign");
+        settings_xmp(source, "FlashEnergy", make_u16(1U));
+        source.finalize();
+        MetaStore output;
+        EXPECT_EQ(
+            translate_xmp_flash_metadata(source, {}, &output).source_properties,
+            0U);
+    }
+    TEST(MetadataFlash, RejectsReservedBitsInvalidCodesAndCoercion)
+    {
+        for (uint16_t code : { 128U, 255U, 65535U }) {
+            MetaStore source;
+            settings_xmp(source, "Flash", make_u16(code));
+            flash_failure(source, SettingsStatus::ValueOutOfRange);
+        }
+        for (const std::string_view value :
+             { "true", "1.0", "1/1", "+1", "-1", "Auto, Fired", " 25", "" }) {
+            MetaStore source;
+            settings_xmp(source, "Flash",
+                         make_text(source.arena(), value, TextEncoding::Ascii));
+            flash_failure(source, SettingsStatus::InvalidNumericValue);
+        }
+        for (const MetaValue value :
+             { make_f64_bits(0x3ff0000000000000ULL), make_urational(1U, 1U) }) {
+            MetaStore source;
+            settings_xmp(source, "Flash", value);
+            flash_failure(source, SettingsStatus::InvalidSourceValue);
+        }
+        MetaStore source;
+        settings_xmp(source, "Flash", make_i32(-1));
+        flash_failure(source, SettingsStatus::ValueOutOfRange);
+        source = MetaStore {};
+        settings_xmp(source, "Flash",
+                     make_text(source.arena(), "25", TextEncoding::Utf16LE));
+        flash_failure(source, SettingsStatus::InvalidSourceValue);
+        for (const size_t field : { 0U, 1U, 2U, 3U, 4U }) {
+            source = flash_source(25U);
+            source.finalize();
+            MetaEdit edit;
+            edit.set_value(static_cast<EntryId>(field), make_u16(4U));
+            source = commit(source, std::span(&edit, 1U));
+            flash_failure(source, SettingsStatus::ValueOutOfRange);
+        }
+    }
+    TEST(MetadataFlash, NativeConflictsRepairTypesAndDuplicates)
+    {
+        MetaStore source = flash_source(25U);
+        settings_native(source, 0x9209U, make_u32(25U));
+        settings_native(source, 0x9209U, make_u16(0U));
+        flash_failure(source, SettingsStatus::NativeConflict);
+        FlashOptions options;
+        options.conflict_policy = SettingsPolicy::PreserveExisting;
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_flash_metadata(source, options, &output)
+                      .groups_preserved,
+                  1U);
+        EXPECT_EQ(settings_active_count(output, 0x9209U), 2U);
+        options.conflict_policy = SettingsPolicy::ReplaceExisting;
+        const auto result       = translate_xmp_flash_metadata(source, options,
+                                                               &output);
+        ASSERT_EQ(result.status, SettingsStatus::Ok);
+        EXPECT_EQ(result.entries_updated, 1U);
+        EXPECT_EQ(result.entries_removed, 1U);
+        EXPECT_EQ(settings_active_count(output, 0x9209U), 1U);
+        EXPECT_EQ(settings_find(output, 0x9209U)->value.elem_type,
+                  MetaElementType::U16);
+    }
+    TEST(MetadataFlash, WholeDeletionIsAtomicAndPartialDeletionFails)
+    {
+        FlashOptions options;
+        options.conflict_policy = SettingsPolicy::ReplaceExisting;
+        for (const bool structured : { false, true }) {
+            MetaStore source = structured
+                                   ? flash_source(25U, false,
+                                                  EntryFlags::Dirty
+                                                      | EntryFlags::Deleted)
+                                   : MetaStore {};
+            if (!structured)
+                settings_xmp(source, "Flash", make_u16(25U),
+                             EntryFlags::Dirty | EntryFlags::Deleted);
+            settings_native(source, 0x9209U, make_u16(25U));
+            settings_native(source, 0xa20bU, make_urational(7U, 3U));
+            source.finalize();
+            ASSERT_EQ(
+                translate_xmp_flash_metadata(source, options, &source).status,
+                SettingsStatus::Ok);
+            EXPECT_EQ(settings_find(source, 0x9209U), nullptr);
+            EXPECT_NE(settings_find(source, 0xa20bU), nullptr);
+        }
+        MetaStore source = flash_source(25U);
+        source.finalize();
+        MetaEdit edit;
+        edit.tombstone(0U);
+        source = commit(source, std::span(&edit, 1U));
+        flash_failure(source, SettingsStatus::IncompleteSource, options);
+    }
+    TEST(MetadataFlash, LimitsAndFailureDiagnosticsPreserveOutput)
+    {
+        MetaStore source = flash_source(25U, true);
+        FlashOptions options;
+        options.max_source_properties = 4U;
+        flash_failure(source, SettingsStatus::SourceLimitExceeded, options);
+        options                      = {};
+        options.max_total_text_bytes = 4U;
+        flash_failure(source, SettingsStatus::SourceLimitExceeded, options);
+        options                             = {};
+        options.max_text_bytes_per_property = 2U;
+        flash_failure(source, SettingsStatus::ValueTooLong, options);
+        options                   = {};
+        options.max_added_entries = 2U;
+        flash_failure(source, SettingsStatus::InvalidOptions, options);
+        source = flash_source(25U);
+        settings_native(source, 0x9209U, make_u16(0U));
+        settings_native(source, 0x9209U, make_u16(0U));
+        options                 = {};
+        options.conflict_policy = SettingsPolicy::ReplaceExisting;
+        options.max_operations  = 1U;
+        flash_failure(source, SettingsStatus::OperationLimitExceeded, options);
+        MetaStore unfinalized;
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_flash_metadata(unfinalized, {}, nullptr).status,
+                  SettingsStatus::NullOutput);
+        EXPECT_EQ(translate_xmp_flash_metadata(unfinalized, {}, &output).status,
+                  SettingsStatus::SourceNotFinalized);
+        EXPECT_STREQ(metadata_capture_translation_status_name(
+                         SettingsStatus::IncompleteSource),
+                     "incomplete_source");
+        EXPECT_STREQ(metadata_capture_translation_status_name(
+                         SettingsStatus::UnsupportedSourceShape),
+                     "unsupported_source_shape");
+        EXPECT_STREQ(metadata_capture_translation_mapping_name(
+                         MetadataCaptureTranslationMapping::XmpFlash),
+                     "xmp_flash");
     }
 }  // namespace
 }  // namespace openmeta
