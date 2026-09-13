@@ -362,10 +362,10 @@ container call mapping.
       `deserialize_prepared_transfer_payload_batch(...)` persist that earlier
       semantic payload batch for cross-process or cross-layer handoff before
       final package materialization.
-    - `PreparedExifTiffPatchPlan` is the separate target-neutral realtime path
-      for canonical EXIF bytes. Exact source-backed fixed-width values compile
-      to opaque handles; per-worker patch batches are typed, transactional, and
-      allocation-free. Container framing remains host-owned.
+    - `PreparedMetadataPatchPlan` is the separate target-neutral realtime path
+      for canonical EXIF and portable XMP bytes. Typed EXIF values and simple XMP
+      scalar identities compile to opaque handles. Per-worker mixed batches are
+      transactional and allocation-free. Container framing remains host-owned.
     - Host metadata tables that use specification naming should export with
       `ExportNameStyle::FlatHost` plus `ExportNamePolicy::Spec`. This preserves
       names such as `Exif:ISOSpeedRatings` and `Exif:ExposureBiasValue` instead

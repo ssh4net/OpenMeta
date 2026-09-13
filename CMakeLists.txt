@@ -27,12 +27,9 @@ project(OpenMeta VERSION "${OPENMETA_VERSION}" LANGUAGES CXX)
 
 option(OPENMETA_BUILD_STATIC "Build libopenmeta.a" ON)
 option(OPENMETA_BUILD_SHARED "Build libopenmeta.so/.dylib/.dll" ON)
-set(OPENMETA_ABI_VERSION "2" CACHE STRING
-  "OpenMeta shared-library ABI version; increase only for ABI breaks")
-if(NOT OPENMETA_ABI_VERSION MATCHES "^[1-9][0-9]*$")
-  message(FATAL_ERROR
-    "OPENMETA_ABI_VERSION must be a positive integer: '${OPENMETA_ABI_VERSION}'")
-endif()
+# The ABI belongs to the release, not to a consumer cache override.
+unset(OPENMETA_ABI_VERSION CACHE)
+set(OPENMETA_ABI_VERSION "3")
 option(OPENMETA_BUILD_TOOLS "Build OpenMeta CLI tools" ON)
 option(OPENMETA_BUILD_TESTS "Build OpenMeta unit tests" OFF)
 option(OPENMETA_BUILD_BENCHMARKS "Build OpenMeta benchmark executables" OFF)
@@ -434,6 +431,7 @@ set(OPENMETA_SOURCES
   src/openmeta/metadata_store_validate.cc
   src/openmeta/metadata_transfer.cc
   src/openmeta/prepared_transfer_handoff.cc
+  src/openmeta/metadata_patch.cc
   src/openmeta/metadata_logical_field_internal.cc
   src/openmeta/meta_store.cc
   src/openmeta/meta_edit.cc
@@ -505,7 +503,7 @@ endif()
 
 if(WIN32)
   # A DLL import library and a static archive otherwise both install as
-  # `openmeta.lib`. Keep the shared runtime name stable and make archives
+  # `openmeta.lib`. Version the shared runtime and make archives
   # unambiguous for direct consumers as well as CMake package targets.
   if(TARGET openmeta_static)
     set_target_properties(openmeta_static PROPERTIES
@@ -514,6 +512,7 @@ if(WIN32)
   if(TARGET openmeta_shared)
     set_target_properties(openmeta_shared PROPERTIES
       ARCHIVE_OUTPUT_NAME openmeta_shared
+      RUNTIME_OUTPUT_NAME "openmeta-${OPENMETA_ABI_VERSION}"
       WINDOWS_EXPORT_ALL_SYMBOLS YES)
   endif()
 endif()
@@ -1011,6 +1010,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/exr_adapter_test.cc
     tests/exr_decode_test.cc
     tests/exif_tiff_patch_test.cc
+    tests/metadata_patch_xmp_test.cc
     tests/exif_tiff_decode_test.cc
     tests/exif_value_names_test.cc
     tests/geotiff_decode_test.cc
@@ -1105,6 +1105,23 @@ if(OPENMETA_BUILD_TESTS)
   endif()
 
   add_test(NAME openmeta_tests COMMAND openmeta_tests)
+  if(TARGET openmeta_static)
+    add_executable(openmeta_patch_allocation_test tests/metadata_patch_allocation_test.cc)
+    target_link_libraries(openmeta_patch_allocation_test PRIVATE openmeta_static)
+    target_compile_features(openmeta_patch_allocation_test PRIVATE cxx_std_20)
+    if(UNIX AND NOT APPLE)
+      target_compile_definitions(openmeta_patch_allocation_test PRIVATE OPENMETA_WRAP_HEAP=1)
+      target_link_options(openmeta_patch_allocation_test PRIVATE
+        "LINKER:--wrap=malloc" "LINKER:--wrap=calloc" "LINKER:--wrap=realloc"
+        "LINKER:--wrap=aligned_alloc" "LINKER:--wrap=posix_memalign")
+    endif()
+    add_test(NAME openmeta_patch_allocation_test COMMAND openmeta_patch_allocation_test)
+  endif()
+  add_test(NAME openmeta_patch_release_boundary
+    COMMAND ${CMAKE_COMMAND}
+      "-DOPENMETA_VERSION_FILE=${CMAKE_CURRENT_BINARY_DIR}/OpenMetaConfigVersion.cmake"
+      "-DOPENMETA_ABI=${OPENMETA_ABI_VERSION}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/patch_release_boundary.cmake")
 
   if(OPENMETA_RAPIDFUZZ_FOUND)
     add_custom_target(openmeta_gate_fuzzy_search_release
@@ -1724,7 +1741,7 @@ configure_package_config_file(
 write_basic_package_version_file(
   "${CMAKE_CURRENT_BINARY_DIR}/OpenMetaConfigVersion.cmake"
   VERSION "${PROJECT_VERSION}"
-  COMPATIBILITY SameMajorVersion
+  COMPATIBILITY SameMinorVersion
 )
 
 install(

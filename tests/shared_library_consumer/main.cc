@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <openmeta/build_info.h>
-#include <openmeta/exif_tiff_patch.h>
 #include <openmeta/exif_tiff_serialize.h>
 #include <openmeta/host_adoption.h>
 #include <openmeta/metadata_authoring.h>
+#include <openmeta/metadata_patch.h>
 #include <openmeta/metadata_translation.h>
 #include <openmeta/prepared_transfer_handoff.h>
 
@@ -435,38 +435,49 @@ main()
                  == openmeta::ExifTiffSerializeStatus::OutputTruncated
           && measured.needed != 0U && serialized.ok()
           && serialized.written == measured.needed;
-    openmeta::ExifTiffPatchRequest patch_request;
+    openmeta::MetadataPatchRequest patch_request;
     patch_request.key = openmeta::make_exif_tag_key_view("ifd0", 0x0112U);
     patch_request.expected.kind      = openmeta::MetaValueKind::Scalar;
     patch_request.expected.elem_type = openmeta::MetaElementType::U16;
     patch_request.expected.count     = 1U;
-    openmeta::ExifTiffPatchHandle patch_handle;
-    openmeta::PreparedExifTiffPatchPlan patch_plan;
-    const openmeta::ExifTiffPatchResult patch_prepared
-        = openmeta::prepare_exif_tiff_patch_plan(
-            authored,
-            std::span<const openmeta::ExifTiffPatchRequest>(&patch_request, 1U),
-            {}, std::span<openmeta::ExifTiffPatchHandle>(&patch_handle, 1U),
-            &patch_plan);
-    openmeta::PreparedExifTiffPatchInstance patch_instance;
-    const openmeta::ExifTiffPatchResult patch_instance_created
-        = openmeta::create_prepared_exif_tiff_patch_instance(patch_plan,
-                                                             &patch_instance);
-    const openmeta::ExifTiffPatchUpdate patch_update {
-        patch_handle,
-        openmeta::make_value_view_u16(3U),
-    };
-    const openmeta::ExifTiffPatchResult canonical_patched
-        = openmeta::patch_prepared_exif_tiff_instance(
-            &patch_instance,
-            std::span<const openmeta::ExifTiffPatchUpdate>(&patch_update, 1U));
+    openmeta::MetadataPatchRequest xmp_patch_request;
+    xmp_patch_request.key
+        = openmeta::make_xmp_property_key_view("http://ns.adobe.com/tiff/1.0/",
+                                               "Orientation");
+    xmp_patch_request.escaped_width = 1U;
+    const std::array patch_requests = { patch_request, xmp_patch_request };
+    std::array<openmeta::MetadataPatchHandle, 2> patch_handles;
+    openmeta::PreparedMetadataPatchPlan patch_plan;
+    const openmeta::MetadataPatchResult patch_prepared
+        = openmeta::prepare_metadata_patch_plan(authored, patch_requests,
+                                                { .plan_id = 1U },
+                                                patch_handles, &patch_plan);
+    openmeta::PreparedMetadataPatchInstance patch_instance;
+    const openmeta::MetadataPatchResult patch_instance_created
+        = openmeta::create_prepared_metadata_patch_instance(patch_plan,
+                                                            &patch_instance);
+    const std::array<openmeta::MetadataPatchUpdate, 2> patch_updates = { {
+        { patch_handles[0], openmeta::make_value_view_u16(3U) },
+        { patch_handles[1],
+          openmeta::make_value_view_text("3", openmeta::TextEncoding::Utf8) },
+    } };
+    const openmeta::MetadataPatchResult canonical_patched
+        = openmeta::patch_prepared_metadata_instance(&patch_instance,
+                                                     patch_updates);
     const bool canonical_patch_contract_matches
-        = openmeta::exif_tiff_patch_contract_version()
-              == openmeta::kExifTiffPatchContractVersion
+        = openmeta::metadata_patch_contract_version()
+              == openmeta::kMetadataPatchContractVersion
           && patch_prepared.ok() && patch_instance_created.ok()
-          && canonical_patched.ok() && patch_plan.valid()
-          && patch_instance.valid()
-          && patch_plan.payload().size() == patch_instance.payload().size();
+          && canonical_patched.ok() && canonical_patched.patched_handles == 2U
+          && patch_plan.valid() && patch_instance.valid()
+          && patch_plan.payload(openmeta::MetadataPatchPayload::ExifTiff).size()
+                 == patch_instance
+                        .payload(openmeta::MetadataPatchPayload::ExifTiff)
+                        .size()
+          && !patch_instance.payload(openmeta::MetadataPatchPayload::Xmp).empty()
+          && patch_plan.payload(openmeta::MetadataPatchPayload::Xmp).size()
+                 == patch_instance.payload(openmeta::MetadataPatchPayload::Xmp)
+                        .size();
     openmeta::PreparedTransferHandoff handoff;
     openmeta::PreparedTransferHandoffInstance instance;
     openmeta::PreparedTransferHandoffTimePatchFieldView field;

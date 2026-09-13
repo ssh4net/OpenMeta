@@ -51,7 +51,7 @@ payload. Hosts writing a different container should own its framing and use
 the canonical bytes directly.
 
 For fixed-width values that must change during repeated execution,
-[`exif_tiff_patch.h`](../src/include/openmeta/exif_tiff_patch.h) compiles exact
+[`metadata_patch.h`](../src/include/openmeta/metadata_patch.h) compiles exact
 key occurrences into opaque plan-scoped handles. Its immutable canonical plan,
 per-worker instances, transactional typed patches, and payload replay remain
 independent of container selection. See

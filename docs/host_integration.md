@@ -416,16 +416,21 @@ payload storage. Generic hosts can call
 `prepared_transfer_handoff_instance_time_patch_field(...)` during setup to
 obtain the exact width and slot count without exposing payload offsets.
 
-### Target-Neutral Canonical EXIF Patching
+### Target-neutral prepared metadata patching
 
-Use `openmeta/exif_tiff_patch.h` when the destination container is host-owned or
-not known during metadata preparation. It compiles exact EXIF key occurrences
-into opaque handles over unwrapped canonical TIFF bytes. Preparation and worker
-creation may allocate; typed fixed-width patch batches and `payload()` replay do
-not. The host adds JPEG, PNG/WebP, JP2/JXL/BMFF, JPH, or private-container
-framing after patching. See
-[canonical_patching.md](canonical_patching.md) for the transaction, concurrency,
-and supported-type contract.
+Use `openmeta/metadata_patch.h` for host-owned canonical TIFF/EXIF and portable
+XMP payloads. EXIF requests select typed key occurrences; XMP requests select
+emitted namespace URI/simple-property identities with exact escaped widths.
+One plan can contain both families. A single batch validates all updates before
+writing either payload, so a rejected XMP update cannot leave newer EXIF bytes.
+
+Preparation and worker creation may allocate. Patching, payload access and
+library replay do not. Independent worker instances own their storage and
+survive plan destruction. The host supplies a fresh `options.plan_id` for each
+successful preparation and synchronizes conflicting object access and lifetimes.
+The patch API has no atomics, mutexes or global ID allocator. The host adds
+container framing and controls frame publication. See [canonical_patching.md](canonical_patching.md) for examples and
+[migration_0_5.md](migration_0_5.md) for the removed pre-0.5 EXIF patch interface.
 
 ### Experimental Adapter-View Pattern
 

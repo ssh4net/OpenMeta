@@ -45,7 +45,7 @@ geometry, and reverse-descriptive Translation milestones are implemented in
 [`metadata_creation.h`](../src/include/openmeta/metadata_creation.h),
 [`metadata_authoring.h`](../src/include/openmeta/metadata_authoring.h),
 [`exif_tiff_serialize.h`](../src/include/openmeta/exif_tiff_serialize.h),
-[`exif_tiff_patch.h`](../src/include/openmeta/exif_tiff_patch.h),
+[`metadata_patch.h`](../src/include/openmeta/metadata_patch.h),
 [`metadata_editing.h`](../src/include/openmeta/metadata_editing.h), plus
 [`metadata_translation.h`](../src/include/openmeta/metadata_translation.h),
 with their contracts documented in [`creation.md`](creation.md),

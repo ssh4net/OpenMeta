@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(OpenMetaSharedLibraryConsumer LANGUAGES CXX)
 
-find_package(OpenMeta CONFIG REQUIRED)
+find_package(OpenMeta 0.5 CONFIG REQUIRED)
 
 if(NOT TARGET OpenMeta::openmeta_shared)
   message(FATAL_ERROR "OpenMeta shared target was not installed")

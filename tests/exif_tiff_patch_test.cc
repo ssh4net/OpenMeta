@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "openmeta/exif_tiff_decode.h"
-#include "openmeta/exif_tiff_patch.h"
 #include "openmeta/metadata_authoring.h"
+#include "openmeta/metadata_patch.h"
 
 #include <gtest/gtest.h>
 
@@ -28,11 +28,11 @@ namespace {
         return entry;
     }
 
-    static ExifTiffPatchValueSpec
+    static MetadataPatchValueSpec
     patch_spec(MetaValueKind kind, MetaElementType type, uint32_t count,
                TextEncoding encoding = TextEncoding::Unknown) noexcept
     {
-        ExifTiffPatchValueSpec spec;
+        MetadataPatchValueSpec spec;
         spec.kind          = kind;
         spec.elem_type     = type;
         spec.text_encoding = encoding;
@@ -40,12 +40,12 @@ namespace {
         return spec;
     }
 
-    static ExifTiffPatchRequest
+    static MetadataPatchRequest
     patch_request(const MetaKeyView& key,
-                  const ExifTiffPatchValueSpec& expected,
+                  const MetadataPatchValueSpec& expected,
                   uint32_t occurrence = 0U) noexcept
     {
-        ExifTiffPatchRequest request;
+        MetadataPatchRequest request;
         request.key        = key;
         request.occurrence = occurrence;
         request.expected   = expected;
@@ -93,7 +93,7 @@ namespace {
         return store;
     }
 
-    static std::array<ExifTiffPatchRequest, 5> patch_requests()
+    static std::array<MetadataPatchRequest, 5> patch_requests()
     {
         return {
             patch_request(make_exif_tag_key_view("ifd0", 0x0100U),
@@ -114,31 +114,36 @@ namespace {
         };
     }
 
-    TEST(ExifTiffPatch, CompilesTypedHandlesAndPatchesWorkerWithoutReallocation)
+    TEST(MetadataPatch, CompilesTypedHandlesAndPatchesWorkerWithoutReallocation)
     {
         const MetaStore store     = make_patch_store();
         const std::array requests = patch_requests();
-        std::array<ExifTiffPatchHandle, requests.size()> handles;
-        PreparedExifTiffPatchPlan plan;
-        const ExifTiffPatchResult prepared
-            = prepare_exif_tiff_patch_plan(store, requests, {}, handles, &plan);
+        std::array<MetadataPatchHandle, requests.size()> handles;
+        PreparedMetadataPatchPlan plan;
+        const MetadataPatchResult prepared
+            = prepare_metadata_patch_plan(store, requests, { .plan_id = 1U },
+                                          handles, &plan);
         ASSERT_TRUE(prepared.ok());
         ASSERT_TRUE(plan.valid());
         EXPECT_EQ(plan.handle_count(), requests.size());
-        ASSERT_GT(plan.payload().size(), 8U);
-        EXPECT_EQ(plan.payload()[0], std::byte { 'I' });
-        EXPECT_EQ(plan.payload()[1], std::byte { 'I' });
-        const std::vector<std::byte> immutable(plan.payload().begin(),
-                                               plan.payload().end());
+        ASSERT_GT(plan.payload(MetadataPatchPayload::ExifTiff).size(), 8U);
+        EXPECT_EQ(plan.payload(MetadataPatchPayload::ExifTiff)[0],
+                  std::byte { 'I' });
+        EXPECT_EQ(plan.payload(MetadataPatchPayload::ExifTiff)[1],
+                  std::byte { 'I' });
+        const std::vector<std::byte> immutable(
+            plan.payload(MetadataPatchPayload::ExifTiff).begin(),
+            plan.payload(MetadataPatchPayload::ExifTiff).end());
 
-        PreparedExifTiffPatchInstance first;
-        PreparedExifTiffPatchInstance second;
+        PreparedMetadataPatchInstance first;
+        PreparedMetadataPatchInstance second;
+        ASSERT_TRUE(create_prepared_metadata_patch_instance(plan, &first).ok());
         ASSERT_TRUE(
-            create_prepared_exif_tiff_patch_instance(plan, &first).ok());
-        ASSERT_TRUE(
-            create_prepared_exif_tiff_patch_instance(plan, &second).ok());
-        const std::byte* const first_data = first.payload().data();
-        const size_t first_size           = first.payload().size();
+            create_prepared_metadata_patch_instance(plan, &second).ok());
+        const std::byte* const first_data
+            = first.payload(MetadataPatchPayload::ExifTiff).data();
+        const size_t first_size
+            = first.payload(MetadataPatchPayload::ExifTiff).size();
 
         const std::array<uint16_t, 3> levels = { 128U, 2048U, 8191U };
         const std::array<std::byte, 4> bytes = {
@@ -148,31 +153,41 @@ namespace {
             std::byte { 6U },
         };
         const std::array updates = {
-            ExifTiffPatchUpdate { handles[0], make_value_view_u32(8000U) },
-            ExifTiffPatchUpdate { handles[1],
+            MetadataPatchUpdate { handles[0], make_value_view_u32(8000U) },
+            MetadataPatchUpdate { handles[1],
                                   make_value_view_urational(1U, 250U) },
-            ExifTiffPatchUpdate {
+            MetadataPatchUpdate {
                 handles[2],
                 make_value_view_text("CameraB", TextEncoding::Ascii) },
-            ExifTiffPatchUpdate {
+            MetadataPatchUpdate {
                 handles[3],
                 make_value_view_array(
                     MetaElementType::U16,
                     std::as_bytes(std::span<const uint16_t>(levels)), 3U) },
-            ExifTiffPatchUpdate { handles[4], make_value_view_bytes(bytes) },
+            MetadataPatchUpdate { handles[4], make_value_view_bytes(bytes) },
         };
-        const ExifTiffPatchResult patched
-            = patch_prepared_exif_tiff_instance(&first, updates);
+        const MetadataPatchResult patched
+            = patch_prepared_metadata_instance(&first, updates);
         ASSERT_TRUE(patched.ok());
         EXPECT_EQ(patched.patched_handles, updates.size());
-        EXPECT_EQ(first.payload().data(), first_data);
-        EXPECT_EQ(first.payload().size(), first_size);
-        EXPECT_TRUE(patch_bytes_equal(immutable, plan.payload()));
-        EXPECT_TRUE(patch_bytes_equal(second.payload(), plan.payload()));
-        EXPECT_FALSE(patch_bytes_equal(first.payload(), plan.payload()));
+        EXPECT_EQ(first.payload(MetadataPatchPayload::ExifTiff).data(),
+                  first_data);
+        EXPECT_EQ(first.payload(MetadataPatchPayload::ExifTiff).size(),
+                  first_size);
+        EXPECT_TRUE(
+            patch_bytes_equal(immutable,
+                              plan.payload(MetadataPatchPayload::ExifTiff)));
+        EXPECT_TRUE(
+            patch_bytes_equal(second.payload(MetadataPatchPayload::ExifTiff),
+                              plan.payload(MetadataPatchPayload::ExifTiff)));
+        EXPECT_FALSE(
+            patch_bytes_equal(first.payload(MetadataPatchPayload::ExifTiff),
+                              plan.payload(MetadataPatchPayload::ExifTiff)));
 
         MetaStore decoded;
-        ASSERT_EQ(decode_exif_tiff(first.payload(), decoded, {}, {}).status,
+        ASSERT_EQ(decode_exif_tiff(first.payload(MetadataPatchPayload::ExifTiff),
+                                   decoded, {}, {})
+                      .status,
                   ExifDecodeStatus::Ok);
         decoded.finalize();
         const std::span<const EntryId> width = decoded.find_all(
@@ -212,99 +227,110 @@ namespace {
             bytes));
     }
 
-    TEST(ExifTiffPatch, FailedBatchIsTransactionalAndRejectsAliases)
+    TEST(MetadataPatch, FailedBatchIsTransactionalAndRejectsAliases)
     {
         const MetaStore store     = make_patch_store();
         const std::array requests = patch_requests();
-        std::array<ExifTiffPatchHandle, requests.size()> handles;
-        PreparedExifTiffPatchPlan plan;
+        std::array<MetadataPatchHandle, requests.size()> handles;
+        PreparedMetadataPatchPlan plan;
+        ASSERT_TRUE(prepare_metadata_patch_plan(store, requests,
+                                                { .plan_id = 1U }, handles,
+                                                &plan)
+                        .ok());
+        PreparedMetadataPatchInstance instance;
         ASSERT_TRUE(
-            prepare_exif_tiff_patch_plan(store, requests, {}, handles, &plan)
-                .ok());
-        PreparedExifTiffPatchInstance instance;
-        ASSERT_TRUE(
-            create_prepared_exif_tiff_patch_instance(plan, &instance).ok());
-        const std::vector<std::byte> before(instance.payload().begin(),
-                                            instance.payload().end());
+            create_prepared_metadata_patch_instance(plan, &instance).ok());
+        const std::vector<std::byte> before(
+            instance.payload(MetadataPatchPayload::ExifTiff).begin(),
+            instance.payload(MetadataPatchPayload::ExifTiff).end());
 
         const std::array invalid = {
-            ExifTiffPatchUpdate { handles[0], make_value_view_u32(9000U) },
-            ExifTiffPatchUpdate { handles[1],
+            MetadataPatchUpdate { handles[0], make_value_view_u32(9000U) },
+            MetadataPatchUpdate { handles[1],
                                   make_value_view_urational(1U, 0U) },
         };
-        const ExifTiffPatchResult invalid_result
-            = patch_prepared_exif_tiff_instance(&instance, invalid);
-        EXPECT_EQ(invalid_result.code, ExifTiffPatchCode::InvalidValue);
+        const MetadataPatchResult invalid_result
+            = patch_prepared_metadata_instance(&instance, invalid);
+        EXPECT_EQ(invalid_result.code, MetadataPatchCode::InvalidValue);
         EXPECT_EQ(invalid_result.failed_index, 1U);
-        EXPECT_TRUE(patch_bytes_equal(instance.payload(), before));
+        EXPECT_TRUE(
+            patch_bytes_equal(instance.payload(MetadataPatchPayload::ExifTiff),
+                              before));
 
         const std::array duplicate = {
-            ExifTiffPatchUpdate { handles[0], make_value_view_u32(9000U) },
-            ExifTiffPatchUpdate { handles[0], make_value_view_u32(9001U) },
+            MetadataPatchUpdate { handles[0], make_value_view_u32(9000U) },
+            MetadataPatchUpdate { handles[0], make_value_view_u32(9001U) },
         };
-        EXPECT_EQ(patch_prepared_exif_tiff_instance(&instance, duplicate).code,
-                  ExifTiffPatchCode::DuplicateHandle);
-        EXPECT_TRUE(patch_bytes_equal(instance.payload(), before));
+        EXPECT_EQ(patch_prepared_metadata_instance(&instance, duplicate).code,
+                  MetadataPatchCode::DuplicateHandle);
+        EXPECT_TRUE(
+            patch_bytes_equal(instance.payload(MetadataPatchPayload::ExifTiff),
+                              before));
 
         const MetaValueView alias = make_value_view_bytes(
-            instance.payload().subspan(0U, 4U));
-        const ExifTiffPatchUpdate alias_update { handles[4], alias };
-        EXPECT_EQ(patch_prepared_exif_tiff_instance(
+            instance.payload(MetadataPatchPayload::ExifTiff).subspan(0U, 4U));
+        const MetadataPatchUpdate alias_update { handles[4], alias };
+        EXPECT_EQ(patch_prepared_metadata_instance(
                       &instance,
-                      std::span<const ExifTiffPatchUpdate>(&alias_update, 1U))
+                      std::span<const MetadataPatchUpdate>(&alias_update, 1U))
                       .code,
-                  ExifTiffPatchCode::ValueAliasesInstance);
-        EXPECT_TRUE(patch_bytes_equal(instance.payload(), before));
+                  MetadataPatchCode::ValueAliasesInstance);
+        EXPECT_TRUE(
+            patch_bytes_equal(instance.payload(MetadataPatchPayload::ExifTiff),
+                              before));
 
         MetaValueView overflow = make_value_view_u32(1U);
         overflow.scalar.u64    = UINT64_MAX;
-        const ExifTiffPatchUpdate overflow_update { handles[0], overflow };
-        EXPECT_EQ(patch_prepared_exif_tiff_instance(
+        const MetadataPatchUpdate overflow_update { handles[0], overflow };
+        EXPECT_EQ(patch_prepared_metadata_instance(
                       &instance,
-                      std::span<const ExifTiffPatchUpdate>(&overflow_update, 1U))
+                      std::span<const MetadataPatchUpdate>(&overflow_update, 1U))
                       .code,
-                  ExifTiffPatchCode::InvalidValue);
-        EXPECT_TRUE(patch_bytes_equal(instance.payload(), before));
+                  MetadataPatchCode::InvalidValue);
+        EXPECT_TRUE(
+            patch_bytes_equal(instance.payload(MetadataPatchPayload::ExifTiff),
+                              before));
     }
 
-    TEST(ExifTiffPatch, RejectsForeignPlanHandle)
+    TEST(MetadataPatch, RejectsForeignPlanHandle)
     {
         const MetaStore first_store  = make_patch_store(4000U);
         const MetaStore second_store = make_patch_store(5000U);
-        const ExifTiffPatchRequest request
+        const MetadataPatchRequest request
             = patch_request(make_exif_tag_key_view("ifd0", 0x0100U),
                             patch_spec(MetaValueKind::Scalar,
                                        MetaElementType::U32, 1U));
-        ExifTiffPatchHandle first_handle;
-        ExifTiffPatchHandle second_handle;
-        PreparedExifTiffPatchPlan first_plan;
-        PreparedExifTiffPatchPlan second_plan;
-        ASSERT_TRUE(prepare_exif_tiff_patch_plan(
+        MetadataPatchHandle first_handle;
+        MetadataPatchHandle second_handle;
+        PreparedMetadataPatchPlan first_plan;
+        PreparedMetadataPatchPlan second_plan;
+        ASSERT_TRUE(prepare_metadata_patch_plan(
                         first_store,
-                        std::span<const ExifTiffPatchRequest>(&request, 1U), {},
-                        std::span<ExifTiffPatchHandle>(&first_handle, 1U),
+                        std::span<const MetadataPatchRequest>(&request, 1U),
+                        { .plan_id = 1U },
+                        std::span<MetadataPatchHandle>(&first_handle, 1U),
                         &first_plan)
                         .ok());
-        ASSERT_TRUE(prepare_exif_tiff_patch_plan(
+        ASSERT_TRUE(prepare_metadata_patch_plan(
                         second_store,
-                        std::span<const ExifTiffPatchRequest>(&request, 1U), {},
-                        std::span<ExifTiffPatchHandle>(&second_handle, 1U),
+                        std::span<const MetadataPatchRequest>(&request, 1U),
+                        { .plan_id = 2U },
+                        std::span<MetadataPatchHandle>(&second_handle, 1U),
                         &second_plan)
                         .ok());
-        PreparedExifTiffPatchInstance instance;
+        PreparedMetadataPatchInstance instance;
         ASSERT_TRUE(
-            create_prepared_exif_tiff_patch_instance(first_plan, &instance)
-                .ok());
-        const ExifTiffPatchUpdate update { second_handle,
+            create_prepared_metadata_patch_instance(first_plan, &instance).ok());
+        const MetadataPatchUpdate update { second_handle,
                                            make_value_view_u32(6000U) };
-        EXPECT_EQ(patch_prepared_exif_tiff_instance(
+        EXPECT_EQ(patch_prepared_metadata_instance(
                       &instance,
-                      std::span<const ExifTiffPatchUpdate>(&update, 1U))
+                      std::span<const MetadataPatchUpdate>(&update, 1U))
                       .code,
-                  ExifTiffPatchCode::ForeignHandle);
+                  MetadataPatchCode::ForeignHandle);
     }
 
-    TEST(ExifTiffPatch, CompilesExactDuplicateOccurrence)
+    TEST(MetadataPatch, CompilesExactDuplicateOccurrence)
     {
         const std::array entries = {
             patch_authoring_entry(make_exif_tag_key_view("ifd0", 0xF100U),
@@ -324,23 +350,27 @@ namespace {
                                      MetaElementType::U16, 1U),
                           1U),
         };
-        std::array<ExifTiffPatchHandle, 2> handles;
-        PreparedExifTiffPatchPlan plan;
+        std::array<MetadataPatchHandle, 2> handles;
+        PreparedMetadataPatchPlan plan;
+        ASSERT_TRUE(prepare_metadata_patch_plan(store, requests,
+                                                { .plan_id = 1U }, handles,
+                                                &plan)
+                        .ok());
+        PreparedMetadataPatchInstance instance;
         ASSERT_TRUE(
-            prepare_exif_tiff_patch_plan(store, requests, {}, handles, &plan)
-                .ok());
-        PreparedExifTiffPatchInstance instance;
-        ASSERT_TRUE(
-            create_prepared_exif_tiff_patch_instance(plan, &instance).ok());
-        const ExifTiffPatchUpdate update { handles[1],
+            create_prepared_metadata_patch_instance(plan, &instance).ok());
+        const MetadataPatchUpdate update { handles[1],
                                            make_value_view_u16(30U) };
         ASSERT_TRUE(
-            patch_prepared_exif_tiff_instance(
-                &instance, std::span<const ExifTiffPatchUpdate>(&update, 1U))
+            patch_prepared_metadata_instance(
+                &instance, std::span<const MetadataPatchUpdate>(&update, 1U))
                 .ok());
 
         MetaStore decoded;
-        ASSERT_EQ(decode_exif_tiff(instance.payload(), decoded, {}, {}).status,
+        ASSERT_EQ(decode_exif_tiff(instance.payload(
+                                       MetadataPatchPayload::ExifTiff),
+                                   decoded, {}, {})
+                      .status,
                   ExifDecodeStatus::Ok);
         decoded.finalize();
         const std::span<const EntryId> ids = decoded.find_all(

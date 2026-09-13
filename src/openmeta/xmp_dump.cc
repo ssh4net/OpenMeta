@@ -8,6 +8,8 @@
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_value.h"
 
+#include "xmp_patch_internal.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -98,12 +100,41 @@ namespace {
     }
 
 
+    struct XmpNsDecl final {
+        std::string_view prefix;
+        std::string_view uri;
+    };
+
     struct SpanWriter final {
         std::span<std::byte> out;
         uint64_t max_output = 0;
         uint64_t written    = 0;
         uint64_t needed     = 0;
         bool limit_hit      = false;
+        std::span<detail::XmpScalarPatchSlot> patch_slots;
+        std::span<const XmpNsDecl> patch_namespaces;
+
+        void record_scalar(std::string_view prefix, std::string_view name,
+                           uint64_t begin) noexcept
+        {
+            if (patch_slots.empty())
+                return;
+            std::string_view uri;
+            for (const XmpNsDecl& decl : patch_namespaces) {
+                if (decl.prefix == prefix) {
+                    uri = decl.uri;
+                    break;
+                }
+            }
+            for (detail::XmpScalarPatchSlot& slot : patch_slots) {
+                if (slot.ns_uri == uri && slot.property_path == name) {
+                    slot.byte_offset = begin;
+                    slot.byte_width  = needed - begin;
+                    if (slot.matches != UINT32_MAX)
+                        ++slot.matches;
+                }
+            }
+        }
 
         explicit SpanWriter(std::span<std::byte> dst,
                             uint64_t max_output_bytes) noexcept
@@ -159,11 +190,6 @@ namespace {
         }
 
         void append_char(char c) noexcept { append_bytes(&c, 1U); }
-    };
-
-    struct XmpNsDecl final {
-        std::string_view prefix;
-        std::string_view uri;
     };
 
     struct PortableCustomNsDecl final {
@@ -3184,7 +3210,9 @@ namespace {
         w->append(":");
         w->append(name);
         w->append(">");
+        const uint64_t patch_begin = w->needed;
         (void)emit_portable_value_inline(arena, v, w);
+        w->record_scalar(prefix, name, patch_begin);
         w->append("</");
         w->append(prefix);
         w->append(":");
@@ -3207,7 +3235,9 @@ namespace {
         w->append(":");
         w->append(name);
         w->append(">");
+        const uint64_t patch_begin = w->needed;
         append_xml_safe_ascii(value, w);
+        w->record_scalar(prefix, name, patch_begin);
         w->append("</");
         w->append(prefix);
         w->append(":");
@@ -3230,7 +3260,9 @@ namespace {
         w->append(":");
         w->append(name);
         w->append(">");
+        const uint64_t patch_begin = w->needed;
         append_xml_safe_utf8(value, w);
+        w->record_scalar(prefix, name, patch_begin);
         w->append("</");
         w->append(prefix);
         w->append(":");
@@ -13852,12 +13884,20 @@ namespace {
 }  // namespace
 
 
-XmpDumpResult
-dump_xmp_portable(const MetaStore& store, std::span<std::byte> out,
-                  const XmpPortableOptions& options) noexcept
+static XmpDumpResult
+dump_xmp_portable_impl(const MetaStore& store, std::span<std::byte> out,
+                       const XmpPortableOptions& options,
+                       std::span<detail::XmpScalarPatchSlot> patch_slots) noexcept
 {
     XmpDumpResult r;
     SpanWriter w(out, options.limits.max_output_bytes);
+
+    for (detail::XmpScalarPatchSlot& slot : patch_slots) {
+        slot.byte_offset = 0U;
+        slot.byte_width  = 0U;
+        slot.matches     = 0U;
+    }
+    w.patch_slots = patch_slots;
 
     static constexpr std::array<XmpNsDecl, 12> kDecls = {
         XmpNsDecl { "xmp", kXmpNsXmp },
@@ -13946,6 +13986,7 @@ dump_xmp_portable(const MetaStore& store, std::span<std::byte> out,
         decls.push_back(
             XmpNsDecl { custom_decls[i].prefix, custom_decls[i].uri });
     }
+    w.patch_namespaces = decls;
     emit_xmp_packet_begin(&w, std::span<const XmpNsDecl>(decls.data(),
                                                          decls.size()));
 
@@ -14335,6 +14376,8 @@ dump_xmp_portable(const MetaStore& store, std::span<std::byte> out,
             &emitted, &iptc_order);
     }
 
+    // Structural leaves are outside the scalar patch contract.
+    w.patch_slots = {};
     emit_portable_lang_alt_groups(&w, arena, &lang_alt,
                                   options.limits.max_entries, &emitted);
     emit_portable_indexed_groups(&w, arena, &indexed,
@@ -14366,6 +14409,23 @@ dump_xmp_portable(const MetaStore& store, std::span<std::byte> out,
     r.written = (w.written < w.needed) ? w.written : w.needed;
     r.needed  = w.needed;
     return r;
+}
+
+
+XmpDumpResult
+dump_xmp_portable(const MetaStore& store, std::span<std::byte> out,
+                  const XmpPortableOptions& options) noexcept
+{
+    return dump_xmp_portable_impl(store, out, options, {});
+}
+
+XmpDumpResult
+detail::dump_xmp_portable_for_patch(const MetaStore& store,
+                                    std::span<std::byte> output,
+                                    const XmpPortableOptions& options,
+                                    std::span<XmpScalarPatchSlot> slots) noexcept
+{
+    return dump_xmp_portable_impl(store, output, options, slots);
 }
 
 

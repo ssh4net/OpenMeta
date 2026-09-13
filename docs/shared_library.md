@@ -29,10 +29,10 @@ explicit shared target for packaging and runtime-linkage tests.
 
 ## ABI And Toolchain
 
-The installed package publishes `OpenMeta_ABI_VERSION`, currently `2`. The ABI
+The installed package publishes `OpenMeta_ABI_VERSION`, currently `3`. The ABI
 major changes only for an incompatible public C++ ABI change. On ELF platforms,
 the installed shared object has the corresponding SONAME major. Package version
-and ABI major are different: a patch or minor release may retain ABI `2`.
+and ABI major are different: a patch or minor release may retain ABI `3`.
 
 When OpenMeta is built with `OPENMETA_USE_LIBCXX=ON`, the package requires a
 Clang consumer and propagates `-stdlib=libc++` for compile and link steps. This
@@ -66,7 +66,7 @@ shared build because it could otherwise become a public dylib symbol; provide a
 dynamic dependency package or disable that optional feature.
 
 On Windows, the static archive is `openmeta_static.lib`, the DLL import archive
-is `openmeta_shared.lib`, and the runtime DLL is `openmeta.dll`. Deploy the DLL
+is `openmeta_shared.lib`, and the runtime DLL is `openmeta-3.dll`. Deploy the DLL
 next to the application or make its directory discoverable through the normal
 Windows DLL search policy. The installed-consumer test places the package `bin`
 directory on `PATH` before it runs its executable.

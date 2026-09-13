@@ -27,7 +27,7 @@ Preparation may allocate. Serialize once and retain immutable bytes for an
 allocation-free replay path. Repeated serialization against an immutable
 finalized store is deterministic and thread-safe.
 
-For repeated fixed-width changes, ``openmeta/exif_tiff_patch.h`` compiles exact
+For repeated fixed-width changes, ``openmeta/metadata_patch.h`` compiles exact
 key occurrences into opaque target-neutral handles. See
 :doc:`canonical_patching`.
 

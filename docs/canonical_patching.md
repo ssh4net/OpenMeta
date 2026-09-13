@@ -1,101 +1,149 @@
-# Prepared Canonical EXIF Patching
+# Prepared metadata patching
 
-`openmeta/exif_tiff_patch.h` prepares immutable canonical TIFF/EXIF bytes and
-compiles exact fixed-width fields into opaque handles. It is target-neutral:
-the API does not select a container, emit route strings, or expose TIFF byte
-offsets.
+OpenMeta 0.5.0 provides `openmeta/metadata_patch.h` for unwrapped canonical
+TIFF/EXIF and portable XMP payloads. One plan can contain either family or both.
+One update batch validates every requested change before writing either payload.
 
-## Lifecycle
+This replaces the pre-0.5 `exif_tiff_patch.h` API. See
+[migration_0_5.md](migration_0_5.md) for the source and binary migration.
 
-Preparation is the initialization phase and may allocate:
+## Preparation and worker ownership
 
-```cpp
-#include "openmeta/exif_tiff_patch.h"
-
-openmeta::ExifTiffPatchRequest request;
-request.key = openmeta::make_exif_tag_key_view("exififd", 0x829aU);
-request.expected.kind = openmeta::MetaValueKind::Scalar;
-request.expected.elem_type = openmeta::MetaElementType::URational;
-request.expected.count = 1U;
-
-openmeta::ExifTiffPatchHandle handle;
-openmeta::PreparedExifTiffPatchPlan plan;
-const openmeta::ExifTiffPatchResult prepared =
-    openmeta::prepare_exif_tiff_patch_plan(
-        store,
-        std::span<const openmeta::ExifTiffPatchRequest>(&request, 1U),
-        {}, std::span<openmeta::ExifTiffPatchHandle>(&handle, 1U),
-        &plan);
-```
-
-Each request identifies an exact `MetaKeyView`, zero-based duplicate
-occurrence, and logical value shape. The output handle is scoped to the
-prepared payload and request layout. It is not an offset and cannot be used to
-modify a worker created from a different plan.
-`kMaxPreparedExifTiffPatchHandles` is the hard per-plan handle ceiling; the
-options default to a lower 4096-request resource bound.
-
-Create one mutable worker instance per concurrent execution lane:
+Prepare after authoring a finalized store. For EXIF, select an exact key,
+zero-based occurrence and native value shape. For XMP, select the namespace URI
+and simple property path in the serializer output, plus the exact escaped width.
 
 ```cpp
-openmeta::PreparedExifTiffPatchInstance worker;
-openmeta::create_prepared_exif_tiff_patch_instance(plan, &worker);
+#include "openmeta/metadata_patch.h"
+#include <array>
 
-const openmeta::ExifTiffPatchUpdate update {
-    handle,
-    openmeta::make_value_view_urational(1U, 250U),
-};
-const openmeta::ExifTiffPatchResult patched =
-    openmeta::patch_prepared_exif_tiff_instance(
-        &worker,
-        std::span<const openmeta::ExifTiffPatchUpdate>(&update, 1U));
+std::array<openmeta::MetadataPatchRequest, 2> requests;
+requests[0].key = openmeta::make_exif_tag_key_view("exififd", 0x9211U);
+requests[0].expected.kind = openmeta::MetaValueKind::Scalar;
+requests[0].expected.elem_type = openmeta::MetaElementType::U32;
+requests[0].expected.count = 1U;
+requests[1].key = openmeta::make_xmp_property_key_view(
+    "https://example.test/capture/1.0/", "FrameNumber");
+requests[1].escaped_width = 10U; // The store already emits ten text bytes.
 
-write_host_container(worker.payload());
+std::array<openmeta::MetadataPatchHandle, 2> handles;
+openmeta::PreparedMetadataPatchPlan plan;
+openmeta::MetadataPatchPlanOptions options;
+options.plan_id = 1U; // Example host-issued ID; use a fresh ID for each preparation.
+const openmeta::MetadataPatchResult prepared =
+    openmeta::prepare_metadata_patch_plan(store, requests, options, handles, &plan);
+if (!prepared.ok()) {
+    // Report prepared.code and prepared.failed_index outside capture.
+    return;
+}
+openmeta::PreparedMetadataPatchInstance worker;
+if (!openmeta::create_prepared_metadata_patch_instance(plan, &worker).ok()) {
+    return;
+}
 ```
 
-Worker creation copies the prepared payload and may allocate. Patch batches and
-`payload()` access do not allocate or resize storage. The immutable plan supports
-concurrent const access. One mutable worker requires exclusive ownership while
-patching; independent workers can be patched and replayed concurrently.
+Preparation and worker creation may allocate. Each worker owns its payloads and
+compiled slots and survives destruction of the plan. The host controls
+synchronization, ownership and publication. Each mutable worker requires exclusive
+access, including against reads through borrowed payload views and destruction. Neither the
+source store nor a template is modified by patching.
 
-## Transaction Contract
+The serializer records the XMP locations internally after applying its conflict
+policy. Namespace prefixes and text sentinels are not application identifiers.
+The default patch options include existing XMP, preserve custom namespaces and
+let existing XMP win over generated projections. Scalar EXIF/IPTC projections
+can also be selected by their emitted XMP identity. Only requested payload
+families are generated.
 
-A patch batch validates every update before changing bytes. Failure leaves the
-complete worker payload unchanged. Validation rejects:
+## Host-owned preparation identity and synchronization
 
-- invalid, duplicate, or foreign handles;
-- logical kind, element type, encoding, or count changes;
-- variable-width text, byte, or array replacements;
-- zero rational denominators;
-- values whose borrowed payload aliases the worker payload;
-- stale or malformed slot bounds.
+Set `options.plan_id` to a host-issued value from 1 through
+`kMaxMetadataPatchPlanId` (48 bits). Zero and larger values return
+`InvalidOptions`. Each successful preparation needs a fresh ID, even when the
+serialized packet is identical. An ID may be reused only after all prior plans,
+workers and handles with that ID can no longer be used. A host sequence must
+coordinate all preparation callers; separate per-thread counters starting at the
+same value do not provide distinct IDs. Exhaustion requires the host to stop or
+establish that old IDs are no longer usable; do not silently wrap.
 
-Scalar and array values use host-native `MetaValueView` input and are encoded to
-canonical little-endian TIFF bytes. Text requests count content bytes; OpenMeta
-preserves the serialized terminal NUL. ASCII and UTF-8 text are fixed-width byte
-patches, not normalization or transcoding operations.
+The library stores and compares the supplied identity. It cannot detect duplicate
+IDs assigned to separate plans by the host. Preparation, worker creation,
+patching and replay use no atomics, mutexes or global mutable state. The host
+must synchronize conflicting access and object lifetime; concurrent misuse is
+not detected and may cause undefined behavior. Independent plans and workers
+with independent writable buffers do not share patch state.
 
-## Supported Fields
+## Transactional EXIF and XMP updates
 
-The v1 plan compiles source-backed EXIF/TIFF entries that the canonical classic
-TIFF serializer emits with a fixed width. This includes 8/16/32-bit signed and
-unsigned integers, float/double bit values, unsigned and signed rationals,
-matching arrays, fixed byte payloads, and fixed-width ASCII/UTF-8 text.
+```cpp
+const std::array<openmeta::MetadataPatchUpdate, 2> updates = {{
+    { handles[0], openmeta::make_value_view_u32(42U) },
+    { handles[1], openmeta::make_value_view_text(
+          "0000000042", openmeta::TextEncoding::Utf8) },
+}};
+const openmeta::MetadataPatchResult patched =
+    openmeta::patch_prepared_metadata_instance(&worker, updates);
+if (!patched.ok()) {
+    // Every EXIF and XMP payload byte still has its previous value.
+    return;
+}
+const auto exif = worker.payload(openmeta::MetadataPatchPayload::ExifTiff);
+const auto xmp = worker.payload(openmeta::MetadataPatchPayload::Xmp);
+// Copy these compact payloads into the host's preallocated frame buffers.
+```
 
-Classic TIFF output does not serialize `U64` or `I64` integer entries, so those
-requests return `EntryNotSerializable`. Regenerated IFD pointer tags and
-synthetic fields such as an injected minimal DNG version are not patchable
-because they do not identify a source store entry. Variable-count edits require
-normal store editing followed by a new preparation pass.
+Successful and rejected batches, payload access and library replay allocate no
+heap memory. Payload addresses and lengths remain stable. Input values must
+remain immutable throughout the call and cannot borrow bytes from either worker
+payload. Duplicate, invalid, foreign and stale-generation handles fail before
+any write when the host follows the ID lifetime contract. Transactional here
+means all-or-nothing payload changes within one call; it does not provide
+inter-thread synchronization. A valid early EXIF update followed by an invalid
+XMP update changes neither family. A caller that keeps both families in one plan needs no separate
+EXIF/XMP preflight or rollback layer.
 
-Opaque MakerNotes remain governed by the serializer policy. Explicitly
-preserving a raw MakerNote does not make vendor-private offsets, checksums, or
-semantic fields safely editable.
+`replay_prepared_metadata_instance` calls a synchronous callback in EXIF then
+XMP order, skipping absent families. The callback owns any output effects and
+must meet the application's allocation requirements. A false callback stops
+replay; already performed host writes are not rolled back. Do not publish a
+partially written frame, or mutate/reset the worker from a replay callback.
 
-## Container Boundary
+## Values and bounds
 
-`plan.payload()` and `worker.payload()` are unwrapped canonical TIFF bytes. A
-host can replay them directly into PNG/WebP-style EXIF carriers or add its own
-JPEG, JP2/JXL/BMFF, JPH, or private-container framing. Patching never requires a
-`TransferTargetFormat`; host framing and image-data ordering remain outside this
-contract.
+EXIF uses host-native `MetaValueView` values and canonical little-endian TIFF
+encoding. The logical kind, element type, encoding and count must match the
+compiled request. Fixed arrays and byte values are supported. Text counts omit
+the serialized terminal NUL. Rational denominators must be nonzero. Regenerated
+IFD pointers, synthetic entries and values the classic TIFF serializer omits
+cannot be selected.
+
+XMP accepts logical UTF-8 or ASCII text for existing simple scalar properties.
+It validates UTF-8 and XML 1.0 characters, then escapes `&`, `<`, `>`, quotes and
+apostrophes. CR is emitted as `&#xD;` to preserve it through XML line-ending
+normalization. Escaped output must have exactly the prepared width: `&` consumes
+five bytes as `&amp;`. There is no padding, truncation, raw-XML insertion or
+numeric/date reformatting. Leading zeros and subsecond digits remain intact.
+An empty scalar can only be replaced with another zero-width value.
+
+The character rules follow [XML 1.0](https://www.w3.org/TR/xml/#charsets) and
+[RFC 3629](https://www.rfc-editor.org/rfc/rfc3629#section-4).
+
+Array items, language alternatives, qualifiers, nested structures, new properties,
+new namespace declarations and variable-width changes are outside the initial
+XMP patch contract. Such properties elsewhere in the packet remain unchanged.
+Use store editing and serialization to prepare a new layout at a stopped or
+drained worker boundary.
+
+The default request limit is 4096; the hard handle ceiling is 65534. XMP output
+has a configurable nonzero bound, defaulting to 16 MiB and 65536 emitted entries.
+These are library defaults, not measured camera packet sizes or latency claims.
+A complete oversized packet fails preparation rather than publishing a partial
+patch plan.
+
+## Container ownership
+
+Payloads carry no JPEG markers, PNG chunks, JP2/JPH UUID boxes or image data.
+The host owns framing, lengths, offsets, checksums, encoders and final I/O.
+The existing prepared-transfer handoff remains useful for target-specific typed
+operations and replay. Its time-field operations are not aliases for this new
+standalone payload API. A new generic property request should use this API.
