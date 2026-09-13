@@ -246,7 +246,17 @@ XMP, or ICC metadata edits. It does not synthesize `VP8X`.
 The JP2 edit path requires a valid JP2 signature box and file-type box.
 
 Prepared top-level `Exif` and XMP `xml` boxes replace existing top-level boxes
-from the same managed family. Unrelated top-level boxes are preserved.
+from the same managed family. This includes the EXIF UUID
+`4a706754-6966-6645-7869-662d3e4a5032` and Adobe XMP UUID
+`be7acfcb-97a9-42e8-9c71-999491e3afac`. All matching carriers are removed for
+the selected family; replacement uses the prepared `Exif` or `xml` route.
+Unselected families, unknown UUIDs, IPTC and GeoTIFF UUID boxes remain intact.
+
+The same box edit path accepts boxed JPH sources. It preserves codestream
+bytes without decoding them. Raw J2K/J2C codestreams require a host-supplied
+container and are not inputs to this edit path. A preserved zero-length box
+stays last; new metadata is inserted before it. Extended sizes and truncated
+UUID headers are checked before any edit output is produced.
 
 ICC update uses the bounded `jp2h/colr` route. OpenMeta rewrites the existing
 `jp2h` box to replace existing `colr` children with the prepared ICC `colr`

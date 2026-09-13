@@ -3,6 +3,7 @@
 #include "openmeta/metadata_transfer.h"
 
 #include "metadata_patch_internal.h"
+#include "jp2_metadata_internal.h"
 #include "openmeta/console_format.h"
 #include "openmeta/container_payload.h"
 #include "openmeta/container_scan.h"
@@ -25801,7 +25802,8 @@ namespace {
                                         uint64_t offset, uint64_t parent_end,
                                         TransferBmffBox* out) noexcept
     {
-        if (!out || offset + 8U > parent_end || offset + 8U > bytes.size()) {
+        if (!out || parent_end > bytes.size() || offset > parent_end
+            || parent_end - offset < 8U) {
             return false;
         }
 
@@ -25815,7 +25817,8 @@ namespace {
         uint64_t header_size = 8U;
         uint64_t box_size    = static_cast<uint64_t>(size32);
         if (size32 == 1U) {
-            if (!read_u64be(bytes, offset + 8U, &box_size)) {
+            if (parent_end - offset < 16U
+                || !read_u64be(bytes, offset + 8U, &box_size)) {
                 return false;
             }
             header_size = 16U;
@@ -25823,8 +25826,7 @@ namespace {
             box_size = parent_end - offset;
         }
 
-        if (box_size < header_size || offset + box_size > parent_end
-            || offset + box_size > bytes.size()) {
+        if (box_size < header_size || box_size > parent_end - offset) {
             return false;
         }
 
@@ -25853,10 +25855,12 @@ namespace {
     static Jp2RewriteFamily
     classify_source_jp2_rewrite_family(const TransferBmffBox& box) noexcept
     {
-        if (box.type == fourcc('E', 'x', 'i', 'f')) {
+        if (box.type == fourcc('E', 'x', 'i', 'f')
+            || (box.has_uuid && box.uuid == detail::kJp2UuidExif)) {
             return Jp2RewriteFamily::Exif;
         }
-        if (box.type == fourcc('x', 'm', 'l', ' ')) {
+        if (box.type == fourcc('x', 'm', 'l', ' ')
+            || (box.has_uuid && box.uuid == detail::kJp2UuidXmp)) {
             return Jp2RewriteFamily::Xmp;
         }
         return Jp2RewriteFamily::Unknown;
@@ -32706,6 +32710,8 @@ build_prepared_bundle_jp2_package(std::span<const std::byte> input_jp2,
     bool found_ftyp          = false;
     bool found_jp2h          = false;
     bool rewrote_jp2h        = false;
+    TransferBmffBox terminal_source_box;
+    bool has_terminal_source_box = false;
     uint32_t removed_boxes   = 0U;
     uint32_t emitted_updates = 0U;
     uint64_t offset          = 0U;
@@ -32757,7 +32763,15 @@ build_prepared_bundle_jp2_package(std::span<const std::byte> input_jp2,
         if (jp2_source_box_matches_rewrite_policy(box, policy)) {
             removed_boxes += 1U;
         } else {
-            append_package_source_chunk(&plan, box.offset, box.size);
+            uint32_t encoded_size = 0U;
+            read_u32be(input_jp2, box.offset, &encoded_size);
+            if (encoded_size == 0U) {
+                // A to-end box must remain last so appended metadata is visible.
+                terminal_source_box = box;
+                has_terminal_source_box = true;
+            } else {
+                append_package_source_chunk(&plan, box.offset, box.size);
+            }
         }
 
         if (box.size == 0U) {
@@ -32816,6 +32830,11 @@ build_prepared_bundle_jp2_package(std::span<const std::byte> input_jp2,
         appended_boxes += 1U;
     }
     emitted_updates += appended_boxes;
+
+    if (has_terminal_source_box) {
+        append_package_source_chunk(&plan, terminal_source_box.offset,
+                                    terminal_source_box.size);
+    }
 
     if (emitted_updates == 0U && removed_boxes == 0U) {
         out.status  = TransferStatus::InvalidArgument;

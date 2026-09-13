@@ -1332,6 +1332,48 @@ TEST(ExifTiffDecode, AsciiWithEmbeddedNulIsStoredAsBytes)
 }
 
 
+TEST(ExifTiffDecode, RootIfdBoundsMatchForSpanAndCallback)
+{
+    for (bool bigtiff : { false, true }) {
+        for (uint64_t offset : { uint64_t(0), uint64_t(16), uint64_t(0xfffffff0) }) {
+            SCOPED_TRACE(bigtiff);
+            SCOPED_TRACE(offset);
+            std::vector<std::byte> tiff;
+            append_bytes(&tiff, "II");
+            append_u16le(&tiff, bigtiff ? 43 : 42);
+            if (bigtiff) {
+                append_u16le(&tiff, 8);
+                append_u16le(&tiff, 0);
+                append_u64le(&tiff, offset);
+            } else {
+                append_u32le(&tiff, static_cast<uint32_t>(offset));
+                tiff.resize(16);
+            }
+            const ExifDecodeStatus expected = offset == 0
+                ? ExifDecodeStatus::Ok : ExifDecodeStatus::Malformed;
+            MetaStore span_store;
+            std::array<ExifIfdRef, 4> ifds {};
+            const auto span_result = decode_exif_tiff(tiff, span_store, ifds, {});
+            EXPECT_EQ(span_result.status, expected);
+            EXPECT_EQ(span_result.entries_decoded, 0U);
+            TiffCallbackState callback { tiff };
+            const auto source = make_callback_random_access_source(
+                tiff.size(), &callback, tiff_read_at);
+            const auto range = make_random_access_source_range(source, 0, tiff.size());
+            std::array<std::byte, 32> window {}, value {};
+            ExifRandomAccessScratch scratch;
+            scratch.read_window = window;
+            scratch.value = value;
+            MetaStore callback_store;
+            const auto callback_result = decode_exif_tiff_random_access(
+                range, callback_store, ifds, scratch, {});
+            EXPECT_TRUE(callback_result.input.ok());
+            EXPECT_EQ(callback_result.decode.status, expected);
+            EXPECT_EQ(callback_result.decode.entries_decoded, 0U);
+        }
+    }
+}
+
 TEST(ExifTiffDecode, OutOfBoundsValueIsRejected)
 {
     std::vector<std::byte> tiff;

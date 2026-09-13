@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "openmeta/container_scan.h"
+#include "jp2_metadata_internal.h"
 
 #include <array>
 #include <cstring>
@@ -22,15 +23,6 @@ namespace {
         std::byte { 0x0A },
     };
 
-    static constexpr std::array<std::byte, 16> kJp2UuidExif = {
-        std::byte { 0x4a }, std::byte { 0x70 }, std::byte { 0x67 },
-        std::byte { 0x54 }, std::byte { 0x69 }, std::byte { 0x66 },
-        std::byte { 0x66 }, std::byte { 0x45 }, std::byte { 0x78 },
-        std::byte { 0x69 }, std::byte { 0x66 }, std::byte { 0x2d },
-        std::byte { 0x3e }, std::byte { 0x4a }, std::byte { 0x50 },
-        std::byte { 0x32 },
-    };
-
     static constexpr std::array<std::byte, 16> kJp2UuidIptc = {
         std::byte { 0x33 }, std::byte { 0xc7 }, std::byte { 0xa4 },
         std::byte { 0xd2 }, std::byte { 0xb8 }, std::byte { 0x1d },
@@ -38,15 +30,6 @@ namespace {
         std::byte { 0xba }, std::byte { 0xf1 }, std::byte { 0xa3 },
         std::byte { 0xe0 }, std::byte { 0x97 }, std::byte { 0xad },
         std::byte { 0x38 },
-    };
-
-    static constexpr std::array<std::byte, 16> kJp2UuidXmp = {
-        std::byte { 0xbe }, std::byte { 0x7a }, std::byte { 0xcf },
-        std::byte { 0xcb }, std::byte { 0x97 }, std::byte { 0xa9 },
-        std::byte { 0x42 }, std::byte { 0xe8 }, std::byte { 0x9c },
-        std::byte { 0x71 }, std::byte { 0x99 }, std::byte { 0x94 },
-        std::byte { 0x91 }, std::byte { 0xe3 }, std::byte { 0xaf },
-        std::byte { 0xac },
     };
 
     // GeoJP2 / GeoTIFF UUID box (OGC GeoJP2). Payload is a classic TIFF stream.
@@ -3076,11 +3059,11 @@ namespace {
             block.id           = box.type;
             block.chunking     = BlockChunking::Jp2UuidPayload;
 
-            if (box.uuid == kJp2UuidExif) {
+            if (box.uuid == detail::kJp2UuidExif) {
                 block.kind = ContainerBlockKind::Exif;
                 skip_exif_preamble(&block, bytes);
                 sink_emit(sink, block);
-            } else if (box.uuid == kJp2UuidXmp) {
+            } else if (box.uuid == detail::kJp2UuidXmp) {
                 block.kind = ContainerBlockKind::Xmp;
                 sink_emit(sink, block);
             } else if (box.uuid == kJp2UuidIptc) {
@@ -5454,13 +5437,13 @@ namespace {
         block.id           = box.type;
         block.chunking     = BlockChunking::Jp2UuidPayload;
 
-        if (box.uuid == kJp2UuidExif) {
+        if (box.uuid == detail::kJp2UuidExif) {
             block.kind = ContainerBlockKind::Exif;
             skip_exif_preamble(&block, bytes);
             sink_emit(sink, block);
             return true;
         }
-        if (box.uuid == kJp2UuidXmp) {
+        if (box.uuid == detail::kJp2UuidXmp) {
             block.kind = ContainerBlockKind::Xmp;
             sink_emit(sink, block);
             return true;
@@ -5582,7 +5565,7 @@ namespace {
                 if (format == ContainerFormat::Jp2
                     && bmff_emit_jp2_uuid_payload(bytes, box, sink)) {
                     // handled
-                } else if (box.uuid == kJp2UuidExif
+                } else if (box.uuid == detail::kJp2UuidExif
                            || box.uuid == kJp2UuidGeoTiff) {
                     ContainerBlockRef block;
                     block.format       = format;
@@ -5598,7 +5581,7 @@ namespace {
                 } else if (box.uuid == kJp2UuidIptc) {
                     bmff_emit_uuid_payload(format, ContainerBlockKind::IptcIim,
                                            box, sink);
-                } else if (box.uuid == kJp2UuidXmp) {
+                } else if (box.uuid == detail::kJp2UuidXmp) {
                     bmff_emit_uuid_payload(format, ContainerBlockKind::Xmp, box,
                                            sink);
                 } else if (format == ContainerFormat::Cr3

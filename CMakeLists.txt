@@ -998,6 +998,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/compatibility_dump_test.cc
     tests/container_payload_test.cc
     tests/container_scan_test.cc
+    tests/jp2_rewrite_test.cc
     tests/bmff_fields_decode_test.cc
     tests/c2pa_container_test.cc
     tests/jumbf_decode_test.cc

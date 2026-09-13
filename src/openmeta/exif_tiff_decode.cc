@@ -4416,6 +4416,11 @@ decode_exif_tiff_contiguous(std::span<const std::byte> tiff_bytes,
         }
     }
 
+    if (first_ifd != 0 && first_ifd >= tiff_bytes.size()) {
+        sink.result.status = ExifDecodeStatus::Malformed;
+        return sink.result;
+    }
+
     std::array<IfdTask, 256> stack_buf {};
     std::array<uint64_t, 256> visited_offs {};
     std::array<uint8_t, 256> visited_masks {};
@@ -6256,6 +6261,11 @@ decode_exif_tiff_random_access(
             result.decode.status = ExifDecodeStatus::Malformed;
             return result;
         }
+    }
+
+    if (first_ifd != 0U && first_ifd >= tiff.size) {
+        result.decode.status = ExifDecodeStatus::Malformed;
+        return result;
     }
 
     std::array<IfdTask, 256> tasks {};
