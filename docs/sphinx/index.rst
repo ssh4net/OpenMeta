@@ -51,6 +51,7 @@ and must not be used as an asset-authenticity or trust gate.
    generic_authoring
    editing
    translation
+   capture_sync_milestone
    canonical_serialization
    canonical_patching
    raw_read_parity_plan

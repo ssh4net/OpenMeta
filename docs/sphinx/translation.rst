@@ -25,6 +25,9 @@ The APIs are experimental and versioned by
 Workflow
 --------
 
+See :doc:`capture_sync_milestone` for the ten capture APIs, 46 distinct native
+targets, shared-target composition and known 0.5.4 portable round-trip gaps.
+
 Translation is a separate step. Creation, editing, transfer, and writing do not
 invoke it implicitly:
 

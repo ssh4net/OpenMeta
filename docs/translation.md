@@ -105,6 +105,11 @@ Portable and standard aliases target the same native singleton. If more than
 one eligible alias is present, the source is ambiguous and translation fails
 rather than selecting one.
 
+The [0.5.4 capture synchronization milestone](capture_sync_milestone.md) inventories
+all ten capture APIs, their 46 distinct native targets, shared-target composition
+and known portable round-trip gaps. Exact reverse authoring does not by itself
+guarantee exact native-to-XMP output for every older capture field.
+
 ## Capture settings writeback
 
 `translate_xmp_capture_settings_metadata(...)` and Python

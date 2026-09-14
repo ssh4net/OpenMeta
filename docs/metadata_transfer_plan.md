@@ -917,8 +917,9 @@ Suggested delivery sequence:
    adds exact SubjectDistance, DigitalZoomRatio, ExposureIndex, and FlashEnergy
    writeback with explicit sentinel rules. Versions 0.5.2 and 0.5.3 add
    LensSpecification, ImageUniqueID and APEX reverse APIs. Version 0.5.4 adds
-   complete focal-plane/subject groups. Remaining capture contracts need a
-   milestone inventory before selecting further rational or opaque fields. Version 0.4.139 adds
+   complete focal-plane/subject groups. The 0.5.4 milestone audit identifies
+   portable precision, sensitivity alias and malformed-value gaps to close
+   before adding further rational or opaque fields. Version 0.4.139 adds
    complete scalar/five-child Flash bitfield writeback with reserved-bit and
    whole-structure removal rules. Version 0.4.140 adds LightSource writeback
    for 32 defined codes, rejects ambiguous Daylight text, and preserves the
@@ -928,8 +929,11 @@ Suggested delivery sequence:
    Version 0.4.142 adds six independent camera/lens/spectral printable-ASCII
    fields in one combined batch, including canonical portable namespaces and
    shared transaction, persistence and platform checks. The capture-related
-   APIs now cover 35 distinct native targets across seven APIs. Geographic
-   inference and arbitrary structured-location merging remain excluded.
+   APIs now cover 46 distinct ExifIFD targets across ten APIs, including camera
+   text and excluding GPS. ISO and ExposureBiasValue each overlap two APIs.
+   The next combined batch is exact portable capture round-trip closure; see
+   `docs/capture_sync_milestone.md` for evidence, gaps and acceptance checks.
+   Geographic inference and arbitrary structured-location merging remain excluded.
    See `docs/translation.md`.
 2. Retain the completed writer-baseline and compare-backed release gates while
    extending validated foreign `BMFF` graph shapes.
