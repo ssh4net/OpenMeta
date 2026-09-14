@@ -247,9 +247,9 @@ active property, and 1536 total source text bytes. Limits may be lowered and
 never cause truncation. Preparation may allocate. EXIF versions are retained;
 the API does not create or upgrade version metadata.
 
-Capture coverage has no fixed all-tags denominator. APEX conversions, lens/spectral text, and
-focal-plane/subject arrays still need separate contracts. These twelve fields
-do not close arbitrary EXIF writeback.
+Capture coverage has no fixed all-tags denominator. Camera/lens/spectral text
+and direct APEX values have separate contracts below. Focal-plane/subject arrays
+remain open; these twelve settings do not close arbitrary EXIF writeback.
 
 
 Exact capture rational writeback
@@ -1601,7 +1601,7 @@ through JPEG/Classic TIFF/BigTIFF, the Python wrapper and an installed shared
 library consumer. Related fields are implemented and reviewed together, with
 focused checks during development and one final platform matrix per stable
 batch. Lens specification and image identity use the separate contract below.
-APEX and focal-plane/subject arrays remain later batches.
+APEX is covered below; focal-plane/subject arrays remain later work.
 
 Lens specification and image identity writeback
 -----------------------------------------------
@@ -1645,5 +1645,94 @@ UUID version, global uniqueness or capture-time identity retention policy and
 never upgrades ExifVersion. Hosts supply lens components in documented order:
 the store flattens RDF arrays and does not retain Seq/Bag container kind.
 See ``docs/translation.md`` for exact contracts, standards references and the
-remaining APEX and focal-plane/subject batches. Combined C++, Python, shared
+remaining focal-plane/subject batches. Combined C++, Python, shared
 consumer and JPEG/Classic TIFF/BigTIFF snapshot checks cover both fields.
+
+
+APEX writeback (contract version 1)
+-----------------------------------
+
+``translate_xmp_apex_metadata`` and Python
+``Document.translate_apex_metadata`` translate five independent scalar fields
+in one transaction. ``MetadataApexTranslationOptions`` uses the capture source
+modes, conflict policies, result and status types.
+
+.. list-table:: Exact exif-namespace APEX mappings
+   :header-rows: 1
+
+   * - XMP source
+     - ExifIFD target
+     - Native type, count 1
+   * - ``ShutterSpeedValue``
+     - ``0x9201``
+     - SRATIONAL
+   * - ``ApertureValue``
+     - ``0x9202``
+     - RATIONAL
+   * - ``BrightnessValue``
+     - ``0x9203``
+     - SRATIONAL
+   * - ``ExposureBiasValue`` or ``ExposureCompensation``
+     - ``0x9204``
+     - SRATIONAL
+   * - ``MaxApertureValue``
+     - ``0x9205``
+     - RATIONAL
+
+The namespace must be ``http://ns.adobe.com/exif/1.0/``. All five independent
+``*_value_to_exif`` switches default to true; at least one must remain enabled.
+The exact switch names are ``shutter_speed_value_to_exif``,
+``aperture_value_to_exif``, ``brightness_value_to_exif``,
+``exposure_bias_value_to_exif`` and ``max_aperture_value_to_exif``.
+Inputs are direct APEX values. No seconds/f-number conversion, exposure
+inference, cross-field consistency check or ExifVersion upgrade is performed.
+
+Scalar integers, the target rational type and ASCII/UTF-8/Unknown-encoding
+integer, decimal, scientific or fraction text are supported. Aperture fields
+accept nonnegative values, including zero; the other fields accept either sign.
+Denominators must be positive. Exact reduction uses bounded 64-bit intermediates
+and must fit 32-bit numerator/denominator components. Floating point, arrays,
+structured children, qualifiers, unit suffixes and invalid numeric text fail.
+Existing XMP decode whitespace normalization is unchanged. The usual
+brightness/bias range of -99.99 to 99.99 is not a hard limit.
+
+A brightness wire numerator of -1 denotes unknown before reduction. Typed
+``SRational{-1,n}``, explicit fraction text ``-1/n`` or exact text ``Unknown``
+writes ``-1/1``; the positive denominator must fit INT32_MAX. Integer or
+single-number text inputs are finite: ``-1`` and ``-1.0`` write ``-2/2``;
+``-0.5`` and ``-2/4`` write ``-2/4``. Finite reduced fractions with numerator -1
+use ``-2/(2n)`` or fail with ValueOutOfRange if the doubled denominator cannot
+fit. Conflict comparison keeps unknown and finite values distinct.
+
+Missing sources retain native fields; dirty tombstones remove them under
+ReplaceExisting. Duplicate eligible aliases fail. Native equivalence requires
+the correct scalar type/count and rational value, with sentinel handling.
+Replacement repairs wrong types and duplicate entries. Parsing, conflicts and
+budgets finish before one commit, including aliased output. Preparation may
+allocate; the host synchronizes conflicting access to shared objects.
+
+Default/hard bounds are five added entries, 1024 operations, 128 text bytes per
+property and 640 total text bytes. Positive lower limits are supported.
+Exposure bias reuses the existing capture mapping and
+``XmpExposureCompensation`` diagnostic; older capture option layouts and input
+behavior remain unchanged.
+
+In 0.5.3 generated portable XMP emits exact APEX fractions for all five tags.
+Native shutter ``6/1`` now emits ``6/1``; earlier output emitted seconds
+``1/64``. Native aperture ``4/1`` now emits ``4/1``; earlier output emitted
+f-number text ``4.0``. Regenerate old packets from native EXIF before reverse
+translation; their units cannot be inferred reliably from the values alone.
+Brightness and the retained ``ExposureCompensation`` alias also emit exact
+fractions. Existing correctly typed scalar XMP APEX rationals retain exact wire
+fractions as well. Unknown brightness emits ``-1/1``. Wrong native types/counts and
+nonpositive denominators are omitted; large representable APEX values remain
+exact. Existing-XMP precedence remains unchanged; CanonicalizeManaged allows
+valid native replacements. Host FlatHost/Spec projections are unchanged.
+
+The structural definitions follow `CIPA DC-008-2012
+<https://www.cipa.jp/std/documents/e/DC-008-2012_E.pdf>`_ and XMP names follow
+`CIPA DC-X010-2017 <https://cipa.jp/std/documents/e/DC-X010-2017.pdf>`_. This is
+not a full conformance claim for all Exif tags or later revisions. The batch
+adds four native targets, bringing capture-related coverage to 41 targets
+across nine APIs. Focal-plane/subject contracts are next; downstream application
+acceptance is separate.

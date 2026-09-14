@@ -1,5 +1,27 @@
 # OpenMeta Changes
 
+## 0.5.3 - 2026-09-14
+
+Changes compared with `0.5.2`.
+
+### Added
+
+- Added bounded C++ and Python APEX writeback for shutter speed, aperture,
+  brightness, exposure bias and maximum aperture in one transaction. Preserve
+  exact signed/unsigned rational values, including the unknown-brightness
+  sentinel, with explicit source shapes, conflicts, removal and resource limits.
+- Added combined numeric, rollback, portable, snapshot, Python and installed
+  shared-consumer coverage. ABI 3 and existing option layouts are unchanged.
+
+### Fixed
+
+- Generated portable APEX properties now contain exact APEX fractions. Earlier
+  shutter/aperture output incorrectly contained seconds/f-numbers under APEX
+  names. Regenerate old portable packets from native EXIF before writeback.
+- Native and existing typed XMP APEX fractions retain exact values. Unknown
+  brightness remains distinct from finite negative values. Malformed native
+  scalar shapes are omitted; valid large APEX values need no exponentiation.
+
 ## 0.5.2 - 2026-09-14
 
 Changes compared with `0.5.1`.

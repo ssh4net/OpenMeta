@@ -5932,3 +5932,596 @@ namespace {
     }
 }  // namespace
 }  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    using ApexOptions = MetadataApexTranslationOptions;
+    using ApexStatus  = MetadataCaptureTranslationStatus;
+    using ApexPolicy  = MetadataCaptureTranslationConflictPolicy;
+    constexpr std::array<std::string_view, 5> kApexPaths
+        = { "ShutterSpeedValue", "ApertureValue", "BrightnessValue",
+            "ExposureBiasValue", "MaxApertureValue" };
+    constexpr std::array<uint16_t, 5> kApexTags = { 0x9201U, 0x9202U, 0x9203U,
+                                                    0x9204U, 0x9205U };
+    constexpr std::array<std::string_view, 5> kApexText
+        = { "-7/3", "0", "-0.5", "1/3", "4294967295/2" };
+    constexpr std::array<bool ApexOptions::*, 5> kApexFlags
+        = { &ApexOptions::shutter_speed_value_to_exif,
+            &ApexOptions::aperture_value_to_exif,
+            &ApexOptions::brightness_value_to_exif,
+            &ApexOptions::exposure_bias_value_to_exif,
+            &ApexOptions::max_aperture_value_to_exif };
+
+    static MetaStore apex_source(EntryFlags flags = EntryFlags::Dirty)
+    {
+        MetaStore store;
+        for (size_t i = 0U; i < kApexPaths.size(); ++i)
+            settings_xmp(store, kApexPaths[i],
+                         make_text(store.arena(), kApexText[i],
+                                   TextEncoding::Ascii),
+                         flags);
+        return store;
+    }
+
+    static void apex_expect(const MetaStore& store, size_t index,
+                            int64_t numerator, uint32_t denominator)
+    {
+        const Entry* entry = settings_find(store, kApexTags[index]);
+        ASSERT_NE(entry, nullptr);
+        const MetaValue& value = entry->value;
+        ASSERT_EQ(value.kind, MetaValueKind::Scalar);
+        ASSERT_EQ(value.count, 1U);
+        if (index == 1U || index == 4U) {
+            ASSERT_EQ(value.elem_type, MetaElementType::URational);
+            EXPECT_EQ(value.data.ur.numer, numerator);
+            EXPECT_EQ(value.data.ur.denom, denominator);
+        } else {
+            ASSERT_EQ(value.elem_type, MetaElementType::SRational);
+            EXPECT_EQ(value.data.sr.numer, numerator);
+            EXPECT_EQ(value.data.sr.denom, denominator);
+        }
+    }
+
+    static std::vector<std::byte> apex_snapshot(const MetaStore& store)
+    {
+        std::vector<std::byte> bytes;
+        EXPECT_EQ(serialize_transfer_source_snapshot(
+                      build_transfer_source_snapshot(store), &bytes)
+                      .status,
+                  TransferStatus::Ok);
+        return bytes;
+    }
+
+    static void apex_failure(MetaStore& source, ApexStatus status,
+                             const ApexOptions& options = {})
+    {
+        source.finalize();
+        const std::vector<std::byte> before = apex_snapshot(source);
+        MetaStore output;
+        settings_native(output, 0x9209U, make_u16(95U));
+        output.finalize();
+        const std::vector<std::byte> output_before = apex_snapshot(output);
+        EXPECT_EQ(translate_xmp_apex_metadata(source, options, &output).status,
+                  status);
+        EXPECT_EQ(apex_snapshot(output), output_before);
+        EXPECT_EQ(translate_xmp_apex_metadata(source, options, &source).status,
+                  status);
+        EXPECT_EQ(apex_snapshot(source), before);
+    }
+
+    TEST(MetadataApex, FiveFieldsCommitExactValuesAndRetainUnrelatedCapture)
+    {
+        MetaStore output;
+        {
+            MetaStore source = apex_source();
+            settings_native(source, 0x829aU, make_urational(1U, 125U));
+            settings_native(source, 0x829dU, make_urational(28U, 10U));
+            source.finalize();
+            const auto result = translate_xmp_apex_metadata(source, {},
+                                                            &output);
+            ASSERT_EQ(result.status, ApexStatus::Ok);
+            EXPECT_EQ(result.entries_added, 5U);
+            EXPECT_EQ(result.groups_translated, 5U);
+            EXPECT_EQ(result.source_properties, 5U);
+            EXPECT_EQ(source.entries().size(), 7U);
+        }
+        apex_expect(output, 0U, -7, 3U);
+        apex_expect(output, 1U, 0, 1U);
+        apex_expect(output, 2U, -2, 4U);
+        apex_expect(output, 3U, 1, 3U);
+        apex_expect(output, 4U, UINT32_MAX, 2U);
+        EXPECT_EQ(settings_find(output, 0x829aU)->value.data.ur.denom, 125U);
+        EXPECT_EQ(settings_find(output, 0x829dU)->value.data.ur.numer, 28U);
+        EXPECT_EQ(
+            translate_xmp_apex_metadata(output, {}, &output).groups_unchanged,
+            5U);
+        for (uint16_t tag : kApexTags)
+            EXPECT_TRUE(
+                any(settings_find(output, tag)->flags, EntryFlags::Dirty));
+    }
+
+    TEST(MetadataApex, DirtySelectionIndependentFlagsAndBiasAlias)
+    {
+        for (size_t selected = 0U; selected < kApexPaths.size(); ++selected) {
+            MetaStore source = apex_source(EntryFlags::None);
+            source.finalize();
+            MetaStore output;
+            EXPECT_EQ(
+                translate_xmp_apex_metadata(source, {}, &output).entries_added,
+                0U);
+            ApexOptions options;
+            options.source_mode = MetadataCaptureTranslationSourceMode::All;
+            for (size_t i = 0U; i < kApexFlags.size(); ++i)
+                options.*kApexFlags[i] = i == selected;
+            ASSERT_EQ(translate_xmp_apex_metadata(source, options, &output)
+                          .entries_added,
+                      1U);
+            for (size_t i = 0U; i < kApexTags.size(); ++i)
+                EXPECT_EQ(settings_find(output, kApexTags[i]) != nullptr,
+                          i == selected);
+        }
+        MetaStore source;
+        settings_xmp(source, "ExposureCompensation", make_srational(-2, 6));
+        source.finalize();
+        ASSERT_EQ(translate_xmp_apex_metadata(source, {}, &source).status,
+                  ApexStatus::Ok);
+        apex_expect(source, 3U, -1, 3U);
+        EXPECT_EQ(translate_xmp_capture_metadata(source, {}, &source)
+                      .groups_unchanged,
+                  1U);
+    }
+
+    TEST(MetadataApex, ExactTypedDecimalScientificAndBoundaryValues)
+    {
+        struct Case {
+            size_t index;
+            std::string_view text;
+            int64_t numer;
+            uint32_t denom;
+        };
+        constexpr Case cases[] = {
+            { 0U, "-2147483648", INT32_MIN, 1U },
+            { 0U, "2147483647/2147483646", INT32_MAX, 2147483646U },
+            { 0U, "4294967294/2", INT32_MAX, 1U },
+            { 1U, "+0.0", 0, 1U },
+            { 1U, "3.125e1", 125, 4U },
+            { 2U, "-99.99", -9999, 100U },
+            { 2U, "1000", 1000, 1U },
+            { 3U, "-2.5e-1", -1, 4U },
+            { 4U, "8589934590/2", UINT32_MAX, 1U },
+            { 4U, "1/4294967295", 1, UINT32_MAX },
+        };
+        for (const Case& item : cases) {
+            MetaStore source;
+            settings_xmp(source, kApexPaths[item.index],
+                         make_text(source.arena(), item.text,
+                                   TextEncoding::Utf8));
+            source.finalize();
+            ASSERT_EQ(translate_xmp_apex_metadata(source, {}, &source).status,
+                      ApexStatus::Ok)
+                << item.text;
+            apex_expect(source, item.index, item.numer, item.denom);
+        }
+        MetaStore typed;
+        settings_xmp(typed, kApexPaths[0], make_srational(INT32_MIN, 2));
+        settings_xmp(typed, kApexPaths[1], make_i32(0));
+        settings_xmp(typed, kApexPaths[2], make_i32(-1));
+        settings_xmp(typed, kApexPaths[3], make_u32(3U));
+        settings_xmp(typed, kApexPaths[4], make_urational(8U, 4U));
+        typed.finalize();
+        ASSERT_EQ(translate_xmp_apex_metadata(typed, {}, &typed).status,
+                  ApexStatus::Ok);
+        apex_expect(typed, 0U, -1073741824, 1U);
+        apex_expect(typed, 1U, 0, 1U);
+        apex_expect(typed, 2U, -2, 2U);
+        apex_expect(typed, 3U, 3, 1U);
+        apex_expect(typed, 4U, 2, 1U);
+    }
+
+    TEST(MetadataApex,
+         BrightnessUnknownPrecedesReductionAndFiniteValuesStayFinite)
+    {
+        struct Case {
+            std::string_view text;
+            int32_t numer;
+            int32_t denom;
+        };
+        constexpr Case cases[] = {
+            { "Unknown", -1, 1 },        { "-1/7", -1, 1 },
+            { "-01/2147483647", -1, 1 }, { "-1", -2, 2 },
+            { "-1.0", -2, 2 },           { "-1e-1", -2, 20 },
+            { "-2/4", -2, 4 },           { "-2/2147483646", -2, 2147483646 },
+        };
+        for (const Case& item : cases) {
+            MetaStore source;
+            settings_xmp(source, kApexPaths[2],
+                         make_text(source.arena(), item.text,
+                                   TextEncoding::Ascii));
+            source.finalize();
+            ASSERT_EQ(translate_xmp_apex_metadata(source, {}, &source).status,
+                      ApexStatus::Ok)
+                << item.text;
+            apex_expect(source, 2U, item.numer, item.denom);
+        }
+        for (int32_t numerator : { -1, -2 }) {
+            MetaStore source;
+            settings_xmp(source, kApexPaths[2], make_srational(numerator, 4));
+            source.finalize();
+            ASSERT_EQ(translate_xmp_apex_metadata(source, {}, &source).status,
+                      ApexStatus::Ok);
+            apex_expect(source, 2U, numerator, numerator == -1 ? 1U : 4U);
+        }
+        for (std::string_view text : { "-2/2147483648", "-1/2147483648" }) {
+            MetaStore source  = apex_source();
+            Entry replacement = source.entry(2U);
+            replacement.value = make_text(source.arena(), text,
+                                          TextEncoding::Ascii);
+            identity_fixture_replace(source, 2U, replacement);
+            apex_failure(source, ApexStatus::ValueOutOfRange);
+        }
+    }
+
+    TEST(MetadataApex, InvalidNumbersTypesAndLateErrorsRollbackTheBatch)
+    {
+        constexpr std::string_view invalid[]
+            = { "1/0", "1/-2", "NaN", "inf",  "4 EV", "f/4",  "1 s",
+                "",    " 2",   "2 ",  "0x10", ".5",   "1/2/3" };
+        for (std::string_view text : invalid) {
+            MetaStore source = apex_source();
+            Entry entry      = source.entry(4U);
+            entry.value = make_text(source.arena(), text, TextEncoding::Ascii);
+            identity_fixture_replace(source, 4U, entry);
+            apex_failure(source, ApexStatus::InvalidNumericValue);
+        }
+        for (const MetaValue value :
+             { make_f64_bits(0x3ff0000000000000ULL), make_srational(2, 1),
+               make_urational(1U, 0U), make_i32(-1) }) {
+            MetaStore source;
+            settings_xmp(source, kApexPaths[4], value);
+            const ApexStatus expected
+                = value.elem_type == MetaElementType::URational
+                      ? ApexStatus::InvalidNumericValue
+                  : value.elem_type == MetaElementType::I32
+                      ? ApexStatus::ValueOutOfRange
+                      : ApexStatus::InvalidSourceValue;
+            apex_failure(source, expected);
+        }
+        for (const MetaValue value :
+             { make_srational(1, -1), make_srational(1, 0),
+               make_urational(1U, 2U) }) {
+            MetaStore source;
+            settings_xmp(source, kApexPaths[0], value);
+            apex_failure(source, value.elem_type == MetaElementType::URational
+                                     ? ApexStatus::InvalidSourceValue
+                                     : ApexStatus::InvalidNumericValue);
+        }
+        for (size_t index : { 0U, 4U }) {
+            for (std::string_view text :
+                 { "4294967296", "1/4294967296", "1e999",
+                   "18446744073709551616/2" }) {
+                MetaStore source;
+                settings_xmp(source, kApexPaths[index],
+                             make_text(source.arena(), text,
+                                       TextEncoding::Utf8));
+                apex_failure(source, ApexStatus::ValueOutOfRange);
+            }
+        }
+        MetaStore malformed;
+        MetaValue count = make_srational(2, 3);
+        count.count     = 2U;
+        settings_xmp(malformed, kApexPaths[0], count);
+        malformed.finalize();
+        EXPECT_EQ(translate_xmp_apex_metadata(malformed, {}, &malformed).status,
+                  ApexStatus::InvalidSourceValue);
+        ASSERT_EQ(malformed.entries().size(), 1U);
+        EXPECT_EQ(malformed.entry(0U).value.count, 2U);
+        EXPECT_EQ(malformed.entry(0U).value.data.sr.numer, 2);
+        EXPECT_EQ(malformed.entry(0U).value.data.sr.denom, 3);
+    }
+
+    TEST(MetadataApex, DuplicateAliasesAndStructuredShapesAreRejected)
+    {
+        for (std::string_view path :
+             { "ShutterSpeedValue", "ExposureCompensation", "ApertureValue[1]",
+               "BrightnessValue/exif:Value", "MaxApertureValue?xml:lang" }) {
+            MetaStore source = apex_source();
+            settings_xmp(source, path, make_u32(1U));
+            apex_failure(source, path == "ShutterSpeedValue"
+                                         || path == "ExposureCompensation"
+                                     ? ApexStatus::AmbiguousSource
+                                     : ApexStatus::UnsupportedSourceShape);
+        }
+        MetaStore source;
+        settings_xmp(source, "ApertureValue", make_u32(4U), EntryFlags::Dirty,
+                     "http://example.test/exif/");
+        settings_xmp(source, "ApertureValueExtra", make_u32(4U));
+        settings_xmp(source, "ApertureValue[1]", make_u32(4U),
+                     EntryFlags::None);
+        source.finalize();
+        EXPECT_EQ(translate_xmp_apex_metadata(source, {}, &source).entries_added,
+                  0U);
+    }
+
+    TEST(MetadataApex,
+         NativeTypesDuplicatesAndBrightnessSentinelsHaveExplicitConflicts)
+    {
+        for (ApexPolicy policy :
+             { ApexPolicy::PreserveExisting, ApexPolicy::FailOnConflict,
+               ApexPolicy::ReplaceExisting }) {
+            MetaStore source = apex_source();
+            settings_native(source, kApexTags[2], make_srational(-1, 2));
+            settings_native(source, kApexTags[4], make_u32(2U));
+            settings_native(source, kApexTags[4], make_urational(3U, 1U));
+            ApexOptions options;
+            options.conflict_policy = policy;
+            source.finalize();
+            if (policy == ApexPolicy::FailOnConflict) {
+                apex_failure(source, ApexStatus::NativeConflict, options);
+                continue;
+            }
+            const auto result = translate_xmp_apex_metadata(source, options,
+                                                            &source);
+            ASSERT_EQ(result.status, ApexStatus::Ok);
+            if (policy == ApexPolicy::PreserveExisting) {
+                EXPECT_EQ(result.groups_preserved, 2U);
+                apex_expect(source, 2U, -1, 2U);
+                EXPECT_EQ(settings_active_count(source, kApexTags[4]), 2U);
+            } else {
+                EXPECT_EQ(result.entries_removed, 1U);
+                EXPECT_EQ(result.entries_updated, 2U);
+                apex_expect(source, 2U, -2, 4U);
+                apex_expect(source, 4U, UINT32_MAX, 2U);
+            }
+        }
+        MetaStore source;
+        settings_xmp(source, kApexPaths[2],
+                     make_text(source.arena(), "Unknown", TextEncoding::Ascii));
+        settings_native(source, kApexTags[2], make_srational(-1, INT32_MAX));
+        source.finalize();
+        EXPECT_EQ(
+            translate_xmp_apex_metadata(source, {}, &source).groups_unchanged,
+            1U);
+    }
+
+    TEST(MetadataApex,
+         DirtyTombstonesRemoveFiveFieldsAndMissingSourcesRetainThem)
+    {
+        for (bool dirty : { false, true }) {
+            MetaStore source;
+            for (size_t i = 0U; i < kApexTags.size(); ++i) {
+                settings_xmp(source, kApexPaths[i], {},
+                             dirty ? EntryFlags::Dirty | EntryFlags::Deleted
+                                   : EntryFlags::Deleted);
+                settings_native(source, kApexTags[i],
+                                i == 1U || i == 4U ? make_urational(2U, 1U)
+                                                   : make_srational(2, 1));
+            }
+            settings_native(source, 0x829aU, make_urational(1U, 125U));
+            source.finalize();
+            ApexOptions options;
+            options.source_mode     = MetadataCaptureTranslationSourceMode::All;
+            options.conflict_policy = ApexPolicy::ReplaceExisting;
+            const auto result = translate_xmp_apex_metadata(source, options,
+                                                            &source);
+            ASSERT_EQ(result.status, ApexStatus::Ok);
+            EXPECT_EQ(result.entries_removed, dirty ? 5U : 0U);
+            for (uint16_t tag : kApexTags)
+                EXPECT_EQ(settings_find(source, tag) == nullptr, dirty);
+            EXPECT_NE(settings_find(source, 0x829aU), nullptr);
+        }
+    }
+
+    TEST(MetadataApex, ResourceAndOptionLimitsAreTransactional)
+    {
+        for (unsigned variant = 0U; variant < 4U; ++variant) {
+            MetaStore source = apex_source();
+            ApexOptions options;
+            ApexStatus status;
+            switch (variant) {
+            case 0U:
+                options.max_added_entries = 4U;
+                status                    = ApexStatus::EntryLimitExceeded;
+                break;
+            case 1U:
+                options.max_operations = 4U;
+                status                 = ApexStatus::OperationLimitExceeded;
+                break;
+            case 2U:
+                options.max_text_bytes_per_property = 4U;
+                status                              = ApexStatus::ValueTooLong;
+                break;
+            default:
+                options.max_total_text_bytes = 10U;
+                status                       = ApexStatus::SourceLimitExceeded;
+                break;
+            }
+            apex_failure(source, status, options);
+        }
+        for (unsigned variant = 0U; variant < 7U; ++variant) {
+            MetaStore source = apex_source();
+            ApexOptions options;
+            switch (variant) {
+            case 0U: options.max_added_entries = 6U; break;
+            case 1U: options.max_operations = 0U; break;
+            case 2U: options.max_text_bytes_per_property = 129U; break;
+            case 3U: options.max_total_text_bytes = 641U; break;
+            case 4U:
+                options.source_mode
+                    = static_cast<MetadataCaptureTranslationSourceMode>(255U);
+                break;
+            case 5U:
+                options.conflict_policy = static_cast<ApexPolicy>(255U);
+                break;
+            default:
+                for (bool ApexOptions::* flag : kApexFlags)
+                    options.*flag = false;
+                break;
+            }
+            apex_failure(source, ApexStatus::InvalidOptions, options);
+        }
+        MetaStore source = apex_source();
+        EXPECT_EQ(translate_xmp_apex_metadata(source, {}, nullptr).status,
+                  ApexStatus::NullOutput);
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_apex_metadata(source, {}, &output).status,
+                  ApexStatus::SourceNotFinalized);
+    }
+
+    TEST(MetadataApex, PortableRoundTripRetainsExactUnitsAndManagedNativeValues)
+    {
+        for (bool unknown : { false, true }) {
+            MetaStore source = apex_source();
+            if (unknown) {
+                Entry entry = source.entry(2U);
+                entry.value = make_srational(-1, 7);
+                identity_fixture_replace(source, 2U, entry);
+            }
+            source.finalize();
+            ASSERT_EQ(translate_xmp_apex_metadata(source, {}, &source).status,
+                      ApexStatus::Ok);
+            for (bool canonical : { false, true }) {
+                XmpPortableOptions options;
+                options.include_existing_xmp = canonical;
+                options.existing_standard_namespace_policy
+                    = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+                std::array<std::byte, 8192> bytes {};
+                const auto dumped = dump_xmp_portable(source, bytes, options);
+                ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+                const std::string_view xml(reinterpret_cast<const char*>(
+                                               bytes.data()),
+                                           dumped.written);
+                EXPECT_NE(
+                    xml.find(
+                        "<exif:ShutterSpeedValue>-7/3</exif:ShutterSpeedValue>"),
+                    std::string_view::npos);
+                EXPECT_NE(xml.find(
+                              "<exif:ApertureValue>0/1</exif:ApertureValue>"),
+                          std::string_view::npos);
+                EXPECT_NE(
+                    xml.find(
+                        "<exif:ExposureCompensation>1/3</exif:ExposureCompensation>"),
+                    std::string_view::npos);
+                MetaStore restored;
+                ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(),
+                                                      dumped.written),
+                                            restored)
+                              .status,
+                          XmpDecodeStatus::Ok);
+                restored.finalize();
+                ApexOptions all;
+                all.source_mode = MetadataCaptureTranslationSourceMode::All;
+                ASSERT_EQ(translate_xmp_apex_metadata(restored, all, &restored)
+                              .status,
+                          ApexStatus::Ok);
+                apex_expect(restored, 0U, -7, 3U);
+                apex_expect(restored, 1U, 0, 1U);
+                apex_expect(restored, 2U, unknown ? -1 : -2, unknown ? 1U : 4U);
+                apex_expect(restored, 3U, 1, 3U);
+                apex_expect(restored, 4U, UINT32_MAX, 2U);
+            }
+        }
+    }
+}  // namespace
+}  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    TEST(MetadataApex,
+         ExistingTypedXmpRetainsExactFractionsAndBrightnessMeaning)
+    {
+        for (bool unknown : { false, true }) {
+            MetaStore source;
+            settings_xmp(source, kApexPaths[0],
+                         make_srational(INT32_MAX, INT32_MAX - 1));
+            settings_xmp(source, kApexPaths[1], make_urational(1U, UINT32_MAX));
+            settings_xmp(source, kApexPaths[2],
+                         make_srational(unknown ? -1 : -2, 6));
+            settings_xmp(source, kApexPaths[3], make_srational(-7, 3));
+            settings_xmp(source, kApexPaths[4], make_urational(UINT32_MAX, 2U));
+            source.finalize();
+            std::array<std::byte, 8192> bytes {};
+            XmpPortableOptions portable;
+            portable.include_existing_xmp = true;
+            const auto dumped = dump_xmp_portable(source, bytes, portable);
+            ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+            const std::string_view xml(reinterpret_cast<const char*>(
+                                           bytes.data()),
+                                       dumped.written);
+            EXPECT_NE(
+                xml.find(
+                    unknown
+                        ? "<exif:BrightnessValue>-1/6</exif:BrightnessValue>"
+                        : "<exif:BrightnessValue>-2/6</exif:BrightnessValue>"),
+                std::string_view::npos);
+            MetaStore restored;
+            ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(), dumped.written),
+                                        restored)
+                          .status,
+                      XmpDecodeStatus::Ok);
+            restored.finalize();
+            ApexOptions options;
+            options.source_mode = MetadataCaptureTranslationSourceMode::All;
+            ASSERT_EQ(translate_xmp_apex_metadata(restored, options, &restored)
+                          .status,
+                      ApexStatus::Ok);
+            apex_expect(restored, 0U, INT32_MAX, INT32_MAX - 1U);
+            apex_expect(restored, 1U, 1, UINT32_MAX);
+            apex_expect(restored, 2U, unknown ? -1 : -2, unknown ? 1U : 6U);
+            apex_expect(restored, 3U, -7, 3U);
+            apex_expect(restored, 4U, UINT32_MAX, 2U);
+        }
+    }
+
+    TEST(MetadataApex, MalformedNativeValuesDoNotReplaceExistingManagedXmp)
+    {
+        for (unsigned variant = 0U; variant < 4U; ++variant) {
+            MetaStore source = apex_source();
+            for (size_t i = 0U; i < kApexTags.size(); ++i) {
+                MetaValue value;
+                if (variant == 0U)
+                    value = make_u32(3U);
+                else if (variant == 1U)
+                    value = i == 1U || i == 4U ? make_urational(2U, 0U)
+                                               : make_srational(2, -1);
+                else if (variant == 2U) {
+                    value       = i == 1U || i == 4U ? make_urational(2U, 1U)
+                                                     : make_srational(2, 1);
+                    value.count = 2U;
+                } else {
+                    const std::array<URational, 1> ur = { URational { 2U, 1U } };
+                    const std::array<SRational, 1> sr = { SRational { 2, 1 } };
+                    value                             = i == 1U || i == 4U
+                                                            ? make_urational_array(source.arena(), ur)
+                                                            : make_srational_array(source.arena(), sr);
+                }
+                settings_native(source, kApexTags[i], value);
+            }
+            source.finalize();
+            for (bool existing : { false, true }) {
+                XmpPortableOptions options;
+                options.include_existing_xmp = existing;
+                options.existing_standard_namespace_policy
+                    = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+                std::array<std::byte, 8192> bytes {};
+                const auto dumped = dump_xmp_portable(source, bytes, options);
+                ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+                const std::string_view xml(reinterpret_cast<const char*>(
+                                               bytes.data()),
+                                           dumped.written);
+                for (size_t i = 0U; i < kApexPaths.size(); ++i) {
+                    const std::string name(i == 3U ? "ExposureCompensation"
+                                                   : kApexPaths[i]);
+                    if (existing)
+                        EXPECT_NE(xml.find("<exif:" + name + ">"
+                                           + std::string(kApexText[i])
+                                           + "</exif:" + name + ">"),
+                                  std::string_view::npos);
+                    else
+                        EXPECT_EQ(xml.find("<exif:" + name + ">"),
+                                  std::string_view::npos);
+                }
+            }
+        }
+    }
+}  // namespace
+}  // namespace openmeta

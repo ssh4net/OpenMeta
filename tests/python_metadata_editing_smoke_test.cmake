@@ -818,6 +818,40 @@ with tempfile.TemporaryDirectory() as temporary:
         assert restored.translate_identity_metadata(source_mode=mode).entry_count == restored.entry_count + 2
         assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'apex.jpg'
+    mode = openmeta.MetadataCaptureTranslationSourceMode.All
+    flags = ('shutter_speed_value', 'aperture_value', 'brightness_value', 'exposure_bias_value', 'max_aperture_value')
+    for brightness in ('-0.5', 'Unknown'):
+        xml = (\"<r:RDF xmlns:r='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><r:Description xmlns:e='http://ns.adobe.com/exif/1.0/' e:ShutterSpeedValue='-7/3' e:ApertureValue='0' e:ExposureBiasValue='1/3' e:MaxApertureValue='4294967295/2' e:BrightnessValue='\" + brightness + \"'/></r:RDF>\").encode()
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        document = openmeta.read(str(path))
+        count = document.entry_count
+        assert openmeta.METADATA_APEX_TRANSLATION_CONTRACT_VERSION == 1
+        assert document.translate_apex_metadata().entry_count == count
+        translated = document.translate_apex_metadata(source_mode=mode)
+        assert translated.entry_count == count + 5
+        assert translated.translate_apex_metadata(source_mode=mode).entry_count == count + 5
+        for selected in flags:
+            assert document.translate_apex_metadata(source_mode=mode, **{name + '_to_exif': name == selected for name in flags}).entry_count == count + 1
+        try:
+            document.translate_apex_metadata(source_mode=mode, max_operations=4)
+        except ValueError as error:
+            assert 'operation_limit_exceeded' in str(error)
+        else:
+            raise AssertionError('APEX transaction limit ignored')
+        payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
+        assert b'<exif:ShutterSpeedValue>-7/3</exif:ShutterSpeedValue>' in payload
+        assert b'<exif:ApertureValue>0/1</exif:ApertureValue>' in payload
+        assert b'<exif:ExposureCompensation>1/3</exif:ExposureCompensation>' in payload
+        assert (b'<exif:BrightnessValue>-1/1</exif:BrightnessValue>' if brightness == 'Unknown' else b'<exif:BrightnessValue>-2/4</exif:BrightnessValue>') in payload
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        restored = openmeta.read(str(path))
+        assert restored.translate_apex_metadata(source_mode=mode).entry_count == restored.entry_count + 5
+        assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

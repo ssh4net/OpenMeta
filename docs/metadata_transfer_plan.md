@@ -915,9 +915,9 @@ Suggested delivery sequence:
    Version 0.4.137 adds twelve closed capture-setting enums and explicit
    five-field flat-XMP-to-structured-location construction. Version 0.4.138
    adds exact SubjectDistance, DigitalZoomRatio, ExposureIndex, and FlashEnergy
-   writeback with explicit sentinel rules. Remaining capture
-   contracts include APEX, LensSpecification, ImageUniqueID,
-   focal-plane/subject arrays and other rational fields. Version 0.4.139 adds
+   writeback with explicit sentinel rules. Versions 0.5.2 and 0.5.3 add
+   LensSpecification, ImageUniqueID and APEX reverse APIs. Remaining capture
+   contracts include focal-plane/subject arrays and other rational fields. Version 0.4.139 adds
    complete scalar/five-child Flash bitfield writeback with reserved-bit and
    whole-structure removal rules. Version 0.4.140 adds LightSource writeback
    for 32 defined codes, rejects ambiguous Daylight text, and preserves the

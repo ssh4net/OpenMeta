@@ -3212,7 +3212,23 @@ namespace {
         w->append(name);
         w->append(">");
         const uint64_t patch_begin = w->needed;
-        (void)emit_portable_value_inline(arena, v, w);
+        if (prefix == "exif" && v.kind == MetaValueKind::Scalar && v.count == 1U
+            && v.elem_type == MetaElementType::SRational
+            && (name == "ShutterSpeedValue" || name == "BrightnessValue"
+                || name == "ExposureBiasValue"
+                || name == "ExposureCompensation")) {
+            append_i64_dec(v.data.sr.numer, w);
+            w->append("/");
+            append_i64_dec(v.data.sr.denom, w);
+        } else if (prefix == "exif" && v.kind == MetaValueKind::Scalar
+                   && v.count == 1U && v.elem_type == MetaElementType::URational
+                   && (name == "ApertureValue" || name == "MaxApertureValue")) {
+            append_u64_dec(v.data.ur.numer, w);
+            w->append("/");
+            append_u64_dec(v.data.ur.denom, w);
+        } else {
+            (void)emit_portable_value_inline(arena, v, w);
+        }
         w->record_scalar(prefix, name, patch_begin);
         w->append("</");
         w->append(prefix);
@@ -3789,44 +3805,6 @@ namespace {
         return false;
     }
 
-    static bool first_valid_srational_value(const ByteArena& arena,
-                                            const MetaValue& v,
-                                            SRational* out) noexcept
-    {
-        if (!out) {
-            return false;
-        }
-        if (v.kind == MetaValueKind::Scalar
-            && v.elem_type == MetaElementType::SRational) {
-            const SRational r = v.data.sr;
-            if (r.denom != 0) {
-                *out = r;
-                return true;
-            }
-            return false;
-        }
-        if (v.kind != MetaValueKind::Array
-            || v.elem_type != MetaElementType::SRational) {
-            return false;
-        }
-
-        const std::span<const std::byte> raw = arena.span(v.data.span);
-        const uint32_t count                 = safe_array_count(arena, v);
-        for (uint32_t i = 0U; i < count; ++i) {
-            const size_t off = static_cast<size_t>(i) * sizeof(SRational);
-            if (off + sizeof(SRational) > raw.size()) {
-                break;
-            }
-            SRational r {};
-            std::memcpy(&r, raw.data() + off, sizeof(r));
-            if (r.denom != 0) {
-                *out = r;
-                return true;
-            }
-        }
-        return false;
-    }
-
     static bool has_invalid_urational_value(const ByteArena& arena,
                                             const MetaValue& v) noexcept
     {
@@ -4334,6 +4312,19 @@ namespace {
         return true;
     }
 
+    static bool portable_apex_value_valid(std::string_view ifd, uint16_t tag,
+                                          const MetaValue& value) noexcept
+    {
+        if (ifd != "exififd" || value.kind != MetaValueKind::Scalar
+            || value.count != 1U)
+            return false;
+        if (tag == 0x9202U || tag == 0x9205U)
+            return value.elem_type == MetaElementType::URational
+                   && value.data.ur.denom != 0U;
+        return value.elem_type == MetaElementType::SRational
+               && value.data.sr.denom > 0;
+    }
+
     static bool emit_portable_exif_tag_property_override(
         SpanWriter* w, std::string_view prefix, std::string_view ifd,
         uint16_t tag, std::string_view name, const ByteArena& arena,
@@ -4555,7 +4546,6 @@ namespace {
         }
 
         URational ur {};
-        SRational sr {};
         char buf[96];
 
         if (tag == 0x920AU) {  // FocalLength
@@ -4580,69 +4570,22 @@ namespace {
             }
             return true;
         }
-        if (tag == 0x9202U
-            || tag == 0x9205U) {  // ApertureValue/MaxApertureValue
-            if (!first_valid_urational_value(arena, v, &ur)) {
+        if (tag >= 0x9201U && tag <= 0x9205U) {
+            if (!portable_apex_value_valid(ifd, tag, v))
                 return true;
+            if (tag == 0x9202U || tag == 0x9205U) {
+                std::snprintf(buf, sizeof(buf), "%u/%u",
+                              static_cast<unsigned>(v.data.ur.numer),
+                              static_cast<unsigned>(v.data.ur.denom));
+            } else {
+                // Preserve the wire numerator: -1 means unknown brightness.
+                std::snprintf(buf, sizeof(buf), "%d/%d",
+                              static_cast<int>(v.data.sr.numer),
+                              tag == 0x9203U && v.data.sr.numer == -1
+                                  ? 1
+                                  : static_cast<int>(v.data.sr.denom));
             }
-            double apex = 0.0;
-            if (urational_to_double(ur, &apex)) {
-                const double fnum = std::pow(2.0, apex * 0.5);
-                if (std::isfinite(fnum) && fnum <= 1024.0) {
-                    std::snprintf(buf, sizeof(buf), "%.1f", fnum);
-                    return emit_portable_property_text(w, prefix, name, buf);
-                }
-            }
-            return true;
-        }
-        if (tag == 0x9201U) {  // ShutterSpeedValue
-            if (!first_valid_srational_value(arena, v, &sr)) {
-                return true;
-            }
-            double apex = 0.0;
-            if (srational_to_double(sr, &apex)) {
-                const double sec = std::pow(2.0, -apex);
-                if (std::isfinite(sec) && sec > 0.0) {
-                    if (sec < 1.0) {
-                        const double den    = 1.0 / sec;
-                        const uint64_t rden = static_cast<uint64_t>(
-                            std::llround(den));
-                        if (rden > 0U) {
-                            std::snprintf(buf, sizeof(buf), "1/%llu",
-                                          static_cast<unsigned long long>(rden));
-                            return emit_portable_property_text(w, prefix, name,
-                                                               buf);
-                        }
-                    } else {
-                        std::snprintf(buf, sizeof(buf), "%.1f", sec);
-                        return emit_portable_property_text(w, prefix, name,
-                                                           buf);
-                    }
-                }
-            }
-            return true;
-        }
-        if (tag == 0x9204U) {  // ExposureCompensation
-            if (!first_valid_srational_value(arena, v, &sr)) {
-                return true;
-            }
-            double d = 0.0;
-            if (srational_to_double(sr, &d) && std::isfinite(d)) {
-                std::snprintf(buf, sizeof(buf), "%.15g", d);
-                return emit_portable_property_text(w, prefix, name, buf);
-            }
-            return true;
-        }
-        if (tag == 0x9203U) {  // BrightnessValue
-            if (!first_valid_srational_value(arena, v, &sr)) {
-                return true;
-            }
-            double d = 0.0;
-            if (srational_to_double(sr, &d) && std::isfinite(d)) {
-                std::snprintf(buf, sizeof(buf), "%.15g", d);
-                return emit_portable_property_text(w, prefix, name, buf);
-            }
-            return true;
+            return emit_portable_property_text(w, prefix, name, buf);
         }
         if (tag == 0xA404U) {  // DigitalZoomRatio
             if (!first_valid_urational_value(arena, v, &ur)) {
@@ -10018,6 +9961,10 @@ namespace {
             return false;
         }
         if (tag == 0x9203U && has_invalid_srational_value(arena, v)) {
+            return false;
+        }
+        if (tag >= 0x9201U && tag <= 0x9205U
+            && !portable_apex_value_valid(ifd, tag, v)) {
             return false;
         }
 

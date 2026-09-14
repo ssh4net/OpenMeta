@@ -148,9 +148,9 @@ active property, and 1536 total source text bytes. Limits may be lowered and
 never cause truncation. Preparation may allocate. EXIF versions are retained;
 the API does not create or upgrade version metadata.
 
-Capture coverage has no fixed all-tags denominator. APEX conversions, lens/spectral text, and
-focal-plane/subject arrays still need separate contracts. These twelve fields
-do not close arbitrary EXIF writeback.
+Capture coverage has no fixed all-tags denominator. Camera/lens/spectral text
+and direct APEX values have separate contracts below. Focal-plane/subject arrays
+remain open; these twelve settings do not close arbitrary EXIF writeback.
 
 
 ## Exact capture rational writeback
@@ -1284,7 +1284,7 @@ through JPEG/Classic TIFF/BigTIFF, the Python wrapper and an installed shared
 library consumer. Related fields are implemented and reviewed together, with
 focused checks during development and one final platform matrix per stable
 batch. Lens specification and image identity use the separate contract below.
-APEX and focal-plane/subject arrays remain later batches.
+APEX is covered by the combined batch below; focal-plane/subject arrays remain later work.
 
 ## Lens specification and image identity writeback
 
@@ -1367,4 +1367,105 @@ version. No existing EXIF version is upgraded implicitly.
 
 Combined tests cover C++, Python, installed shared consumers, exact portable
 round trips, and serialized snapshots through JPEG, Classic TIFF and BigTIFF.
-Remaining capture batches include APEX and focal-plane/subject fields.
+The APEX batch below extends this coverage; focal-plane/subject fields remain.
+
+## APEX writeback (contract version 1)
+
+`translate_xmp_apex_metadata(source, MetadataApexTranslationOptions{}, &output)`
+writes five scalar properties in one transaction. Python exposes the same
+contract as `Document.translate_apex_metadata(...)`. The result, source modes,
+conflict policies and diagnostics use the existing capture types.
+
+| Exact source in `http://ns.adobe.com/exif/1.0/` | ExifIFD target | Native type | Independent option |
+| --- | --- | --- | --- |
+| `ShutterSpeedValue` | `0x9201` | `SRATIONAL`, count 1 | `shutter_speed_value_to_exif` |
+| `ApertureValue` | `0x9202` | `RATIONAL`, count 1 | `aperture_value_to_exif` |
+| `BrightnessValue` | `0x9203` | `SRATIONAL`, count 1 | `brightness_value_to_exif` |
+| `ExposureBiasValue` or `ExposureCompensation` | `0x9204` | `SRATIONAL`, count 1 | `exposure_bias_value_to_exif` |
+| `MaxApertureValue` | `0x9205` | `RATIONAL`, count 1 | `max_aperture_value_to_exif` |
+
+All inputs are direct APEX values. There is no conversion from seconds or
+f-numbers, inference from ExposureTime/FNumber, exposure-equation check, version
+upgrade, or consistency check between the five fields. The two aperture fields
+accept zero and positive values. The signed fields accept either sign. The
+usual brightness/bias range of -99.99 to 99.99 is not a hard limit.
+
+The structural types and brightness sentinel follow
+[CIPA DC-008-2012, camera information tags and Annex C](https://www.cipa.jp/std/documents/e/DC-008-2012_E.pdf).
+The XMP property names follow
+[CIPA DC-X010-2017, Exif mappings](https://cipa.jp/std/documents/e/DC-X010-2017.pdf).
+This contract does not claim full conformance to every tag or later Exif revision.
+
+### Exact numbers and unknown brightness
+
+Sources may be scalar signed/unsigned integers, the target rational type, or
+ASCII/UTF-8/Unknown-encoding text containing an integer, decimal, scientific
+number or `numerator/denominator`. Signed integers for aperture fields must be
+nonnegative. Signed rational fields require `SRational`, and unsigned rational
+fields require `URational`. Floating-point, arrays, structured children,
+qualifiers, units, whitespace in numeric text and zero/negative denominators
+fail. XMP decoding retains its existing whitespace normalization; this batch
+does not change reader behavior. Exact fractions reduce to 32-bit components;
+numeric text parsing uses bounded 64-bit intermediates. Overflow fails without
+approximation. Denominators are positive, at most `INT32_MAX` for signed fields
+or `UINT32_MAX` for unsigned fields.
+
+Brightness reserves a **wire numerator of -1** (`0xffffffff`) for unknown,
+regardless of its positive denominator. Explicit fraction text `-1/n`, a typed
+`SRational{-1, n}`, or exact text `Unknown` selects this sentinel before
+reduction and writes `-1/1`. Sentinel fraction denominators must fit `INT32_MAX`.
+Integer and decimal/scientific inputs are finite: `-1`, `-1.0` and a signed
+integer -1 write `-2/2`. A finite `-0.5` or explicit `-2/4` writes `-2/4`.
+Reduced finite fractions with numerator -1 use `-2/(2n)`; if the doubled
+denominator cannot fit, translation returns `ValueOutOfRange`. Unknown and
+finite native brightness values never compare equal during conflict handling.
+Positive-denominator native unknown fractions compare equivalent to each other.
+
+### Selection, conflicts and bounds
+
+All five switches default to true. At least one must be enabled. DirtyOnly
+selects eligible dirty scalar sources; All also selects active clean sources.
+Deleted sources require Dirty in either mode. Missing sources retain native
+values. Each field reconciles independently with PreserveExisting,
+FailOnConflict or ReplaceExisting, and duplicate eligible aliases fail even
+when their values agree. Indexed/structured shapes of enabled properties fail.
+Unrelated names, namespaces and disabled mappings are ignored.
+
+Native equivalence requires the correct scalar type/count and equal rational
+value, with the brightness sentinel rule above. ReplaceExisting repairs wrong
+types and duplicate native entries. A dirty tombstone removes all native
+instances under ReplaceExisting. Parsing, conflicts and shared limits complete
+before one commit. Failure preserves both separate and aliased output; success
+owns its values and provenance. Preparation may allocate. The host synchronizes
+conflicting access to shared stores.
+
+Default and hard maximum budgets are five added entries, 1024 edit operations,
+128 bytes per text property and 640 total text bytes. Duplicate repair and
+removal consume the operation budget. Lower positive caller limits are allowed.
+The exposure-bias mapping and its diagnostic `XmpExposureCompensation` are
+shared with the older capture API; that API's options and input behavior remain
+unchanged.
+
+### Portable output change in 0.5.3
+
+Generated portable XMP now emits exact fractions for all five native APEX tags.
+For example, native shutter `6/1` emits `ShutterSpeedValue=6/1`; native aperture
+`4/1` emits `ApertureValue=4/1`. Previous releases emitted seconds (`1/64`) and
+f-numbers (`4.0`) under these names. Old generated packets cannot be identified
+reliably from their values; regenerate them from native EXIF before reverse
+translation. No heuristic migration is performed.
+
+Brightness and exposure compensation also use fractions instead of rounded
+floating-point text. Existing correctly typed scalar XMP APEX rationals also
+retain their exact wire fractions, including noncanonical unknown brightness. The existing portable `ExposureCompensation` alias remains.
+Unknown brightness emits `-1/1`; finite wire fractions retain their numerator
+so the sentinel distinction survives. Wrong native types/counts and nonpositive
+denominators are omitted. Large representable APEX values remain exact without
+exponentiation or a physical aperture limit. Default existing-XMP precedence
+remains unchanged; CanonicalizeManaged permits valid native values to replace
+managed source properties. Host FlatHost/Spec projections are separate and
+unchanged.
+
+The combined batch adds four native targets, bringing capture-related coverage
+to 41 targets across nine APIs. The next core batch is focal-plane/subject
+contracts. OIIO/iRAW application acceptance remains a separate downstream task.

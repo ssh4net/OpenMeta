@@ -356,6 +356,10 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpSensitivity,
     XmpLensSpecification,
     XmpImageUniqueID,
+    XmpShutterSpeedValue,
+    XmpApertureValue,
+    XmpBrightnessValue,
+    XmpMaxApertureValue,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -417,6 +421,53 @@ struct MetadataCaptureTranslationResult final {
     uint32_t entries_updated    = 0U;
     uint32_t entries_removed    = 0U;
 };
+
+inline constexpr uint32_t kMetadataApexTranslationContractVersion   = 1U;
+inline constexpr uint32_t kMetadataApexTranslationMaxAddedEntries   = 5U;
+inline constexpr uint64_t kMetadataApexTranslationMaxTotalTextBytes = 640U;
+
+struct MetadataApexTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    bool shutter_speed_value_to_exif = true;
+    bool aperture_value_to_exif      = true;
+    bool brightness_value_to_exif    = true;
+    bool exposure_bias_value_to_exif = true;
+    bool max_aperture_value_to_exif  = true;
+    uint32_t max_added_entries       = kMetadataApexTranslationMaxAddedEntries;
+    uint32_t max_operations          = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes = kMetadataApexTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Translate five scalar exif-namespace APEX properties in one transaction.
+ *
+ * ShutterSpeedValue, BrightnessValue and ExposureBiasValue use SRATIONAL;
+ * ApertureValue and MaxApertureValue use nonnegative RATIONAL, including zero.
+ * ExposureCompensation is an alias for ExposureBiasValue. All values are direct
+ * APEX units, never seconds or f-numbers. No ExposureTime/FNumber inference or
+ * cross-field exposure consistency check is performed.
+ *
+ * Scalar integers, the target rational type, and exact decimal/scientific or
+ * fraction text are supported. Denominators must be positive. Brightness text
+ * "Unknown" or an explicit signed fraction with numerator -1 denotes unknown,
+ * as does a typed SRational with numerator -1. Other brightness inputs are
+ * finite; a reduced -1/n is encoded as -2/(2n), or rejected if it cannot fit.
+ * Unknown is canonicalized to -1/1. No floating-point approximation is used.
+ *
+ * Each enabled field reconciles independently. Duplicate eligible aliases and
+ * indexed/structured source shapes fail. Dirty tombstones remove native fields
+ * under ReplaceExisting. Limits and conflicts precede all mutation, including
+ * aliased output. Preparation may allocate; shared-object access is host-owned.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_apex_metadata(const MetaStore& source,
+                            const MetadataApexTranslationOptions& options,
+                            MetaStore* out_store);
 
 inline constexpr uint32_t kMetadataIdentityTranslationContractVersion   = 1U;
 inline constexpr uint32_t kMetadataIdentityTranslationMaxAddedEntries   = 2U;

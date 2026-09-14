@@ -54,7 +54,10 @@ namespace {
         ISOSpeedLatitudezzz,
         LensSpecification,
         ImageUniqueID,
-
+        ShutterSpeedValue,
+        ApertureValue,
+        BrightnessValue,
+        MaxApertureValue,
     };
 
     enum class NumericParseStatus : uint8_t {
@@ -541,6 +544,56 @@ namespace {
         return Status::Ok;
     }
 
+    static MetadataCaptureTranslationStatus
+    parse_apex_source(const ByteArena& arena, const MetaValue& value,
+                      NativeCaptureField field, MetaValue* out) noexcept
+    {
+        using Status = MetadataCaptureTranslationStatus;
+        if (value.kind != MetaValueKind::Text
+            && (value.kind != MetaValueKind::Scalar || value.count != 1U))
+            return Status::InvalidSourceValue;
+        if (field == NativeCaptureField::ApertureValue
+            || field == NativeCaptureField::MaxApertureValue)
+            return parse_capture_rational_source(arena, value, field, out);
+
+        if (field == NativeCaptureField::BrightnessValue) {
+            bool unknown = false;
+            if (value.kind == MetaValueKind::Scalar
+                && value.elem_type == MetaElementType::SRational) {
+                if (value.data.sr.denom <= 0)
+                    return Status::InvalidNumericValue;
+                unknown = value.data.sr.numer == -1;
+            } else if (value.kind == MetaValueKind::Text) {
+                const std::string_view text = arena_text(arena,
+                                                         value.data.span);
+                unknown                     = text == "Unknown";
+                if (!unknown && text.find('/') != std::string_view::npos) {
+                    ExactRatio ratio;
+                    const NumericParseStatus parsed
+                        = parse_exact_ratio(text, true, &ratio, false);
+                    if (parsed != NumericParseStatus::Ok)
+                        return numeric_status(parsed);
+                    unknown = ratio.negative && ratio.numerator == 1U;
+                    if (unknown && ratio.denominator > INT32_MAX)
+                        return Status::ValueOutOfRange;
+                }
+            }
+            if (unknown) {
+                *out = make_srational(-1, 1);
+                return Status::Ok;
+            }
+        }
+        const Status status = parse_signed_rational_source(arena, value, out);
+        if (status == Status::Ok && field == NativeCaptureField::BrightnessValue
+            && out->data.sr.numer == -1) {
+            // The reserved wire numerator must never replace a finite value.
+            if (out->data.sr.denom > INT32_MAX / 2)
+                return Status::ValueOutOfRange;
+            *out = make_srational(-2, out->data.sr.denom * 2);
+        }
+        return status;
+    }
+
     static MetadataCaptureTranslationResult
     flash_error(MetadataCaptureTranslationStatus status,
                 EntryId source = kInvalidEntryId) noexcept
@@ -647,6 +700,40 @@ namespace {
         return MetadataCaptureTranslationStatus::Ok;
     }
 
+    static MetadataCaptureTranslationStatus find_apex_source(
+        const MetaStore& store, std::span<const std::string_view> paths,
+        MetadataCaptureTranslationSourceMode mode, CaptureSource* out) noexcept
+    {
+        using Status        = MetadataCaptureTranslationStatus;
+        const Status status = find_capture_source(store, paths, mode, out);
+        if (status != Status::Ok)
+            return status;
+        for (EntryId id = 0U; id < store.entries().size(); ++id) {
+            const Entry& entry = store.entry(id);
+            const bool dirty   = any(entry.flags, EntryFlags::Dirty);
+            if (entry.key.kind != MetaKeyKind::XmpProperty
+                || arena_text(store.arena(),
+                              entry.key.data.xmp_property.schema_ns)
+                       != kXmpNsExif
+                || (mode == MetadataCaptureTranslationSourceMode::DirtyOnly
+                    && !dirty)
+                || (any(entry.flags, EntryFlags::Deleted) && !dirty))
+                continue;
+            const std::string_view path
+                = arena_text(store.arena(),
+                             entry.key.data.xmp_property.property_path);
+            for (const std::string_view root : paths) {
+                if (path.size() > root.size() && path.starts_with(root)
+                    && (path[root.size()] == '[' || path[root.size()] == '/'
+                        || path[root.size()] == '?')) {
+                    out->entry_id = id;
+                    return Status::UnsupportedSourceShape;
+                }
+            }
+        }
+        return Status::Ok;
+    }
+
     static bool is_additional_iso_member(std::string_view path) noexcept
     {
         static constexpr std::string_view kPrefix = "ISOSpeedRatings[";
@@ -706,6 +793,10 @@ namespace {
         case NativeCaptureField::FNumber: tag = 0x829dU; break;
         case NativeCaptureField::Iso: tag = 0x8827U; break;
         case NativeCaptureField::ExposureBias: tag = 0x9204U; break;
+        case NativeCaptureField::ShutterSpeedValue: tag = 0x9201U; break;
+        case NativeCaptureField::ApertureValue: tag = 0x9202U; break;
+        case NativeCaptureField::BrightnessValue: tag = 0x9203U; break;
+        case NativeCaptureField::MaxApertureValue: tag = 0x9205U; break;
         case NativeCaptureField::FocalLength: tag = 0x920aU; break;
         case NativeCaptureField::ExposureProgram: tag = 0x8822U; break;
         case NativeCaptureField::MeteringMode: tag = 0x9207U; break;
@@ -768,6 +859,9 @@ namespace {
             if (actual.data.sr.denom <= 0 || expected.data.sr.denom <= 0) {
                 return false;
             }
+            if (field == NativeCaptureField::BrightnessValue
+                && (actual.data.sr.numer == -1 || expected.data.sr.numer == -1))
+                return actual.data.sr.numer == expected.data.sr.numer;
             return static_cast<int64_t>(actual.data.sr.numer)
                        * expected.data.sr.denom
                    == static_cast<int64_t>(expected.data.sr.numer)
@@ -899,6 +993,10 @@ namespace {
         case NativeCaptureField::FNumber: tag = 0x829dU; break;
         case NativeCaptureField::Iso: tag = 0x8827U; break;
         case NativeCaptureField::ExposureBias: tag = 0x9204U; break;
+        case NativeCaptureField::ShutterSpeedValue: tag = 0x9201U; break;
+        case NativeCaptureField::ApertureValue: tag = 0x9202U; break;
+        case NativeCaptureField::BrightnessValue: tag = 0x9203U; break;
+        case NativeCaptureField::MaxApertureValue: tag = 0x9205U; break;
         case NativeCaptureField::FocalLength: tag = 0x920aU; break;
         case NativeCaptureField::ExposureProgram: tag = 0x8822U; break;
         case NativeCaptureField::MeteringMode: tag = 0x9207U; break;
@@ -1772,6 +1870,132 @@ translate_xmp_capture_settings_metadata(
 }
 
 MetadataCaptureTranslationResult
+translate_xmp_apex_metadata(const MetaStore& source,
+                            const MetadataApexTranslationOptions& options,
+                            MetaStore* out_store)
+{
+    using Status = MetadataCaptureTranslationStatus;
+    using Mode   = MetadataCaptureTranslationSourceMode;
+    using Policy = MetadataCaptureTranslationConflictPolicy;
+    if (!out_store)
+        return capture_error(Status::NullOutput);
+    if (!source.is_finalized())
+        return capture_error(Status::SourceNotFinalized);
+    if ((options.source_mode != Mode::DirtyOnly
+         && options.source_mode != Mode::All)
+        || (options.conflict_policy != Policy::PreserveExisting
+            && options.conflict_policy != Policy::FailOnConflict
+            && options.conflict_policy != Policy::ReplaceExisting)
+        || (!options.shutter_speed_value_to_exif
+            && !options.aperture_value_to_exif
+            && !options.brightness_value_to_exif
+            && !options.exposure_bias_value_to_exif
+            && !options.max_aperture_value_to_exif)
+        || options.max_added_entries == 0U
+        || options.max_added_entries > kMetadataApexTranslationMaxAddedEntries
+        || options.max_operations == 0U
+        || options.max_operations > kMetadataCaptureTranslationMaxOperations
+        || options.max_text_bytes_per_property == 0U
+        || options.max_text_bytes_per_property
+               > kMetadataCaptureTranslationMaxTextBytesPerProperty
+        || options.max_total_text_bytes == 0U
+        || options.max_total_text_bytes
+               > kMetadataApexTranslationMaxTotalTextBytes)
+        return capture_error(Status::InvalidOptions);
+    struct Mapping final {
+        std::array<std::string_view, 2> paths;
+        size_t path_count;
+        NativeCaptureField field;
+        MetadataCaptureTranslationMapping mapping;
+        bool enabled;
+    };
+    const std::array<Mapping, 5> mappings { {
+        { { "ShutterSpeedValue", {} },
+          1U,
+          NativeCaptureField::ShutterSpeedValue,
+          MetadataCaptureTranslationMapping::XmpShutterSpeedValue,
+          options.shutter_speed_value_to_exif },
+        { { "ApertureValue", {} },
+          1U,
+          NativeCaptureField::ApertureValue,
+          MetadataCaptureTranslationMapping::XmpApertureValue,
+          options.aperture_value_to_exif },
+        { { "BrightnessValue", {} },
+          1U,
+          NativeCaptureField::BrightnessValue,
+          MetadataCaptureTranslationMapping::XmpBrightnessValue,
+          options.brightness_value_to_exif },
+        { { "ExposureBiasValue", "ExposureCompensation" },
+          2U,
+          NativeCaptureField::ExposureBias,
+          MetadataCaptureTranslationMapping::XmpExposureCompensation,
+          options.exposure_bias_value_to_exif },
+        { { "MaxApertureValue", {} },
+          1U,
+          NativeCaptureField::MaxApertureValue,
+          MetadataCaptureTranslationMapping::XmpMaxApertureValue,
+          options.max_aperture_value_to_exif },
+    } };
+    std::array<CapturePlannedGroup, 5> groups {};
+    size_t count        = 0U;
+    uint64_t text_bytes = 0U;
+    MetadataCaptureTranslationResult result;
+    for (const Mapping& mapping : mappings) {
+        if (!mapping.enabled)
+            continue;
+        CaptureSource property;
+        Status status = find_apex_source(source,
+                                         std::span(mapping.paths.data(),
+                                                   mapping.path_count),
+                                         options.source_mode, &property);
+        if (status == Status::Ok && !property.found)
+            continue;
+        CapturePlannedGroup group;
+        group.mapping      = mapping.mapping;
+        group.field        = mapping.field;
+        group.source_entry = property.entry_id;
+        if (status == Status::Ok && !property.deleted) {
+            const MetaValue& value = *property.value;
+            if (value.kind == MetaValueKind::Text) {
+                const std::string_view text = arena_text(source.arena(),
+                                                         value.data.span);
+                if (text.size() > options.max_text_bytes_per_property)
+                    status = Status::ValueTooLong;
+                else if (text.size() > options.max_total_text_bytes
+                         || text_bytes
+                                > options.max_total_text_bytes - text.size())
+                    status = Status::SourceLimitExceeded;
+                else if (text.size() != value.count
+                         || text.size() != value.data.span.size)
+                    status = Status::InvalidSourceValue;
+                else if (value.text_encoding != TextEncoding::Ascii
+                         && value.text_encoding != TextEncoding::Utf8
+                         && value.text_encoding != TextEncoding::Unknown)
+                    status = Status::InvalidSourceValue;
+                else
+                    text_bytes += text.size();
+            }
+            if (status == Status::Ok)
+                status = parse_apex_source(source.arena(), value, mapping.field,
+                                           &group.value);
+            group.present = status == Status::Ok;
+        }
+        if (status != Status::Ok) {
+            result.status              = status;
+            result.failed_mapping      = mapping.mapping;
+            result.failed_source_entry = property.entry_id;
+            return result;
+        }
+        ++result.source_properties;
+        groups[count++] = group;
+    }
+    return apply_capture_groups(source, std::span(groups.data(), count),
+                                options.conflict_policy,
+                                options.max_added_entries,
+                                options.max_operations, result, out_store);
+}
+
+MetadataCaptureTranslationResult
 translate_xmp_capture_rational_metadata(
     const MetaStore& source,
     const MetadataCaptureRationalTranslationOptions& options,
@@ -2427,6 +2651,14 @@ metadata_capture_translation_mapping_name(
 {
     switch (mapping) {
     case MetadataCaptureTranslationMapping::None: return "none";
+    case MetadataCaptureTranslationMapping::XmpShutterSpeedValue:
+        return "xmp_shutter_speed_value";
+    case MetadataCaptureTranslationMapping::XmpApertureValue:
+        return "xmp_aperture_value";
+    case MetadataCaptureTranslationMapping::XmpBrightnessValue:
+        return "xmp_brightness_value";
+    case MetadataCaptureTranslationMapping::XmpMaxApertureValue:
+        return "xmp_max_aperture_value";
     case MetadataCaptureTranslationMapping::XmpLensSpecification:
         return "xmp_lens_specification";
     case MetadataCaptureTranslationMapping::XmpImageUniqueID:

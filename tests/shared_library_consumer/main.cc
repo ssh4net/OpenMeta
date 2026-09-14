@@ -415,6 +415,39 @@ main()
                  == openmeta::MetadataTechnicalTranslationStatus::Ok
           && camera_text_result.entries_added == 6U
           && camera_text_result.groups_translated == 6U;
+    const std::array<openmeta::MetadataAuthoringEntry, 5> apex_entries = { {
+        { openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "ShutterSpeedValue"),
+          openmeta::make_value_view_text("-7/3",
+                                         openmeta::TextEncoding::Ascii) },
+        { openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "ApertureValue"),
+          openmeta::make_value_view_text("0", openmeta::TextEncoding::Ascii) },
+        { openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "BrightnessValue"),
+          openmeta::make_value_view_text("-0.5",
+                                         openmeta::TextEncoding::Ascii) },
+        { openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "ExposureBiasValue"),
+          openmeta::make_value_view_text("1/3", openmeta::TextEncoding::Ascii) },
+        { openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "MaxApertureValue"),
+          openmeta::make_value_view_text("4294967295/2",
+                                         openmeta::TextEncoding::Ascii) },
+    } };
+    openmeta::MetaStore apex_source;
+    const auto apex_authored = openmeta::create_metadata_store(apex_entries,
+                                                               &apex_source);
+    const auto apex_result
+        = openmeta::translate_xmp_apex_metadata(apex_source, {}, &apex_source);
+    const bool apex_contract_matches
+        = apex_authored.ok()
+          && openmeta::kMetadataApexTranslationContractVersion == 1U
+          && apex_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && apex_result.entries_added == 5U
+          && apex_result.groups_translated == 5U
+          && openmeta::validate_store(apex_source).ok();
     constexpr std::array<openmeta::URational, 4> identity_lens = {
         openmeta::URational { 24U, 1U }, { 70U, 1U }, { 14U, 5U }, { 0U, 0U }
     };
@@ -536,7 +569,7 @@ main()
                    || !capture_rational_contract_matches
                    || !flash_contract_matches || !light_source_contract_matches
                    || !sensitivity_contract_matches
-                   || !camera_text_contract_matches
+                   || !camera_text_contract_matches || !apex_contract_matches
                    || !identity_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
