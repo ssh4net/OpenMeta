@@ -201,7 +201,8 @@ namespace {
                                                 std::string_view path,
                                                 std::string_view value) noexcept
     {
-        if ((ns == kXmpNsExif && path == "SpectralSensitivity")
+        if ((ns == kXmpNsExif
+             && (path == "SpectralSensitivity" || path == "ImageUniqueID"))
             || ((ns == kXmpNsExif || ns == "http://cipa.jp/exif/1.0/")
                 && (path == "CameraOwnerName" || path == "BodySerialNumber"
                     || path == "LensMake" || path == "LensModel"

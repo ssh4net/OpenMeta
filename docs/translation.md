@@ -1283,5 +1283,88 @@ shapes and budgets, portable XML and namespace policies, serialized snapshots
 through JPEG/Classic TIFF/BigTIFF, the Python wrapper and an installed shared
 library consumer. Related fields are implemented and reviewed together, with
 focused checks during development and one final platform matrix per stable
-batch. `LensSpecification`, `ImageUniqueID`, APEX and focal-plane/subject arrays
-require separate value contracts.
+batch. Lens specification and image identity use the separate contract below.
+APEX and focal-plane/subject arrays remain later batches.
+
+## Lens specification and image identity writeback
+
+`translate_xmp_identity_metadata(...)` and Python
+`Document.translate_identity_metadata(...)` use
+`MetadataIdentityTranslationOptions`, contract version 1, and the existing
+capture source modes, conflict policies, statuses and result counters. The two
+fields have independent switches and conflict decisions, followed by one commit.
+
+| Source | Native ExifIFD field | Option |
+| --- | --- | --- |
+| `exifEX:LensSpecification` | `0xA432`, four unsigned RATIONALs | `lens_specification_to_exif` |
+| `exif:ImageUniqueID` | `0xA420`, ASCII, 33 bytes on wire | `image_unique_id_to_exif` |
+
+Lens specification also accepts the historical OpenMeta `exif` namespace alias.
+The four ordered components are minimum focal length, maximum focal length,
+minimum F-number at the minimum focal length, and minimum F-number at the maximum
+focal length. Focal lengths must be positive, with minimum <= maximum. Apertures
+must be positive or exactly `0/0`, the EXIF unknown-aperture marker. The API does
+not infer missing values, constrain one aperture relative to the other, or parse
+lens model descriptions.
+
+Accepted lens shapes are one `URational` array of exactly four elements, or four
+scalar properties named `LensSpecification[1]` through `[4]`. Indexed values
+accept unsigned integer/rational scalars or ASCII/UTF-8 numeric text: integer,
+decimal, scientific notation or `numerator/denominator`. Conversion is exact and
+reduced to unsigned 32-bit components; unrepresentable values fail. Floating
+point scalars, units, opaque lists, sparse/noncanonical indexes, nested fields,
+root/index mixtures and mixed or duplicate namespace aliases fail. The store
+retains flattened indexes, not the original RDF Seq/Bag container kind; hosts
+must supply the four components in the documented order. Portable output uses a
+standard `exifEX` RDF Seq with exact fraction text and preserves `0/0`.
+
+Under `DirtyOnly`, any dirty lens member selects the whole lens group, including
+clean companions. A root tombstone must stand alone. Four dirty indexed
+tombstones also remove the group; partial deletion fails. Missing sources and
+clean tombstones do nothing. `All` selects clean active sources too. Image ID
+selection is independent and accepts only the exact scalar property.
+
+Image IDs require exactly 32 hexadecimal ASCII characters (`0-9`, `a-f`, `A-F`),
+stored as ASCII/UTF-8 Text. No trimming, case folding, hyphen removal or ID
+creation occurs. Leading zeros and letter case survive. A native equivalent must
+be ASCII/UTF-8 Text with those same bytes, optionally followed by one NUL. The
+serializer writes one terminator for the required 33-byte wire representation.
+Generic validation and validated authoring allow `0/0` only in the exact
+unsigned lens aperture slots (native array, XMP root array or scalar `[3]`/`[4]`).
+Other zero-denominator values remain errors. The translation contract also checks
+positive values, focal ordering and completeness. Native lens equivalence
+requires a four-element URational array with equal
+rational values and exact unknown markers; equivalent unreduced values remain.
+Malformed native types or duplicate native tags are conflicts.
+
+`FailOnConflict` rejects differences, `PreserveExisting` retains existing native
+fields, and `ReplaceExisting` applies updates, duplicate repair and requested
+removals. Every source check and budget check precedes mutation of either field.
+Failure retains both a separate output and an aliased input/output unchanged.
+Preparation and commit may allocate; synchronization of shared objects is the
+host's responsibility. The API has no internal synchronization or ID allocator.
+
+Limits are 2 added native entries, 1024 edit operations, 128 text bytes per source
+member, and 544 total text bytes (four lens members plus a 32-byte image ID).
+Callers can lower these positive limits. Typed lens arrays are fixed at 32 bytes
+and do not consume the text budget. Source properties count actual selected
+entries; successful translations count at most two groups.
+
+Portable native output skips malformed lens/ID values. `CanonicalizeManaged`
+recognizes the canonical lens array and removes managed source copies before
+native projection. Preservation policies may retain a historical alias alongside
+a generated canonical value, which reverse translation rejects as ambiguous.
+XMP decoding preserves boundary whitespace for `exif:ImageUniqueID`, so invalid
+padded IDs are rejected consistently for attributes, resources and element text.
+
+The structural contract follows the
+[Exif 2.3 field definitions](https://www.cipa.jp/std/documents/e/DC-008-2012_E.pdf)
+and [CIPA Exif/XMP mappings](https://cipa.jp/std/documents/e/DC-X010-2017.pdf).
+It does not validate UUID generation/version, global uniqueness, or an
+application's capture-time identity retention policy. Hosts decide whether an
+explicit replacement or removal is appropriate for their workflow and Exif
+version. No existing EXIF version is upgraded implicitly.
+
+Combined tests cover C++, Python, installed shared consumers, exact portable
+round trips, and serialized snapshots through JPEG, Classic TIFF and BigTIFF.
+Remaining capture batches include APEX and focal-plane/subject fields.

@@ -415,6 +415,32 @@ main()
                  == openmeta::MetadataTechnicalTranslationStatus::Ok
           && camera_text_result.entries_added == 6U
           && camera_text_result.groups_translated == 6U;
+    constexpr std::array<openmeta::URational, 4> identity_lens = {
+        openmeta::URational { 24U, 1U }, { 70U, 1U }, { 14U, 5U }, { 0U, 0U }
+    };
+    const std::array<openmeta::MetadataAuthoringEntry, 2> identity_entries = {
+        { { openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                                 "LensSpecification"),
+            openmeta::make_value_view_array(
+                openmeta::MetaElementType::URational,
+                std::as_bytes(std::span(identity_lens)), 4U) },
+          { openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                                 "ImageUniqueID"),
+            openmeta::make_value_view_text("00112233445566778899aAbBcCdDeEfF",
+                                           openmeta::TextEncoding::Ascii) } }
+    };
+    openmeta::MetaStore identity_source;
+    const auto identity_authored
+        = openmeta::create_metadata_store(identity_entries, &identity_source);
+    const auto identity_result
+        = openmeta::translate_xmp_identity_metadata(identity_source, {},
+                                                    &identity_source);
+    const bool identity_contract_matches
+        = identity_authored.ok()
+          && identity_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && identity_result.entries_added == 2U
+          && identity_result.groups_translated == 2U;
     const openmeta::MetadataAuthoringResult authoring
         = openmeta::create_metadata_store(
             std::span<const openmeta::MetadataAuthoringEntry>(&orientation, 1U),
@@ -511,6 +537,7 @@ main()
                    || !flash_contract_matches || !light_source_contract_matches
                    || !sensitivity_contract_matches
                    || !camera_text_contract_matches
+                   || !identity_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()

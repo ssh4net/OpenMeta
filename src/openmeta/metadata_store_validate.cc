@@ -403,6 +403,38 @@ namespace {
         }
     }
 
+    static bool lens_unknown_aperture_slot(const MetaStore& store,
+                                           const Entry& entry,
+                                           uint32_t index) noexcept
+    {
+        const MetaValue& value = entry.value;
+        if (value.elem_type != MetaElementType::URational)
+            return false;
+        const bool array = value.kind == MetaValueKind::Array
+                           && value.count == 4U && index >= 2U && index < 4U
+                           && store.arena().span(value.data.span).size()
+                                  == 4U * sizeof(URational);
+        if (entry.key.kind == MetaKeyKind::ExifTag)
+            return array && entry.key.data.exif_tag.tag == 0xa432U
+                   && arena_string(store.arena(), entry.key.data.exif_tag.ifd)
+                          == "exififd";
+        if (entry.key.kind != MetaKeyKind::XmpProperty)
+            return false;
+        const auto ns = arena_string(store.arena(),
+                                     entry.key.data.xmp_property.schema_ns);
+        if (ns != "http://ns.adobe.com/exif/1.0/"
+            && ns != "http://cipa.jp/exif/1.0/")
+            return false;
+        const auto path
+            = arena_string(store.arena(),
+                           entry.key.data.xmp_property.property_path);
+        if (array)
+            return path == "LensSpecification";
+        return value.kind == MetaValueKind::Scalar && value.count == 1U
+               && (path == "LensSpecification[3]"
+                   || path == "LensSpecification[4]");
+    }
+
     static void validate_rationals(const MetaStore& store, const Entry& entry,
                                    EntryId id,
                                    const MetadataValidationOptions& options,
@@ -417,7 +449,10 @@ namespace {
             const bool zero = value.elem_type == MetaElementType::URational
                                   ? value.data.ur.denom == 0U
                                   : value.data.sr.denom == 0;
-            if (zero) {
+            if (zero
+                && !(value.elem_type == MetaElementType::URational
+                     && value.data.ur.numer == 0U
+                     && lens_unknown_aperture_slot(store, entry, 0U))) {
                 append_issue(
                     out, options, ValidateIssueSeverity::Error,
                     MetadataValidationIssueCode::RationalDenominatorZero, id,
@@ -441,6 +476,10 @@ namespace {
             uint32_t denom = 0U;
             std::memcpy(&denom, bytes.data() + offset, sizeof(denom));
             if (denom == 0U) {
+                uint32_t numer = 0U;
+                std::memcpy(&numer, bytes.data() + offset - 4U, sizeof(numer));
+                if (numer == 0U && lens_unknown_aperture_slot(store, entry, i))
+                    continue;
                 append_issue(
                     out, options, ValidateIssueSeverity::Error,
                     MetadataValidationIssueCode::RationalDenominatorZero, id,

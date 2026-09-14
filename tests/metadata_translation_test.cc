@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
@@ -5420,6 +5421,514 @@ namespace {
                 EXPECT_EQ(camera_text_value(restored, tag),
                           canonical ? "native" : "source");
         }
+    }
+}  // namespace
+}  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    using IdentityOptions = MetadataIdentityTranslationOptions;
+    using IdentityStatus  = MetadataCaptureTranslationStatus;
+    using IdentityPolicy  = MetadataCaptureTranslationConflictPolicy;
+    constexpr std::string_view kIdentityId = "00112233445566778899aAbBcCdDeEfF";
+    constexpr std::array<URational, 4> kIdentityLens
+        = { URational { 50U, 3U }, { 200U, 3U }, { 14U, 5U }, { 0U, 0U } };
+
+    static void identity_fixture_replace(MetaStore& store, EntryId id,
+                                         const Entry& replacement)
+    {
+        MetaStore rebuilt;
+        rebuilt.arena() = store.arena();
+        for (BlockId block = 0U; block < store.block_count(); ++block)
+            rebuilt.add_block(store.block_info(block));
+        for (EntryId entry = 0U; entry < store.entries().size(); ++entry)
+            rebuilt.add_entry(entry == id ? replacement : store.entry(entry));
+        store = std::move(rebuilt);
+    }
+
+    static void identity_source(MetaStore& store, bool indexed = false,
+                                bool legacy      = false,
+                                EntryFlags flags = EntryFlags::Dirty)
+    {
+        const auto ns = legacy ? kSettingsNs : kSensitivityNs;
+        if (indexed) {
+            constexpr std::array<std::string_view, 4> values
+                = { "50/3", "200/3", "2.8", "0/0" };
+            for (size_t i = 0U; i < values.size(); ++i)
+                settings_xmp(
+                    store, "LensSpecification[" + std::to_string(i + 1U) + "]",
+                    make_text(store.arena(), values[i], TextEncoding::Utf8),
+                    flags, ns);
+        } else {
+            settings_xmp(store, "LensSpecification",
+                         make_urational_array(store.arena(), kIdentityLens),
+                         flags, ns);
+        }
+        settings_xmp(store, "ImageUniqueID",
+                     make_text(store.arena(), kIdentityId, TextEncoding::Ascii),
+                     flags);
+    }
+
+    static void expect_identity_lens(const MetaStore& store,
+                                     const std::array<URational, 4>& expected
+                                     = kIdentityLens)
+    {
+        const Entry* entry = settings_find(store, 0xa432U);
+        ASSERT_NE(entry, nullptr);
+        ASSERT_EQ(entry->value.kind, MetaValueKind::Array);
+        ASSERT_EQ(entry->value.elem_type, MetaElementType::URational);
+        ASSERT_EQ(entry->value.count, 4U);
+        const auto bytes = store.arena().span(entry->value.data.span);
+        ASSERT_EQ(bytes.size(), sizeof(expected));
+        std::array<URational, 4> actual {};
+        std::memcpy(actual.data(), bytes.data(), sizeof(actual));
+        for (size_t i = 0U; i < actual.size(); ++i) {
+            EXPECT_EQ(actual[i].numer, expected[i].numer);
+            EXPECT_EQ(actual[i].denom, expected[i].denom);
+        }
+    }
+
+    static void identity_failure(MetaStore& source, IdentityStatus status,
+                                 const IdentityOptions& options = {})
+    {
+        source.finalize();
+        const size_t before = source.entries().size();
+        MetaStore output;
+        settings_native(output, 0x9209U, make_u16(95U));
+        output.finalize();
+        EXPECT_EQ(
+            translate_xmp_identity_metadata(source, options, &output).status,
+            status);
+        ASSERT_EQ(output.entries().size(), 1U);
+        EXPECT_EQ(settings_find(output, 0x9209U)->value.data.u64, 95U);
+        EXPECT_EQ(
+            translate_xmp_identity_metadata(source, options, &source).status,
+            status);
+        EXPECT_EQ(source.entries().size(), before);
+        EXPECT_EQ(settings_find(source, 0xa432U), nullptr);
+        EXPECT_EQ(settings_find(source, 0xa420U), nullptr);
+    }
+
+    TEST(MetadataIdentity,
+         ExactArrayAndIndexedAliasesCommitTogetherAndOwnPayloads)
+    {
+        for (bool indexed : { false, true }) {
+            for (bool legacy : { false, true }) {
+                MetaStore output;
+                {
+                    MetaStore source;
+                    identity_source(source, indexed, legacy);
+                    source.finalize();
+                    const auto result
+                        = translate_xmp_identity_metadata(source, {}, &output);
+                    ASSERT_EQ(result.status, IdentityStatus::Ok);
+                    EXPECT_EQ(result.groups_translated, 2U);
+                    EXPECT_EQ(result.entries_added, 2U);
+                    EXPECT_EQ(result.source_properties, indexed ? 5U : 2U);
+                    EXPECT_EQ(source.entries().size(), indexed ? 5U : 2U);
+                }
+                expect_identity_lens(output);
+                EXPECT_EQ(camera_text_value(output, 0xa420U), kIdentityId);
+                EXPECT_TRUE(any(settings_find(output, 0xa432U)->flags,
+                                EntryFlags::Dirty));
+                EXPECT_EQ(translate_xmp_identity_metadata(output, {}, &output)
+                              .groups_unchanged,
+                          2U);
+            }
+        }
+    }
+
+    TEST(MetadataIdentity, SelectionUsesCleanLensCompanionsAndIndependentFlags)
+    {
+        MetaStore source;
+        identity_source(source, true, false, EntryFlags::None);
+        {
+            Entry replacement = source.entry(2U);
+            replacement.flags = EntryFlags::Dirty;
+            identity_fixture_replace(source, 2U, replacement);
+        }
+        source.finalize();
+        const auto result = translate_xmp_identity_metadata(source, {},
+                                                            &source);
+        ASSERT_EQ(result.status, IdentityStatus::Ok);
+        EXPECT_EQ(result.source_properties, 4U);
+        EXPECT_EQ(result.entries_added, 1U);
+        expect_identity_lens(source);
+        EXPECT_EQ(settings_find(source, 0xa420U), nullptr);
+        IdentityOptions all;
+        all.source_mode = MetadataCaptureTranslationSourceMode::All;
+        EXPECT_EQ(
+            translate_xmp_identity_metadata(source, all, &source).entries_added,
+            1U);
+        for (bool lens : { false, true }) {
+            MetaStore selected;
+            identity_source(selected);
+            selected.finalize();
+            IdentityOptions options;
+            options.lens_specification_to_exif = lens;
+            options.image_unique_id_to_exif    = !lens;
+            EXPECT_EQ(translate_xmp_identity_metadata(selected, options,
+                                                      &selected)
+                          .entries_added,
+                      1U);
+            EXPECT_EQ(settings_find(selected, lens ? 0xa420U : 0xa432U),
+                      nullptr);
+        }
+    }
+
+    TEST(MetadataIdentity,
+         RejectsMalformedIdentityAfterValidLensWithoutMutation)
+    {
+        for (const std::string& text :
+             { std::string(), std::string(31U, 'a'), std::string(33U, 'a'),
+               std::string(31U, 'a') + 'g', std::string(kIdentityId) + '\0', std::string(kIdentityId) + ' ',
+               std::string(" ") + std::string(kIdentityId),
+               std::string(31U, 'a') + '\0', std::string(30U, 'a') + "\xc3\xa9",
+               std::string("00112233-4455-6677-8899-aabbccddeeff") }) {
+            MetaStore source;
+            identity_source(source);
+            {
+                Entry replacement = source.entry(1U);
+                replacement.value = make_text(source.arena(), text,
+                                              TextEncoding::Utf8);
+                identity_fixture_replace(source, 1U, replacement);
+            }
+            identity_failure(source, IdentityStatus::InvalidSourceValue);
+        }
+        for (const auto encoding :
+             { TextEncoding::Unknown, TextEncoding::Utf16LE }) {
+            MetaStore source;
+            identity_source(source);
+            {
+                Entry replacement               = source.entry(1U);
+                replacement.value.text_encoding = encoding;
+                identity_fixture_replace(source, 1U, replacement);
+            }
+            identity_failure(source, IdentityStatus::InvalidSourceValue);
+        }
+        MetaStore scalar;
+        identity_source(scalar);
+        {
+            Entry replacement = scalar.entry(1U);
+            replacement.value = make_u32(42U);
+            identity_fixture_replace(scalar, 1U, replacement);
+        }
+        identity_failure(scalar, IdentityStatus::InvalidSourceValue);
+    }
+
+    TEST(MetadataIdentity,
+         RejectsIncompleteMixedDuplicateAndStructuredLensSources)
+    {
+        for (const auto path :
+             { "LensSpecification[0]", "LensSpecification[01]",
+               "LensSpecification[5]", "LensSpecification[1]/x",
+               "LensSpecification/x", "ImageUniqueID[1]" }) {
+            MetaStore source;
+            identity_source(source, true);
+            settings_xmp(source, path, make_u32(1U));
+            identity_failure(source, IdentityStatus::UnsupportedSourceShape);
+        }
+        for (bool mixed : { false, true }) {
+            MetaStore source;
+            identity_source(source, true);
+            settings_xmp(source,
+                         mixed ? "LensSpecification" : "LensSpecification[1]",
+                         make_u32(1U), EntryFlags::Dirty, kSensitivityNs);
+            identity_failure(source,
+                             mixed ? IdentityStatus::UnsupportedSourceShape
+                                   : IdentityStatus::AmbiguousSource);
+        }
+        for (bool alias : { false, true }) {
+            MetaStore source;
+            identity_source(source);
+            settings_xmp(source, "LensSpecification",
+                         make_urational_array(source.arena(), kIdentityLens),
+                         EntryFlags::Dirty,
+                         alias ? kSettingsNs : kSensitivityNs);
+            identity_failure(source, IdentityStatus::AmbiguousSource);
+        }
+        MetaStore sparse;
+        settings_xmp(sparse, "LensSpecification[2]", make_u32(50U));
+        identity_failure(sparse, IdentityStatus::IncompleteSource);
+        MetaStore split;
+        identity_source(split, true);
+        {
+            Entry replacement = split.entry(1U);
+            replacement.key = make_xmp_property_key(split.arena(), kSettingsNs,
+                                                    "LensSpecification[2]");
+            identity_fixture_replace(split, 1U, replacement);
+        }
+        identity_failure(split, IdentityStatus::AmbiguousSource);
+    }
+
+    TEST(MetadataIdentity,
+         ValidatesLensShapePositiveBoundsOrderingAndExactPrecision)
+    {
+        for (size_t count : { 0U, 1U, 3U, 5U }) {
+            MetaStore source;
+            const std::array<URational, 5> values = {
+                URational { 24, 1 }, { 70, 1 }, { 28, 10 }, { 4, 1 }, { 1, 1 }
+            };
+            settings_xmp(source, "LensSpecification",
+                         make_urational_array(source.arena(),
+                                              std::span(values.data(), count)));
+            identity_failure(source, IdentityStatus::InvalidSourceValue);
+        }
+        for (size_t index = 0U; index < 4U; ++index) {
+            for (const URational bad : { URational { 1U, 0U }, { 0U, 1U } }) {
+                MetaStore source;
+                auto values   = kIdentityLens;
+                values[index] = bad;
+                settings_xmp(source, "LensSpecification",
+                             make_urational_array(source.arena(), values));
+                identity_failure(source, IdentityStatus::InvalidNumericValue);
+            }
+        }
+        MetaStore reversed;
+        auto values = kIdentityLens;
+        values[0]   = { 100U, 1U };
+        settings_xmp(reversed, "LensSpecification",
+                     make_urational_array(reversed.arena(), values));
+        identity_failure(reversed, IdentityStatus::InvalidNumericValue);
+        for (const auto text : { "1/4294967296", "4294967296", "1e-20" }) {
+            MetaStore source;
+            identity_source(source, true);
+            {
+                Entry replacement = source.entry(0U);
+                replacement.value = make_text(source.arena(), text,
+                                              TextEncoding::Ascii);
+                identity_fixture_replace(source, 0U, replacement);
+            }
+            identity_failure(source, IdentityStatus::ValueOutOfRange);
+        }
+        MetaStore maximum;
+        values = { URational { 1U, UINT32_MAX },
+                   { UINT32_MAX, 1U },
+                   { UINT32_MAX, UINT32_MAX },
+                   { 0U, 0U } };
+        settings_xmp(maximum, "LensSpecification",
+                     make_urational_array(maximum.arena(), values));
+        maximum.finalize();
+        ASSERT_EQ(translate_xmp_identity_metadata(maximum, {}, &maximum).status,
+                  IdentityStatus::Ok);
+        values[2] = { 1U, 1U };
+        expect_identity_lens(maximum, values);
+    }
+
+    TEST(MetadataIdentity,
+         ConflictPoliciesRepairDuplicatesAndRetainTypedEquivalence)
+    {
+        MetaStore source;
+        identity_source(source);
+        auto equivalent = kIdentityLens;
+        equivalent[0]   = { 100U, 6U };
+        settings_native(source, 0xa432U,
+                        make_urational_array(source.arena(), equivalent));
+        settings_native(source, 0xa420U,
+                        make_text(source.arena(),
+                                  std::string(kIdentityId) + '\0',
+                                  TextEncoding::Ascii));
+        source.finalize();
+        EXPECT_EQ(translate_xmp_identity_metadata(source, {}, &source)
+                      .groups_unchanged,
+                  2U);
+        expect_identity_lens(source, equivalent);
+        {
+            Entry replacement = source.entry(3U);
+            replacement.value = make_text(source.arena(),
+                                          "ffffffffffffffffffffffffffffffff",
+                                          TextEncoding::Ascii);
+            identity_fixture_replace(source, 3U, replacement);
+        }
+        settings_native(source, 0xa420U, make_u32(1U));
+        source.finalize();
+        const auto failed = translate_xmp_identity_metadata(source, {},
+                                                            &source);
+        EXPECT_EQ(failed.status, IdentityStatus::NativeConflict);
+        EXPECT_EQ(failed.failed_mapping,
+                  MetadataCaptureTranslationMapping::XmpImageUniqueID);
+        IdentityOptions options;
+        options.conflict_policy = IdentityPolicy::PreserveExisting;
+        EXPECT_EQ(translate_xmp_identity_metadata(source, options, &source)
+                      .groups_preserved,
+                  2U);
+        EXPECT_EQ(settings_active_count(source, 0xa420U), 2U);
+        options.conflict_policy = IdentityPolicy::ReplaceExisting;
+        const auto replaced = translate_xmp_identity_metadata(source, options,
+                                                              &source);
+        EXPECT_EQ(replaced.status, IdentityStatus::Ok);
+        EXPECT_EQ(replaced.entries_updated, 1U);
+        EXPECT_EQ(replaced.entries_removed, 1U);
+        EXPECT_EQ(camera_text_value(source, 0xa420U), kIdentityId);
+        {
+            Entry replacement = source.entry(2U);
+            replacement.value = make_u32(42U);
+            identity_fixture_replace(source, 2U, replacement);
+        }
+        source.finalize();
+        EXPECT_EQ(translate_xmp_identity_metadata(source, {}, &source).status,
+                  IdentityStatus::NativeConflict);
+        ASSERT_EQ(translate_xmp_identity_metadata(source, options, &source)
+                      .entries_updated,
+                  1U);
+        expect_identity_lens(source);
+    }
+
+    TEST(MetadataIdentity, DeletesCompleteGroupsAndRejectsPartialMemberDeletion)
+    {
+        for (bool indexed : { false, true }) {
+            MetaStore source;
+            identity_source(source, indexed, false,
+                            EntryFlags::Dirty | EntryFlags::Deleted);
+            settings_native(source, 0xa432U,
+                            make_urational_array(source.arena(), kIdentityLens));
+            settings_native(source, 0xa420U,
+                            make_text(source.arena(), kIdentityId,
+                                      TextEncoding::Ascii));
+            source.finalize();
+            EXPECT_EQ(
+                translate_xmp_identity_metadata(source, {}, &source).status,
+                IdentityStatus::NativeConflict);
+            IdentityOptions options;
+            options.conflict_policy = IdentityPolicy::ReplaceExisting;
+            const auto result = translate_xmp_identity_metadata(source, options,
+                                                                &source);
+            EXPECT_EQ(result.status, IdentityStatus::Ok);
+            EXPECT_EQ(result.entries_removed, 2U);
+            EXPECT_EQ(settings_find(source, 0xa432U), nullptr);
+            EXPECT_EQ(settings_find(source, 0xa420U), nullptr);
+        }
+        MetaStore partial;
+        identity_source(partial, true);
+        {
+            Entry replacement = partial.entry(2U);
+            replacement.flags |= EntryFlags::Deleted;
+            identity_fixture_replace(partial, 2U, replacement);
+        }
+        identity_failure(partial, IdentityStatus::IncompleteSource);
+        MetaStore clean;
+        identity_source(clean, true, false, EntryFlags::Deleted);
+        clean.finalize();
+        IdentityOptions all;
+        all.source_mode = MetadataCaptureTranslationSourceMode::All;
+        EXPECT_EQ(translate_xmp_identity_metadata(clean, all, &clean)
+                      .source_properties,
+                  0U);
+    }
+
+    TEST(MetadataIdentity, ResourceLimitsRejectTheWholeBatch)
+    {
+        MetaStore source;
+        identity_source(source, true);
+        IdentityOptions options;
+        options.max_added_entries = 1U;
+        identity_failure(source, IdentityStatus::EntryLimitExceeded, options);
+        options                = {};
+        options.max_operations = 1U;
+        identity_failure(source, IdentityStatus::OperationLimitExceeded,
+                         options);
+        options                             = {};
+        options.max_text_bytes_per_property = 31U;
+        identity_failure(source, IdentityStatus::ValueTooLong, options);
+        options                      = {};
+        options.max_total_text_bytes = 32U;
+        identity_failure(source, IdentityStatus::SourceLimitExceeded, options);
+        options                   = {};
+        options.max_added_entries = 3U;
+        identity_failure(source, IdentityStatus::InvalidOptions, options);
+        options                            = {};
+        options.lens_specification_to_exif = false;
+        options.image_unique_id_to_exif    = false;
+        identity_failure(source, IdentityStatus::InvalidOptions, options);
+        MetaStore unfinalized;
+        EXPECT_EQ(
+            translate_xmp_identity_metadata(unfinalized, {}, &source).status,
+            IdentityStatus::SourceNotFinalized);
+        EXPECT_EQ(translate_xmp_identity_metadata(source, {}, nullptr).status,
+                  IdentityStatus::NullOutput);
+    }
+
+    TEST(MetadataIdentity,
+         PortableFractionsAndUnknownsRoundTripWithManagedArrays)
+    {
+        for (bool legacy : { false, true }) {
+            for (bool canonical : { false, true }) {
+                MetaStore source;
+                identity_source(source, true, legacy);
+                source.finalize();
+                ASSERT_EQ(
+                    translate_xmp_identity_metadata(source, {}, &source).status,
+                    IdentityStatus::Ok);
+                XmpPortableOptions options;
+                options.include_existing_xmp = canonical;
+                options.conflict_policy      = XmpConflictPolicy::ExistingWins;
+                if (canonical)
+                    options.existing_standard_namespace_policy
+                        = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+                std::array<std::byte, 8192> bytes {};
+                const auto dumped = dump_xmp_portable(source, bytes, options);
+                ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+                const std::string_view xml(reinterpret_cast<const char*>(
+                                               bytes.data()),
+                                           dumped.written);
+                EXPECT_NE(xml.find("<exifEX:LensSpecification>"),
+                          std::string_view::npos);
+                EXPECT_NE(xml.find("<rdf:li>50/3</rdf:li>"),
+                          std::string_view::npos);
+                EXPECT_NE(xml.find("<rdf:li>0/0</rdf:li>"),
+                          std::string_view::npos);
+                EXPECT_EQ(xml.find("<exif:LensSpecification>"),
+                          std::string_view::npos);
+                MetaStore restored;
+                ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(),
+                                                      dumped.written),
+                                            restored)
+                              .status,
+                          XmpDecodeStatus::Ok);
+                restored.finalize();
+                IdentityOptions all;
+                all.source_mode = MetadataCaptureTranslationSourceMode::All;
+                ASSERT_EQ(translate_xmp_identity_metadata(restored, all,
+                                                          &restored)
+                              .status,
+                          IdentityStatus::Ok);
+                expect_identity_lens(restored);
+                EXPECT_EQ(camera_text_value(restored, 0xa420U), kIdentityId);
+            }
+        }
+    }
+
+    TEST(MetadataIdentity,
+         DecodedIdentityWhitespaceIsRejectedAndMalformedNativeIsNotProjected)
+    {
+        for (const auto xml :
+             { "<r:RDF xmlns:r='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><r:Description xmlns:e='http://ns.adobe.com/exif/1.0/' e:ImageUniqueID=' 00112233445566778899aAbBcCdDeEfF '/></r:RDF>",
+               "<r:RDF xmlns:r='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><r:Description xmlns:e='http://ns.adobe.com/exif/1.0/'><e:ImageUniqueID> 00112233445566778899aAbBcCdDeEfF </e:ImageUniqueID></r:Description></r:RDF>",
+               "<r:RDF xmlns:r='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><r:Description xmlns:e='http://ns.adobe.com/exif/1.0/'><e:ImageUniqueID r:resource=' 00112233445566778899aAbBcCdDeEfF '/></r:Description></r:RDF>" }) {
+            MetaStore source;
+            ASSERT_EQ(decode_xmp_packet(std::as_bytes(
+                                            std::span(xml, std::strlen(xml))),
+                                        source)
+                          .status,
+                      XmpDecodeStatus::Ok);
+            IdentityOptions all;
+            all.source_mode = MetadataCaptureTranslationSourceMode::All;
+            identity_failure(source, IdentityStatus::InvalidSourceValue, all);
+        }
+        MetaStore source;
+        settings_native(source, 0xa432U, make_u32(42U));
+        settings_native(source, 0xa420U,
+                        make_text(source.arena(), "invalid",
+                                  TextEncoding::Ascii));
+        source.finalize();
+        std::array<std::byte, 8192> bytes {};
+        const auto dumped = dump_xmp_portable(source, bytes, {});
+        ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+        const std::string_view xml(reinterpret_cast<const char*>(bytes.data()),
+                                   dumped.written);
+        EXPECT_EQ(xml.find("<exifEX:LensSpecification>"),
+                  std::string_view::npos);
+        EXPECT_EQ(xml.find("<exif:ImageUniqueID>"), std::string_view::npos);
     }
 }  // namespace
 }  // namespace openmeta

@@ -354,6 +354,8 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpFlash,
     XmpLightSource,
     XmpSensitivity,
+    XmpLensSpecification,
+    XmpImageUniqueID,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -415,6 +417,49 @@ struct MetadataCaptureTranslationResult final {
     uint32_t entries_updated    = 0U;
     uint32_t entries_removed    = 0U;
 };
+
+inline constexpr uint32_t kMetadataIdentityTranslationContractVersion   = 1U;
+inline constexpr uint32_t kMetadataIdentityTranslationMaxAddedEntries   = 2U;
+inline constexpr uint64_t kMetadataIdentityTranslationMaxTotalTextBytes = 544U;
+
+struct MetadataIdentityTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    bool lens_specification_to_exif = true;
+    bool image_unique_id_to_exif    = true;
+    uint32_t max_added_entries = kMetadataIdentityTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataIdentityTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Translate lens specification and image identity in one transaction.
+ *
+ * exifEX:LensSpecification (or historical exif alias) accepts one four-element
+ * URational array or four dense [1]..[4] scalar properties. One dirty member
+ * selects the complete lens group, including clean companions. Numeric text
+ * accepts exact integer, decimal, scientific and fraction forms. Focal lengths
+ * must be positive and ordered; apertures must be positive or exactly 0/0 for
+ * unknown. Values are reduced to unsigned 32-bit rational components.
+ * exif:ImageUniqueID accepts exactly 32 ASCII hex characters as ASCII/UTF-8 Text.
+ * Case and leading zeros are retained; identity is never generated or inferred.
+ *
+ * Duplicate aliases, mixed root/indexed forms and incomplete arrays fail.
+ * A dirty root tombstone or four deleted members removes the lens group;
+ * partial member deletion fails. The image ID uses a scalar tombstone.
+ * Conflict and resource checks precede all mutations, including aliased output.
+ * Preparation may allocate. This is a structural translation contract, not
+ * validation of UUID generation, uniqueness or capture-time identity policy.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_identity_metadata(
+    const MetaStore& source, const MetadataIdentityTranslationOptions& options,
+    MetaStore* out_store);
 
 /**
  * \brief Translate exact standard or OpenMeta-portable XMP capture properties

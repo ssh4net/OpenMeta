@@ -1400,10 +1400,10 @@ namespace {
         return name;
     }
 
-    static bool portable_camera_text_tag(uint16_t tag) noexcept
+    static bool portable_exif_ex_identity_tag(uint16_t tag) noexcept
     {
-        return tag == 0xa430U || tag == 0xa431U || tag == 0xa433U
-               || tag == 0xa434U || tag == 0xa435U;
+        return tag == 0xa430U || tag == 0xa431U || tag == 0xa432U
+               || tag == 0xa433U || tag == 0xa434U || tag == 0xa435U;
     }
 
     static bool
@@ -2011,7 +2011,8 @@ namespace {
                    || name == "ISOSpeedLatitudeyyy"
                    || name == "ISOSpeedLatitudezzz" || name == "CameraOwnerName"
                    || name == "BodySerialNumber" || name == "LensMake"
-                   || name == "LensModel" || name == "LensSerialNumber";
+                   || name == "LensModel" || name == "LensSerialNumber"
+                   || name == "LensSpecification";
         }
 
         if (prefix == "xmp") {
@@ -4268,20 +4269,34 @@ namespace {
         return true;
     }
 
-    static bool emit_exif_lens_specification_decimal_seq(
-        SpanWriter* w, std::string_view prefix, std::string_view name,
-        const ByteArena& arena, const MetaValue& v) noexcept
+    static bool emit_exif_lens_specification_seq(SpanWriter* w,
+                                                 std::string_view prefix,
+                                                 std::string_view name,
+                                                 const ByteArena& arena,
+                                                 const MetaValue& v) noexcept
     {
         if (!w || prefix.empty() || name.empty()
             || v.kind != MetaValueKind::Array
-            || v.elem_type != MetaElementType::URational) {
-            return false;
+            || v.elem_type != MetaElementType::URational || v.count != 4U) {
+            return true;
         }
         const std::span<const std::byte> raw = arena.span(v.data.span);
         const uint32_t count                 = safe_array_count(arena, v);
-        if (count == 0U) {
-            return false;
+        if (count != 4U || raw.size() != 4U * sizeof(URational)) {
+            return true;
         }
+        std::array<URational, 4> values {};
+        std::memcpy(values.data(), raw.data(), sizeof(values));
+        for (size_t i = 0U; i < values.size(); ++i) {
+            const URational r = values[i];
+            if (i >= 2U && r.numer == 0U && r.denom == 0U)
+                continue;
+            if (r.numer == 0U || r.denom == 0U)
+                return true;
+        }
+        if (static_cast<uint64_t>(values[0].numer) * values[1].denom
+            > static_cast<uint64_t>(values[1].numer) * values[0].denom)
+            return true;
 
         w->append(kIndent3);
         w->append("<");
@@ -4302,12 +4317,9 @@ namespace {
             w->append(kIndent4);
             w->append(kIndent1);
             w->append("<rdf:li>");
-            double d = 0.0;
-            if (urational_to_double(r, &d)) {
-                append_f64_dec(d, w);
-            } else {
-                append_rational_text(r, w);
-            }
+            append_u64_dec(r.numer, w);
+            w->append("/");
+            append_u64_dec(r.denom, w);
             w->append("</rdf:li>\n");
         }
 
@@ -4329,6 +4341,29 @@ namespace {
     {
         if (!w || prefix.empty() || name.empty()) {
             return false;
+        }
+
+        if (tag == 0xA432U) {  // LensSpecification
+            return emit_exif_lens_specification_seq(w, prefix, name, arena, v);
+        }
+
+        if (tag == 0xa420U) {
+            if (v.kind != MetaValueKind::Text
+                || (v.text_encoding != TextEncoding::Ascii
+                    && v.text_encoding != TextEncoding::Utf8))
+                return true;
+            std::string_view text = arena_string(arena, v.data.span);
+            if (text.size() != v.count || text.size() != v.data.span.size)
+                return true;
+            if (text.size() == 33U && text.back() == '\0')
+                text.remove_suffix(1U);
+            if (text.size() != 32U)
+                return true;
+            for (char c : text)
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+                      || (c >= 'A' && c <= 'F')))
+                    return true;
+            return emit_portable_property_text(w, prefix, name, text);
         }
 
         uint64_t u = 0U;
@@ -4452,11 +4487,6 @@ namespace {
             // DeviceSettingDescription. ExifTool effectively collapses these
             // to a meaningless first scalar on XMP re-read, so skip them.
             return true;
-        }
-
-        if (tag == 0xA432U) {  // LensSpecification
-            return emit_exif_lens_specification_decimal_seq(w, prefix, name,
-                                                            arena, v);
         }
 
         if (tag == 0x0002U || tag == 0x0004U || tag == 0x0014U
@@ -7171,6 +7201,11 @@ namespace {
         const PortableGeneratedLangAltKeySet* generated_lang_alt,
         std::string_view prefix, std::string_view name) noexcept
     {
+        if (prefix == "exif" && name == "LensSpecification"
+            && portable_property_shape_is_present(
+                generated_shapes, "exifEX", name,
+                PortablePropertyShape::Indexed))
+            return true;
         if (portable_property_shape_is_present(generated_shapes, prefix, name,
                                                PortablePropertyShape::Scalar)
             || portable_property_shape_is_present(
@@ -10001,7 +10036,9 @@ namespace {
         bool new_claim = false;
         if (!claim_portable_property_key(claims, prefix, emitted_name,
                                          PortablePropertyOwner::Exif,
-                                         PortablePropertyShape::Scalar,
+                                         tag == 0xa432U
+                                             ? PortablePropertyShape::Indexed
+                                             : PortablePropertyShape::Scalar,
                                          &new_claim)
             || !new_claim) {
             return false;
@@ -10035,7 +10072,7 @@ namespace {
 
         const uint16_t tag = e.key.data.exif_tag.tag;
         if (ifd == "exififd"
-            && (portable_camera_text_tag(tag)
+            && (portable_exif_ex_identity_tag(tag)
                 || (tag >= 0x8830U && tag <= 0x8835U)
                 || (tag == 0x8827U
                     && portable_has_sensitivity_type(arena, entries))))
@@ -10634,7 +10671,7 @@ namespace {
 
                 const uint16_t tag = e.key.data.exif_tag.tag;
                 if (ifd == "exififd"
-                    && (portable_camera_text_tag(tag)
+                    && (portable_exif_ex_identity_tag(tag)
                         || (tag >= 0x8830U && tag <= 0x8835U)
                         || (tag == 0x8827U
                             && portable_has_sensitivity_type(arena, entries))))
@@ -10678,7 +10715,8 @@ namespace {
                                                       entries, e.value)) {
                     (void)out->insert(PortablePropertyGeneratedShape {
                         PortablePropertyKey { prefix, portable_tag_name },
-                        PortablePropertyShape::Scalar });
+                        tag == 0xa432U ? PortablePropertyShape::Indexed
+                                       : PortablePropertyShape::Scalar });
                 }
 
                 const std::string_view xmp_alias_name
@@ -13930,7 +13968,7 @@ dump_xmp_portable_impl(const MetaStore& store, std::span<std::byte> out,
         for (const Entry& entry : es) {
             if (!any(entry.flags, EntryFlags::Deleted)
                 && entry.key.kind == MetaKeyKind::ExifTag
-                && (portable_camera_text_tag(entry.key.data.exif_tag.tag)
+                && (portable_exif_ex_identity_tag(entry.key.data.exif_tag.tag)
                     || (entry.key.data.exif_tag.tag >= 0x8830U
                         && entry.key.data.exif_tag.tag <= 0x8835U))
                 && arena_string(arena, entry.key.data.exif_tag.ifd)

@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <string_view>
@@ -51,6 +52,8 @@ namespace {
         ISOSpeed,
         ISOSpeedLatitudeyyy,
         ISOSpeedLatitudezzz,
+        LensSpecification,
+        ImageUniqueID,
 
     };
 
@@ -80,6 +83,8 @@ namespace {
         EntryId source_entry     = kInvalidEntryId;
         bool present             = false;
         MetaValue value;
+        std::array<URational, 4> lens {};
+        std::string_view identity;
         bool existing_any = false;
         bool exact_match  = false;
         bool apply        = false;
@@ -728,6 +733,8 @@ namespace {
         case NativeCaptureField::ISOSpeed: tag = 0x8833U; break;
         case NativeCaptureField::ISOSpeedLatitudeyyy: tag = 0x8834U; break;
         case NativeCaptureField::ISOSpeedLatitudezzz: tag = 0x8835U; break;
+        case NativeCaptureField::LensSpecification: tag = 0xa432U; break;
+        case NativeCaptureField::ImageUniqueID: tag = 0xa420U; break;
         }
         return entry.key.data.exif_tag.tag == tag;
     }
@@ -769,6 +776,56 @@ namespace {
         }
     }
 
+    static bool group_value_matches(const ByteArena& arena,
+                                    const MetaValue& actual,
+                                    const CapturePlannedGroup& group) noexcept
+    {
+        if (group.field == NativeCaptureField::LensSpecification) {
+            if (actual.kind != MetaValueKind::Array
+                || actual.elem_type != MetaElementType::URational
+                || actual.count != 4U
+                || arena.span(actual.data.span).size() != sizeof(group.lens))
+                return false;
+            std::array<URational, 4> values {};
+            std::memcpy(values.data(), arena.span(actual.data.span).data(),
+                        sizeof(values));
+            for (size_t i = 0U; i < values.size(); ++i) {
+                const URational a = values[i];
+                const URational b = group.lens[i];
+                if (a.denom == 0U || b.denom == 0U) {
+                    if (a.numer != 0U || b.numer != 0U || a.denom != b.denom)
+                        return false;
+                } else if (static_cast<uint64_t>(a.numer) * b.denom
+                           != static_cast<uint64_t>(b.numer) * a.denom)
+                    return false;
+            }
+            return true;
+        }
+        if (group.field == NativeCaptureField::ImageUniqueID) {
+            if (actual.kind != MetaValueKind::Text
+                || (actual.text_encoding != TextEncoding::Ascii
+                    && actual.text_encoding != TextEncoding::Utf8))
+                return false;
+            std::string_view text = arena_text(arena, actual.data.span);
+            if (text.size() != actual.count || text.size() != actual.data.span.size)
+                return false;
+            if (text.size() == 33U && text.back() == '\0')
+                text.remove_suffix(1U);
+            return text == group.identity;
+        }
+        return capture_value_matches(group.field, actual, group.value);
+    }
+
+    static MetaValue materialize_group_value(ByteArena& arena,
+                                             const CapturePlannedGroup& group)
+    {
+        if (group.field == NativeCaptureField::LensSpecification)
+            return make_urational_array(arena, group.lens);
+        if (group.field == NativeCaptureField::ImageUniqueID)
+            return make_text(arena, group.identity, TextEncoding::Ascii);
+        return group.value;
+    }
+
     static void analyze_group(const MetaStore& store,
                               CapturePlannedGroup* group) noexcept
     {
@@ -784,8 +841,7 @@ namespace {
             }
             ++active_count;
             if (active_count == 1U && group->present) {
-                exact = capture_value_matches(group->field, entry.value,
-                                              group->value);
+                exact = group_value_matches(store.arena(), entry.value, *group);
             }
         }
         group->existing_any = active_count > 0U;
@@ -821,8 +877,8 @@ namespace {
             }
             ++active_count;
             if (active_count == 1U && group.present) {
-                first_matches = capture_value_matches(group.field, entry.value,
-                                                      group.value);
+                first_matches = group_value_matches(store.arena(), entry.value,
+                                                    group);
             }
         }
         if (!group.present) {
@@ -870,6 +926,8 @@ namespace {
         case NativeCaptureField::ISOSpeed: tag = 0x8833U; break;
         case NativeCaptureField::ISOSpeedLatitudeyyy: tag = 0x8834U; break;
         case NativeCaptureField::ISOSpeedLatitudezzz: tag = 0x8835U; break;
+        case NativeCaptureField::LensSpecification: tag = 0xa432U; break;
+        case NativeCaptureField::ImageUniqueID: tag = 0xa420U; break;
         }
         return make_exif_tag_key(arena, "exififd", tag);
     }
@@ -882,7 +940,7 @@ namespace {
         }
         Entry entry;
         entry.key    = make_native_key(edit->arena(), group.field);
-        entry.value  = group.value;
+        entry.value  = materialize_group_value(edit->arena(), group);
         entry.origin = source.entry(group.source_entry).origin;
         if (entry.origin.wire_type_name.size > 0U) {
             entry.origin.wire_type_name = edit->arena().append(
@@ -921,8 +979,9 @@ namespace {
                 continue;
             }
             first_active = id;
-            if (!capture_value_matches(group.field, entry.value, group.value)) {
-                edit->set_value(id, group.value);
+            if (!group_value_matches(source.arena(), entry.value, group)) {
+                edit->set_value(id,
+                                materialize_group_value(edit->arena(), group));
                 ++result->entries_updated;
             }
         }
@@ -1154,7 +1213,271 @@ namespace {
     }
 
 
+    static int identity_member(const MetaStore& store, const Entry& entry,
+                               bool lens) noexcept
+    {
+        if (entry.key.kind != MetaKeyKind::XmpProperty)
+            return -1;
+        const std::string_view ns
+            = arena_text(store.arena(), entry.key.data.xmp_property.schema_ns);
+        if (ns != kXmpNsExif && (!lens || ns != "http://cipa.jp/exif/1.0/"))
+            return -1;
+        const std::string_view path
+            = arena_text(store.arena(),
+                         entry.key.data.xmp_property.property_path);
+        const std::string_view base = lens ? "LensSpecification"
+                                           : "ImageUniqueID";
+        if (path == base)
+            return 0;
+        if (!path.starts_with(base) || path.size() <= base.size()
+            || (path[base.size()] != '[' && path[base.size()] != '/'))
+            return -1;
+        const std::string_view tail = path.substr(base.size());
+        if (lens && tail.size() == 3U && tail[0] == '[' && tail[2] == ']'
+            && tail[1] >= '1' && tail[1] <= '4')
+            return tail[1] - '0';
+        return -2;
+    }
+
+    static MetadataCaptureTranslationStatus
+    identity_text_budget(const MetaStore& source, const MetaValue& value,
+                         const MetadataIdentityTranslationOptions& options,
+                         uint64_t* total)
+    {
+        using Status = MetadataCaptureTranslationStatus;
+        if (value.kind != MetaValueKind::Text)
+            return Status::Ok;
+        const auto text = source.arena().span(value.data.span);
+        if ((value.text_encoding != TextEncoding::Ascii
+             && value.text_encoding != TextEncoding::Utf8)
+            || text.size() != value.count
+            || text.size() != value.data.span.size)
+            return Status::InvalidSourceValue;
+        if (text.size() > options.max_text_bytes_per_property)
+            return Status::ValueTooLong;
+        if (text.size() > options.max_total_text_bytes
+            || *total > options.max_total_text_bytes - text.size())
+            return Status::SourceLimitExceeded;
+        *total += text.size();
+        return Status::Ok;
+    }
+
+    static MetadataCaptureTranslationStatus
+    parse_lens_member(const ByteArena& arena, const MetaValue& value,
+                      size_t index, URational* out) noexcept
+    {
+        using Status = MetadataCaptureTranslationStatus;
+        if (index >= 2U
+            && ((value.kind == MetaValueKind::Scalar && value.count == 1U
+                 && value.elem_type == MetaElementType::URational
+                 && value.data.ur.numer == 0U && value.data.ur.denom == 0U)
+                || (value.kind == MetaValueKind::Text
+                    && arena_text(arena, value.data.span) == "0/0"))) {
+            *out = { 0U, 0U };
+            return Status::Ok;
+        }
+        if (value.kind == MetaValueKind::Scalar && value.count != 1U)
+            return Status::InvalidSourceValue;
+        MetaValue parsed;
+        const Status status = parse_unsigned_rational_source(arena, value,
+                                                             false, &parsed);
+        if (status == Status::Ok)
+            *out = parsed.data.ur;
+        return status;
+    }
+
+    static MetadataCaptureTranslationStatus prepare_identity_group(
+        const MetaStore& source,
+        const MetadataIdentityTranslationOptions& options, bool lens,
+        uint64_t* total, CapturePlannedGroup* group,
+        MetadataCaptureTranslationResult* result, bool* found)
+    {
+        using Status  = MetadataCaptureTranslationStatus;
+        using Mode    = MetadataCaptureTranslationSourceMode;
+        *found        = false;
+        bool selected = false;
+        for (const Entry& entry : source.entries()) {
+            if (identity_member(source, entry, lens) == -1)
+                continue;
+            const bool dirty = any(entry.flags, EntryFlags::Dirty);
+            if ((!any(entry.flags, EntryFlags::Deleted) || dirty)
+                && (dirty || options.source_mode == Mode::All))
+                selected = true;
+        }
+        if (!selected)
+            return Status::Ok;
+        group->mapping
+            = lens ? MetadataCaptureTranslationMapping::XmpLensSpecification
+                   : MetadataCaptureTranslationMapping::XmpImageUniqueID;
+        group->field           = lens ? NativeCaptureField::LensSpecification
+                                      : NativeCaptureField::ImageUniqueID;
+        result->failed_mapping = group->mapping;
+        std::array<CaptureSource, 5> properties {};
+        std::string_view selected_ns;
+        for (EntryId id = 0U; id < source.entries().size(); ++id) {
+            const Entry& entry = source.entry(id);
+            const int member   = identity_member(source, entry, lens);
+            if (member == -1)
+                continue;
+            const bool dirty   = any(entry.flags, EntryFlags::Dirty);
+            const bool deleted = any(entry.flags, EntryFlags::Deleted);
+            if ((deleted && !dirty)
+                || (!lens && !dirty && options.source_mode == Mode::DirtyOnly))
+                continue;
+            result->failed_source_entry = id;
+            if (member < 0)
+                return Status::UnsupportedSourceShape;
+            const auto ns = arena_text(source.arena(),
+                                       entry.key.data.xmp_property.schema_ns);
+            if (!selected_ns.empty() && selected_ns != ns)
+                return Status::AmbiguousSource;
+            selected_ns             = ns;
+            CaptureSource& property = properties[static_cast<size_t>(member)];
+            if (property.found)
+                return Status::AmbiguousSource;
+            property = { true, deleted, id, &entry.value };
+            ++result->source_properties;
+        }
+        *found              = true;
+        CaptureSource& root = properties[0];
+        if (root.found) {
+            group->source_entry         = root.entry_id;
+            result->failed_source_entry = root.entry_id;
+            for (size_t i = 1U; i < properties.size(); ++i)
+                if (properties[i].found)
+                    return Status::UnsupportedSourceShape;
+            group->present = !root.deleted;
+            if (root.deleted)
+                return Status::Ok;
+            Status status = identity_text_budget(source, *root.value, options,
+                                                 total);
+            if (status != Status::Ok)
+                return status;
+            if (!lens) {
+                if (root.value->kind != MetaValueKind::Text)
+                    return Status::InvalidSourceValue;
+                const auto text = arena_text(source.arena(),
+                                             root.value->data.span);
+                if (text.size() != 32U)
+                    return Status::InvalidSourceValue;
+                for (char c : text)
+                    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+                          || (c >= 'A' && c <= 'F')))
+                        return Status::InvalidSourceValue;
+                group->identity = text;
+                return Status::Ok;
+            }
+            const MetaValue& value = *root.value;
+            if (value.kind != MetaValueKind::Array
+                || value.elem_type != MetaElementType::URational
+                || value.count != 4U
+                || source.arena().span(value.data.span).size()
+                       != sizeof(group->lens))
+                return Status::InvalidSourceValue;
+            std::array<URational, 4> values {};
+            std::memcpy(values.data(),
+                        source.arena().span(value.data.span).data(),
+                        sizeof(values));
+            for (size_t i = 0U; i < values.size(); ++i) {
+                const MetaValue scalar = make_urational(values[i].numer,
+                                                        values[i].denom);
+                status = parse_lens_member(source.arena(), scalar, i,
+                                           &group->lens[i]);
+                if (status != Status::Ok)
+                    return status;
+            }
+        } else {
+            uint32_t deleted_count = 0U;
+            for (size_t i = 1U; i < properties.size(); ++i) {
+                const CaptureSource& property = properties[i];
+                if (!property.found)
+                    return Status::IncompleteSource;
+                if (i == 1U)
+                    group->source_entry = property.entry_id;
+                result->failed_source_entry = property.entry_id;
+                if (property.deleted) {
+                    ++deleted_count;
+                    continue;
+                }
+                Status status = identity_text_budget(source, *property.value,
+                                                     options, total);
+                if (status != Status::Ok)
+                    return status;
+                status = parse_lens_member(source.arena(), *property.value,
+                                           i - 1U, &group->lens[i - 1U]);
+                if (status != Status::Ok)
+                    return status;
+            }
+            if (deleted_count != 0U && deleted_count != 4U)
+                return Status::IncompleteSource;
+            group->present = deleted_count == 0U;
+        }
+        if (group->present
+            && static_cast<uint64_t>(group->lens[0].numer)
+                       * group->lens[1].denom
+                   > static_cast<uint64_t>(group->lens[1].numer)
+                         * group->lens[0].denom)
+            return Status::InvalidNumericValue;
+        return Status::Ok;
+    }
+
 }  // namespace
+
+MetadataCaptureTranslationResult
+translate_xmp_identity_metadata(
+    const MetaStore& source, const MetadataIdentityTranslationOptions& options,
+    MetaStore* out_store)
+{
+    using Status = MetadataCaptureTranslationStatus;
+    using Mode   = MetadataCaptureTranslationSourceMode;
+    using Policy = MetadataCaptureTranslationConflictPolicy;
+    if (!out_store)
+        return capture_error(Status::NullOutput);
+    if (!source.is_finalized())
+        return capture_error(Status::SourceNotFinalized);
+    if ((options.source_mode != Mode::DirtyOnly
+         && options.source_mode != Mode::All)
+        || (options.conflict_policy != Policy::PreserveExisting
+            && options.conflict_policy != Policy::FailOnConflict
+            && options.conflict_policy != Policy::ReplaceExisting)
+        || (!options.lens_specification_to_exif
+            && !options.image_unique_id_to_exif)
+        || options.max_added_entries == 0U
+        || options.max_added_entries
+               > kMetadataIdentityTranslationMaxAddedEntries
+        || options.max_operations == 0U
+        || options.max_operations > kMetadataCaptureTranslationMaxOperations
+        || options.max_text_bytes_per_property == 0U
+        || options.max_text_bytes_per_property
+               > kMetadataCaptureTranslationMaxTextBytesPerProperty
+        || options.max_total_text_bytes == 0U
+        || options.max_total_text_bytes
+               > kMetadataIdentityTranslationMaxTotalTextBytes)
+        return capture_error(Status::InvalidOptions);
+    std::array<CapturePlannedGroup, 2> groups {};
+    const std::array<bool, 2> enabled = { options.lens_specification_to_exif,
+                                          options.image_unique_id_to_exif };
+    size_t count                      = 0U;
+    uint64_t total                    = 0U;
+    MetadataCaptureTranslationResult result;
+    for (size_t i = 0U; i < enabled.size(); ++i) {
+        if (!enabled[i])
+            continue;
+        bool found    = false;
+        result.status = prepare_identity_group(source, options, i == 0U, &total,
+                                               &groups[count], &result, &found);
+        if (result.status != Status::Ok)
+            return result;
+        if (found)
+            ++count;
+    }
+    result.failed_mapping      = MetadataCaptureTranslationMapping::None;
+    result.failed_source_entry = kInvalidEntryId;
+    return apply_capture_groups(source, std::span(groups.data(), count),
+                                options.conflict_policy,
+                                options.max_added_entries,
+                                options.max_operations, result, out_store);
+}
 
 MetadataCaptureTranslationResult
 translate_xmp_capture_metadata(const MetaStore& source,
@@ -2104,6 +2427,10 @@ metadata_capture_translation_mapping_name(
 {
     switch (mapping) {
     case MetadataCaptureTranslationMapping::None: return "none";
+    case MetadataCaptureTranslationMapping::XmpLensSpecification:
+        return "xmp_lens_specification";
+    case MetadataCaptureTranslationMapping::XmpImageUniqueID:
+        return "xmp_image_unique_id";
     case MetadataCaptureTranslationMapping::XmpSensitivity:
         return "xmp_sensitivity";
     case MetadataCaptureTranslationMapping::XmpFlash: return "xmp_flash";

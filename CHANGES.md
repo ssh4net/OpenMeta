@@ -1,5 +1,39 @@
 # OpenMeta Changes
 
+## 0.5.2 - 2026-09-14
+
+Changes compared with `0.5.1`.
+
+### Added
+
+- Added transactional C++ and Python LensSpecification/ImageUniqueID writeback,
+  with exact four-rational and 32-hex contracts, explicit conflicts/removal and
+  shared bounds. Both fields are validated and committed as one batch.
+- Added combined portable, snapshot, Python and installed-consumer coverage.
+
+### Fixed
+
+- Generic validation recognizes the exact LensSpecification unknown-aperture
+  slots, allowing validated authoring and translated stores to retain `0/0`.
+- Portable LensSpecification now uses canonical exifEX and exact fraction text,
+  preserving unknown apertures and recognizing indexed managed replacements.
+- Malformed native lens/ID values are omitted from portable output. XMP decoding
+  retains ImageUniqueID boundary whitespace for strict source validation.
+
+## 0.5.1 - 2026-09-13
+
+- Fixed selected-family EXIF/XMP UUID replacement in JP2/JPH transfers, extended
+  box size overflow checks and preservation of terminal zero-length boxes.
+- Reject out-of-range nonzero TIFF/BigTIFF root offsets in contiguous and
+  positional readers. Added real-codec qualification and adoption guidance.
+
+## 0.5.0 - 2026-09-13
+
+- Replaced the old EXIF patch API with transactional EXIF/scalar-XMP prepared
+  patching, bounded workers and allocation-free patch/replay execution.
+- Plans require host-issued IDs; the host owns shared-object synchronization.
+- Bumped ABI to 3 and restricted package compatibility to the same minor version.
+
 ## 0.4.142 - 2026-09-10
 
 Changes compared with `0.4.141`.

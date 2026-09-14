@@ -6416,6 +6416,54 @@ translate_camera_text_metadata_document(
 }
 
 static std::shared_ptr<PyDocument>
+translate_identity_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataCaptureTranslationSourceMode source_mode,
+    MetadataCaptureTranslationConflictPolicy conflict_policy,
+    bool lens_specification_to_exif, bool image_unique_id_to_exif,
+    uint32_t max_added_entries, uint32_t max_operations,
+    uint32_t max_text_bytes_per_property, uint64_t max_total_text_bytes)
+{
+    MetadataIdentityTranslationOptions options;
+    options.source_mode                 = source_mode;
+    options.conflict_policy             = conflict_policy;
+    options.lens_specification_to_exif  = lens_specification_to_exif;
+    options.image_unique_id_to_exif     = image_unique_id_to_exif;
+    options.max_added_entries           = max_added_entries;
+    options.max_operations              = max_operations;
+    options.max_text_bytes_per_property = max_text_bytes_per_property;
+    options.max_total_text_bytes        = max_total_text_bytes;
+
+    MetaStore translated;
+    MetadataCaptureTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_identity_metadata(source->store, options,
+                                                 &translated);
+    }
+    if (result.status != MetadataCaptureTranslationStatus::Ok) {
+        std::string message = "metadata identity translation failed: ";
+        message += metadata_capture_translation_status_name(result.status);
+        if (result.failed_mapping != MetadataCaptureTranslationMapping::None) {
+            message += " for ";
+            message += metadata_capture_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
 translate_capture_metadata_document(
     std::shared_ptr<PyDocument> source,
     MetadataCaptureTranslationSourceMode source_mode,
@@ -8996,6 +9044,12 @@ NB_MODULE(_openmeta, m)
         .value("UnsupportedSourceShape",
                MetadataTechnicalTranslationStatus::UnsupportedSourceShape);
 
+    m.attr("METADATA_IDENTITY_TRANSLATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataIdentityTranslationContractVersion);
+    m.attr("METADATA_IDENTITY_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
+        kMetadataIdentityTranslationMaxAddedEntries);
+    m.attr("METADATA_IDENTITY_TRANSLATION_MAX_TOTAL_TEXT_BYTES") = nb::int_(
+        kMetadataIdentityTranslationMaxTotalTextBytes);
     m.attr("METADATA_CAMERA_TEXT_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataCameraTextTranslationContractVersion);
     m.attr("METADATA_CAMERA_TEXT_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
@@ -9196,7 +9250,11 @@ NB_MODULE(_openmeta, m)
         .value("XmpLightSource",
                MetadataCaptureTranslationMapping::XmpLightSource)
         .value("XmpSensitivity",
-               MetadataCaptureTranslationMapping::XmpSensitivity);
+               MetadataCaptureTranslationMapping::XmpSensitivity)
+        .value("XmpLensSpecification",
+               MetadataCaptureTranslationMapping::XmpLensSpecification)
+        .value("XmpImageUniqueID",
+               MetadataCaptureTranslationMapping::XmpImageUniqueID);
 
 
     m.attr("METADATA_FLASH_TRANSLATION_CONTRACT_VERSION") = nb::int_(
@@ -10239,6 +10297,19 @@ NB_MODULE(_openmeta, m)
              = kMetadataTechnicalTranslationMaxTextBytesPerProperty,
              "max_total_text_bytes"_a
              = kMetadataCameraTextTranslationMaxTotalTextBytes)
+        .def("translate_identity_metadata",
+             &translate_identity_metadata_document,
+             "source_mode"_a = MetadataCaptureTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+             "lens_specification_to_exif"_a = true,
+             "image_unique_id_to_exif"_a    = true,
+             "max_added_entries"_a = kMetadataIdentityTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataCaptureTranslationMaxOperations,
+             "max_text_bytes_per_property"_a
+             = kMetadataCaptureTranslationMaxTextBytesPerProperty,
+             "max_total_text_bytes"_a
+             = kMetadataIdentityTranslationMaxTotalTextBytes)
         .def("translate_capture_metadata", &translate_capture_metadata_document,
              "source_mode"_a = MetadataCaptureTranslationSourceMode::DirtyOnly,
              "conflict_policy"_a

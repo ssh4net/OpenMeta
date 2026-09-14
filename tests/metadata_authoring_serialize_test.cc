@@ -556,3 +556,109 @@ namespace {
 
 }  // namespace
 }  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    TEST(MetadataAuthoring, LensUnknownAperturesAreScopedToExactUnsignedSlots)
+    {
+        constexpr std::array<URational, 4> lens
+            = { URational { 24U, 1U }, { 70U, 1U }, { 0U, 0U }, { 0U, 0U } };
+        const std::array<MetaKeyView, 3> keys
+            = { make_exif_tag_key_view("exififd", 0xa432U),
+                make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                           "LensSpecification"),
+                make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                           "LensSpecification") };
+        for (const auto& key : keys) {
+            const MetadataAuthoringEntry entry {
+                key, make_value_view_array(MetaElementType::URational,
+                                           std::as_bytes(std::span(lens)), 4U)
+            };
+            MetaStore store;
+            ASSERT_TRUE(
+                create_metadata_store(std::span(&entry, 1U), &store).ok());
+            EXPECT_TRUE(validate_store(store).ok());
+            for (size_t bad_index = 0U; bad_index < 4U; ++bad_index) {
+                auto invalid       = lens;
+                invalid[bad_index] = bad_index < 2U ? URational { 0U, 0U }
+                                                    : URational { 1U, 0U };
+                const MetadataAuthoringEntry bad {
+                    key,
+                    make_value_view_array(MetaElementType::URational,
+                                          std::as_bytes(std::span(invalid)), 4U)
+                };
+                const auto result = create_metadata_store(std::span(&bad, 1U),
+                                                          &store);
+                EXPECT_EQ(result.status,
+                          MetadataAuthoringStatus::ValidationFailed);
+                EXPECT_EQ(result.validation_issue,
+                          MetadataValidationIssueCode::RationalDenominatorZero);
+                EXPECT_EQ(store.entries().size(), 1U);
+            }
+        }
+        for (const auto ns :
+             { "http://cipa.jp/exif/1.0/", "http://ns.adobe.com/exif/1.0/" }) {
+            for (const auto path :
+                 { "LensSpecification[3]", "LensSpecification[4]" }) {
+                const MetadataAuthoringEntry entry {
+                    make_xmp_property_key_view(ns, path),
+                    make_value_view_urational(0U, 0U)
+                };
+                MetaStore store;
+                ASSERT_TRUE(
+                    create_metadata_store(std::span(&entry, 1U), &store).ok());
+            }
+        }
+        const std::array<MetaKeyView, 6> wrong_keys
+            = { make_exif_tag_key_view("ifd0", 0xa432U),
+                make_exif_tag_key_view("exififd", 0x920aU),
+                make_xmp_property_key_view("urn:custom", "LensSpecification"),
+                make_xmp_property_key_view("http://cipa.jp/exif/1.0/", "Other"),
+                make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                           "LensSpecification[1]"),
+                make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                           "LensSpecification[03]") };
+        for (const auto& key : wrong_keys) {
+            for (bool array : { false, true }) {
+                const MetadataAuthoringEntry entry {
+                    key,
+                    array
+                        ? make_value_view_array(MetaElementType::URational,
+                                                std::as_bytes(std::span(lens)),
+                                                4U)
+                        : make_value_view_urational(0U, 0U)
+                };
+                MetaStore store;
+                const auto result = create_metadata_store(std::span(&entry, 1U),
+                                                          &store);
+                EXPECT_EQ(result.status,
+                          MetadataAuthoringStatus::ValidationFailed);
+                EXPECT_EQ(result.validation_issue,
+                          MetadataValidationIssueCode::RationalDenominatorZero);
+                EXPECT_EQ(store.entries().size(), 0U);
+            }
+        }
+        for (const auto& key : keys) {
+            const MetadataAuthoringEntry short_array {
+                key,
+                make_value_view_array(MetaElementType::URational,
+                                      std::as_bytes(std::span(lens.data(), 3U)),
+                                      3U)
+            };
+            MetaStore store;
+            EXPECT_FALSE(
+                create_metadata_store(std::span(&short_array, 1U), &store).ok());
+            const std::array<SRational, 4> signed_lens
+                = { SRational { 24, 1 }, { 70, 1 }, { 0, 0 }, { 0, 0 } };
+            const MetadataAuthoringEntry signed_array {
+                key,
+                make_value_view_array(MetaElementType::SRational,
+                                      std::as_bytes(std::span(signed_lens)), 4U)
+            };
+            EXPECT_FALSE(
+                create_metadata_store(std::span(&signed_array, 1U), &store)
+                    .ok());
+        }
+    }
+}  // namespace
+}  // namespace openmeta

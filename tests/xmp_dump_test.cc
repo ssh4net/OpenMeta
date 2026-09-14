@@ -1393,8 +1393,8 @@ TEST(XmpDump, PortablePrintConvertsCommonExifEnumsAndValues)
     const std::array<URational, 4> lens_spec = {
         URational { 24, 1 },
         URational { 70, 1 },
-        URational { 0, 1 },
-        URational { 0, 1 },
+        URational { 0, 0 },
+        URational { 0, 0 },
     };
     Entry lens_spec_entry;
     lens_spec_entry.key = make_exif_tag_key(store.arena(), "exififd", 0xA432);
@@ -1516,8 +1516,8 @@ TEST(XmpDump, PortablePrintConvertsCommonExifEnumsAndValues)
     EXPECT_NE(
         s.find("<exif:GPSTimeStamp>2024-04-19T12:11:13Z</exif:GPSTimeStamp>"),
         std::string_view::npos);
-    EXPECT_NE(s.find("<rdf:li>24</rdf:li>"), std::string_view::npos);
-    EXPECT_NE(s.find("<rdf:li>70</rdf:li>"), std::string_view::npos);
+    EXPECT_NE(s.find("<rdf:li>24/1</rdf:li>"), std::string_view::npos);
+    EXPECT_NE(s.find("<rdf:li>70/1</rdf:li>"), std::string_view::npos);
 }
 
 TEST(XmpDump, PortableSkipsInvalidGpsRationalValues)

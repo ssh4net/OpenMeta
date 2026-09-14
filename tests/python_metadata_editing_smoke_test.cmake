@@ -779,6 +779,45 @@ with tempfile.TemporaryDirectory() as temporary:
         assert restored.translate_camera_text_metadata(source_mode=mode).entry_count == restored.entry_count + 6
         assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'identity.jpg'
+    mode = openmeta.MetadataCaptureTranslationSourceMode.All
+    for identity in ('00112233445566778899aAbBcCdDeEfF', ' 00112233445566778899aAbBcCdDeEfF '):
+        xml = (\"<r:RDF xmlns:r='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><r:Description xmlns:e='http://ns.adobe.com/exif/1.0/' xmlns:x='http://cipa.jp/exif/1.0/'><x:LensSpecification><r:Seq><r:li>50/3</r:li><r:li>200/3</r:li><r:li>2.8</r:li><r:li>0/0</r:li></r:Seq></x:LensSpecification><e:ImageUniqueID>\" + identity + \"</e:ImageUniqueID></r:Description></r:RDF>\").encode()
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        document = openmeta.read(str(path))
+        count = document.entry_count
+        assert openmeta.METADATA_IDENTITY_TRANSLATION_CONTRACT_VERSION == 1
+        assert document.translate_identity_metadata().entry_count == count
+        if identity.startswith(' '):
+            try:
+                document.translate_identity_metadata(source_mode=mode)
+            except ValueError as error:
+                assert 'invalid_source_value' in str(error) and 'xmp_image_unique_id' in str(error)
+            else:
+                raise AssertionError('invalid identity accepted')
+            continue
+        translated = document.translate_identity_metadata(source_mode=mode)
+        assert translated.entry_count == count + 2
+        assert translated.translate_identity_metadata(source_mode=mode).entry_count == count + 2
+        for flag in ('lens_specification_to_exif', 'image_unique_id_to_exif'):
+            assert document.translate_identity_metadata(source_mode=mode, **{flag: False}).entry_count == count + 1
+        try:
+            document.translate_identity_metadata(source_mode=mode, max_added_entries=1)
+        except ValueError as error:
+            assert 'entry_limit_exceeded' in str(error)
+        else:
+            raise AssertionError('identity budget ignored')
+        payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
+        assert b'<exifEX:LensSpecification>' in payload and b'<rdf:li>50/3</rdf:li>' in payload
+        assert b'<rdf:li>0/0</rdf:li>' in payload and identity.encode() in payload
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        restored = openmeta.read(str(path))
+        assert restored.translate_identity_metadata(source_mode=mode).entry_count == restored.entry_count + 2
+        assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 
