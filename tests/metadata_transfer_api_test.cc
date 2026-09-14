@@ -50837,3 +50837,168 @@ TEST(MetadataTransferApi,
         }
     }
 }
+
+TEST(MetadataTransferApi,
+     CaptureSpatialSnapshotsPersistArraysAndRationalsThroughRemoval)
+{
+    for (const unsigned container : { 0U, 1U, 2U }) {
+        for (const unsigned mode : { 0U, 1U, 2U, 3U }) {
+            SCOPED_TRACE(container);
+            SCOPED_TRACE(mode);
+            openmeta::MetaStore source;
+            constexpr std::array<std::string_view, 5> names = {
+                "FocalPlaneXResolution", "FocalPlaneYResolution",
+                "FocalPlaneResolutionUnit", "SubjectArea", "SubjectLocation"
+            };
+            constexpr std::array<uint16_t, 5> tags
+                = { 0xa20eU, 0xa20fU, 0xa210U, 0x9214U, 0xa214U };
+            constexpr std::array<uint16_t, 4> area = { 0U, 65535U, 12U, 34U };
+            constexpr std::array<uint16_t, 2> location = { 123U, 456U };
+            for (size_t i = 0U; i < names.size(); ++i) {
+                openmeta::Entry entry;
+                entry.key = openmeta::make_xmp_property_key(
+                    source.arena(), "http://ns.adobe.com/exif/1.0/", names[i]);
+                if (i < 2U)
+                    entry.value = openmeta::make_urational(i == 0U ? 10000U
+                                                                   : 2500U,
+                                                           i == 0U ? 3U : 1U);
+                else if (i == 2U)
+                    entry.value = openmeta::make_u16(3U);
+                else
+                    entry.value = openmeta::make_u16_array(
+                        source.arena(),
+                        i == 3U ? std::span<const uint16_t>(area)
+                                : std::span<const uint16_t>(location));
+                entry.flags = openmeta::EntryFlags::Dirty;
+                if (mode >= 2U)
+                    entry.flags |= openmeta::EntryFlags::Deleted;
+                ASSERT_NE(source.add_entry(entry), openmeta::kInvalidEntryId);
+                if (mode != 0U) {
+                    entry.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                              "exififd", tags[i]);
+                    entry.value = i < 2U ? openmeta::make_urational(1U, 1U)
+                                  : i == 2U
+                                      ? openmeta::make_u16(2U)
+                                      : openmeta::make_u16_array(source.arena(),
+                                                                 location);
+                    entry.flags = openmeta::EntryFlags::None;
+                    ASSERT_NE(source.add_entry(entry),
+                              openmeta::kInvalidEntryId);
+                }
+            }
+            openmeta::Entry camera;
+            camera.key   = openmeta::make_exif_tag_key(source.arena(), "ifd0",
+                                                       0x010fU);
+            camera.value = openmeta::make_text(source.arena(),
+                                               "Retained camera",
+                                               openmeta::TextEncoding::Ascii);
+            ASSERT_NE(source.add_entry(camera), openmeta::kInvalidEntryId);
+            if (mode == 3U) {
+                camera.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                           "exififd", 0x829aU);
+                camera.value = openmeta::make_urational(1U, 125U);
+                ASSERT_NE(source.add_entry(camera), openmeta::kInvalidEntryId);
+            }
+            source.finalize();
+            openmeta::PrepareTransferRequest request;
+            request.target_format      = container == 0U
+                                             ? openmeta::TransferTargetFormat::Jpeg
+                                             : openmeta::TransferTargetFormat::Tiff;
+            request.include_exif_app1  = true;
+            request.include_xmp_app1   = false;
+            request.include_icc_app2   = false;
+            request.include_iptc_app13 = false;
+            openmeta::ExecutePreparedTransferOptions execute;
+            execute.edit_requested = true;
+            execute.edit_apply     = true;
+            const auto input = container == 0U ? make_jpeg_with_segments({})
+                               : container == 1U
+                                   ? make_minimal_tiff_little_endian()
+                                   : make_minimal_bigtiff_little_endian();
+            openmeta::PreparedTransferBundle seed_bundle;
+            ASSERT_EQ(openmeta::prepare_metadata_for_target(source, request,
+                                                            &seed_bundle)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            const auto seed = openmeta::execute_prepared_transfer(&seed_bundle,
+                                                                  input,
+                                                                  execute);
+            ASSERT_EQ(seed.edit_apply.status, openmeta::TransferStatus::Ok);
+            openmeta::MetadataCaptureSpatialTranslationOptions options;
+            options.conflict_policy = openmeta::
+                MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+            openmeta::MetaStore translated;
+            ASSERT_EQ(openmeta::translate_xmp_capture_spatial_metadata(
+                          source, options, &translated)
+                          .status,
+                      openmeta::MetadataCaptureTranslationStatus::Ok);
+            const auto snapshot = openmeta::build_transfer_source_snapshot(
+                translated);
+            std::vector<std::byte> bytes;
+            ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(snapshot,
+                                                                   &bytes)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::TransferSourceSnapshot restored;
+            ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(bytes,
+                                                                     &restored)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::ExecutePreparedTransferSnapshotOptions high_level;
+            high_level.prepare = request;
+            high_level.execute = execute;
+            const auto written = openmeta::execute_prepared_transfer_snapshot(
+                restored, seed.edited_output, high_level);
+            ASSERT_EQ(written.execute.edit_apply.status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::MetaStore decoded;
+            ASSERT_TRUE(
+                decode_transfer_roundtrip_store(written.execute.edited_output,
+                                                &decoded));
+            EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                                 exif_key_view("ifd0", 0x010fU),
+                                                 "Retained camera"));
+            for (size_t i = 0U; i < tags.size(); ++i) {
+                if (mode >= 2U)
+                    EXPECT_TRUE(
+                        decoded.find_all(exif_key_view("exififd", tags[i]))
+                            .empty());
+                else {
+                    const auto ids = decoded.find_all(
+                        exif_key_view("exififd", tags[i]));
+                    ASSERT_EQ(ids.size(), 1U);
+                    const auto& value = decoded.entry(ids[0]).value;
+                    if (i < 2U) {
+                        ASSERT_EQ(value.kind, openmeta::MetaValueKind::Scalar);
+                        ASSERT_EQ(value.elem_type,
+                                  openmeta::MetaElementType::URational);
+                        EXPECT_EQ(value.data.ur.numer,
+                                  i == 0U ? 10000U : 2500U);
+                        EXPECT_EQ(value.data.ur.denom, i == 0U ? 3U : 1U);
+                    } else if (i == 2U) {
+                        ASSERT_EQ(value.kind, openmeta::MetaValueKind::Scalar);
+                        ASSERT_EQ(value.elem_type,
+                                  openmeta::MetaElementType::U16);
+                        EXPECT_EQ(value.data.u64, 3U);
+                    } else {
+                        ASSERT_EQ(value.kind, openmeta::MetaValueKind::Array);
+                        ASSERT_EQ(value.elem_type,
+                                  openmeta::MetaElementType::U16);
+                        const auto expected
+                            = i == 3U ? std::span<const uint16_t>(area)
+                                      : std::span<const uint16_t>(location);
+                        ASSERT_EQ(value.count, expected.size());
+                        const auto raw = decoded.arena().span(value.data.span);
+                        ASSERT_EQ(raw.size(), expected.size_bytes());
+                        EXPECT_EQ(std::memcmp(raw.data(), expected.data(),
+                                              raw.size()),
+                                  0);
+                    }
+                }
+            }
+            if (mode == 3U)
+                EXPECT_TRUE(store_has_urational_scalar_entry(
+                    decoded, exif_key_view("exififd", 0x829aU), 1U, 125U));
+        }
+    }
+}

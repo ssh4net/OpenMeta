@@ -916,8 +916,9 @@ Suggested delivery sequence:
    five-field flat-XMP-to-structured-location construction. Version 0.4.138
    adds exact SubjectDistance, DigitalZoomRatio, ExposureIndex, and FlashEnergy
    writeback with explicit sentinel rules. Versions 0.5.2 and 0.5.3 add
-   LensSpecification, ImageUniqueID and APEX reverse APIs. Remaining capture
-   contracts include focal-plane/subject arrays and other rational fields. Version 0.4.139 adds
+   LensSpecification, ImageUniqueID and APEX reverse APIs. Version 0.5.4 adds
+   complete focal-plane/subject groups. Remaining capture contracts need a
+   milestone inventory before selecting further rational or opaque fields. Version 0.4.139 adds
    complete scalar/five-child Flash bitfield writeback with reserved-bit and
    whole-structure removal rules. Version 0.4.140 adds LightSource writeback
    for 32 defined codes, rejects ambiguous Daylight text, and preserves the

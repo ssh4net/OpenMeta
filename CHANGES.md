@@ -1,5 +1,27 @@
 # OpenMeta Changes
 
+## 0.5.4 - 2026-09-14
+
+Changes compared with `0.5.3`.
+
+### Added
+
+- Added C++ `translate_xmp_capture_spatial_metadata` and Python
+  `Document.translate_capture_spatial_metadata`. One bounded transaction covers
+  a complete focal-plane X/Y/unit group and independent SubjectArea and
+  SubjectLocation arrays. Exact positive rationals, explicit inches/cm units,
+  dense integer arrays, whole-group conflicts and deletion are supported.
+- Added combined rollback, portable, JPEG/TIFF/BigTIFF snapshot, Python and
+  installed shared-consumer checks. Capture-related writeback covers 46 native
+  targets across ten APIs. ABI 3 and existing option layouts remain unchanged.
+
+### Fixed
+
+- Portable focal-plane X/Y resolutions now retain exact fractions instead of
+  rounded decimals. Subject arrays claim ordered shapes during managed XMP
+  replacement. Malformed native spatial values cannot suppress valid existing
+  XMP. Existing read labels for mm/um remain; new writeback accepts inches/cm.
+
 ## 0.5.3 - 2026-09-14
 
 Changes compared with `0.5.2`.

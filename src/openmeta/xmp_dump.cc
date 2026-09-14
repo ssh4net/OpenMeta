@@ -3222,7 +3222,9 @@ namespace {
             append_i64_dec(v.data.sr.denom, w);
         } else if (prefix == "exif" && v.kind == MetaValueKind::Scalar
                    && v.count == 1U && v.elem_type == MetaElementType::URational
-                   && (name == "ApertureValue" || name == "MaxApertureValue")) {
+                   && (name == "ApertureValue" || name == "MaxApertureValue"
+                       || name == "FocalPlaneXResolution"
+                       || name == "FocalPlaneYResolution")) {
             append_u64_dec(v.data.ur.numer, w);
             w->append("/");
             append_u64_dec(v.data.ur.denom, w);
@@ -4325,6 +4327,34 @@ namespace {
                && value.data.sr.denom > 0;
     }
 
+    static bool portable_spatial_tag(uint16_t tag) noexcept
+    {
+        return tag == 0xa20eU || tag == 0xa20fU || tag == 0xa210U
+               || tag == 0x9214U || tag == 0xa214U;
+    }
+
+    static bool portable_spatial_value_valid(const ByteArena& arena,
+                                             std::string_view ifd, uint16_t tag,
+                                             const MetaValue& value) noexcept
+    {
+        if (ifd != "exififd")
+            return false;
+        if (tag == 0x9214U || tag == 0xa214U)
+            return value.kind == MetaValueKind::Array
+                   && value.elem_type == MetaElementType::U16
+                   && value.count >= 2U
+                   && value.count <= (tag == 0x9214U ? 4U : 2U)
+                   && value.data.span.size == value.count * sizeof(uint16_t)
+                   && arena.span(value.data.span).size()
+                          == value.data.span.size;
+        if (value.kind != MetaValueKind::Scalar || value.count != 1U)
+            return false;
+        if (tag == 0xa210U)
+            return value.elem_type == MetaElementType::U16;
+        return value.elem_type == MetaElementType::URational
+               && value.data.ur.numer > 0U && value.data.ur.denom > 0U;
+    }
+
     static bool emit_portable_exif_tag_property_override(
         SpanWriter* w, std::string_view prefix, std::string_view ifd,
         uint16_t tag, std::string_view name, const ByteArena& arena,
@@ -4333,6 +4363,12 @@ namespace {
         if (!w || prefix.empty() || name.empty()) {
             return false;
         }
+
+        if (portable_spatial_tag(tag)
+            && !portable_spatial_value_valid(arena, ifd, tag, v))
+            return true;
+        if (tag == 0xa20eU || tag == 0xa20fU)
+            return emit_portable_property(w, prefix, name, arena, v);
 
         if (tag == 0xA432U) {  // LensSpecification
             return emit_exif_lens_specification_seq(w, prefix, name, arena, v);
@@ -4597,14 +4633,6 @@ namespace {
                 return emit_portable_property_text(w, prefix, name, buf);
             }
             return true;
-        }
-        if ((tag == 0xA20EU || tag == 0xA20FU)
-            && scalar_urational_value(v, &ur)) {  // FocalPlaneX/YResolution
-            double d = 0.0;
-            if (urational_to_double(ur, &d)) {
-                std::snprintf(buf, sizeof(buf), "%.15g", d);
-                return emit_portable_property_text(w, prefix, name, buf);
-            }
         }
 
         return false;
@@ -4958,6 +4986,12 @@ namespace {
             return false;
         }
         *out_shape = PortablePropertyShape::Scalar;
+
+        if (prefix == "exif"
+            && (name == "SubjectArea" || name == "SubjectLocation")) {
+            *out_shape = PortablePropertyShape::Indexed;
+            return true;
+        }
 
         if (prefix == "dc"
             && (name == "title" || name == "description" || name == "rights")) {
@@ -7367,8 +7401,15 @@ namespace {
                 indexed->push_back(item);
                 return false;
             }
-            if (!standard_existing_xmp_base_accepts_shape(
-                    prefix, portable_name, PortablePropertyShape::Scalar)) {
+            const PortablePropertyShape root_shape
+                = prefix == "exif"
+                          && (portable_name == "SubjectArea"
+                              || portable_name == "SubjectLocation")
+                          && e.value.kind == MetaValueKind::Array
+                      ? PortablePropertyShape::Indexed
+                      : PortablePropertyShape::Scalar;
+            if (!standard_existing_xmp_base_accepts_shape(prefix, portable_name,
+                                                          root_shape)) {
                 return false;
             }
             if (options.existing_standard_namespace_policy
@@ -7383,8 +7424,7 @@ namespace {
             bool new_claim = false;
             if (!claim_portable_property_key(claims, prefix, portable_name,
                                              PortablePropertyOwner::ExistingXmp,
-                                             PortablePropertyShape::Scalar,
-                                             &new_claim)
+                                             root_shape, &new_claim)
                 || !new_claim) {
                 return false;
             }
@@ -9967,6 +10007,9 @@ namespace {
             && !portable_apex_value_valid(ifd, tag, v)) {
             return false;
         }
+        if (portable_spatial_tag(tag)
+            && !portable_spatial_value_valid(arena, ifd, tag, v))
+            return false;
 
         const std::string_view tag_name = exif_tag_name(ifd, tag);
         if (tag_name.empty() || exif_tag_is_nonportable_blob(tag)
@@ -9983,7 +10026,8 @@ namespace {
         bool new_claim = false;
         if (!claim_portable_property_key(claims, prefix, emitted_name,
                                          PortablePropertyOwner::Exif,
-                                         tag == 0xa432U
+                                         (tag == 0xa432U || tag == 0x9214U
+                                          || tag == 0xa214U)
                                              ? PortablePropertyShape::Indexed
                                              : PortablePropertyShape::Scalar,
                                          &new_claim)
@@ -10662,8 +10706,9 @@ namespace {
                                                       entries, e.value)) {
                     (void)out->insert(PortablePropertyGeneratedShape {
                         PortablePropertyKey { prefix, portable_tag_name },
-                        tag == 0xa432U ? PortablePropertyShape::Indexed
-                                       : PortablePropertyShape::Scalar });
+                        (tag == 0xa432U || tag == 0x9214U || tag == 0xa214U)
+                            ? PortablePropertyShape::Indexed
+                            : PortablePropertyShape::Scalar });
                 }
 
                 const std::string_view xmp_alias_name

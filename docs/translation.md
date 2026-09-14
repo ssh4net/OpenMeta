@@ -149,8 +149,8 @@ never cause truncation. Preparation may allocate. EXIF versions are retained;
 the API does not create or upgrade version metadata.
 
 Capture coverage has no fixed all-tags denominator. Camera/lens/spectral text
-and direct APEX values have separate contracts below. Focal-plane/subject arrays
-remain open; these twelve settings do not close arbitrary EXIF writeback.
+and direct APEX values have separate contracts below, as do focal-plane/subject
+arrays. These twelve settings do not close arbitrary EXIF writeback.
 
 
 ## Exact capture rational writeback
@@ -1284,7 +1284,7 @@ through JPEG/Classic TIFF/BigTIFF, the Python wrapper and an installed shared
 library consumer. Related fields are implemented and reviewed together, with
 focused checks during development and one final platform matrix per stable
 batch. Lens specification and image identity use the separate contract below.
-APEX is covered by the combined batch below; focal-plane/subject arrays remain later work.
+APEX and focal-plane/subject arrays are covered by the combined batches below.
 
 ## Lens specification and image identity writeback
 
@@ -1367,7 +1367,7 @@ version. No existing EXIF version is upgraded implicitly.
 
 Combined tests cover C++, Python, installed shared consumers, exact portable
 round trips, and serialized snapshots through JPEG, Classic TIFF and BigTIFF.
-The APEX batch below extends this coverage; focal-plane/subject fields remain.
+The APEX and focal-plane/subject batches below extend this coverage.
 
 ## APEX writeback (contract version 1)
 
@@ -1466,6 +1466,83 @@ remains unchanged; CanonicalizeManaged permits valid native values to replace
 managed source properties. Host FlatHost/Spec projections are separate and
 unchanged.
 
-The combined batch adds four native targets, bringing capture-related coverage
-to 41 targets across nine APIs. The next core batch is focal-plane/subject
-contracts. OIIO/iRAW application acceptance remains a separate downstream task.
+The APEX batch added four native targets, bringing capture-related coverage
+at 0.5.3 to 41 targets across nine APIs. The spatial batch below extends this.
+OIIO/iRAW application acceptance remains a separate downstream task.
+
+## Focal-plane and subject writeback (contract version 1)
+
+`translate_xmp_capture_spatial_metadata`, `MetadataCaptureSpatialTranslationOptions`
+and Python `Document.translate_capture_spatial_metadata` provide three logical
+groups in one transaction. Sources use `http://ns.adobe.com/exif/1.0/`.
+
+| XMP property | ExifIFD target | Native shape | Group switch |
+| --- | --- | --- | --- |
+| `FocalPlaneXResolution` | `0xa20e` | RATIONAL, count 1 | `focal_plane_to_exif` |
+| `FocalPlaneYResolution` | `0xa20f` | RATIONAL, count 1 | `focal_plane_to_exif` |
+| `FocalPlaneResolutionUnit` | `0xa210` | SHORT, count 1 | `focal_plane_to_exif` |
+| `SubjectArea` | `0x9214` | SHORT array, count 2, 3 or 4 | `subject_area_to_exif` |
+| `SubjectLocation` | `0xa214` | SHORT array, count 2 | `subject_location_to_exif` |
+
+Focal-plane X/Y values are pixels per explicit unit for the recorded image.
+All three source fields must be present together. Positive scalar signed or
+unsigned integers, `URational`, or ASCII/UTF-8 integer, decimal, scientific and
+fraction text are accepted for X/Y. Fractions reduce exactly using bounded
+64-bit intermediates and must fit unsigned 32-bit components. Zero, negative
+values, zero denominators, floating point and approximation are rejected.
+The unit accepts integer 2 or 3, integer text with an optional leading plus,
+or the exact portable labels `inches` and `cm`. Units 1, 4 and 5 and labels
+`mm`/`um` are outside this writeback contract. There is no default or conversion.
+
+SubjectArea holds X/Y for a point; a circle adds diameter; a rectangle adds
+width and height. SubjectLocation holds X/Y independently. Values are preserved
+as supplied relative to the upper-left origin before orientation processing.
+No rotation, crop, image-dimension check, positive-size rule or consistency
+relation between the two arrays is inferred. Every element may be 0..65535.
+
+Sources can be one root `U16` array or dense indexed members `[1]` through `[N]`.
+Indexed members accept scalar signed/unsigned integers in range or ASCII/UTF-8
+integer text, optionally prefixed with `+`. They reject decimal/fraction text,
+float/rational values, nested arrays, qualifiers, duplicate or sparse indexes,
+leading-zero indexes and mixed root/indexed forms. SubjectArea requires 2..4
+members; SubjectLocation requires exactly two. The store flattens RDF arrays,
+so callers must supply the documented order; Seq/Bag provenance is not retained.
+
+All three switches default to true, and at least one must remain enabled.
+DirtyOnly selects a group when any member is dirty; All also selects active
+clean sources. Selected groups include all active clean companions and dirty
+tombstones. Clean tombstones are ignored. Duplicate active/dirty sources fail,
+even when values agree. Disabled groups and unrelated namespaces are ignored.
+
+Every selected group must be wholly present or wholly deleted. An array root
+tombstone, or a complete dense deleted source array, removes the native array
+under ReplaceExisting. Focal-plane removal requires all three tombstones.
+Partial deletion fails instead of changing an array's meaning or leaving units
+behind. A missing group retains native values. PreserveExisting preserves the
+entire group if any native member exists; FailOnConflict requires all native
+members to match; ReplaceExisting repairs partial groups, wrong types and
+duplicates. Equality checks exact native type/count, rational value and ordered
+array contents. Results count up to three logical groups and five native entries.
+
+Parsing, conflicts and shared limits precede one commit, preserving separate
+and aliased output on failure. Success owns array storage and provenance.
+Default and hard bounds are five added entries, 1024 edit operations, 128 text
+bytes per property and 1152 total text bytes. Positive lower limits are allowed.
+Preparation may allocate; hosts synchronize conflicting shared-object access.
+
+In 0.5.4, native and existing typed XMP focal-plane rationals emit exact
+fractions. Earlier rounded decimal packets cannot recover the original exact
+fraction; regenerate them from native EXIF when exact recovery is required.
+Subject arrays emit ordered sequences and participate in managed replacement
+as arrays. Invalid native spatial types/counts/spans and nonpositive resolutions
+are omitted before claiming a property. Valid existing XMP remains available.
+Existing unit read labels, including mm/um, and default existing-XMP precedence
+remain. Host FlatHost/Spec and reader decode paths are unchanged.
+
+The field types and coordinate meanings follow
+[CIPA DC-008-2012, camera information tags](https://www.cipa.jp/std/documents/e/DC-008-2012_E.pdf);
+the XMP namespace and ordered-array mappings follow
+[CIPA DC-X010-2017](https://cipa.jp/std/documents/e/DC-X010-2017.pdf).
+Requiring explicit complete groups and positive resolutions is this bounded
+OpenMeta contract. This is not full Exif conformance or downstream acceptance.
+The five new targets bring capture-related coverage to 46 targets across ten APIs.

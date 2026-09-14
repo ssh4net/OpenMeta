@@ -852,6 +852,37 @@ with tempfile.TemporaryDirectory() as temporary:
         assert restored.translate_apex_metadata(source_mode=mode).entry_count == restored.entry_count + 5
         assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'capture_spatial.jpg'
+    mode = openmeta.MetadataCaptureTranslationSourceMode.All
+    xml = b\"<r:RDF xmlns:r='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><r:Description xmlns:e='http://ns.adobe.com/exif/1.0/' e:FocalPlaneXResolution='10000/3' e:FocalPlaneYResolution='2500' e:FocalPlaneResolutionUnit='cm'><e:SubjectArea><r:Seq><r:li>0</r:li><r:li>65535</r:li><r:li>12</r:li><r:li>34</r:li></r:Seq></e:SubjectArea><e:SubjectLocation><r:Seq><r:li>123</r:li><r:li>456</r:li></r:Seq></e:SubjectLocation></r:Description></r:RDF>\"
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    document = openmeta.read(str(path))
+    count = document.entry_count
+    assert openmeta.METADATA_CAPTURE_SPATIAL_TRANSLATION_CONTRACT_VERSION == 1
+    assert document.translate_capture_spatial_metadata().entry_count == count
+    translated = document.translate_capture_spatial_metadata(source_mode=mode)
+    assert translated.entry_count == count + 5
+    assert translated.translate_capture_spatial_metadata(source_mode=mode).entry_count == count + 5
+    for selected in ('focal_plane', 'subject_area', 'subject_location'):
+        flags = {name + '_to_exif': name == selected for name in ('focal_plane', 'subject_area', 'subject_location')}
+        assert document.translate_capture_spatial_metadata(source_mode=mode, **flags).entry_count == count + (3 if selected == 'focal_plane' else 1)
+    try:
+        document.translate_capture_spatial_metadata(source_mode=mode, max_operations=4)
+    except ValueError as error:
+        assert 'operation_limit_exceeded' in str(error)
+    else:
+        raise AssertionError('capture spatial limit ignored')
+    payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
+    assert b'<exif:FocalPlaneXResolution>10000/3</exif:FocalPlaneXResolution>' in payload
+    assert b'<exif:SubjectArea>' in payload and b'<rdf:li>65535</rdf:li>' in payload
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    restored = openmeta.read(str(path))
+    assert restored.translate_capture_spatial_metadata(source_mode=mode).entry_count == restored.entry_count + 5
+    assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

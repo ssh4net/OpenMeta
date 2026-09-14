@@ -360,6 +360,9 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpApertureValue,
     XmpBrightnessValue,
     XmpMaxApertureValue,
+    XmpFocalPlaneResolution,
+    XmpSubjectArea,
+    XmpSubjectLocation,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -468,6 +471,54 @@ MetadataCaptureTranslationResult
 translate_xmp_apex_metadata(const MetaStore& source,
                             const MetadataApexTranslationOptions& options,
                             MetaStore* out_store);
+
+inline constexpr uint32_t kMetadataCaptureSpatialTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataCaptureSpatialTranslationMaxAddedEntries = 5U;
+inline constexpr uint64_t kMetadataCaptureSpatialTranslationMaxTotalTextBytes
+    = 1152U;
+
+struct MetadataCaptureSpatialTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    bool focal_plane_to_exif      = true;
+    bool subject_area_to_exif     = true;
+    bool subject_location_to_exif = true;
+    uint32_t max_added_entries
+        = kMetadataCaptureSpatialTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataCaptureSpatialTranslationMaxTotalTextBytes;
+};
+
+/**
+ * \brief Translate focal-plane resolution and subject arrays in one transaction.
+ *
+ * FocalPlaneXResolution, FocalPlaneYResolution and FocalPlaneResolutionUnit in
+ * the exif namespace form one complete group. Resolutions are positive exact
+ * unsigned rationals; units are 2/inches or 3/cm. No default unit is inferred.
+ * SubjectArea is a U16 array of two (point), three (circle) or four (rectangle)
+ * values. SubjectLocation has two U16 coordinates. Each array is independent.
+ * Root U16 arrays or dense indexed integer/text members [1]..[N] are accepted.
+ * Coordinates and dimensions are preserved, including zero; no rotation,
+ * cropping, image-size validation or relationship between arrays is inferred.
+ *
+ * One eligible dirty member selects its whole group, including clean active
+ * companions. Duplicate, sparse, qualified and mixed root/indexed shapes fail.
+ * A root tombstone or complete deleted group removes its native targets under
+ * ReplaceExisting; partial deletion fails. Conflicts apply to each whole group.
+ * Results count three logical groups and up to five native entries. Bounds and
+ * all validation precede mutation, including aliased output. Preparation may
+ * allocate; synchronization of shared objects is the host's responsibility.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_capture_spatial_metadata(
+    const MetaStore& source,
+    const MetadataCaptureSpatialTranslationOptions& options,
+    MetaStore* out_store);
 
 inline constexpr uint32_t kMetadataIdentityTranslationContractVersion   = 1U;
 inline constexpr uint32_t kMetadataIdentityTranslationMaxAddedEntries   = 2U;

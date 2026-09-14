@@ -448,6 +448,44 @@ main()
           && apex_result.entries_added == 5U
           && apex_result.groups_translated == 5U
           && openmeta::validate_store(apex_source).ok();
+    constexpr std::array<uint16_t, 4> subject_area = { 0U, 65535U, 12U, 34U };
+    const std::array<openmeta::MetadataAuthoringEntry, 5> spatial_entries = { {
+        { openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "FocalPlaneXResolution"),
+          openmeta::make_value_view_text("10000/3",
+                                         openmeta::TextEncoding::Ascii) },
+        { openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "FocalPlaneYResolution"),
+          openmeta::make_value_view_text("2500",
+                                         openmeta::TextEncoding::Ascii) },
+        { openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "FocalPlaneResolutionUnit"),
+          openmeta::make_value_view_text("cm", openmeta::TextEncoding::Ascii) },
+        { openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "SubjectArea"),
+          openmeta::make_value_view_array(openmeta::MetaElementType::U16,
+                                          std::as_bytes(std::span(subject_area)),
+                                          4U) },
+        { openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "SubjectLocation"),
+          openmeta::make_value_view_array(
+              openmeta::MetaElementType::U16,
+              std::as_bytes(std::span(subject_area.data(), 2U)), 2U) },
+    } };
+    openmeta::MetaStore spatial_source;
+    const auto spatial_authored
+        = openmeta::create_metadata_store(spatial_entries, &spatial_source);
+    const auto spatial_result
+        = openmeta::translate_xmp_capture_spatial_metadata(spatial_source, {},
+                                                           &spatial_source);
+    const bool spatial_contract_matches
+        = spatial_authored.ok()
+          && openmeta::kMetadataCaptureSpatialTranslationContractVersion == 1U
+          && spatial_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && spatial_result.entries_added == 5U
+          && spatial_result.groups_translated == 3U
+          && openmeta::validate_store(spatial_source).ok();
     constexpr std::array<openmeta::URational, 4> identity_lens = {
         openmeta::URational { 24U, 1U }, { 70U, 1U }, { 14U, 5U }, { 0U, 0U }
     };
@@ -570,7 +608,7 @@ main()
                    || !flash_contract_matches || !light_source_contract_matches
                    || !sensitivity_contract_matches
                    || !camera_text_contract_matches || !apex_contract_matches
-                   || !identity_contract_matches
+                   || !spatial_contract_matches || !identity_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()
