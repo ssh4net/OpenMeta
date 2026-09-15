@@ -180,10 +180,10 @@ Transfer, Translation, and Writing.
 Creation and Editing resume for multilingual alternatives, full RDF structured
 values, fresh ICC construction, structural block operations, and broader
 cross-family synchronization. Adapters and Utilities remain deferred. Fuzzy
-Search resumes before those final two stages for
-independently sourced quality expansion, designed Unicode/transliteration
-behavior, multilingual gates, and an optional immutable index for repeated
-searches over large stores.
+Search has the lowest priority and resumes after those stages. Its remaining
+work includes independently sourced quality expansion, designed
+Unicode/transliteration behavior, multilingual gates, and an optional immutable
+index for repeated searches over large stores.
 
 Query results should expose both inspection-level matches and interpreted
 candidates. A crop query, for example, may match separate

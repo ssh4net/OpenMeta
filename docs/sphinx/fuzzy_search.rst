@@ -116,9 +116,9 @@ stores and one-off searches.
 
 An immutable reusable index is justified for repeated interactive queries or
 aggregated stores with many thousands of entries. That work is deferred until
-Fuzzy Search resumes, before Adapters and Utilities become the active project
-focus. The index must have explicit ownership, build cost, invalidation rules,
-memory accounting, and identical deterministic ranking.
+Fuzzy Search resumes at the lowest project priority, after Adapters and
+Utilities. The index must have explicit ownership, build cost, invalidation
+rules, memory accounting, and identical deterministic ranking.
 
 Fuzzy Search is considered milestone-ready at about ``80-85%``. Remaining work
 is broader independently sourced quality coverage, Unicode/transliteration
