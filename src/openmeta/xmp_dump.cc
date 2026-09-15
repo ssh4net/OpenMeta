@@ -1406,6 +1406,21 @@ namespace {
                || tag == 0xa433U || tag == 0xa434U || tag == 0xa435U;
     }
 
+    static bool portable_sensitivity_value_valid(uint16_t tag,
+                                                 const MetaValue& value) noexcept
+    {
+        if (value.kind != MetaValueKind::Scalar || value.count != 1U)
+            return false;
+        if (tag == 0x8827U)
+            return value.elem_type == MetaElementType::U16
+                   && value.data.u64 > 0U && value.data.u64 <= UINT16_MAX;
+        if (tag == 0x8830U)
+            return value.elem_type == MetaElementType::U16
+                   && value.data.u64 <= 7U;
+        return value.elem_type == MetaElementType::U32 && value.data.u64 > 0U
+               && value.data.u64 <= UINT32_MAX;
+    }
+
     static bool
     portable_has_sensitivity_type(const ByteArena& arena,
                                   std::span<const Entry> entries) noexcept
@@ -1414,6 +1429,7 @@ namespace {
             if (!any(entry.flags, EntryFlags::Deleted)
                 && entry.key.kind == MetaKeyKind::ExifTag
                 && entry.key.data.exif_tag.tag == 0x8830U
+                && portable_sensitivity_value_valid(0x8830U, entry.value)
                 && arena_string(arena, entry.key.data.exif_tag.ifd)
                        == "exififd")
                 return true;
@@ -3224,7 +3240,9 @@ namespace {
                    && v.count == 1U && v.elem_type == MetaElementType::URational
                    && (name == "ApertureValue" || name == "MaxApertureValue"
                        || name == "FocalPlaneXResolution"
-                       || name == "FocalPlaneYResolution")) {
+                       || name == "FocalPlaneYResolution" || name == "FNumber"
+                       || name == "FocalLength"
+                       || name == "DigitalZoomRatio")) {
             append_u64_dec(v.data.ur.numer, w);
             w->append("/");
             append_u64_dec(v.data.ur.denom, w);
@@ -4314,6 +4332,22 @@ namespace {
         return true;
     }
 
+    static bool
+    portable_capture_scalar_value_valid(std::string_view ifd, uint16_t tag,
+                                        const MetaValue& value) noexcept
+    {
+        if (ifd != "exififd")
+            return true;
+        if (tag == 0x829dU || tag == 0x920aU || tag == 0xa404U)
+            return value.kind == MetaValueKind::Scalar && value.count == 1U
+                   && value.elem_type == MetaElementType::URational
+                   && value.data.ur.denom > 0U
+                   && (tag == 0xa404U || value.data.ur.numer > 0U);
+        if (tag == 0x8827U || (tag >= 0x8830U && tag <= 0x8835U))
+            return portable_sensitivity_value_valid(tag, value);
+        return true;
+    }
+
     static bool portable_apex_value_valid(std::string_view ifd, uint16_t tag,
                                           const MetaValue& value) noexcept
     {
@@ -4363,6 +4397,12 @@ namespace {
         if (!w || prefix.empty() || name.empty()) {
             return false;
         }
+
+        if (!portable_capture_scalar_value_valid(ifd, tag, v))
+            return true;
+        if (ifd == "exififd"
+            && (tag == 0x829dU || tag == 0x920aU || tag == 0xa404U))
+            return emit_portable_property(w, prefix, name, arena, v);
 
         if (portable_spatial_tag(tag)
             && !portable_spatial_value_valid(arena, ifd, tag, v))
@@ -7178,6 +7218,31 @@ namespace {
         const PortableGeneratedLangAltKeySet* generated_lang_alt,
         std::string_view prefix, std::string_view name) noexcept
     {
+        if (prefix == "exif") {
+            const std::string_view canonical_name
+                = name == "ISO" || name == "ISOSpeedRatings"
+                      ? "PhotographicSensitivity"
+                      : name;
+            if (name == "ISOSpeedRatings"
+                && portable_property_shape_is_present(
+                    generated_shapes, "exif", "ISO",
+                    PortablePropertyShape::Scalar))
+                return true;
+            if ((name == "ISO" || name == "ISOSpeedRatings"
+                 || name == "SensitivityType"
+                 || name == "StandardOutputSensitivity"
+                 || name == "RecommendedExposureIndex" || name == "ISOSpeed"
+                 || name == "ISOSpeedLatitudeyyy"
+                 || name == "ISOSpeedLatitudezzz")
+                && portable_property_shape_is_present(
+                    generated_shapes, "exifEX", canonical_name,
+                    PortablePropertyShape::Scalar))
+                return true;
+        }
+        if (prefix == "exifEX" && name == "PhotographicSensitivity"
+            && portable_property_shape_is_present(
+                generated_shapes, "exif", "ISO", PortablePropertyShape::Scalar))
+            return true;
         if (prefix == "exif" && name == "LensSpecification"
             && portable_property_shape_is_present(
                 generated_shapes, "exifEX", name,
@@ -7520,7 +7585,10 @@ namespace {
         uint32_t index = 0U;
         if (parse_indexed_xmp_property_name(name, &base_name, &index)) {
             const std::string_view portable_base
-                = portable_property_name_for_existing_xmp(prefix, base_name);
+                = prefix == "exif" && base_name == "ISOSpeedRatings"
+                      ? base_name
+                      : portable_property_name_for_existing_xmp(prefix,
+                                                                base_name);
             if (portable_base.empty()
                 || xmp_property_is_nonportable_blob(prefix, portable_base)) {
                 return false;
@@ -9988,6 +10056,9 @@ namespace {
         if (!w || !claims || prefix.empty() || portable_tag_name.empty()) {
             return false;
         }
+
+        if (!portable_capture_scalar_value_valid(ifd, tag, v))
+            return false;
 
         if ((ifd == "gpsifd" || ifd.ends_with("_gpsifd"))
             && (has_invalid_urational_value(arena, v)

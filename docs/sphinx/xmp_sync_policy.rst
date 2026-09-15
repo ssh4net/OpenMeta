@@ -5,7 +5,7 @@ This page defines the bounded public policy for generated portable XMP during
 metadata transfer.
 
 See :doc:`capture_sync_milestone` for the combined capture audit, shared-target
-composition and known 0.5.4 portable round-trip gaps.
+composition and the 0.5.5 portable round-trip fixes.
 
 It covers:
 

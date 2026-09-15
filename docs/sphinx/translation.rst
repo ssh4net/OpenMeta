@@ -26,7 +26,11 @@ Workflow
 --------
 
 See :doc:`capture_sync_milestone` for the ten capture APIs, 46 distinct native
-targets, shared-target composition and known 0.5.4 portable round-trip gaps.
+targets, shared-target composition and the 0.5.5 portable round-trip fixes.
+Primary ExifIFD FNumber, FocalLength and DigitalZoomRatio emit exact fractions;
+FocalLength is in millimeters without the display suffix `` mm``. Invalid native
+types/counts and values leave valid existing XMP available. Regenerate older
+rounded packets from native EXIF when original precision is needed.
 
 Translation is a separate step. Creation, editing, transfer, and writing do not
 invoke it implicitly:
@@ -316,10 +320,12 @@ bytes per property, and 512 total text bytes. Preparation may allocate.
 The canonical EXIF tags 0xA215 and 0xA20B are the only ExposureIndex/FlashEnergy
 targets; older TIFF/EP aliases remain untouched. No APEX conversion, unit
 conversion, version creation/upgrade, or geographic/flash-state inference occurs.
-Existing numeric and settings option layouts remain unchanged. Portable
-native-to-XMP numeric formatting may be approximate; retain original XMP with
-both ``xmp_include_existing=True`` and ``XmpConflictPolicy.ExistingWins`` when exact
-source spelling is needed.
+Existing numeric and settings option layouts remain unchanged. In 0.5.5,
+primary native DigitalZoomRatio output retains exact fractions, including zero.
+Source spelling can still differ from equivalent generated values. Use
+``xmp_include_existing=True`` and ``XmpConflictPolicy.ExistingWins`` for
+authoritative source spelling; choose ``CanonicalizeManaged`` when generated
+values must replace managed source aliases. These are explicit authority choices.
 
 
 Complete Flash writeback

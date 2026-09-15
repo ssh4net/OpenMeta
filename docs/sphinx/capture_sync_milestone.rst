@@ -1,10 +1,31 @@
 Capture Synchronization Milestone
 ====================================
 
-Audit date: 2026-09-14. This inventory describes C++ 0.5.4 and does not change
-runtime behavior. Ten explicit reverse APIs cover **46 distinct ExifIFD tags**,
+Audit date: 2026-09-14. Original observations below describe C++ 0.5.4.
+The 0.5.5 update closes the identified portable-output gaps without adding tags
+or changing signatures, ABI 3 or host synchronization responsibilities.
+Ten explicit reverse APIs cover **46 distinct ExifIFD tags**,
 including camera text and excluding GPS, dates, geometry, IPTC and MakerNotes.
 This count does not measure all-EXIF or competitor coverage.
+
+Fixes in 0.5.5
+------------------
+
+Primary ExifIFD FNumber, FocalLength and DigitalZoomRatio emit exact fractions.
+Native rational and sensitivity scalar types/counts and ranges are checked
+before claiming generated properties. Under ``CanonicalizeManaged``, valid
+generated replacements remove legacy scalar/indexed ISO and sensitivity
+companion aliases across ``exif`` and ``exifEX``. Missing or invalid replacements
+retain source values. Replacement is per property and does not repair group
+relationships.
+Retained indexed ``ISOSpeedRatings`` keeps its recognized array name rather
+than becoming unsupported ``ISO[1]`` when no replacement is available.
+
+``PreserveAll``, reverse ambiguity/conflict rules and per-call transactions
+remain unchanged. Combined regression coverage exercises all ten APIs, exact
+boundaries, malformed values, policies and JPEG/classic TIFF/BigTIFF snapshots.
+Regenerate older rounded packets from native originals to recover precision.
+FocalLength portable fractions express millimeters without the `` mm`` suffix.
 
 Implemented Targets
 -------------------
@@ -102,7 +123,7 @@ destination carriers need explicit authority choices. Packet absence does not
 encode a deletion request; tombstones and carrier cleanup follow separate
 contracts. See :doc:`xmp_sync_policy`.
 
-The next batch should retain API signatures and close these gaps together:
+The 0.5.5 fix retains API signatures and covers these acceptance checks:
 
 1. Exact FNumber, FocalLength and DigitalZoomRatio output, including boundaries
    and permitted zero values.
@@ -112,6 +133,8 @@ The next batch should retain API signatures and close these gaps together:
 4. Combined ten-API, policy, rollback and JPEG/classic TIFF/BigTIFF checks,
    independent reads, and one platform matrix against the final patch.
 
+The next feature batch can select additional capture scalars, then the six
+environment fields, with an explicit combined contract for each family.
 Further field batches remain separate: additional capture scalars; six
 environment values; image encoding/calibration fields; composite capture
 groups; structured/opaque OECF, CFA and device data; UserComment and EXIF text

@@ -1,7 +1,7 @@
 # XMP Sync And Writeback Policy
 
-For the combined capture audit, shared-target composition and known 0.5.4
-portable round-trip gaps, see [Capture synchronization milestone](capture_sync_milestone.md).
+For the combined capture audit, shared-target composition and the 0.5.5
+portable round-trip fixes, see [Capture synchronization milestone](capture_sync_milestone.md).
 
 This page defines the bounded public policy for generated portable XMP during
 metadata transfer.

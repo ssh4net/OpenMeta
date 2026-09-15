@@ -1504,7 +1504,7 @@ TEST(XmpDump, PortablePrintConvertsCommonExifEnumsAndValues)
               std::string_view::npos);
     EXPECT_NE(s.find("<exif:ExposureProgram>2</exif:ExposureProgram>"),
               std::string_view::npos);
-    EXPECT_NE(s.find("<exif:FocalLength>66.0 mm</exif:FocalLength>"),
+    EXPECT_NE(s.find("<exif:FocalLength>66/1</exif:FocalLength>"),
               std::string_view::npos);
     EXPECT_NE(s.find("<exif:ShutterSpeedValue>6/1</exif:ShutterSpeedValue>"),
               std::string_view::npos);
@@ -1801,12 +1801,12 @@ TEST(XmpDump, PortableSkipsInvalidApexRationalValues)
     EXPECT_EQ(s.find("<exif:ApertureValue>"), std::string_view::npos);
     EXPECT_EQ(s.find("<exif:ShutterSpeedValue>"), std::string_view::npos);
     EXPECT_EQ(s.find("<exif:ExposureCompensation>"), std::string_view::npos);
-    EXPECT_NE(s.find("<exif:FocalLength>66.0 mm</exif:FocalLength>"),
+    EXPECT_NE(s.find("<exif:FocalLength>66/1</exif:FocalLength>"),
               std::string_view::npos);
 }
 
 
-TEST(XmpDump, PortableRejectsApexArraysAndRetainsFNumberFallback)
+TEST(XmpDump, PortableRejectsApexAndFNumberArrays)
 {
     MetaStore store;
     const BlockId block = store.add_block(BlockInfo {});
@@ -1878,8 +1878,7 @@ TEST(XmpDump, PortableRejectsApexArraysAndRetainsFNumberFallback)
 
     const std::string_view s(reinterpret_cast<const char*>(out.data()),
                              static_cast<size_t>(r.written));
-    EXPECT_NE(s.find("<exif:FNumber>2.8</exif:FNumber>"),
-              std::string_view::npos);
+    EXPECT_EQ(s.find("<exif:FNumber>"), std::string_view::npos);
     EXPECT_EQ(s.find("<exif:ApertureValue>"), std::string_view::npos);
     EXPECT_EQ(s.find("<exif:ShutterSpeedValue>"), std::string_view::npos);
     EXPECT_EQ(s.find("<exif:ExposureCompensation>"), std::string_view::npos);

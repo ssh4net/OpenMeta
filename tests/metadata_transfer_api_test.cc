@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "capture_sync_fixture.h"
+
 #include "openmeta/compatibility_dump.h"
 #include "openmeta/container_scan.h"
 #include "openmeta/interop_import.h"
@@ -50834,6 +50836,104 @@ TEST(MetadataTransferApi,
             if (mode == 3U)
                 EXPECT_TRUE(store_has_urational_scalar_entry(
                     decoded, exif_key_view("exififd", 0x829aU), 1U, 125U));
+        }
+    }
+}
+
+TEST(MetadataTransferApi, CaptureSyncTenApiSnapshotsRoundTripAcrossContainers)
+{
+    using namespace openmeta;
+    MetaStore source;
+    const auto xml = test::kCaptureSyncXml;
+    ASSERT_EQ(decode_xmp_packet(std::as_bytes(std::span(xml.data(), xml.size())),
+                                source)
+                  .status,
+              XmpDecodeStatus::Ok);
+    Entry camera;
+    camera.key   = make_exif_tag_key(source.arena(), "ifd0", 0x010fU);
+    camera.value = make_text(source.arena(), "Retained camera",
+                             TextEncoding::Ascii);
+    ASSERT_NE(source.add_entry(camera), kInvalidEntryId);
+    source.finalize();
+    ASSERT_TRUE(test::capture_sync_translate(source));
+    const auto snapshot = build_transfer_source_snapshot(source);
+    std::vector<std::byte> bytes;
+    ASSERT_EQ(serialize_transfer_source_snapshot(snapshot, &bytes).status,
+              TransferStatus::Ok);
+    TransferSourceSnapshot restored_snapshot;
+    ASSERT_EQ(
+        deserialize_transfer_source_snapshot(bytes, &restored_snapshot).status,
+        TransferStatus::Ok);
+    for (unsigned container : { 0U, 1U, 2U }) {
+        for (bool replacing : { false, true }) {
+            for (const auto policy : { XmpConflictPolicy::CurrentBehavior,
+                                       XmpConflictPolicy::ExistingWins,
+                                       XmpConflictPolicy::GeneratedWins }) {
+                SCOPED_TRACE(container);
+                SCOPED_TRACE(replacing);
+                ExecutePreparedTransferSnapshotOptions options;
+                options.prepare.target_format
+                    = container == 0U ? TransferTargetFormat::Jpeg
+                                      : TransferTargetFormat::Tiff;
+                options.prepare.include_exif_app1    = true;
+                options.prepare.include_xmp_app1     = true;
+                options.prepare.include_icc_app2     = false;
+                options.prepare.include_iptc_app13   = false;
+                options.prepare.xmp_include_existing = true;
+                options.prepare.xmp_conflict_policy  = policy;
+                options.prepare.xmp_existing_standard_namespace_policy
+                    = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+                options.execute.edit_requested = true;
+                options.execute.edit_apply     = true;
+                auto input = container == 0U ? make_jpeg_with_segments({})
+                             : container == 1U
+                                 ? make_minimal_tiff_little_endian()
+                                 : make_minimal_bigtiff_little_endian();
+                if (replacing) {
+                    MetaStore old;
+                    Entry entry;
+                    entry.key   = make_exif_tag_key(old.arena(), "exififd",
+                                                    0x829dU);
+                    entry.value = make_urational(99U, 1U);
+                    ASSERT_NE(old.add_entry(entry), kInvalidEntryId);
+                    old.finalize();
+                    const auto seed = execute_prepared_transfer_snapshot(
+                        build_transfer_source_snapshot(old), input, options);
+                    ASSERT_EQ(seed.execute.edit_apply.status,
+                              TransferStatus::Ok);
+                    input = seed.execute.edited_output;
+                }
+                const auto written
+                    = execute_prepared_transfer_snapshot(restored_snapshot,
+                                                         input, options);
+                ASSERT_EQ(written.execute.edit_apply.status,
+                          TransferStatus::Ok);
+                MetaStore decoded;
+                ASSERT_TRUE(decode_transfer_roundtrip_store(
+                    written.execute.edited_output, &decoded));
+                test::capture_sync_expect_native(decoded, source);
+                EXPECT_TRUE(
+                    store_has_any_text_entry(decoded,
+                                             exif_key_view("ifd0", 0x010fU),
+                                             "Retained camera"));
+                XmpPortableOptions portable;
+                portable.include_exif         = false;
+                portable.include_iptc         = false;
+                portable.include_existing_xmp = true;
+                std::array<std::byte, 16384> packet {};
+                const auto dumped = dump_xmp_portable(decoded, packet,
+                                                      portable);
+                ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+                MetaStore roundtrip;
+                ASSERT_EQ(decode_xmp_packet(std::span(packet.data(),
+                                                      dumped.written),
+                                            roundtrip)
+                              .status,
+                          XmpDecodeStatus::Ok);
+                roundtrip.finalize();
+                ASSERT_TRUE(test::capture_sync_translate(roundtrip));
+                test::capture_sync_expect_native(roundtrip, source);
+            }
         }
     }
 }

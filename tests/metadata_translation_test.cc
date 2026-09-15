@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "capture_sync_fixture.h"
 #include "openmeta/exif_value_names.h"
 #include "openmeta/meta_edit.h"
 #include "openmeta/metadata_editing.h"
@@ -7029,6 +7030,341 @@ namespace {
             apex_expect(restored, 3U, -7, 3U);
             apex_expect(restored, 4U, UINT32_MAX, 2U);
         }
+    }
+
+    TEST(MetadataCaptureSync, TenApisRoundTripTogetherAndKeepCallTransactions)
+    {
+        const auto xml = test::kCaptureSyncXml;
+        MetaStore source;
+        ASSERT_EQ(decode_xmp_packet(
+                      std::as_bytes(std::span(xml.data(), xml.size())), source)
+                      .status,
+                  XmpDecodeStatus::Ok);
+        source.finalize();
+        const size_t source_count = source.entries().size();
+        MetaStore translated;
+        ASSERT_EQ(translate_xmp_capture_metadata(
+                      source,
+                      { .source_mode
+                        = MetadataCaptureTranslationSourceMode::All },
+                      &translated)
+                      .status,
+                  MetadataCaptureTranslationStatus::Ok);
+        const size_t partial_count = translated.entries().size();
+        EXPECT_EQ(translate_xmp_sensitivity_metadata(
+                      translated,
+                      { .source_mode
+                        = MetadataCaptureTranslationSourceMode::All },
+                      &translated)
+                      .status,
+                  MetadataCaptureTranslationStatus::NativeConflict);
+        EXPECT_EQ(translated.entries().size(), partial_count);
+        ASSERT_TRUE(test::capture_sync_translate(translated));
+        EXPECT_EQ(translated.entries().size(), source_count + 46U);
+        EXPECT_EQ(source.entries().size(), source_count);
+        ASSERT_TRUE(test::capture_sync_translate(translated, true));
+        EXPECT_EQ(translated.entries().size(), source_count + 46U);
+        for (bool existing : { false, true }) {
+            for (const auto policy : { XmpConflictPolicy::CurrentBehavior,
+                                       XmpConflictPolicy::ExistingWins,
+                                       XmpConflictPolicy::GeneratedWins }) {
+                XmpPortableOptions options;
+                options.include_existing_xmp = existing;
+                options.conflict_policy      = policy;
+                options.existing_standard_namespace_policy
+                    = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+                std::array<std::byte, 16384> bytes {};
+                const auto dumped = dump_xmp_portable(translated, bytes,
+                                                      options);
+                ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+                MetaStore restored;
+                ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(),
+                                                      dumped.written),
+                                            restored)
+                              .status,
+                          XmpDecodeStatus::Ok);
+                restored.finalize();
+                ASSERT_TRUE(test::capture_sync_translate(restored, true));
+                test::capture_sync_expect_native(restored, translated);
+            }
+        }
+    }
+
+    TEST(MetadataCaptureSync, NativeAndTypedXmpFractionsKeepExactBoundaries)
+    {
+        constexpr std::array<uint16_t, 3> tags = { 0x829dU, 0x920aU, 0xa404U };
+        constexpr std::array<std::string_view, 3> names
+            = { "FNumber", "FocalLength", "DigitalZoomRatio" };
+        constexpr std::array<std::array<URational, 3>, 3> cases
+            = { { { { { 17U, 6U }, { 50U, 3U }, { 1U, 3U } } },
+                  { { { UINT32_MAX, UINT32_MAX - 1U },
+                      { 1U, UINT32_MAX },
+                      { 0U, 1U } } },
+                  { { { 139U, 50U },
+                      { UINT32_MAX, 1U },
+                      { UINT32_MAX, UINT32_MAX - 1U } } } } };
+        for (const auto& values : cases) {
+            for (bool existing : { false, true }) {
+                MetaStore source;
+                for (size_t i = 0; i < tags.size(); ++i) {
+                    const auto value = make_urational(values[i].numer,
+                                                      values[i].denom);
+                    if (existing)
+                        settings_xmp(source, names[i], value);
+                    else
+                        settings_native(source, tags[i], value);
+                }
+                source.finalize();
+                XmpPortableOptions options;
+                options.include_existing_xmp = existing;
+                std::array<std::byte, 4096> bytes {};
+                const auto dumped = dump_xmp_portable(source, bytes, options);
+                ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+                const std::string_view packet(reinterpret_cast<const char*>(
+                                                  bytes.data()),
+                                              dumped.written);
+                for (size_t i = 0; i < tags.size(); ++i)
+                    EXPECT_NE(packet.find(
+                                  "<exif:" + std::string(names[i]) + ">"
+                                  + std::to_string(values[i].numer) + "/"
+                                  + std::to_string(values[i].denom)
+                                  + "</exif:" + std::string(names[i]) + ">"),
+                              std::string_view::npos);
+                MetaStore restored;
+                ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(),
+                                                      dumped.written),
+                                            restored)
+                              .status,
+                          XmpDecodeStatus::Ok);
+                restored.finalize();
+                ASSERT_TRUE(test::capture_sync_translate_step(restored, 0U));
+                ASSERT_TRUE(test::capture_sync_translate_step(restored, 2U));
+                for (size_t i = 0; i < tags.size(); ++i) {
+                    const Entry* entry = settings_find(restored, tags[i]);
+                    ASSERT_NE(entry, nullptr);
+                    EXPECT_EQ(entry->value.data.ur.numer, values[i].numer);
+                    EXPECT_EQ(entry->value.data.ur.denom, values[i].denom);
+                }
+            }
+        }
+    }
+
+    TEST(MetadataCaptureSync, InvalidNativeScalarsCannotClaimExistingFractions)
+    {
+        constexpr std::array<uint16_t, 3> tags = { 0x829dU, 0x920aU, 0xa404U };
+        constexpr std::array<std::string_view, 3> names
+            = { "FNumber", "FocalLength", "DigitalZoomRatio" };
+        for (unsigned variant = 0U; variant < 8U; ++variant) {
+            SCOPED_TRACE(variant);
+            MetaStore source;
+            for (size_t i = 0; i < tags.size(); ++i) {
+                settings_xmp(source, names[i],
+                             make_text(source.arena(), "7/3",
+                                       TextEncoding::Ascii));
+                MetaValue value = make_urational(2U, 1U);
+                switch (variant) {
+                case 0: value = make_u16(3U); break;
+                case 1: value = make_urational(1U, 0U); break;
+                case 2: value.count = 2U; break;
+                case 3: {
+                    const std::array<URational, 1> array
+                        = { URational { 2U, 1U } };
+                    value = make_urational_array(source.arena(), array);
+                    break;
+                }
+                case 4: value = make_urational(0U, i == 2U ? 0U : 1U); break;
+                case 5: value = make_srational(2, 1); break;
+                case 6:
+                    value = make_text(source.arena(), "2", TextEncoding::Ascii);
+                    break;
+                default: value.count = 0U; break;
+                }
+                settings_native(source, tags[i], value);
+            }
+            source.finalize();
+            for (const auto policy : { XmpConflictPolicy::CurrentBehavior,
+                                       XmpConflictPolicy::ExistingWins,
+                                       XmpConflictPolicy::GeneratedWins }) {
+                for (const auto standard :
+                     { XmpExistingStandardNamespacePolicy::PreserveAll,
+                       XmpExistingStandardNamespacePolicy::CanonicalizeManaged }) {
+                    XmpPortableOptions options;
+                    options.include_existing_xmp               = true;
+                    options.conflict_policy                    = policy;
+                    options.existing_standard_namespace_policy = standard;
+                    std::array<std::byte, 4096> bytes {};
+                    const auto dumped = dump_xmp_portable(source, bytes,
+                                                          options);
+                    ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+                    const std::string_view packet(reinterpret_cast<const char*>(
+                                                      bytes.data()),
+                                                  dumped.written);
+                    for (const auto name : names)
+                        EXPECT_NE(packet.find("<exif:" + std::string(name)
+                                              + ">7/3</exif:"
+                                              + std::string(name) + ">"),
+                                  std::string_view::npos);
+                }
+            }
+        }
+    }
+
+    TEST(MetadataCaptureSync,
+         ManagedSensitivityReconcilesLegacyBasesAndCompanions)
+    {
+        for (const std::string_view base :
+             { "ISO", "ISOSpeedRatings", "ISO[1]", "ISOSpeedRatings[1]" }) {
+            for (const auto policy : { XmpConflictPolicy::CurrentBehavior,
+                                       XmpConflictPolicy::ExistingWins,
+                                       XmpConflictPolicy::GeneratedWins }) {
+                MetaStore source;
+                for (size_t i = 0U; i < kSensitivityTags.size(); ++i) {
+                    settings_xmp(source, i == 0U ? base : kSensitivityNames[i],
+                                 make_u32(i == 1U ? 7U : 100U));
+                    settings_native(source, kSensitivityTags[i],
+                                    i < 2U ? make_u16(i == 1U ? 7U : 400U)
+                                           : make_u32(400U));
+                }
+                source.finalize();
+                for (bool canonical : { false, true }) {
+                    XmpPortableOptions options;
+                    options.include_existing_xmp = true;
+                    options.conflict_policy      = policy;
+                    if (canonical)
+                        options.existing_standard_namespace_policy
+                            = XmpExistingStandardNamespacePolicy::
+                                CanonicalizeManaged;
+                    std::array<std::byte, 8192> bytes {};
+                    const auto dumped = dump_xmp_portable(source, bytes,
+                                                          options);
+                    ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+                    MetaStore restored;
+                    ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(),
+                                                          dumped.written),
+                                                restored)
+                                  .status,
+                              XmpDecodeStatus::Ok);
+                    restored.finalize();
+                    const auto result = translate_xmp_sensitivity_metadata(
+                        restored,
+                        { .source_mode
+                          = MetadataCaptureTranslationSourceMode::All },
+                        &restored);
+                    ASSERT_EQ(
+                        result.status,
+                        canonical
+                            ? MetadataCaptureTranslationStatus::Ok
+                            : MetadataCaptureTranslationStatus::AmbiguousSource);
+                    if (canonical) {
+                        for (size_t i = 0; i < kSensitivityTags.size(); ++i) {
+                            const Entry* entry
+                                = settings_find(restored, kSensitivityTags[i]);
+                            ASSERT_NE(entry, nullptr);
+                            EXPECT_EQ(entry->value.data.u64,
+                                      i == 1U ? 7U : 400U);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    TEST(MetadataCaptureSync,
+         InvalidOrAbsentSensitivityReplacementRetainsSource)
+    {
+        for (unsigned variant = 0U; variant < 8U; ++variant) {
+            SCOPED_TRACE(variant);
+            MetaStore source;
+            for (size_t i = 0; i < kSensitivityTags.size(); ++i) {
+                settings_xmp(source,
+                             i == 0U ? "ISOSpeedRatings[1]"
+                                     : kSensitivityNames[i],
+                             make_u32(i == 1U ? 7U : 100U));
+                if (variant == 0U)
+                    continue;
+                MetaValue value = i < 2U ? make_u16(i == 1U ? 7U : 400U)
+                                         : make_u32(400U);
+                switch (variant) {
+                case 1: value = make_u64(400U); break;
+                case 2: value.count = 2U; break;
+                case 3: {
+                    const std::array<uint16_t, 1> array = { 400U };
+                    value = make_u16_array(source.arena(), array);
+                    break;
+                }
+                case 4: value.data.u64 = i == 1U ? 8U : 0U; break;
+                case 5: value.count = 0U; break;
+                case 6: value.data.u64 = i < 2U ? 65536U : UINT64_MAX; break;
+                default: break;
+                }
+                settings_native(source, kSensitivityTags[i], value);
+            }
+            source.finalize();
+            for (const auto policy : { XmpConflictPolicy::CurrentBehavior,
+                                       XmpConflictPolicy::ExistingWins,
+                                       XmpConflictPolicy::GeneratedWins }) {
+                XmpPortableOptions options;
+                options.include_exif         = variant != 7U;
+                options.include_existing_xmp = true;
+                options.conflict_policy      = policy;
+                options.existing_standard_namespace_policy
+                    = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+                std::array<std::byte, 8192> bytes {};
+                const auto dumped = dump_xmp_portable(source, bytes, options);
+                ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+                MetaStore restored;
+                ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(),
+                                                      dumped.written),
+                                            restored)
+                              .status,
+                          XmpDecodeStatus::Ok);
+                restored.finalize();
+                const auto result = translate_xmp_sensitivity_metadata(
+                    restored,
+                    { .source_mode = MetadataCaptureTranslationSourceMode::All },
+                    &restored);
+                ASSERT_EQ(result.status, MetadataCaptureTranslationStatus::Ok);
+                for (size_t i = 0; i < kSensitivityTags.size(); ++i) {
+                    const Entry* entry = settings_find(restored,
+                                                       kSensitivityTags[i]);
+                    ASSERT_NE(entry, nullptr);
+                    EXPECT_EQ(entry->value.data.u64, i == 1U ? 7U : 100U);
+                }
+            }
+        }
+    }
+
+    TEST(MetadataCaptureSync, ManagedBaseReplacementWorksWithoutSensitivityType)
+    {
+        MetaStore source;
+        settings_xmp(source, "PhotographicSensitivity", make_u32(100U),
+                     EntryFlags::None, kSensitivityNs);
+        settings_native(source, 0x8827U, make_u16(400U));
+        source.finalize();
+        XmpPortableOptions options;
+        options.include_existing_xmp = true;
+        options.conflict_policy      = XmpConflictPolicy::ExistingWins;
+        options.existing_standard_namespace_policy
+            = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+        std::array<std::byte, 4096> bytes {};
+        const auto dumped = dump_xmp_portable(source, bytes, options);
+        ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+        const std::string_view packet(reinterpret_cast<const char*>(
+                                          bytes.data()),
+                                      dumped.written);
+        EXPECT_EQ(packet.find("<exifEX:PhotographicSensitivity>"),
+                  std::string_view::npos);
+        EXPECT_NE(packet.find("<exif:ISO>400</exif:ISO>"),
+                  std::string_view::npos);
+        MetaStore restored;
+        ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(), dumped.written),
+                                    restored)
+                      .status,
+                  XmpDecodeStatus::Ok);
+        restored.finalize();
+        ASSERT_TRUE(test::capture_sync_translate_step(restored, 0U));
+        ASSERT_NE(settings_find(restored, 0x8827U), nullptr);
+        EXPECT_EQ(settings_find(restored, 0x8827U)->value.data.u64, 400U);
     }
 
     TEST(MetadataApex, MalformedNativeValuesDoNotReplaceExistingManagedXmp)

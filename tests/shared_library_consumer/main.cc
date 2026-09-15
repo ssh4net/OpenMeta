@@ -7,12 +7,14 @@
 #include <openmeta/metadata_patch.h>
 #include <openmeta/metadata_translation.h>
 #include <openmeta/prepared_transfer_handoff.h>
+#include <openmeta/xmp_dump.h>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 int
@@ -486,6 +488,55 @@ main()
           && spatial_result.entries_added == 5U
           && spatial_result.groups_translated == 3U
           && openmeta::validate_store(spatial_source).ok();
+    const std::array<openmeta::MetadataAuthoringEntry, 6> capture_sync_entries
+        = { {
+            { openmeta::make_exif_tag_key_view("exififd", 0x829dU),
+              openmeta::make_value_view_urational(17U, 6U) },
+            { openmeta::make_exif_tag_key_view("exififd", 0x920aU),
+              openmeta::make_value_view_urational(50U, 3U) },
+            { openmeta::make_exif_tag_key_view("exififd", 0xa404U),
+              openmeta::make_value_view_urational(1U, 3U) },
+            { openmeta::make_exif_tag_key_view("exififd", 0x8827U),
+              openmeta::make_value_view_u16(400U) },
+            { openmeta::make_exif_tag_key_view("exififd", 0x8830U),
+              openmeta::make_value_view_u16(0U) },
+            { openmeta::make_xmp_property_key_view(
+                  "http://ns.adobe.com/exif/1.0/", "ISO"),
+              openmeta::make_value_view_text("100",
+                                             openmeta::TextEncoding::Ascii) },
+        } };
+    openmeta::MetaStore capture_sync_source;
+    const auto capture_sync_authored
+        = openmeta::create_metadata_store(capture_sync_entries,
+                                          &capture_sync_source);
+    openmeta::XmpPortableOptions capture_sync_options;
+    capture_sync_options.include_existing_xmp = true;
+    capture_sync_options.conflict_policy
+        = openmeta::XmpConflictPolicy::ExistingWins;
+    capture_sync_options.existing_standard_namespace_policy
+        = openmeta::XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+    std::array<std::byte, 4096> capture_sync_bytes {};
+    const auto capture_sync_dumped
+        = openmeta::dump_xmp_portable(capture_sync_source, capture_sync_bytes,
+                                      capture_sync_options);
+    const std::string_view capture_sync_packet(reinterpret_cast<const char*>(
+                                                   capture_sync_bytes.data()),
+                                               capture_sync_dumped.written);
+    const bool capture_sync_contract_matches
+        = capture_sync_authored.ok()
+          && capture_sync_dumped.status == openmeta::XmpDumpStatus::Ok
+          && capture_sync_packet.find("<exif:FNumber>17/6</exif:FNumber>")
+                 != std::string_view::npos
+          && capture_sync_packet.find(
+                 "<exif:FocalLength>50/3</exif:FocalLength>")
+                 != std::string_view::npos
+          && capture_sync_packet.find(
+                 "<exif:DigitalZoomRatio>1/3</exif:DigitalZoomRatio>")
+                 != std::string_view::npos
+          && capture_sync_packet.find(
+                 "<exifEX:PhotographicSensitivity>400</exifEX:PhotographicSensitivity>")
+                 != std::string_view::npos
+          && capture_sync_packet.find("<exif:ISO>") == std::string_view::npos;
     constexpr std::array<openmeta::URational, 4> identity_lens = {
         openmeta::URational { 24U, 1U }, { 70U, 1U }, { 14U, 5U }, { 0U, 0U }
     };
@@ -609,6 +660,7 @@ main()
                    || !sensitivity_contract_matches
                    || !camera_text_contract_matches || !apex_contract_matches
                    || !spatial_contract_matches || !identity_contract_matches
+                   || !capture_sync_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()

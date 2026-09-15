@@ -918,8 +918,9 @@ Suggested delivery sequence:
    writeback with explicit sentinel rules. Versions 0.5.2 and 0.5.3 add
    LensSpecification, ImageUniqueID and APEX reverse APIs. Version 0.5.4 adds
    complete focal-plane/subject groups. The 0.5.4 milestone audit identifies
-   portable precision, sensitivity alias and malformed-value gaps to close
-   before adding further rational or opaque fields. Version 0.4.139 adds
+   portable precision, sensitivity alias and malformed-value gaps; version 0.5.5
+   closes them with exact primary capture fractions, scalar validity checks and
+   managed alias reconciliation. Version 0.4.139 adds
    complete scalar/five-child Flash bitfield writeback with reserved-bit and
    whole-structure removal rules. Version 0.4.140 adds LightSource writeback
    for 32 defined codes, rejects ambiguous Daylight text, and preserves the
@@ -931,7 +932,7 @@ Suggested delivery sequence:
    shared transaction, persistence and platform checks. The capture-related
    APIs now cover 46 distinct ExifIFD targets across ten APIs, including camera
    text and excluding GPS. ISO and ExposureBiasValue each overlap two APIs.
-   The next combined batch is exact portable capture round-trip closure; see
+   Portable capture round-trip closure is covered by version 0.5.5; see
    `docs/capture_sync_milestone.md` for evidence, gaps and acceptance checks.
    Geographic inference and arbitrary structured-location merging remain excluded.
    See `docs/translation.md`.

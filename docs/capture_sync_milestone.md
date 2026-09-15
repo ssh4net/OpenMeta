@@ -1,7 +1,27 @@
 # Capture synchronization milestone: 0.5.4
 
-Audit date: 2026-09-14. This inventory describes the C++ 0.5.4 contracts.
-It does not add mappings or change runtime behavior.
+Audit date: 2026-09-14. The original observations below describe C++ 0.5.4.
+The 0.5.5 update closes the identified portable-output gaps without adding tags
+or changing API signatures, ABI 3, or host synchronization responsibilities.
+
+## Fixes in 0.5.5
+
+Primary ExifIFD FNumber, FocalLength and DigitalZoomRatio emit exact fractions.
+Their native types/counts and valid value ranges are checked before claiming
+generated properties. Sensitivity scalars receive the same pre-claim checks.
+Under `CanonicalizeManaged`, valid generated scalar replacements remove legacy
+ISO/indexed ISO and sensitivity companion aliases, including across the
+`exif`/`exifEX` namespaces. Missing or invalid replacements retain source values.
+Retained indexed `ISOSpeedRatings` keeps that recognized array name rather than
+becoming unsupported `ISO[1]` when no replacement is available.
+Replacement is per property; it does not infer or repair group relationships.
+
+`PreserveAll` still retains legacy aliases, and reverse translation still rejects
+duplicate eligible sources. Default native conflict behavior and per-call
+transactions also remain unchanged. Combined tests cover all ten APIs, exact
+boundaries, malformed values, policies and JPEG/classic TIFF/BigTIFF snapshots.
+The earlier rounded packets cannot recover lost precision without the native
+originals. FocalLength portable fractions express millimeters without ` mm`.
 
 ## Implemented capture targets
 
@@ -88,11 +108,10 @@ The library does not infer photographic relationships such as FNumber/APEX,
 ExposureTime/APEX, focal length/sensor dimensions or ISO/gain. Synchronization
 of conflicting shared-object access remains the host's responsibility.
 
-## Next combined batch
+## Completed fix scope in 0.5.5
 
-Close portable capture round trips before adding more IDs. This work should
-retain the existing reverse API signatures and conflict policies, with these
-acceptance checks:
+The combined fix retains the existing reverse API signatures and conflict
+policies. Its acceptance checks are:
 
 1. Emit exact accepted values for FNumber, FocalLength and DigitalZoomRatio,
    including boundary fractions and zero where the existing contract permits it.
@@ -106,6 +125,9 @@ acceptance checks:
    failure rollback and JPEG/classic TIFF/BigTIFF persistence. Qualify exact wire
    values and independent image reads together, then run the platform matrix
    once against the final patch.
+
+The next feature batch can select the additional capture scalars below, then
+the environment fields, with an explicit combined contract for each family.
 
 ## Remaining field families
 

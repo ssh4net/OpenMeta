@@ -1,5 +1,27 @@
 # OpenMeta Changes
 
+## 0.5.5 - 2026-09-15
+
+Changes compared with `0.5.4`.
+
+### Fixed
+
+- Primary ExifIFD FNumber, FocalLength and DigitalZoomRatio now emit exact
+  numerator/denominator values in portable XMP. Existing typed XMP fractions
+  retain the same representation. Regenerate previously rounded packets from
+  native EXIF when the original precision is needed.
+- Validate these native rational scalars and sensitivity scalars before
+  claiming generated properties. Unsupported types/counts, invalid values and
+  zero denominators cannot hide valid existing XMP or trigger managed removal.
+- `CanonicalizeManaged` reconciles legacy scalar/indexed ISO and sensitivity
+  companion aliases when a valid generated replacement exists. PreserveAll
+  and reverse-translation ambiguity/conflict rules remain unchanged.
+- Retained indexed `ISOSpeedRatings` keeps its recognized array name instead
+  of becoming unsupported `ISO[1]` when no generated replacement is available.
+- Add combined ten-API round-trip, boundary, malformed-value, alias-policy and
+  JPEG/classic TIFF/BigTIFF snapshot regression coverage. The 46 capture targets,
+  API signatures, ABI 3 and host-owned synchronization contract are unchanged.
+
 ## 0.5.4 - 2026-09-14
 
 Changes compared with `0.5.3`.
