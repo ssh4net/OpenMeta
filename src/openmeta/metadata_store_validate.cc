@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "metadata_capture_fields_internal.h"
+
 #include "openmeta/validate.h"
 
 #include "metadata_logical_field_internal.h"
@@ -77,6 +79,15 @@ namespace {
         { SchemaIfd::ExifIfd, 0xA001U, kShort, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0xA002U, kShort | kLong, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0xA003U, kShort | kLong, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA405U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA300U, kUndefined, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA301U, kUndefined, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9400U, kSRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9401U, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9402U, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9403U, kSRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9404U, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9405U, kSRational, 1U, 1U, true },
         { SchemaIfd::GpsIfd, 0x0000U, kByte, 4U, 4U, true },
         { SchemaIfd::GpsIfd, 0x0001U, kAscii, 2U, 2U, true },
         { SchemaIfd::GpsIfd, 0x0002U, kRational, 3U, 3U, true },
@@ -772,6 +783,14 @@ namespace {
             || (schema->max_count != 0U && count > schema->max_count)) {
             append_issue(out, options, ValidateIssueSeverity::Error,
                          MetadataValidationIssueCode::WrongCount, id,
+                         kInvalidEntryId, entry.key.kind, tag);
+        }
+        if (ifd == "exififd" && detail::additional_capture_tag(tag)
+            && (schema->type_mask & type_bit(type)) != 0U && count == 1U
+            && !detail::additional_capture_value_valid(store.arena(), tag,
+                                                       entry.value)) {
+            append_issue(out, options, ValidateIssueSeverity::Error,
+                         MetadataValidationIssueCode::ScalarOutOfRange, id,
                          kInvalidEntryId, entry.key.kind, tag);
         }
         if (type == 2U && entry.value.kind == MetaValueKind::Text) {

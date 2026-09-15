@@ -503,3 +503,13 @@ Sphinx docs require:
    uv pip install -r docs/requirements.txt
    cmake -S . -B build -DOPENMETA_BUILD_SPHINX_DOCS=ON
    cmake --build build --target openmeta_docs_sphinx
+
+The 0.5.6 editing/translation batch
+-----------------------------------
+
+Exact-key typed editing now covers supported EXIF/IPTC/XMP and private/custom
+entries with complete candidate validation and explicit wire-hint replacement.
+Three additional capture and six environment fields bring capture-related
+translation to 55 unique ExifIFD targets across twelve APIs. See
+:doc:`editing`, :doc:`translation` and :doc:`capture_sync_milestone`.
+Fuzzy Search remains the lowest priority, after Adapters and Utilities.

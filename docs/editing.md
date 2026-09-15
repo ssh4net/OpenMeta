@@ -115,12 +115,64 @@ operation index.
 
 ## Current Scope
 
-This milestone edits the 24 logical fields listed in
-[creation.md](creation.md). It does not yet provide high-level arbitrary
-EXIF/IPTC/XMP/custom-key operations, language-alternative selection beyond
-`x-default`, structural block editing, a full EXIF/IPTC/XMP synchronization
-engine, or direct in-place file patching. Supported edited creation dates can
+The logical API edits the 24 fields listed in [creation.md](creation.md).
+The exact-key API below covers supported typed EXIF/IPTC/XMP/custom entries.
+Structural block editing, a full EXIF/IPTC/XMP synchronization engine and direct
+in-place file patching remain separate concerns. Supported edited creation dates can
 be projected explicitly into native EXIF/IPTC groups before persistence; see
 [translation.md](translation.md). Lower-level `MetaEdit` remains available for
 entry-ID-based host code, while transfer and writer APIs handle container
 persistence.
+
+## Exact typed keys (0.5.6)
+
+`edit_metadata_typed(...)` adds an experimental v1 C++ contract for exact
+EXIF/TIFF, IPTC-IIM and XMP keys, including private EXIF and custom XMP. It uses
+`MetadataAuthoringEntry` and the borrowed `MetaValueView` helpers from generic
+authoring. It copies all supplied keys and payloads. The logical-field API above
+continues to provide its own field-specific aliases and repeated-list behavior.
+
+```cpp
+#include "openmeta/metadata_editing.h"
+
+openmeta::MetadataTypedEditingOperation operation;
+operation.kind = openmeta::MetadataEditingOperationKind::Set;
+operation.entry.key = openmeta::make_exif_tag_key_view("exififd", 0xa405);
+operation.entry.value = openmeta::make_value_view_u16(50);
+const auto result = openmeta::edit_metadata_typed(
+    source, std::span(&operation, 1), &source);
+```
+
+The finalized base and output may alias. Every supplied Add/Set value and the
+complete final candidate must pass structural and selected schema validation
+before publication. A failed request leaves both stores unchanged and reports
+an operation index or final candidate entry when available. Values overwritten
+later in the request must still be valid. A malformed unrelated base entry can
+therefore fail final validation; the caller can select schema policy through
+`MetadataTypedEditingOptions::validation`.
+
+| Operation | Exact-key behavior |
+| --- | --- |
+| Add | Default `FailIfPresent` rejects an active exact key. Explicit `Append` permits another occurrence, subject to final schema singleton checks. New entries are dirty and have no original source block. |
+| Set | Default `kMetadataTypedEditingUniqueOccurrence` requires exactly one active match. A numeric occurrence selects the zero-based current active match. The value and wire hints are replaced; source entry identity, block and order remain. Omitted wire hints request inference, and obsolete wire type names are cleared. |
+| Remove | Uses the same occurrence rules, or `kMetadataEditingAllOccurrences` for all active matches. Tombstones preserve identity and provenance. Missing targets fail. Value and wire hints are ignored. |
+
+Operations observe earlier edits, including additions and shifted occurrences.
+Removing all duplicate singleton entries followed by Add can repair a store in
+one transaction. XMP path indices remain part of the exact key; deleting
+`subject[1]` does not renumber `subject[2]`. This API performs no alias matching,
+namespace migration, container restructuring or automatic translation.
+
+Defaults bound the request to 4096 operations, 8 MiB of borrowed key/payload
+bytes, 200000 output entries, 64 MiB of output arena/value bytes and 4096 bytes
+per key component. Remove-all expansion counts against the operation budget.
+Output limits include retained tombstones and arena bytes; editing does not
+compact them. Existing lower store ceilings remain in force. Preparation may
+allocate. The host must synchronize conflicting access to shared objects;
+there are no library atomics or mutexes in this path.
+
+The combined capture fixture now edits typed XMP, translates twelve API groups,
+serializes/restores a transfer snapshot, and checks native and portable values
+through JPEG, classic TIFF and BigTIFF add/replace workflows. Exact-key authoring
+and editing remain C++ APIs; Python retains logical editing and exposes the two
+new translation calls.

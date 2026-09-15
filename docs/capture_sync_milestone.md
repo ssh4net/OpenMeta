@@ -1,8 +1,24 @@
-# Capture synchronization milestone: 0.5.4
+# Capture synchronization milestones: 0.5.4–0.5.6
 
 Audit date: 2026-09-14. The original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing API signatures, ABI 3, or host synchronization responsibilities.
+
+## Typed editing and new fields in 0.5.6
+
+The exact-key editor validates ordered EXIF/IPTC/XMP Add/Set/Remove operations
+and the complete candidate before publication. It preserves source identity,
+updates obsolete wire hints, and supports aliased output. See [editing.md](editing.md).
+Three additional capture fields and six environment fields now share the
+translation, portable-output and persistence qualification. The environment
+contract preserves unknown-denominator sentinels before rational reduction.
+
+The current combined fixture covers twelve APIs and 55 unique targets, typed
+XMP edits, exact finite and unknown rationals, and serialized transfer snapshots
+through JPEG, classic TIFF and BigTIFF add/replace paths. Python exposes the two
+new translators; installed shared-library checks exercise authoring, typed
+editing, translation, validation and portable output. The earlier audit evidence
+below remains historical and describes its original 46-target scope.
 
 ## Fixes in 0.5.5
 
@@ -25,7 +41,7 @@ originals. FocalLength portable fractions express millimeters without ` mm`.
 
 ## Implemented capture targets
 
-Ten explicit reverse APIs cover **46 distinct ExifIFD tags**. The count includes
+Twelve explicit reverse APIs cover **55 distinct ExifIFD tags**. The count includes
 camera text and excludes GPS, dates, geometry, IPTC and vendor MakerNotes.
 It is an inventory count, not a percentage of all EXIF or competitor coverage.
 All function names below have the prefix `translate_xmp_` and suffix
@@ -44,12 +60,14 @@ All function names below have the prefix `translate_xmp_` and suffix
 | identity | 2 | LensSpecification A432, ImageUniqueID A420 |
 | apex | 5 | ShutterSpeedValue 9201, ApertureValue 9202, BrightnessValue 9203, ExposureBiasValue 9204, MaxApertureValue 9205 |
 | capture_spatial | 5 | FocalPlaneXResolution A20E, FocalPlaneYResolution A20F, FocalPlaneResolutionUnit A210, SubjectArea 9214, SubjectLocation A214 |
+| capture_additional | 3 | FocalLengthIn35mmFilm A405, FileSource A300, SceneType A301 |
+| environment | 6 | Temperature 9400, Humidity 9401, Pressure 9402, WaterDepth 9403, Acceleration 9404, CameraElevationAngle 9405 |
 
-Tag IDs are hexadecimal. The 48 API mappings include two shared targets:
+Tag IDs are hexadecimal. The 57 API mappings include two shared targets:
 ISO belongs to basic capture and sensitivity; ExposureBiasValue belongs to
-basic capture and APEX. Counting each shared tag once gives 46.
+basic capture and APEX. Counting each shared tag once gives 55.
 
-## Combined qualification and gaps
+## Historical 0.5.4 qualification and gaps
 
 A combined fixture exercises all ten APIs with ordinary values and a second
 set containing nonterminating fractions. Explicit `ReplaceExisting` produces
@@ -126,18 +144,17 @@ policies. Its acceptance checks are:
    values and independent image reads together, then run the platform matrix
    once against the final patch.
 
-The next feature batch can select the additional capture scalars below, then
-the environment fields, with an explicit combined contract for each family.
+The additional capture and environment batches are implemented in 0.5.6.
+Next, define the encoded-image/calibration contracts and composite capture group
+dependencies before extending those families.
 
 ## Remaining field families
 
-These are candidate families outside the ten capture contracts, not a complete
+These are candidate families outside the twelve capture contracts, not a complete
 remaining-tags denominator. Read/display support does not imply reverse support.
 
 | Family | Examples | Work needed before implementation |
 | --- | --- | --- |
-| Additional capture scalars | FocalLengthIn35mmFilm A405, FileSource A300, SceneType A301 | Explicit unknown values, accepted codes and native types; no sensor-size inference. |
-| Environment | Temperature 9400, Humidity 9401, Pressure 9402, WaterDepth 9403, Acceleration 9404, CameraElevationAngle 9405 | Units, signedness, valid ranges and exact fractions as one related batch. |
 | Image encoding/calibration | Gamma A500, CompressedBitsPerPixel 9102, ComponentsConfiguration 9101 | Distinguish descriptive values from data tied to encoded pixels. |
 | Composite capture | CompositeImage A460, SourceImageNumberOfCompositeImage A461, SourceExposureTimesOfCompositeImage A462 | Group dependencies and bounded binary layout. |
 | Structured or opaque data | OECF 8828, SpatialFrequencyResponse A20C, CFAPattern A302, DeviceSettingDescription A40B | Typed layouts, byte order, bounds and persistence evidence. |

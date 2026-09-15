@@ -381,5 +381,344 @@ namespace {
         EXPECT_EQ(payload.find("Before"), std::string_view::npos);
     }
 
+
+    static MetadataTypedEditingOperation
+    typed_operation(MetadataEditingOperationKind kind, const MetaKeyView& key,
+                    const MetaValueView& value = {},
+                    uint32_t occurrence = kMetadataTypedEditingUniqueOccurrence)
+    {
+        MetadataTypedEditingOperation operation;
+        operation.kind        = kind;
+        operation.entry.key   = key;
+        operation.entry.value = value;
+        operation.occurrence  = occurrence;
+        return operation;
+    }
+
+    TEST(MetadataTypedEditing, OrdersMixedOperationsAndOwnsAliasedInputs)
+    {
+        const auto make          = make_exif_tag_key_view("ifd0", 0x010fU);
+        const auto keyword       = make_iptc_dataset_key_view(2U, 25U);
+        const auto custom        = make_xmp_property_key_view("urn:typed-edit",
+                                                              "Gain[1]");
+        const auto private_key   = make_exif_tag_key_view("exififd", 0xd123U);
+        const std::array entries = {
+            MetadataAuthoringEntry {
+                make,
+                make_value_view_text("A", TextEncoding::Ascii),
+                { WireFamily::Tiff, 2U },
+                2U },
+            MetadataAuthoringEntry {
+                keyword, make_value_view_text("first", TextEncoding::Ascii) },
+            MetadataAuthoringEntry {
+                keyword, make_value_view_text("second", TextEncoding::Ascii) },
+            MetadataAuthoringEntry { private_key,
+                                     make_value_view_u16(7U),
+                                     { WireFamily::Tiff, 3U },
+                                     1U },
+        };
+        MetaStore base;
+        ASSERT_TRUE(create_metadata_store(entries, &base).ok());
+        const Origin origin         = base.entry(0U).origin;
+        std::string replacement     = "Longer camera name";
+        const std::array operations = {
+            typed_operation(MetadataEditingOperationKind::Set, make,
+                            make_value_view_text(replacement,
+                                                 TextEncoding::Ascii)),
+            typed_operation(MetadataEditingOperationKind::Remove, keyword, {},
+                            0U),
+            typed_operation(MetadataEditingOperationKind::Set, keyword,
+                            make_value_view_text("retained",
+                                                 TextEncoding::Ascii)),
+            typed_operation(MetadataEditingOperationKind::Add, custom,
+                            make_value_view_text("old", TextEncoding::Utf8)),
+            typed_operation(MetadataEditingOperationKind::Set, custom,
+                            make_value_view_text("new & exact",
+                                                 TextEncoding::Utf8)),
+            typed_operation(MetadataEditingOperationKind::Set, private_key,
+                            make_value_view_u32(70000U)),
+        };
+        MetaStore result;
+        const auto edited = edit_metadata_typed(base, operations, &result);
+        ASSERT_TRUE(edited.ok())
+            << metadata_typed_editing_status_name(edited.status);
+        EXPECT_EQ(edited.operations_applied, 6U);
+        EXPECT_EQ(edited.entries_added, 1U);
+        EXPECT_EQ(edited.entries_updated, 4U);
+        EXPECT_EQ(edited.entries_removed, 1U);
+        EXPECT_EQ(result.entry(0U).origin.block, origin.block);
+        EXPECT_EQ(result.entry(0U).origin.order_in_block,
+                  origin.order_in_block);
+        EXPECT_EQ(result.entry(0U).origin.wire_type.family, WireFamily::None);
+        EXPECT_EQ(result.entry(0U).origin.wire_count, 0U);
+        EXPECT_EQ(result.entry(3U).value.elem_type, MetaElementType::U32);
+        EXPECT_EQ(base.entry(3U).value.elem_type, MetaElementType::U16);
+        EXPECT_TRUE(any(result.entry(1U).flags, EntryFlags::Deleted));
+        replacement.assign("destroyed");
+        EXPECT_EQ(arena_string(result.arena(), result.entry(0U).value.data.span),
+                  "Longer camera name");
+        EXPECT_EQ(arena_string(base.arena(), base.entry(0U).value.data.span),
+                  "A");
+        const std::string_view borrowed
+            = arena_string(result.arena(), result.entry(0U).value.data.span);
+        const std::array alias = {
+            typed_operation(MetadataEditingOperationKind::Set, custom,
+                            make_value_view_text(borrowed, TextEncoding::Ascii))
+        };
+        ASSERT_TRUE(edit_metadata_typed(result, alias, &result).ok());
+        const auto ids = result.find_all(custom);
+        ASSERT_EQ(ids.size(), 1U);
+        EXPECT_EQ(arena_string(result.arena(),
+                               result.entry(ids[0]).value.data.span),
+                  "Longer camera name");
+    }
+
+    TEST(MetadataTypedEditing,
+         RequiresExplicitDuplicatesAndRepairsWholeSingleton)
+    {
+        const auto make = make_exif_tag_key_view("ifd0", 0x010fU);
+        const auto text = make_value_view_text("Camera", TextEncoding::Ascii);
+        const std::array entries = { MetadataAuthoringEntry { make, text },
+                                     MetadataAuthoringEntry { make, text } };
+        MetadataAuthoringOptions authoring;
+        authoring.validate = false;
+        MetaStore base;
+        ASSERT_TRUE(create_metadata_store(entries, &base, authoring).ok());
+        MetaStore output      = base;
+        std::array operations = {
+            typed_operation(MetadataEditingOperationKind::Set, make, text)
+        };
+        EXPECT_EQ(edit_metadata_typed(base, operations, &output).status,
+                  MetadataTypedEditingStatus::AmbiguousTarget);
+        operations[0].kind = MetadataEditingOperationKind::Add;
+        EXPECT_EQ(edit_metadata_typed(base, operations, &output).status,
+                  MetadataTypedEditingStatus::TargetAlreadyExists);
+        const std::array repair = {
+            typed_operation(MetadataEditingOperationKind::Remove, make, {},
+                            kMetadataEditingAllOccurrences),
+            typed_operation(MetadataEditingOperationKind::Add, make, text),
+        };
+        ASSERT_TRUE(edit_metadata_typed(base, repair, &output).ok());
+        ASSERT_EQ(output.find_all(make).size(), 1U);
+        EXPECT_EQ(output.entries().size(), 3U);
+        EXPECT_EQ(base.find_all(make).size(), 2U);
+        MetadataTypedEditingOptions append;
+        append.add_policy = MetadataTypedEditingAddPolicy::Append;
+        EXPECT_EQ(
+            edit_metadata_typed(output, operations, &output, append).status,
+            MetadataTypedEditingStatus::ValidationFailed);
+        EXPECT_EQ(output.find_all(make).size(), 1U);
+        const auto private_key   = make_exif_tag_key_view("exififd", 0xd123U);
+        const std::array repeats = {
+            typed_operation(MetadataEditingOperationKind::Add, private_key,
+                            make_value_view_u16(1U)),
+            typed_operation(MetadataEditingOperationKind::Add, private_key,
+                            make_value_view_u16(2U)),
+            typed_operation(MetadataEditingOperationKind::Remove, private_key,
+                            {}, 0U),
+            typed_operation(MetadataEditingOperationKind::Set, private_key,
+                            make_value_view_u16(3U)),
+        };
+        ASSERT_TRUE(edit_metadata_typed(output, repeats, &output, append).ok());
+        const auto ids = output.find_all(private_key);
+        ASSERT_EQ(ids.size(), 1U);
+        EXPECT_EQ(output.entry(ids[0]).value.data.u64, 3U);
+    }
+
+    TEST(MetadataTypedEditing,
+         RejectsLateInvalidValuesAndMissingTargetsTransactionally)
+    {
+        const auto key = make_xmp_property_key_view("urn:typed-edit", "Value");
+        MetaStore base;
+        base.finalize();
+        MetaStore output;
+        const std::array seed
+            = { MetadataAuthoringEntry { key, make_value_view_u32(99U) } };
+        ASSERT_TRUE(create_metadata_store(seed, &output).ok());
+        const auto old_size         = output.arena().bytes().size();
+        const std::array bad_values = {
+            make_value_view_urational(1U, 0U),
+            make_value_view_text(std::string_view("\xc0\xaf", 2U),
+                                 TextEncoding::Utf8),
+            make_value_view_array(MetaElementType::U32, {}, 2U),
+        };
+        for (const MetaValueView& bad : bad_values) {
+            const std::array operations = {
+                typed_operation(MetadataEditingOperationKind::Add, key,
+                                make_value_view_u32(1U)),
+                typed_operation(MetadataEditingOperationKind::Set, key, bad),
+            };
+            const auto result = edit_metadata_typed(base, operations, &output);
+            EXPECT_FALSE(result.ok());
+            EXPECT_EQ(result.failed_operation_index, 1U);
+            EXPECT_EQ(result.operations_applied, 0U);
+            EXPECT_EQ(output.entry(0U).value.data.u64, 99U);
+            EXPECT_EQ(output.arena().bytes().size(), old_size);
+            EXPECT_TRUE(base.entries().empty());
+        }
+        const std::array missing = {
+            typed_operation(MetadataEditingOperationKind::Add, key,
+                            make_value_view_u32(1U)),
+            typed_operation(MetadataEditingOperationKind::Remove,
+                            make_xmp_property_key_view("urn:typed-edit",
+                                                       "Absent")),
+        };
+        const auto result = edit_metadata_typed(base, missing, &base);
+        EXPECT_EQ(result.status, MetadataTypedEditingStatus::TargetNotFound);
+        EXPECT_EQ(result.failed_operation_index, 1U);
+        EXPECT_TRUE(base.entries().empty());
+    }
+
+    TEST(MetadataTypedEditing, EnforcesOutputRequestAndExpandedOperationLimits)
+    {
+        const auto key   = make_iptc_dataset_key_view(2U, 25U);
+        const auto value = make_value_view_text("word", TextEncoding::Ascii);
+        const std::array entries = { MetadataAuthoringEntry { key, value },
+                                     MetadataAuthoringEntry { key, value } };
+        MetaStore base;
+        ASSERT_TRUE(create_metadata_store(entries, &base).ok());
+        const std::array remove
+            = { typed_operation(MetadataEditingOperationKind::Remove, key, {},
+                                kMetadataEditingAllOccurrences) };
+        MetadataTypedEditingOptions options;
+        options.max_operations = 1U;
+        MetaStore output       = base;
+        EXPECT_EQ(edit_metadata_typed(base, remove, &output, options).status,
+                  MetadataTypedEditingStatus::LimitExceeded);
+        EXPECT_EQ(output.find_all(key).size(), 2U);
+        const std::array add
+            = { typed_operation(MetadataEditingOperationKind::Add,
+                                make_iptc_dataset_key_view(2U, 120U), value) };
+        options             = {};
+        options.max_entries = 2U;
+        EXPECT_EQ(edit_metadata_typed(base, add, &output, options).status,
+                  MetadataTypedEditingStatus::LimitExceeded);
+        options                   = {};
+        options.max_request_bytes = 3U;
+        EXPECT_EQ(edit_metadata_typed(base, add, &output, options).status,
+                  MetadataTypedEditingStatus::LimitExceeded);
+        options                 = {};
+        options.max_arena_bytes = base.arena().bytes().size();
+        options.max_value_bytes = options.max_arena_bytes;
+        EXPECT_EQ(edit_metadata_typed(base, add, &output, options).status,
+                  MetadataTypedEditingStatus::LimitExceeded);
+        options = {};
+        base.constrain_resources(2U, 0U);
+        EXPECT_EQ(edit_metadata_typed(base, add, &output, options).status,
+                  MetadataTypedEditingStatus::LimitExceeded);
+        EXPECT_EQ(output.entries().size(), 2U);
+        EXPECT_FALSE(base.resource_limit_exceeded());
+    }
+
+    TEST(MetadataTypedEditing, AuthorsAndValidatesNineNativeCaptureShapes)
+    {
+        const std::array<std::byte, 1> file    = { std::byte { 2 } };
+        const std::array<std::byte, 1> scene   = { std::byte { 1 } };
+        constexpr std::array<uint16_t, 9> tags = { 0xa405U, 0xa300U, 0xa301U,
+                                                   0x9400U, 0x9401U, 0x9402U,
+                                                   0x9403U, 0x9404U, 0x9405U };
+        const std::array<MetaValueView, 9> values
+            = { make_value_view_u16(0U),
+                make_value_view_bytes(file),
+                make_value_view_bytes(scene),
+                make_value_view_srational(-41, 2),
+                make_value_view_urational(301U, 3U),
+                make_value_view_urational(7U, UINT32_MAX),
+                make_value_view_srational(-7, -1),
+                make_value_view_urational(980665U, 1U),
+                make_value_view_srational(-180, 1) };
+        std::array<MetadataAuthoringEntry, 9> entries {};
+        std::array<MetadataTypedEditingOperation, 9> operations {};
+        for (size_t i = 0; i < tags.size(); ++i) {
+            entries[i].key   = make_exif_tag_key_view("exififd", tags[i]);
+            entries[i].value = values[i];
+            operations[i] = typed_operation(MetadataEditingOperationKind::Set,
+                                            entries[i].key, values[i]);
+        }
+        MetaStore source;
+        ASSERT_TRUE(create_metadata_store(entries, &source).ok());
+        ASSERT_TRUE(edit_metadata_typed(source, operations, &source).ok());
+        EXPECT_TRUE(validate_store(source).ok());
+        operations[0].entry.value = make_value_view_u16(50U);
+        operations[8].entry.value = make_value_view_srational(180, 1);
+        const auto rejected = edit_metadata_typed(source, operations, &source);
+        EXPECT_EQ(rejected.status,
+                  MetadataTypedEditingStatus::ValidationFailed);
+        EXPECT_EQ(rejected.validation_issue,
+                  MetadataValidationIssueCode::ScalarOutOfRange);
+        EXPECT_EQ(rejected.failed_operation_index, 8U);
+        EXPECT_EQ(source.entry(0U).value.data.u64, 0U);
+        const std::array<std::byte, 1> invalid_code = { std::byte { 4 } };
+        operations[1].entry.value = make_value_view_bytes(invalid_code);
+        EXPECT_EQ(edit_metadata_typed(source, std::span(&operations[1], 1U),
+                                      &source)
+                      .status,
+                  MetadataTypedEditingStatus::ValidationFailed);
+    }
+
+    TEST(MetadataTypedEditing, RepeatedSetsUseSeparateRequestAndOutputBudgets)
+    {
+        const auto key = make_exif_tag_key_view("exififd", 0xa405U);
+        const MetadataAuthoringEntry entry { key, make_value_view_u16(35U) };
+        MetaStore base;
+        ASSERT_TRUE(create_metadata_store(std::span(&entry, 1U), &base).ok());
+        const std::array operations
+            = { typed_operation(MetadataEditingOperationKind::Set, key,
+                                make_value_view_u16(50U)),
+                typed_operation(MetadataEditingOperationKind::Set, key,
+                                make_value_view_u16(85U)) };
+        MetadataTypedEditingOptions options;
+        options.max_entries     = 1U;
+        options.max_arena_bytes = base.arena().bytes().size();
+        options.max_value_bytes = options.max_arena_bytes;
+        const auto result       = edit_metadata_typed(base, operations, &base,
+                                                      options);
+        ASSERT_TRUE(result.ok())
+            << metadata_typed_editing_status_name(result.status);
+        EXPECT_EQ(base.entry(0U).value.data.u64, 85U);
+    }
+
+    TEST(MetadataTypedEditing,
+         ChecksExplicitWireShapesAndCompleteImageRelationships)
+    {
+        const auto key           = make_exif_tag_key_view("ifd0", 0xd123U);
+        const std::array entries = { MetadataAuthoringEntry {
+            key, make_value_view_u16(1U), { WireFamily::Tiff, 3U }, 1U } };
+        MetaStore base;
+        ASSERT_TRUE(create_metadata_store(entries, &base).ok());
+        const std::array bytes = { std::byte { 1 }, std::byte { 2 },
+                                   std::byte { 3 } };
+        std::array operations
+            = { typed_operation(MetadataEditingOperationKind::Set, key,
+                                make_value_view_bytes(bytes)) };
+        operations[0].entry.wire_type  = { WireFamily::Tiff, 7U };
+        operations[0].entry.wire_count = 3U;
+        MetaStore output;
+        ASSERT_TRUE(edit_metadata_typed(base, operations, &output).ok());
+        EXPECT_EQ(output.entry(0U).origin.wire_count, 3U);
+        EXPECT_EQ(output.entry(0U).origin.wire_type.code, 7U);
+        operations[0].entry.wire_count = 2U;
+        const auto result = edit_metadata_typed(base, operations, &output);
+        EXPECT_EQ(result.status, MetadataTypedEditingStatus::ValidationFailed);
+        EXPECT_EQ(result.validation_issue,
+                  MetadataValidationIssueCode::InvalidWireCount);
+        EXPECT_EQ(output.entry(0U).origin.wire_count, 3U);
+        const std::array geometry = {
+            typed_operation(MetadataEditingOperationKind::Add,
+                            make_exif_tag_key_view("ifd0", 0x100U),
+                            make_value_view_u32(10U)),
+            typed_operation(MetadataEditingOperationKind::Add,
+                            make_exif_tag_key_view("ifd0", 0x101U),
+                            make_value_view_u32(20U)),
+        };
+        MetadataTypedEditingOptions options;
+        options.validation.context.has_dimensions = true;
+        options.validation.context.width          = 10U;
+        options.validation.context.height         = 21U;
+        EXPECT_EQ(edit_metadata_typed(base, geometry, &output, options).status,
+                  MetadataTypedEditingStatus::ValidationFailed);
+        EXPECT_EQ(output.entries().size(), 1U);
+    }
+
 }  // namespace
 }  // namespace openmeta

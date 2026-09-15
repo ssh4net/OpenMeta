@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "openmeta/metadata_editing.h"
 #include "openmeta/metadata_translation.h"
 #include "openmeta/xmp_decode.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstring>
 #include <string_view>
 
@@ -40,7 +42,47 @@ inline constexpr std::string_view kCaptureSyncXml = R"xml(
 <e:FocalPlaneResolutionUnit>3</e:FocalPlaneResolutionUnit>
 <e:SubjectArea><rdf:Seq><rdf:li>3</rdf:li><rdf:li>4</rdf:li><rdf:li>2</rdf:li><rdf:li>0</rdf:li></rdf:Seq></e:SubjectArea>
 <e:SubjectLocation><rdf:Seq><rdf:li>1</rdf:li><rdf:li>2</rdf:li></rdf:Seq></e:SubjectLocation>
+<e:FocalLengthIn35mmFilm>35</e:FocalLengthIn35mmFilm>
+<e:FileSource>3</e:FileSource><e:SceneType>1</e:SceneType>
+<x:Temperature>-41/2</x:Temperature><x:Humidity>301/3</x:Humidity>
+<x:Pressure>30397/30</x:Pressure><x:WaterDepth>-1/3</x:WaterDepth>
+<x:Acceleration>980665</x:Acceleration><x:CameraElevationAngle>-180</x:CameraElevationAngle>
 </rdf:Description></rdf:RDF>)xml";
+
+inline bool
+capture_sync_edit(MetaStore& store)
+{
+    constexpr std::array<std::string_view, 9> names = { "FocalLengthIn35mmFilm",
+                                                        "FileSource",
+                                                        "SceneType",
+                                                        "Temperature",
+                                                        "Humidity",
+                                                        "Pressure",
+                                                        "WaterDepth",
+                                                        "Acceleration",
+                                                        "CameraElevationAngle" };
+    const std::array<MetaValueView, 9> values
+        = { make_value_view_u16(65535U),
+            make_value_view_u16(1U),
+            make_value_view_u16(1U),
+            make_value_view_srational(-41, 2),
+            make_value_view_urational(301U, 3U),
+            make_value_view_urational(7U, UINT32_MAX),
+            make_value_view_srational(-7, -1),
+            make_value_view_urational(980665U, 1U),
+            make_value_view_srational(179999, 1000) };
+    std::array<MetadataTypedEditingOperation, 9> operations {};
+    for (size_t i = 0; i < names.size(); ++i) {
+        operations[i].kind = MetadataEditingOperationKind::Set;
+        operations[i].entry.key
+            = make_xmp_property_key_view(i < 3U
+                                             ? "http://ns.adobe.com/exif/1.0/"
+                                             : "http://cipa.jp/exif/1.0/",
+                                         names[i]);
+        operations[i].entry.value = values[i];
+    }
+    return edit_metadata_typed(store, operations, &store).ok();
+}
 
 inline bool
 capture_sync_translate_step(MetaStore& store, unsigned step)
@@ -118,6 +160,18 @@ capture_sync_translate_step(MetaStore& store, unsigned step)
                    &store)
                    .status
                == ok;
+    case 10:
+        return translate_xmp_capture_additional_metadata(
+                   store, { .source_mode = all, .conflict_policy = replace },
+                   &store)
+                   .status
+               == ok;
+    case 11:
+        return translate_xmp_environment_metadata(
+                   store, { .source_mode = all, .conflict_policy = replace },
+                   &store)
+                   .status
+               == ok;
     default: return false;
     }
 }
@@ -125,8 +179,8 @@ capture_sync_translate_step(MetaStore& store, unsigned step)
 inline bool
 capture_sync_translate(MetaStore& store, bool reverse = false)
 {
-    for (unsigned step = 0; step < 10U; ++step)
-        if (!capture_sync_translate_step(store, reverse ? 9U - step : step))
+    for (unsigned step = 0; step < 12U; ++step)
+        if (!capture_sync_translate_step(store, reverse ? 11U - step : step))
             return false;
     return true;
 }
@@ -171,7 +225,8 @@ capture_sync_expect_native(const MetaStore& actual, const MetaStore& expected)
             EXPECT_EQ(av, bv);
         } else {
             ASSERT_EQ(a.count, b.count);
-            if (a.kind == MetaValueKind::Array) {
+            if (a.kind == MetaValueKind::Array
+                || a.kind == MetaValueKind::Bytes) {
                 const auto av = actual.arena().span(a.data.span);
                 const auto bv = expected.arena().span(b.data.span);
                 ASSERT_EQ(av.size(), bv.size());
@@ -188,7 +243,7 @@ capture_sync_expect_native(const MetaStore& actual, const MetaStore& expected)
         }
         ++count;
     }
-    EXPECT_EQ(count, 46U);
+    EXPECT_EQ(count, 55U);
 }
 
 }  // namespace openmeta::test

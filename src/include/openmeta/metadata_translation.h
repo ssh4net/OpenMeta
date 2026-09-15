@@ -363,6 +363,15 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpFocalPlaneResolution,
     XmpSubjectArea,
     XmpSubjectLocation,
+    XmpFocalLengthIn35mmFilm,
+    XmpFileSource,
+    XmpSceneType,
+    XmpTemperature,
+    XmpHumidity,
+    XmpPressure,
+    XmpWaterDepth,
+    XmpAcceleration,
+    XmpCameraElevationAngle,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -424,6 +433,91 @@ struct MetadataCaptureTranslationResult final {
     uint32_t entries_updated    = 0U;
     uint32_t entries_removed    = 0U;
 };
+
+inline constexpr uint32_t kMetadataCaptureAdditionalTranslationContractVersion
+    = 1U;
+inline constexpr uint32_t kMetadataCaptureAdditionalTranslationMaxAddedEntries
+    = 3U;
+inline constexpr uint64_t kMetadataCaptureAdditionalTranslationMaxTotalTextBytes
+    = 384U;
+
+struct MetadataCaptureAdditionalTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    bool focal_length_in_35mm_film_to_exif = true;
+    bool file_source_to_exif               = true;
+    bool scene_type_to_exif                = true;
+    uint32_t max_added_entries
+        = kMetadataCaptureAdditionalTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataCaptureAdditionalTranslationMaxTotalTextBytes;
+};
+
+/**
+ * Translate exif:FocalLengthIn35mmFilm (or FocalLengthIn35mmFormat), FileSource
+ * and SceneType transactionally. Focal length is a SHORT in millimetres, with
+ * zero meaning unknown. FileSource codes 0..3 and SceneType code 1 are stored
+ * as UNDEFINED count 1, not TIFF BYTE. XMP accepts scalar integers or decimal
+ * integer text. No labels, units, rounding or camera-model inference is used.
+ * Duplicate aliases and non-scalar paths fail. Dirty tombstones, conflicts,
+ * budgets and aliased output follow the capture translation contract.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_capture_additional_metadata(
+    const MetaStore& source,
+    const MetadataCaptureAdditionalTranslationOptions& options,
+    MetaStore* out_store);
+
+inline constexpr uint32_t kMetadataEnvironmentTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataEnvironmentTranslationMaxAddedEntries = 6U;
+inline constexpr uint64_t kMetadataEnvironmentTranslationMaxTotalTextBytes
+    = 768U;
+
+struct MetadataEnvironmentTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    bool temperature_to_exif            = true;
+    bool humidity_to_exif               = true;
+    bool pressure_to_exif               = true;
+    bool water_depth_to_exif            = true;
+    bool acceleration_to_exif           = true;
+    bool camera_elevation_angle_to_exif = true;
+    uint32_t max_added_entries = kMetadataEnvironmentTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataEnvironmentTranslationMaxTotalTextBytes;
+};
+
+/**
+ * Translate six scalar exifEX environment properties transactionally. Legacy
+ * exif namespace aliases are accepted, but duplicate eligible aliases fail.
+ * Temperature (degrees C), WaterDepth (metres) and CameraElevationAngle
+ * (degrees) use SRATIONAL. Humidity (percent), Pressure (hPa) and Acceleration
+ * (mGal, 10^-5 m/s^2) use RATIONAL. Finite elevation is in [-180, 180).
+ * No additional physical range or unit conversion is imposed.
+ *
+ * Typed rationals, integers, exact decimal/scientific or fraction text are
+ * supported. Raw denominator 0xffffffff means unknown; signed fields use -1.
+ * The sentinel is recognized before reduction and preserves its numerator.
+ * Text "Unknown" uses numerator zero; signed sentinel text accepts n/-1 or
+ * n/4294967295. Other finite denominators must be positive. Finite input that
+ * would reduce to the reserved denominator fails. No float approximation.
+ * Dirty tombstones, conflicts, budgets and aliased output follow the capture
+ * contract. Each call is one transaction; shared-object access is host-owned.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_environment_metadata(
+    const MetaStore& source,
+    const MetadataEnvironmentTranslationOptions& options, MetaStore* out_store);
 
 inline constexpr uint32_t kMetadataApexTranslationContractVersion   = 1U;
 inline constexpr uint32_t kMetadataApexTranslationMaxAddedEntries   = 5U;

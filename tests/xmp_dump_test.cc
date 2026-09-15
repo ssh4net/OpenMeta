@@ -2161,7 +2161,8 @@ TEST(XmpDump, PortableNormalizesEnumAndGpsRefTextValues)
 
     Entry file_source;
     file_source.key   = make_exif_tag_key(store.arena(), "exififd", 0xA300);
-    file_source.value = make_u8(3);
+    const std::array<std::byte, 1> file_source_bytes = { std::byte { 3 } };
+    file_source.value = make_bytes(store.arena(), file_source_bytes);
     file_source.origin.block          = block;
     file_source.origin.order_in_block = 3;
     (void)store.add_entry(file_source);
@@ -2203,7 +2204,7 @@ TEST(XmpDump, PortableNormalizesEnumAndGpsRefTextValues)
         std::string_view::npos);
     EXPECT_NE(s.find("<exif:ColorSpace>Adobe RGB</exif:ColorSpace>"),
               std::string_view::npos);
-    EXPECT_NE(s.find("<exif:FileSource>Digital Camera</exif:FileSource>"),
+    EXPECT_NE(s.find("<exif:FileSource>3</exif:FileSource>"),
               std::string_view::npos);
     EXPECT_NE(s.find(
                   "<exif:GPSDifferential>No Correction</exif:GPSDifferential>"),

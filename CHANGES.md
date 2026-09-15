@@ -1,5 +1,35 @@
 # OpenMeta Changes
 
+## 0.5.6 - 2026-09-15
+
+Changes compared with `0.5.5`. ABI remains 3.
+
+### Added
+
+- Add C++ `edit_metadata_typed` for ordered exact-key EXIF/IPTC/XMP Add/Set/Remove
+  transactions, including private/custom keys. Explicit occurrences, duplicate
+  policies, borrowed values, wire hints, resource ceilings and complete candidate
+  validation cover aliased output and failure rollback. Python logical editing
+  remains available; exact-key authoring/editing is C++ only.
+- Add C++ and Python additional-capture and environment translation: three
+  capture scalars and six environmental rationals bring coverage to 55 unique
+  ExifIFD targets across twelve APIs. Preserve exact unknown-denominator bits
+  before reduction and enforce native shapes, codes, units and elevation range.
+- Extend combined author/edit/translate/snapshot/persist tests through JPEG,
+  classic TIFF and BigTIFF, plus Python and installed shared-library checks.
+
+### Changed
+
+- FileSource and SceneType use their defined UNDEFINED count-one native shape
+  and numeric portable XMP, replacing the earlier FileSource display label.
+  Environment portable output uses exact fractions in the CIPA exifEX namespace.
+  Managed legacy aliases are removed only when valid native replacements exist.
+- Typed Set and capture native replacements clear obsolete wire hints while
+  retaining source identity. Typed editing and capture translation check inherited
+  resource ceilings on the complete candidate before publishing it.
+- Preparation can allocate. Conflicting shared-object access remains the host's
+  responsibility; no atomics or mutexes are introduced.
+
 ## 0.5.5 - 2026-09-15
 
 Changes compared with `0.5.4`.

@@ -930,9 +930,10 @@ Suggested delivery sequence:
    Version 0.4.142 adds six independent camera/lens/spectral printable-ASCII
    fields in one combined batch, including canonical portable namespaces and
    shared transaction, persistence and platform checks. The capture-related
-   APIs now cover 46 distinct ExifIFD targets across ten APIs, including camera
+   APIs now cover 55 distinct ExifIFD targets across twelve APIs, including camera
    text and excluding GPS. ISO and ExposureBiasValue each overlap two APIs.
-   Portable capture round-trip closure is covered by version 0.5.5; see
+   Version 0.5.6 adds exact-key typed editing, additional capture scalars and
+   six environment fields. Portable capture round-trip closure builds on 0.5.5; see
    `docs/capture_sync_milestone.md` for evidence, gaps and acceptance checks.
    Geographic inference and arbitrary structured-location merging remain excluded.
    See `docs/translation.md`.

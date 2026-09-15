@@ -25,7 +25,7 @@ The APIs are experimental and versioned by
 Workflow
 --------
 
-See :doc:`capture_sync_milestone` for the ten capture APIs, 46 distinct native
+See :doc:`capture_sync_milestone` for the twelve capture APIs, 55 distinct native
 targets, shared-target composition and the 0.5.5 portable round-trip fixes.
 Primary ExifIFD FNumber, FocalLength and DigitalZoomRatio emit exact fractions;
 FocalLength is in millimeters without the display suffix `` mm``. Invalid native
@@ -1843,4 +1843,42 @@ the XMP namespace and ordered-array mappings follow
 `CIPA DC-X010-2017 <https://cipa.jp/std/documents/e/DC-X010-2017.pdf>`_.
 Requiring explicit complete groups and positive resolutions is this bounded
 OpenMeta contract. This is not full Exif conformance or downstream acceptance.
-The five new targets bring capture-related coverage to 46 targets across ten APIs.
+The spatial milestone brought coverage to 46 targets across ten APIs; 0.5.6 extends it to 55 targets across twelve APIs.
+
+Additional capture and environment fields (0.5.6)
+-------------------------------------------------
+
+``translate_xmp_capture_additional_metadata`` adds FocalLengthIn35mmFilm A405
+(SHORT count 1, 0 unknown), FileSource A300 (UNDEFINED count 1, codes 0..3),
+and SceneType A301 (UNDEFINED count 1, code 1). The explicit focal-length alias
+``FocalLengthIn35mmFormat`` remains the portable spelling. XMP inputs accept
+integer scalars and decimal integer text without labels, units or inference.
+
+``translate_xmp_environment_metadata`` accepts the CIPA namespace
+``http://cipa.jp/exif/1.0/`` and explicit legacy EXIF namespace aliases.
+Duplicate eligible aliases and indexed/structured paths fail transactionally.
+Temperature 9400 (degrees Celsius), WaterDepth 9403 (metres), and
+CameraElevationAngle 9405 (degrees in [-180, 180)) use SRATIONAL count 1.
+Humidity 9401 (percent), Pressure 9402 (hPa), and Acceleration 9404
+(mGal, 10^-5 m/s²) use RATIONAL count 1. No other physical ranges are imposed.
+
+Environment inputs accept matching typed rationals, integers and exact
+fraction/decimal/scientific text. Raw denominator 0xffffffff means unknown;
+signed fields represent it as -1. Recognition precedes reduction and preserves
+the numerator. Signed sentinel text accepts n/-1 or n/4294967295, unsigned text
+accepts n/4294967295, and ``Unknown`` uses numerator zero. Other denominators
+must be positive. Finite fractions that reduce to the reserved denominator
+fail. Portable output retains exact rational pairs. No float approximation or
+unit-suffix conversion is performed.
+
+Each call is bounded and transactional, including aliased output, dirty
+removals and native conflicts. Defaults are 3/6 added entries, 1024 primitive
+operations, 128 text bytes per property and 384/768 total text bytes. Python
+``Document.translate_capture_additional_metadata`` and
+``Document.translate_environment_metadata`` use the same policy. Multi-call
+publication and conflicting shared-object access remain host responsibilities.
+``CanonicalizeManaged`` removes legacy environment aliases only when a valid
+native replacement is emitted; invalid native values preserve existing XMP.
+
+References: `CIPA Exif 2.32 <https://www.cipa.jp/std/documents/e/DC-X008-Translation-2019-E.pdf>`_
+and `CIPA Exif metadata for XMP <https://www.cipa.jp/std/documents/e/DC-X010-2017.pdf>`_.

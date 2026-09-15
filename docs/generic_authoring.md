@@ -111,3 +111,9 @@ reuse constant capture metadata for values that can vary per frame.
 This is currently a C++ API. A future Python surface must remain a thin wrapper
 over this implementation rather than duplicate construction or validation
 logic.
+
+Existing stores can use the same borrowed entry/value types through
+`edit_metadata_typed(...)`. See [exact typed editing](editing.md#exact-typed-keys-056)
+for occurrence selection, wire hints, complete candidate validation and limits.
+The nine additional capture/environment native tags are included in the schema
+checks; successful authoring does not infer that their values describe pixels.

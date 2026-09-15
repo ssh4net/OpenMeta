@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "metadata_capture_fields_internal.h"
+
 #include "openmeta/xmp_dump.h"
 
 #include "interop_safety_internal.h"
@@ -3228,11 +3230,25 @@ namespace {
         w->append(name);
         w->append(">");
         const uint64_t patch_begin = w->needed;
-        if (prefix == "exif" && v.kind == MetaValueKind::Scalar && v.count == 1U
-            && v.elem_type == MetaElementType::SRational
-            && (name == "ShutterSpeedValue" || name == "BrightnessValue"
-                || name == "ExposureBiasValue"
-                || name == "ExposureCompensation")) {
+        if ((prefix == "exif" || prefix == "exifEX")
+            && detail::environment_property(name)
+            && v.kind == MetaValueKind::Scalar && v.count == 1U
+            && v.elem_type == MetaElementType::SRational) {
+            append_i64_dec(v.data.sr.numer, w);
+            w->append("/");
+            append_i64_dec(v.data.sr.denom, w);
+        } else if ((prefix == "exif" || prefix == "exifEX")
+                   && detail::environment_property(name)
+                   && v.kind == MetaValueKind::Scalar && v.count == 1U
+                   && v.elem_type == MetaElementType::URational) {
+            append_u64_dec(v.data.ur.numer, w);
+            w->append("/");
+            append_u64_dec(v.data.ur.denom, w);
+        } else if (prefix == "exif" && v.kind == MetaValueKind::Scalar
+                   && v.count == 1U && v.elem_type == MetaElementType::SRational
+                   && (name == "ShutterSpeedValue" || name == "BrightnessValue"
+                       || name == "ExposureBiasValue"
+                       || name == "ExposureCompensation")) {
             append_i64_dec(v.data.sr.numer, w);
             w->append("/");
             append_i64_dec(v.data.sr.denom, w);
@@ -4333,11 +4349,14 @@ namespace {
     }
 
     static bool
-    portable_capture_scalar_value_valid(std::string_view ifd, uint16_t tag,
+    portable_capture_scalar_value_valid(const ByteArena& arena,
+                                        std::string_view ifd, uint16_t tag,
                                         const MetaValue& value) noexcept
     {
         if (ifd != "exififd")
             return true;
+        if (detail::additional_capture_tag(tag))
+            return detail::additional_capture_value_valid(arena, tag, value);
         if (tag == 0x829dU || tag == 0x920aU || tag == 0xa404U)
             return value.kind == MetaValueKind::Scalar && value.count == 1U
                    && value.elem_type == MetaElementType::URational
@@ -4398,8 +4417,17 @@ namespace {
             return false;
         }
 
-        if (!portable_capture_scalar_value_valid(ifd, tag, v))
+        if (!portable_capture_scalar_value_valid(arena, ifd, tag, v))
             return true;
+        if (ifd == "exififd" && detail::additional_capture_tag(tag)) {
+            if (tag == 0xa300U || tag == 0xa301U) {
+                const auto code = std::to_integer<uint8_t>(
+                    arena.span(v.data.span)[0]);
+                return emit_portable_property(w, prefix, name, arena,
+                                              make_u16(code));
+            }
+            return emit_portable_property(w, prefix, name, arena, v);
+        }
         if (ifd == "exififd"
             && (tag == 0x829dU || tag == 0x920aU || tag == 0xa404U))
             return emit_portable_property(w, prefix, name, arena, v);
@@ -7218,6 +7246,11 @@ namespace {
         const PortableGeneratedLangAltKeySet* generated_lang_alt,
         std::string_view prefix, std::string_view name) noexcept
     {
+        if (prefix == "exif" && detail::environment_property(name)
+            && portable_property_shape_is_present(generated_shapes, "exifEX",
+                                                  name,
+                                                  PortablePropertyShape::Scalar))
+            return true;
         if (prefix == "exif") {
             const std::string_view canonical_name
                 = name == "ISO" || name == "ISOSpeedRatings"
@@ -10057,7 +10090,7 @@ namespace {
             return false;
         }
 
-        if (!portable_capture_scalar_value_valid(ifd, tag, v))
+        if (!portable_capture_scalar_value_valid(arena, ifd, tag, v))
             return false;
 
         if ((ifd == "gpsifd" || ifd.ends_with("_gpsifd"))
@@ -10135,6 +10168,7 @@ namespace {
         const uint16_t tag = e.key.data.exif_tag.tag;
         if (ifd == "exififd"
             && (portable_exif_ex_identity_tag(tag)
+                || detail::environment_tag(tag)
                 || (tag >= 0x8830U && tag <= 0x8835U)
                 || (tag == 0x8827U
                     && portable_has_sensitivity_type(arena, entries))))
@@ -10734,6 +10768,7 @@ namespace {
                 const uint16_t tag = e.key.data.exif_tag.tag;
                 if (ifd == "exififd"
                     && (portable_exif_ex_identity_tag(tag)
+                        || detail::environment_tag(tag)
                         || (tag >= 0x8830U && tag <= 0x8835U)
                         || (tag == 0x8827U
                             && portable_has_sensitivity_type(arena, entries))))
@@ -14032,6 +14067,7 @@ dump_xmp_portable_impl(const MetaStore& store, std::span<std::byte> out,
             if (!any(entry.flags, EntryFlags::Deleted)
                 && entry.key.kind == MetaKeyKind::ExifTag
                 && (portable_exif_ex_identity_tag(entry.key.data.exif_tag.tag)
+                    || detail::environment_tag(entry.key.data.exif_tag.tag)
                     || (entry.key.data.exif_tag.tag >= 0x8830U
                         && entry.key.data.exif_tag.tag <= 0x8835U))
                 && arena_string(arena, entry.key.data.exif_tag.ifd)

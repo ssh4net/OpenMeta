@@ -4,6 +4,7 @@
 #include <openmeta/exif_tiff_serialize.h>
 #include <openmeta/host_adoption.h>
 #include <openmeta/metadata_authoring.h>
+#include <openmeta/metadata_editing.h>
 #include <openmeta/metadata_patch.h>
 #include <openmeta/metadata_translation.h>
 #include <openmeta/prepared_transfer_handoff.h>
@@ -537,6 +538,45 @@ main()
                  "<exifEX:PhotographicSensitivity>400</exifEX:PhotographicSensitivity>")
                  != std::string_view::npos
           && capture_sync_packet.find("<exif:ISO>") == std::string_view::npos;
+    openmeta::MetaStore typed_source;
+    typed_source.finalize();
+    std::array<openmeta::MetadataTypedEditingOperation, 2> typed_operations {};
+    typed_operations[0].entry.key
+        = openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "FileSource");
+    typed_operations[0].entry.value = openmeta::make_value_view_u16(2U);
+    typed_operations[1].entry.key
+        = openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                               "WaterDepth");
+    typed_operations[1].entry.value = openmeta::make_value_view_srational(-7,
+                                                                          -1);
+    const auto typed_edited = openmeta::edit_metadata_typed(typed_source,
+                                                            typed_operations,
+                                                            &typed_source);
+    const auto additional_result
+        = openmeta::translate_xmp_capture_additional_metadata(typed_source, {},
+                                                              &typed_source);
+    const auto environment_result
+        = openmeta::translate_xmp_environment_metadata(typed_source, {},
+                                                       &typed_source);
+    const auto typed_dumped = openmeta::dump_xmp_portable(typed_source,
+                                                          capture_sync_bytes,
+                                                          capture_sync_options);
+    const std::string_view typed_packet(reinterpret_cast<const char*>(
+                                            capture_sync_bytes.data()),
+                                        typed_dumped.written);
+    const bool typed_contract_matches
+        = typed_edited.ok()
+          && additional_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && environment_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && openmeta::validate_store(typed_source).ok()
+          && typed_dumped.status == openmeta::XmpDumpStatus::Ok
+          && typed_packet.find("<exif:FileSource>2</exif:FileSource>")
+                 != std::string_view::npos
+          && typed_packet.find("<exifEX:WaterDepth>-7/-1</exifEX:WaterDepth>")
+                 != std::string_view::npos;
     constexpr std::array<openmeta::URational, 4> identity_lens = {
         openmeta::URational { 24U, 1U }, { 70U, 1U }, { 14U, 5U }, { 0U, 0U }
     };
@@ -660,7 +700,7 @@ main()
                    || !sensitivity_contract_matches
                    || !camera_text_contract_matches || !apex_contract_matches
                    || !spatial_contract_matches || !identity_contract_matches
-                   || !capture_sync_contract_matches
+                   || !capture_sync_contract_matches || !typed_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches || handoff.valid()

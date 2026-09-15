@@ -109,3 +109,34 @@ direct in-place file patching. Supported edited creation dates can be projected
 explicitly into native EXIF/IPTC groups before persistence; see
 :doc:`translation`. Lower-level ``MetaEdit`` remains available for entry-ID-
 based host code; transfer and writer APIs handle persistence.
+
+Exact typed keys (0.5.6)
+------------------------
+
+``edit_metadata_typed`` uses borrowed ``MetadataAuthoringEntry`` keys and values
+for EXIF/TIFF, IPTC-IIM and XMP, including private/custom entries. Inputs are
+copied; every supplied value and the complete final candidate are validated
+before publication. A failed batch leaves source and output unchanged, even
+when they alias. This experimental v1 API is C++ only.
+
+Add defaults to ``FailIfPresent``; explicit ``Append`` allows repeated keys,
+subject to final schema singleton checks. Set and Remove default to
+``kMetadataTypedEditingUniqueOccurrence``. Numeric occurrences select current
+active exact-key matches. Remove also accepts ``kMetadataEditingAllOccurrences``.
+Missing targets fail. Ordered Remove-all then Add can repair duplicates.
+
+Set retains entry identity, block and order, replaces wire hints and clears
+obsolete wire type names. Omitted hints request inference. Remove retains dirty
+tombstones; Add has no original source block. Exact XMP indices are not
+renumbered. There is no implicit alias translation or container restructuring.
+
+Defaults bound requests to 4096 primitive operations, 8 MiB of key/payload
+bytes, 200000 output entries, 64 MiB output arena/value bytes and 4096 bytes per
+key component. Remove-all expansion counts toward the operation limit. Retained
+tombstones/arena bytes and existing lower store ceilings count toward output
+limits. Every supplied value must be valid even if later overwritten; selected
+schema and complete candidate validation can reject unrelated malformed base
+metadata. Preparation can allocate; the host synchronizes conflicting access.
+
+The combined fixture edits typed XMP, translates twelve groups and checks
+serialized snapshots through JPEG, classic TIFF and BigTIFF add/replace paths.

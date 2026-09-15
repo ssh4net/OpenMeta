@@ -50840,7 +50840,8 @@ TEST(MetadataTransferApi,
     }
 }
 
-TEST(MetadataTransferApi, CaptureSyncTenApiSnapshotsRoundTripAcrossContainers)
+TEST(MetadataTransferApi,
+     CaptureSyncTypedEditsAndTwelveApiSnapshotsRoundTripAcrossContainers)
 {
     using namespace openmeta;
     MetaStore source;
@@ -50855,6 +50856,7 @@ TEST(MetadataTransferApi, CaptureSyncTenApiSnapshotsRoundTripAcrossContainers)
                              TextEncoding::Ascii);
     ASSERT_NE(source.add_entry(camera), kInvalidEntryId);
     source.finalize();
+    ASSERT_TRUE(test::capture_sync_edit(source));
     ASSERT_TRUE(test::capture_sync_translate(source));
     const auto snapshot = build_transfer_source_snapshot(source);
     std::vector<std::byte> bytes;

@@ -49,6 +49,20 @@ MetaEdit::set_value(EntryId target, const MetaValue& value)
 
 
 void
+MetaEdit::set_value(EntryId target, const MetaValue& value, WireType wire_type,
+                    uint32_t wire_count)
+{
+    EditOp op;
+    op.kind                    = EditOpKind::SetValueWithWire;
+    op.target                  = target;
+    op.value                   = value;
+    op.entry.origin.wire_type  = wire_type;
+    op.entry.origin.wire_count = wire_count;
+    ops_.push_back(op);
+}
+
+
+void
 MetaEdit::tombstone(EntryId target)
 {
     EditOp op;
@@ -166,13 +180,19 @@ commit(const MetaStore& base, std::span<const MetaEdit> edits)
                 out.entries_.push_back(entry);
                 break;
             }
-            case EditOpKind::SetValue: {
+            case EditOpKind::SetValue:
+            case EditOpKind::SetValueWithWire: {
                 if (op.target >= out.entries_.size()) {
                     break;
                 }
                 Entry& updated = out.entries_[op.target];
                 updated.value = copy_value(op.value, edit.arena(), out.arena());
                 updated.flags |= EntryFlags::Dirty;
+                if (op.kind == EditOpKind::SetValueWithWire) {
+                    updated.origin.wire_type      = op.entry.origin.wire_type;
+                    updated.origin.wire_count     = op.entry.origin.wire_count;
+                    updated.origin.wire_type_name = {};
+                }
                 break;
             }
             case EditOpKind::Tombstone: {

@@ -22,6 +22,7 @@ enum class EditOpKind : uint8_t {
     AddEntry,
     SetValue,
     Tombstone,
+    SetValueWithWire,
 };
 
 /// A single edit operation recorded by MetaEdit.
@@ -54,6 +55,9 @@ public:
     void add_entry(const Entry& entry);
     /// Updates the value of an existing entry id.
     void set_value(EntryId target, const MetaValue& value);
+    /// Replaces the value and encoding hints, retaining other provenance.
+    void set_value(EntryId target, const MetaValue& value, WireType wire_type,
+                   uint32_t wire_count);
     /// Marks an entry as deleted (tombstone).
     void tombstone(EntryId target);
 

@@ -7032,7 +7032,382 @@ namespace {
         }
     }
 
-    TEST(MetadataCaptureSync, TenApisRoundTripTogetherAndKeepCallTransactions)
+    constexpr std::array<uint16_t, 9> kAdditionalTags
+        = { 0xa405U, 0xa300U, 0xa301U, 0x9400U, 0x9401U,
+            0x9402U, 0x9403U, 0x9404U, 0x9405U };
+    constexpr std::array<std::string_view, 9> kAdditionalNames
+        = { "FocalLengthIn35mmFilm",
+            "FileSource",
+            "SceneType",
+            "Temperature",
+            "Humidity",
+            "Pressure",
+            "WaterDepth",
+            "Acceleration",
+            "CameraElevationAngle" };
+
+    static MetadataCaptureTranslationResult additional_translate(
+        MetaStore& source, bool environment,
+        MetadataCaptureTranslationConflictPolicy policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+        uint32_t max_ops = kMetadataCaptureTranslationMaxOperations)
+    {
+        if (environment)
+            return translate_xmp_environment_metadata(
+                source,
+                { .conflict_policy = policy, .max_operations = max_ops },
+                &source);
+        return translate_xmp_capture_additional_metadata(
+            source, { .conflict_policy = policy, .max_operations = max_ops },
+            &source);
+    }
+
+    TEST(MetadataAdditionalCapture, CodesUseUndefinedBytesAndExplicitAliases)
+    {
+        for (uint16_t code = 0U; code < 4U; ++code) {
+            MetaStore source;
+            settings_xmp(source,
+                         code % 2U ? "FocalLengthIn35mmFormat"
+                                   : "FocalLengthIn35mmFilm",
+                         make_u16(code == 0U ? 0U : UINT16_MAX));
+            settings_xmp(source, "FileSource", make_u16(code));
+            settings_xmp(source, "SceneType",
+                         make_text(source.arena(), "1", TextEncoding::Utf8));
+            source.finalize();
+            const auto result = additional_translate(source, false);
+            ASSERT_EQ(result.status, MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(result.entries_added, 3U);
+            EXPECT_EQ(settings_find(source, 0xa405U)->value.data.u64,
+                      code == 0U ? 0U : UINT16_MAX);
+            for (uint16_t tag : { 0xa300U, 0xa301U }) {
+                const auto& value = settings_find(source, tag)->value;
+                ASSERT_EQ(value.kind, MetaValueKind::Bytes);
+                ASSERT_EQ(value.count, 1U);
+                EXPECT_EQ(std::to_integer<uint8_t>(
+                              source.arena().span(value.data.span)[0]),
+                          tag == 0xa300U ? code : 1U);
+            }
+            EXPECT_EQ(additional_translate(source, false).groups_unchanged, 3U);
+        }
+    }
+
+    TEST(MetadataAdditionalCapture, InvalidCodesAndAliasesRollBack)
+    {
+        for (size_t i = 0U; i < 3U; ++i) {
+            for (unsigned variant = 0U; variant < 5U; ++variant) {
+                MetaStore source;
+                settings_xmp(source, "Temperature", make_srational(20, 1));
+                MetaValue value = make_u32(i == 0U   ? 65536U
+                                           : i == 1U ? 4U
+                                                     : 0U);
+                if (variant == 1U)
+                    value = make_i32(-1);
+                if (variant == 2U)
+                    value = make_text(source.arena(), "3 mm",
+                                      TextEncoding::Utf8);
+                if (variant == 3U) {
+                    value       = make_u16(1);
+                    value.count = 2U;
+                }
+                if (variant == 4U)
+                    value = make_urational(1U, 1U);
+                settings_xmp(source, kAdditionalNames[i], value);
+                source.finalize();
+                const auto before = source.entries().size();
+                const auto result = additional_translate(source, false);
+                EXPECT_NE(result.status, MetadataCaptureTranslationStatus::Ok);
+                EXPECT_EQ(result.entries_added, 0U);
+                EXPECT_EQ(source.entries().size(), before);
+                EXPECT_EQ(settings_find(source, kAdditionalTags[i]), nullptr);
+            }
+        }
+        MetaStore source;
+        settings_xmp(source, "FocalLengthIn35mmFilm", make_u16(35));
+        settings_xmp(source, "FocalLengthIn35mmFormat", make_u16(35));
+        source.finalize();
+        EXPECT_EQ(additional_translate(source, false).status,
+                  MetadataCaptureTranslationStatus::AmbiguousSource);
+    }
+
+    TEST(MetadataEnvironment, ExactFiniteValuesAndUnknownDenominators)
+    {
+        struct Case {
+            size_t field;
+            std::string_view input;
+            int64_t numer;
+            int64_t denom;
+        };
+        constexpr std::array cases = {
+            Case { 3U, "-20.5", -41, 2 },
+            Case { 4U, "301/3", 301, 3 },
+            Case { 5U, "1.01325e3", 4053, 4 },
+            Case { 6U, "-1/3", -1, 3 },
+            Case { 7U, "9.80665e5", 980665, 1 },
+            Case { 8U, "-180", -180, 1 },
+            Case { 8U, "179999/1000", 179999, 1000 },
+            Case { 3U, "-7/-1", -7, -1 },
+            Case { 6U, "-2147483648/4294967295", INT32_MIN, -1 },
+            Case { 8U, "Unknown", 0, -1 },
+            Case { 4U, "7/4294967295", 7, UINT32_MAX },
+            Case { 5U, "4294967295/4294967295", UINT32_MAX, UINT32_MAX },
+            Case { 7U, "Unknown", 0, UINT32_MAX },
+            Case { 3U, "2/4", 1, 2 },
+            Case { 4U, "4294967295/4294967294", UINT32_MAX, UINT32_MAX - 1U },
+        };
+        for (const auto& item : cases) {
+            SCOPED_TRACE(item.input);
+            for (bool legacy : { false, true }) {
+                MetaStore source;
+                settings_xmp(source, kAdditionalNames[item.field],
+                             make_text(source.arena(), item.input,
+                                       TextEncoding::Utf8),
+                             EntryFlags::Dirty,
+                             legacy ? kSettingsNs : kSensitivityNs);
+                source.finalize();
+                const auto result = additional_translate(source, true);
+                ASSERT_EQ(result.status, MetadataCaptureTranslationStatus::Ok);
+                const auto& value
+                    = settings_find(source, kAdditionalTags[item.field])->value;
+                const bool sign = item.field == 3U || item.field == 6U
+                                  || item.field == 8U;
+                if (sign) {
+                    ASSERT_EQ(value.elem_type, MetaElementType::SRational);
+                    EXPECT_EQ(value.data.sr.numer, item.numer);
+                    EXPECT_EQ(value.data.sr.denom, item.denom);
+                } else {
+                    ASSERT_EQ(value.elem_type, MetaElementType::URational);
+                    EXPECT_EQ(value.data.ur.numer, item.numer);
+                    EXPECT_EQ(value.data.ur.denom, item.denom);
+                }
+                EXPECT_EQ(additional_translate(source, true).groups_unchanged,
+                          1U);
+                XmpPortableOptions options;
+                options.include_existing_xmp = true;
+                options.existing_standard_namespace_policy
+                    = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+                std::array<std::byte, 4096> bytes {};
+                const auto dumped = dump_xmp_portable(source, bytes, options);
+                ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+                const std::string xml(reinterpret_cast<const char*>(
+                                          bytes.data()),
+                                      dumped.written);
+                const std::string name(kAdditionalNames[item.field]);
+                EXPECT_NE(xml.find("<exifEX:" + name + ">"
+                                   + std::to_string(item.numer) + "/"
+                                   + std::to_string(item.denom)
+                                   + "</exifEX:" + name + ">"),
+                          std::string::npos);
+                EXPECT_EQ(xml.find("<exif:" + name + ">"), std::string::npos);
+                MetaStore restored;
+                ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(),
+                                                      dumped.written),
+                                            restored)
+                              .status,
+                          XmpDecodeStatus::Ok);
+                restored.finalize();
+                ASSERT_EQ(translate_xmp_environment_metadata(
+                              restored,
+                              { .source_mode
+                                = MetadataCaptureTranslationSourceMode::All },
+                              &restored)
+                              .status,
+                          MetadataCaptureTranslationStatus::Ok);
+                const auto& r = settings_find(restored,
+                                              kAdditionalTags[item.field])
+                                    ->value;
+                if (sign) {
+                    EXPECT_EQ(r.data.sr.numer, item.numer);
+                    EXPECT_EQ(r.data.sr.denom, item.denom);
+                } else {
+                    EXPECT_EQ(r.data.ur.numer, item.numer);
+                    EXPECT_EQ(r.data.ur.denom, item.denom);
+                }
+            }
+        }
+    }
+
+    TEST(MetadataEnvironment,
+         InvalidValuesShapesAndNamespaceDuplicatesAreTransactional)
+    {
+        struct Case {
+            size_t field;
+            std::string_view text;
+        };
+        constexpr std::array cases = {
+            Case { 3U, "1/0" },          Case { 3U, "1/-2" },
+            Case { 3U, "1.5/-1" },       Case { 3U, "2147483648/-1" },
+            Case { 3U, "1/2147483648" }, Case { 4U, "-1" },
+            Case { 4U, "1/-1" },         Case { 4U, "4294967296/4294967295" },
+            Case { 4U, "2/8589934590" }, Case { 5U, "1013 hPa" },
+            Case { 8U, "180" },          Case { 8U, "-180.001" },
+            Case { 8U, "nan" },
+        };
+        for (const auto& item : cases) {
+            SCOPED_TRACE(item.text);
+            MetaStore source;
+            settings_xmp(source, "Acceleration", make_u32(100));
+            settings_xmp(source, kAdditionalNames[item.field],
+                         make_text(source.arena(), item.text,
+                                   TextEncoding::Utf8),
+                         EntryFlags::Dirty, kSensitivityNs);
+            source.finalize();
+            const auto before = source.entries().size();
+            EXPECT_NE(additional_translate(source, true).status,
+                      MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(source.entries().size(), before);
+            EXPECT_EQ(settings_find(source, 0x9404U), nullptr);
+        }
+        for (size_t i = 0U; i < 9U; ++i) {
+            for (std::string_view suffix : { "[1]", "/value", "?xml:lang" }) {
+                MetaStore source;
+                settings_xmp(source,
+                             std::string(kAdditionalNames[i])
+                                 + std::string(suffix),
+                             make_u16(1));
+                source.finalize();
+                EXPECT_EQ(
+                    additional_translate(source, i >= 3U).status,
+                    MetadataCaptureTranslationStatus::UnsupportedSourceShape);
+            }
+        }
+        MetaStore duplicate;
+        settings_xmp(duplicate, "Temperature", make_srational(1, 1));
+        settings_xmp(duplicate, "Temperature", make_srational(1, 1),
+                     EntryFlags::Dirty, kSensitivityNs);
+        duplicate.finalize();
+        EXPECT_EQ(additional_translate(duplicate, true).status,
+                  MetadataCaptureTranslationStatus::AmbiguousSource);
+    }
+
+    TEST(MetadataAdditionalCapture, ConflictsDeletionAndOperationBudgets)
+    {
+        for (size_t i = 0U; i < 9U; ++i) {
+            SCOPED_TRACE(i);
+            for (const auto policy :
+                 { MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+                   MetadataCaptureTranslationConflictPolicy::PreserveExisting,
+                   MetadataCaptureTranslationConflictPolicy::ReplaceExisting }) {
+                MetaStore source;
+                settings_xmp(source, kAdditionalNames[i], make_u16(1));
+                settings_native(source, kAdditionalTags[i], make_u32(2));
+                settings_native(source, kAdditionalTags[i], make_u32(3));
+                source.finalize();
+                const auto result = additional_translate(source, i >= 3U,
+                                                         policy);
+                if (policy
+                    == MetadataCaptureTranslationConflictPolicy::FailOnConflict) {
+                    EXPECT_EQ(result.status,
+                              MetadataCaptureTranslationStatus::NativeConflict);
+                    EXPECT_EQ(settings_active_count(source, kAdditionalTags[i]),
+                              2U);
+                } else if (policy
+                           == MetadataCaptureTranslationConflictPolicy::
+                               PreserveExisting) {
+                    EXPECT_EQ(result.status,
+                              MetadataCaptureTranslationStatus::Ok);
+                    EXPECT_EQ(result.groups_preserved, 1U);
+                    EXPECT_EQ(settings_active_count(source, kAdditionalTags[i]),
+                              2U);
+                } else {
+                    ASSERT_EQ(result.status,
+                              MetadataCaptureTranslationStatus::Ok);
+                    EXPECT_EQ(result.entries_updated, 1U);
+                    EXPECT_EQ(result.entries_removed, 1U);
+                    EXPECT_EQ(settings_active_count(source, kAdditionalTags[i]),
+                              1U);
+                }
+            }
+            MetaStore source;
+            settings_xmp(source, kAdditionalNames[i], {},
+                         EntryFlags::Dirty | EntryFlags::Deleted);
+            settings_native(source, kAdditionalTags[i], make_u32(2));
+            settings_native(source, kAdditionalTags[i], make_u32(3));
+            source.finalize();
+            constexpr auto replace
+                = MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+            EXPECT_EQ(additional_translate(source, i >= 3U, replace, 1U).status,
+                      MetadataCaptureTranslationStatus::OperationLimitExceeded);
+            EXPECT_EQ(settings_active_count(source, kAdditionalTags[i]), 2U);
+            EXPECT_EQ(
+                additional_translate(source, i >= 3U, replace).entries_removed,
+                2U);
+            EXPECT_EQ(settings_active_count(source, kAdditionalTags[i]), 0U);
+        }
+        for (bool environment : { false, true }) {
+            for (bool entry_limit : { false, true }) {
+                MetaStore source;
+                settings_xmp(source, environment ? "Temperature" : "FileSource",
+                             make_u16(1U));
+                source.finalize();
+                source.constrain_resources(entry_limit ? 1U : 0U,
+                                           entry_limit
+                                               ? 0U
+                                               : source.arena().bytes().size());
+                const auto before = source.arena().bytes().size();
+                const auto result = additional_translate(source, environment);
+                EXPECT_EQ(result.status,
+                          MetadataCaptureTranslationStatus::EntryLimitExceeded);
+                EXPECT_EQ(result.entries_added, 0U);
+                EXPECT_EQ(source.entries().size(), 1U);
+                EXPECT_EQ(source.arena().bytes().size(), before);
+                EXPECT_FALSE(source.resource_limit_exceeded());
+            }
+        }
+    }
+
+    TEST(MetadataAdditionalCapture, InvalidNativeKeepsExistingPortableSource)
+    {
+        for (unsigned variant = 0U; variant < 4U; ++variant) {
+            MetaStore source;
+            for (size_t i = 0U; i < 9U; ++i) {
+                settings_xmp(source, kAdditionalNames[i], make_u16(1),
+                             EntryFlags::Dirty,
+                             i < 3U ? kSettingsNs : kSensitivityNs);
+                MetaValue value = make_u64(1);
+                if (variant == 1U)
+                    value = make_srational(1, -2);
+                if (variant == 2U)
+                    value = make_urational(1U, 0U);
+                if (variant == 3U) {
+                    value       = make_u16(1);
+                    value.count = 2U;
+                }
+                settings_native(source, kAdditionalTags[i], value);
+            }
+            source.finalize();
+            XmpPortableOptions options;
+            options.include_existing_xmp = true;
+            options.conflict_policy      = XmpConflictPolicy::GeneratedWins;
+            options.existing_standard_namespace_policy
+                = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+            std::array<std::byte, 8192> bytes {};
+            const auto dumped = dump_xmp_portable(source, bytes, options);
+            ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+            MetaStore restored;
+            ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(), dumped.written),
+                                        restored)
+                          .status,
+                      XmpDecodeStatus::Ok);
+            restored.finalize();
+            EXPECT_EQ(translate_xmp_capture_additional_metadata(
+                          restored,
+                          { .source_mode
+                            = MetadataCaptureTranslationSourceMode::All },
+                          &restored)
+                          .entries_added,
+                      3U);
+            EXPECT_EQ(translate_xmp_environment_metadata(
+                          restored,
+                          { .source_mode
+                            = MetadataCaptureTranslationSourceMode::All },
+                          &restored)
+                          .entries_added,
+                      6U);
+        }
+    }
+
+    TEST(MetadataCaptureSync,
+         TwelveApisRoundTripTogetherAndKeepCallTransactions)
     {
         const auto xml = test::kCaptureSyncXml;
         MetaStore source;
@@ -7060,10 +7435,10 @@ namespace {
                   MetadataCaptureTranslationStatus::NativeConflict);
         EXPECT_EQ(translated.entries().size(), partial_count);
         ASSERT_TRUE(test::capture_sync_translate(translated));
-        EXPECT_EQ(translated.entries().size(), source_count + 46U);
+        EXPECT_EQ(translated.entries().size(), source_count + 55U);
         EXPECT_EQ(source.entries().size(), source_count);
         ASSERT_TRUE(test::capture_sync_translate(translated, true));
-        EXPECT_EQ(translated.entries().size(), source_count + 46U);
+        EXPECT_EQ(translated.entries().size(), source_count + 55U);
         for (bool existing : { false, true }) {
             for (const auto policy : { XmpConflictPolicy::CurrentBehavior,
                                        XmpConflictPolicy::ExistingWins,

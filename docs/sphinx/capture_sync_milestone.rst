@@ -4,9 +4,23 @@ Capture Synchronization Milestone
 Audit date: 2026-09-14. Original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing signatures, ABI 3 or host synchronization responsibilities.
-Ten explicit reverse APIs cover **46 distinct ExifIFD tags**,
+Twelve explicit reverse APIs now cover **55 distinct ExifIFD tags**,
 including camera text and excluding GPS, dates, geometry, IPTC and MakerNotes.
 This count does not measure all-EXIF or competitor coverage.
+
+Typed editing and new fields in 0.5.6
+-------------------------------------
+
+The exact-key editor validates ordered Add/Set/Remove operations and the complete
+candidate before publication. It preserves source identity, updates wire hints
+and supports aliased output. Three additional capture fields and six environment
+fields extend the combined workflow to 55 unique native targets. Unknown raw
+rational denominators are preserved before reduction. The fixture covers typed
+XMP edits, twelve translators and serialized snapshots through JPEG, classic
+TIFF and BigTIFF add/replace paths. Python exposes both new translators; the
+installed shared-library check exercises the new C++ entry points. See
+:doc:`editing` and :doc:`translation` for contracts and limits.
+The earlier audit observations below retain their historical 46-target scope.
 
 Fixes in 0.5.5
 ------------------
@@ -72,11 +86,18 @@ The API stems below have the prefix ``translate_xmp_`` and suffix
      - 5
      - Focal-plane resolution/unit and subject arrays
 
-ISO and ExposureBiasValue are each shared by two APIs. The 48 mappings
-therefore cover 46 distinct tags.
+   * - capture_additional
+     - 3
+     - FocalLengthIn35mmFilm, FileSource, SceneType
+   * - environment
+     - 6
+     - Temperature, Humidity, Pressure, WaterDepth, Acceleration, CameraElevationAngle
 
-Combined Qualification and Gaps
-------------------------------------
+ISO and ExposureBiasValue are each shared by two APIs. The 57 mappings
+therefore cover 55 distinct tags.
+
+Historical 0.5.4 Qualification and Gaps
+---------------------------------------
 
 Ordinary and fractional fixtures pass exact native type/count/value checks for
 all 46 targets in JPEG and classic TIFF with explicit ``ReplaceExisting``.
@@ -133,10 +154,8 @@ The 0.5.5 fix retains API signatures and covers these acceptance checks:
 4. Combined ten-API, policy, rollback and JPEG/classic TIFF/BigTIFF checks,
    independent reads, and one platform matrix against the final patch.
 
-The next feature batch can select additional capture scalars, then the six
-environment fields, with an explicit combined contract for each family.
-Further field batches remain separate: additional capture scalars; six
-environment values; image encoding/calibration fields; composite capture
+The additional capture and environment batches are implemented in 0.5.6.
+Next, define image encoding/calibration field contracts and composite capture
 groups; structured/opaque OECF, CFA and device data; UserComment and EXIF text
 encoding/version extensions. MakerNote rewrite trust remains vendor-specific.
 Read/display support does not establish reverse writeback support. Downstream

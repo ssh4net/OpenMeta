@@ -1557,3 +1557,59 @@ the XMP namespace and ordered-array mappings follow
 Requiring explicit complete groups and positive resolutions is this bounded
 OpenMeta contract. This is not full Exif conformance or downstream acceptance.
 The five new targets bring capture-related coverage to 46 targets across ten APIs.
+
+## Additional capture and environment fields (0.5.6)
+
+Two explicit, bounded APIs extend the capture family to twelve calls and 55
+distinct ExifIFD targets. Both reuse capture source modes, conflict policies,
+dirty tombstones, failure details and transaction rules. Python provides
+`Document.translate_capture_additional_metadata(...)` and
+`Document.translate_environment_metadata(...)` with the same defaults and
+limits. Each call publishes independently; hosts that need an entire multi-call
+workflow transaction should keep the candidate detached until every call succeeds.
+
+| API / property | Native tag and shape | Accepted meaning |
+| --- | --- | --- |
+| Additional: exif:FocalLengthIn35mmFilm | A405 SHORT, 1 | Millimetres, 0 unknown, maximum 65535. FocalLengthIn35mmFormat is an explicit alias and remains the portable output spelling. |
+| Additional: exif:FileSource | A300 UNDEFINED, 1 | 0 other, 1 transparent scanner, 2 reflex scanner, 3 digital still camera. |
+| Additional: exif:SceneType | A301 UNDEFINED, 1 | 1 directly photographed image. |
+| Environment: exifEX:Temperature | 9400 SRATIONAL, 1 | Degrees Celsius. |
+| Environment: exifEX:Humidity | 9401 RATIONAL, 1 | Percent. No additional physical range is imposed. |
+| Environment: exifEX:Pressure | 9402 RATIONAL, 1 | hPa. |
+| Environment: exifEX:WaterDepth | 9403 SRATIONAL, 1 | Metres; negative above water level. |
+| Environment: exifEX:Acceleration | 9404 RATIONAL, 1 | mGal (10^-5 m/s²). |
+| Environment: exifEX:CameraElevationAngle | 9405 SRATIONAL, 1 | Degrees, finite values in [-180, 180). |
+
+Additional capture inputs accept scalar integer values and decimal integer
+text, with no labels, units, rounding or sensor-size inference. Native
+FileSource and SceneType remain one-byte `MetaValueKind::Bytes`, and portable
+XMP emits integer text. Environment inputs accept the matching typed rational,
+integers and exact decimal/scientific/fraction text. Floating-point values and
+unit suffixes are rejected. The CIPA namespace URI is
+`http://cipa.jp/exif/1.0/`; legacy EXIF namespace environment properties are
+accepted as aliases. Duplicate eligible aliases, indexed/structured paths and
+malformed scalar shapes fail before mutation.
+
+For every environment tag, raw denominator `0xffffffff` means unknown.
+SRATIONAL represents those bits as `-1`. Recognition precedes reduction, and
+unknown numerators are preserved. Typed `SRational{-7, -1}` and text `-7/-1`
+or `-7/4294967295` retain the same unknown value. Unsigned `7/4294967295` also
+retains its numerator. Text `Unknown` uses numerator zero. Other denominators
+must be positive; a finite fraction that reduces to the reserved denominator
+is rejected. Finite fractions reduce exactly within their native integer width.
+
+Portable output uses exact numerator/denominator text for these typed values.
+`CanonicalizeManaged` removes legacy namespace aliases only when a valid native
+replacement will be emitted. Invalid native shapes, codes and finite elevation
+ranges leave existing XMP available. `PreserveAll` retains explicit aliases,
+which can subsequently fail reverse translation as ambiguous.
+
+The per-call defaults are 3 or 6 added entries, 1024 primitive edit operations,
+128 text bytes per property, and 384 or 768 total text bytes. Options may lower
+these bounds. Typed editing before translation is described in
+[editing.md](editing.md#exact-typed-keys-056).
+
+Contracts follow the native definitions in
+[CIPA Exif 2.32](https://www.cipa.jp/std/documents/e/DC-X008-Translation-2019-E.pdf)
+and the namespace/property mappings in
+[CIPA Exif metadata for XMP](https://www.cipa.jp/std/documents/e/DC-X010-2017.pdf).

@@ -883,6 +883,51 @@ with tempfile.TemporaryDirectory() as temporary:
     assert restored.translate_capture_spatial_metadata(source_mode=mode).entry_count == restored.entry_count + 5
     assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'additional_environment.jpg'
+    mode = openmeta.MetadataCaptureTranslationSourceMode.All
+    for stem, prefix, namespace, fields in [
+        ('capture_additional', 'e', 'http://ns.adobe.com/exif/1.0/', [
+            ('FocalLengthIn35mmFilm', '65535', 'focal_length_in_35mm_film'),
+            ('FileSource', '2', 'file_source'), ('SceneType', '1', 'scene_type')]),
+        ('environment', 'x', 'http://cipa.jp/exif/1.0/', [
+            ('Temperature', '-41/2', 'temperature'), ('Humidity', '301/3', 'humidity'),
+            ('Pressure', '7/4294967295', 'pressure'), ('WaterDepth', '-7/-1', 'water_depth'),
+            ('Acceleration', '980665', 'acceleration'), ('CameraElevationAngle', '-180', 'camera_elevation_angle')])]:
+        properties = ''.join(f'<{prefix}:{name}>{value}</{prefix}:{name}>' for name, value, _ in fields)
+        xml = (f'<r:RDF xmlns:r=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><r:Description xmlns:{prefix}=\"{namespace}\">' + properties + '</r:Description></r:RDF>').encode()
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        document = openmeta.read(str(path))
+        count = document.entry_count
+        method = getattr(document, 'translate_' + stem + '_metadata')
+        assert getattr(openmeta, 'METADATA_' + stem.upper() + '_TRANSLATION_CONTRACT_VERSION') == 1
+        assert method().entry_count == count
+        translated = method(source_mode=mode)
+        assert translated.entry_count == count + len(fields)
+        assert getattr(translated, 'translate_' + stem + '_metadata')(source_mode=mode).entry_count == translated.entry_count
+        for _, _, selected in fields:
+            flags = {flag + '_to_exif': flag == selected for _, _, flag in fields}
+            assert method(source_mode=mode, **flags).entry_count == count + 1
+        for bound in ('max_operations', 'max_added_entries'):
+            try:
+                method(source_mode=mode, **{bound: len(fields) - 1})
+            except ValueError as error:
+                assert 'limit_exceeded' in str(error)
+            else:
+                raise AssertionError(stem + ' ignored ' + bound)
+        payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
+        if stem == 'environment':
+            assert b'<exifEX:Pressure>7/4294967295</exifEX:Pressure>' in payload
+            assert b'<exifEX:WaterDepth>-7/-1</exifEX:WaterDepth>' in payload
+        else:
+            assert b'<exif:FileSource>2</exif:FileSource>' in payload
+        packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+        path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+        restored = openmeta.read(str(path))
+        assert getattr(restored, 'translate_' + stem + '_metadata')(source_mode=mode).entry_count == restored.entry_count + len(fields)
+        assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 
