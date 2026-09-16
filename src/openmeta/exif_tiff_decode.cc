@@ -4736,6 +4736,9 @@ decode_exif_tiff_contiguous(std::span<const std::byte> tiff_bytes,
                 continue;
             }
 
+            if (ifd_name == "exififd" && tag == 0xa462U && type == 7U
+                && !cfg.le)
+                entry.flags |= EntryFlags::ValueBigEndian;
             maybe_mark_contextual_name(ifd_name, tag, store, &entry);
             if (store.add_entry(entry) == kInvalidEntryId) {
                 mark_limit_exceeded(&sink.result,
@@ -5375,6 +5378,9 @@ namespace exif_internal {
                                                 ifd_entry.count32, 0U,
                                                 ref.value_bytes, store.arena(),
                                                 options.limits, status_out);
+                if (ifd_name == "exififd" && ifd_entry.tag == 0xa462U
+                    && ifd_entry.type == 7U && !value_cfg.le)
+                    entry.flags |= EntryFlags::ValueBigEndian;
             }
             if (mark_contextual_names) {
                 maybe_mark_contextual_name(ifd_name, ifd_entry.tag, store,
@@ -6515,6 +6521,9 @@ decode_exif_tiff_random_access(
                     || tag == 0x014AU)) {
                 continue;
             }
+            if (ifd_name == "exififd" && tag == 0xa462U && type == 7U
+                && !cfg.le)
+                entry.flags |= EntryFlags::ValueBigEndian;
             maybe_mark_contextual_name(ifd_name, tag, store, &entry);
             if (store.add_entry(entry) == kInvalidEntryId) {
                 mark_limit_exceeded(&result.decode,

@@ -189,6 +189,9 @@ commit(const MetaStore& base, std::span<const MetaEdit> edits)
                 updated.value = copy_value(op.value, edit.arena(), out.arena());
                 updated.flags |= EntryFlags::Dirty;
                 if (op.kind == EditOpKind::SetValueWithWire) {
+                    updated.flags = static_cast<EntryFlags>(
+                        static_cast<uint8_t>(updated.flags)
+                        & ~static_cast<uint8_t>(EntryFlags::ValueBigEndian));
                     updated.origin.wire_type      = op.entry.origin.wire_type;
                     updated.origin.wire_count     = op.entry.origin.wire_count;
                     updated.origin.wire_type_name = {};

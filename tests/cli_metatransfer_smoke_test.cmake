@@ -219,8 +219,14 @@ if(NOT _rv_write_dng EQUAL 0)
   message(FATAL_ERROR
     "failed to write target dng fixture (${_rv_write_dng})\nstdout:\n${_out_write_dng}\nstderr:\n${_err_write_dng}")
 endif()
-file(COPY_FILE "${_target_dng}" "${_sdk_target_dng}")
-file(COPY_FILE "${_target_dng}" "${_sdk_target_dng_before}")
+# CMake 3.28 COPY_FILE can fail on SMB mounts even when both paths are writable.
+# The portable copy command also supports the project's CMake 3.20 minimum.
+foreach(_sdk_copy IN ITEMS "${_sdk_target_dng}" "${_sdk_target_dng_before}")
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E copy "${_target_dng}" "${_sdk_copy}"
+    COMMAND_ERROR_IS_FATAL ANY
+  )
+endforeach()
 
 # Minimal classic big-endian TIFF target (MM + 42 + IFD0 at offset 8 with 0 entries)
 execute_process(

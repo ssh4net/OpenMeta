@@ -29,6 +29,9 @@ enum class EntryFlags : uint8_t {
     Unreadable = 1U << 4U,
     /// Entry name has a decode-time contextual display variant.
     ContextualName = 1U << 5U,
+    /// A462 structured bytes use big-endian integers; unset means little-endian.
+    /// The raw value remains byte-for-byte unchanged after decoding.
+    ValueBigEndian = 1U << 6U,
 };
 
 constexpr EntryFlags

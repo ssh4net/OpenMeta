@@ -540,7 +540,7 @@ main()
           && capture_sync_packet.find("<exif:ISO>") == std::string_view::npos;
     openmeta::MetaStore typed_source;
     typed_source.finalize();
-    std::array<openmeta::MetadataTypedEditingOperation, 2> typed_operations {};
+    std::array<openmeta::MetadataTypedEditingOperation, 4> typed_operations {};
     typed_operations[0].entry.key
         = openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
                                                "FileSource");
@@ -550,6 +550,15 @@ main()
                                                "WaterDepth");
     typed_operations[1].entry.value = openmeta::make_value_view_srational(-7,
                                                                           -1);
+    typed_operations[2].entry.key
+        = openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                               "Gamma");
+    typed_operations[2].entry.value = openmeta::make_value_view_urational(0U,
+                                                                          7U);
+    typed_operations[3].entry.key
+        = openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                               "CompositeImage");
+    typed_operations[3].entry.value = openmeta::make_value_view_u16(2U);
     const auto typed_edited = openmeta::edit_metadata_typed(typed_source,
                                                             typed_operations,
                                                             &typed_source);
@@ -559,6 +568,12 @@ main()
     const auto environment_result
         = openmeta::translate_xmp_environment_metadata(typed_source, {},
                                                        &typed_source);
+    const auto encoding_result
+        = openmeta::translate_xmp_image_encoding_metadata(typed_source, {},
+                                                          &typed_source);
+    const auto composite_result
+        = openmeta::translate_xmp_composite_metadata(typed_source, {},
+                                                     &typed_source);
     const auto typed_dumped = openmeta::dump_xmp_portable(typed_source,
                                                           capture_sync_bytes,
                                                           capture_sync_options);
@@ -567,6 +582,15 @@ main()
                                         typed_dumped.written);
     const bool typed_contract_matches
         = typed_edited.ok()
+          && encoding_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && composite_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && typed_packet.find("<exifEX:Gamma>0/7</exifEX:Gamma>")
+                 != std::string_view::npos
+          && typed_packet.find(
+                 "<exifEX:CompositeImage>2</exifEX:CompositeImage>")
+                 != std::string_view::npos
           && additional_result.status
                  == openmeta::MetadataCaptureTranslationStatus::Ok
           && environment_result.status

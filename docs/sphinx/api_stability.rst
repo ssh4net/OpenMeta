@@ -769,3 +769,14 @@ writing a test that is intentionally tied to implementation details.
 High-throughput hosts should use :doc:`host_adoption_profile` for read/state
 compatibility and :doc:`prepared_transfer_handoff` for stable target
 preparation, then query format capabilities separately.
+
+Image Encoding and Composite Translation (0.5.7)
+-------------------------------------------------
+
+``translate_xmp_image_encoding_metadata`` and ``translate_xmp_composite_metadata``
+are experimental v1 APIs with thin Python wrappers. Six typed native fields,
+exact rationals, group dependencies and bounded binary exposure lists share
+validation and portable-output rules. ``EntryFlags::ValueBigEndian`` preserves
+raw big-endian exposure bytes. Snapshot v1 layout remains unchanged, but a
+snapshot carrying this new flag needs a 0.5.7 or later reader. See
+:doc:`translation`.

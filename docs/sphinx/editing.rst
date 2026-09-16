@@ -138,5 +138,5 @@ limits. Every supplied value must be valid even if later overwritten; selected
 schema and complete candidate validation can reject unrelated malformed base
 metadata. Preparation can allocate; the host synchronizes conflicting access.
 
-The combined fixture edits typed XMP, translates twelve groups and checks
+The combined fixture edits typed XMP, translates fourteen groups and checks
 serialized snapshots through JPEG, classic TIFF and BigTIFF add/replace paths.

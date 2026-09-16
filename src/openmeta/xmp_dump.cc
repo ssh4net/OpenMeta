@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "metadata_capture_fields_internal.h"
+#include "metadata_encoding_fields_internal.h"
 
 #include "openmeta/xmp_dump.h"
 
@@ -2022,7 +2023,12 @@ namespace {
         }
 
         if (prefix == "exifEX") {
-            return name == "PhotographicSensitivity"
+            return name == "Gamma" || name == "CompositeImage"
+                   || name == "SourceImageNumberOfCompositeImage"
+                   || name == "CompositeImageCount"
+                   || name == "SourceExposureTimesOfCompositeImage"
+                   || name == "CompositeImageExposureTimes"
+                   || name == "PhotographicSensitivity"
                    || name == "SensitivityType"
                    || name == "StandardOutputSensitivity"
                    || name == "RecommendedExposureIndex" || name == "ISOSpeed"
@@ -3231,9 +3237,16 @@ namespace {
         w->append(">");
         const uint64_t patch_begin = w->needed;
         if ((prefix == "exif" || prefix == "exifEX")
-            && detail::environment_property(name)
-            && v.kind == MetaValueKind::Scalar && v.count == 1U
-            && v.elem_type == MetaElementType::SRational) {
+            && (name == "Gamma" || name == "CompressedBitsPerPixel")
+            && v.kind == MetaValueKind::Scalar
+            && v.elem_type == MetaElementType::URational) {
+            append_u64_dec(v.data.ur.numer, w);
+            w->append("/");
+            append_u64_dec(v.data.ur.denom, w);
+        } else if ((prefix == "exif" || prefix == "exifEX")
+                   && detail::environment_property(name)
+                   && v.kind == MetaValueKind::Scalar && v.count == 1U
+                   && v.elem_type == MetaElementType::SRational) {
             append_i64_dec(v.data.sr.numer, w);
             w->append("/");
             append_i64_dec(v.data.sr.denom, w);
@@ -4355,6 +4368,8 @@ namespace {
     {
         if (ifd != "exififd")
             return true;
+        if (detail::encoding_tag(tag))
+            return detail::encoding_value_valid(arena, tag, value);
         if (detail::additional_capture_tag(tag))
             return detail::additional_capture_value_valid(arena, tag, value);
         if (tag == 0x829dU || tag == 0x920aU || tag == 0xa404U)
@@ -4408,10 +4423,76 @@ namespace {
                && value.data.ur.numer > 0U && value.data.ur.denom > 0U;
     }
 
+    static bool emit_composite_exposure_property(SpanWriter* w,
+                                                 std::string_view prefix,
+                                                 std::string_view name,
+                                                 const ByteArena& arena,
+                                                 const MetaValue& value,
+                                                 EntryFlags flags) noexcept
+    {
+        const auto raw    = arena.span(value.data.span);
+        const bool little = !any(flags, EntryFlags::ValueBigEndian);
+        w->append(kIndent3);
+        w->append("<");
+        w->append(prefix);
+        w->append(":");
+        w->append(name);
+        w->append(" rdf:parseType=\"Resource\">\n");
+        for (size_t i = 0U; i < 7U; ++i) {
+            const URational r = detail::composite_rational(raw, i * 8U, little);
+            w->append(kIndent4);
+            w->append("<exifEX:");
+            w->append(detail::kCompositeMembers[i]);
+            w->append(">");
+            append_u64_dec(r.numer, w);
+            w->append("/");
+            append_u64_dec(r.denom, w);
+            w->append("</exifEX:");
+            w->append(detail::kCompositeMembers[i]);
+            w->append(">\n");
+        }
+        const uint32_t sequences = detail::composite_uint(raw, 56U, 2U, little);
+        for (size_t i = 0U; i < (sequences == 0U ? 1U : 2U); ++i) {
+            w->append(kIndent4);
+            w->append("<exifEX:");
+            w->append(detail::kCompositeMembers[7U + i]);
+            w->append(">");
+            append_u64_dec(detail::composite_uint(raw, 56U + i * 2U, 2U, little),
+                           w);
+            w->append("</exifEX:");
+            w->append(detail::kCompositeMembers[7U + i]);
+            w->append(">\n");
+        }
+        if (sequences != 0U) {
+            w->append(kIndent4);
+            w->append("<exifEX:Values><rdf:Seq>\n");
+            for (size_t offset = 60U; offset < raw.size(); offset += 8U) {
+                const URational r = detail::composite_rational(raw, offset,
+                                                               little);
+                w->append(kIndent4);
+                w->append("<rdf:li>");
+                append_u64_dec(r.numer, w);
+                w->append("/");
+                append_u64_dec(r.denom, w);
+                w->append("</rdf:li>\n");
+            }
+            w->append(kIndent4);
+            w->append("</rdf:Seq></exifEX:Values>\n");
+        }
+        w->append(kIndent3);
+        w->append("</");
+        w->append(prefix);
+        w->append(":");
+        w->append(name);
+        w->append(">\n");
+        return true;
+    }
+
     static bool emit_portable_exif_tag_property_override(
         SpanWriter* w, std::string_view prefix, std::string_view ifd,
         uint16_t tag, std::string_view name, const ByteArena& arena,
-        std::span<const Entry> entries, const MetaValue& v) noexcept
+        std::span<const Entry> entries, const MetaValue& v,
+        EntryFlags flags = EntryFlags::None) noexcept
     {
         if (!w || prefix.empty() || name.empty()) {
             return false;
@@ -4419,6 +4500,27 @@ namespace {
 
         if (!portable_capture_scalar_value_valid(arena, ifd, tag, v))
             return true;
+        if (ifd == "exififd" && detail::composite_tag(tag)) {
+            if (!detail::composite_group_valid(arena, entries))
+                return true;
+            if (tag == 0xa462U)
+                return emit_composite_exposure_property(w, prefix, name, arena,
+                                                        v, flags);
+            return emit_portable_property(w, prefix, name, arena, v);
+        }
+        if (ifd == "exififd" && detail::encoding_tag(tag)) {
+            if (tag != 0x9101U)
+                return emit_portable_property(w, prefix, name, arena, v);
+            w->append(kIndent3);
+            w->append("<exif:ComponentsConfiguration><rdf:Seq>");
+            for (std::byte code : arena.span(v.data.span)) {
+                w->append("<rdf:li>");
+                append_u64_dec(std::to_integer<uint8_t>(code), w);
+                w->append("</rdf:li>");
+            }
+            w->append("</rdf:Seq></exif:ComponentsConfiguration>\n");
+            return true;
+        }
         if (ifd == "exififd" && detail::additional_capture_tag(tag)) {
             if (tag == 0xa300U || tag == 0xa301U) {
                 const auto code = std::to_integer<uint8_t>(
@@ -5055,8 +5157,21 @@ namespace {
         }
         *out_shape = PortablePropertyShape::Scalar;
 
+        if ((prefix == "exif" || prefix == "exifEX")
+            && (name == "SourceExposureTimesOfCompositeImage"
+                || name == "CompositeImageExposureTimes")) {
+            *out_shape = PortablePropertyShape::Structured;
+            return true;
+        }
+        if ((prefix == "exif" || prefix == "exifEX")
+            && (name == "SourceImageNumberOfCompositeImage"
+                || name == "CompositeImageCount")) {
+            *out_shape = PortablePropertyShape::Indexed;
+            return true;
+        }
         if (prefix == "exif"
-            && (name == "SubjectArea" || name == "SubjectLocation")) {
+            && (name == "SubjectArea" || name == "SubjectLocation"
+                || name == "ComponentsConfiguration")) {
             *out_shape = PortablePropertyShape::Indexed;
             return true;
         }
@@ -5170,6 +5285,16 @@ namespace {
             return false;
         }
         *out_shape = PortableStructuredChildShape::Scalar;
+        if ((prefix == "exif" || prefix == "exifEX")
+            && (base == "SourceExposureTimesOfCompositeImage"
+                || base == "CompositeImageExposureTimes")
+            && (child_prefix.empty() || child_prefix == "exifEX"
+                || child_prefix == prefix)
+            && child == "Values") {
+            *out_shape = PortableStructuredChildShape::Indexed;
+            return true;
+        }
+
 
         if ((child_prefix.empty() || child_prefix == prefix)
             && prefix == "Iptc4xmpCore" && base == "CreatorContactInfo"
@@ -7246,6 +7371,21 @@ namespace {
         const PortableGeneratedLangAltKeySet* generated_lang_alt,
         std::string_view prefix, std::string_view name) noexcept
     {
+        if ((prefix == "exif" || prefix == "exifEX")
+            && (name == "CompositeImage"
+                || name == "SourceImageNumberOfCompositeImage"
+                || name == "CompositeImageCount"
+                || name == "SourceExposureTimesOfCompositeImage"
+                || name == "CompositeImageExposureTimes")
+            && portable_property_shape_is_present(generated_shapes, "exifEX",
+                                                  "CompositeImage",
+                                                  PortablePropertyShape::Scalar))
+            return true;
+        if (prefix == "exif" && name == "Gamma"
+            && portable_property_shape_is_present(generated_shapes, "exifEX",
+                                                  name,
+                                                  PortablePropertyShape::Scalar))
+            return true;
         if (prefix == "exif" && detail::environment_property(name)
             && portable_property_shape_is_present(generated_shapes, "exifEX",
                                                   name,
@@ -10083,13 +10223,16 @@ namespace {
         const ByteArena& arena, std::span<const Entry> entries,
         std::string_view prefix, std::string_view ifd, uint16_t tag,
         std::string_view portable_tag_name, bool exiftool_gpsdatetime_alias,
-        const MetaValue& v, SpanWriter* w,
-        PortablePropertyClaimMap* claims) noexcept
+        const MetaValue& v, SpanWriter* w, PortablePropertyClaimMap* claims,
+        EntryFlags flags = EntryFlags::None) noexcept
     {
         if (!w || !claims || prefix.empty() || portable_tag_name.empty()) {
             return false;
         }
 
+        if (ifd == "exififd" && detail::composite_tag(tag)
+            && !detail::composite_group_valid(arena, entries))
+            return false;
         if (!portable_capture_scalar_value_valid(arena, ifd, tag, v))
             return false;
 
@@ -10128,20 +10271,21 @@ namespace {
         }
 
         bool new_claim = false;
-        if (!claim_portable_property_key(claims, prefix, emitted_name,
-                                         PortablePropertyOwner::Exif,
-                                         (tag == 0xa432U || tag == 0x9214U
-                                          || tag == 0xa214U)
-                                             ? PortablePropertyShape::Indexed
-                                             : PortablePropertyShape::Scalar,
-                                         &new_claim)
+        if (!claim_portable_property_key(
+                claims, prefix, emitted_name, PortablePropertyOwner::Exif,
+                tag == 0xa462U ? PortablePropertyShape::Structured
+                : (tag == 0xa432U || tag == 0x9214U || tag == 0xa214U
+                   || tag == 0x9101U || tag == 0xa461U)
+                    ? PortablePropertyShape::Indexed
+                    : PortablePropertyShape::Scalar,
+                &new_claim)
             || !new_claim) {
             return false;
         }
 
         if (emit_portable_exif_tag_property_override(w, prefix, ifd, tag,
                                                      emitted_name, arena,
-                                                     entries, v)) {
+                                                     entries, v, flags)) {
             return true;
         }
 
@@ -10168,7 +10312,8 @@ namespace {
         const uint16_t tag = e.key.data.exif_tag.tag;
         if (ifd == "exififd"
             && (portable_exif_ex_identity_tag(tag)
-                || detail::environment_tag(tag)
+                || detail::environment_tag(tag) || tag == 0xa500U
+                || detail::composite_tag(tag)
                 || (tag >= 0x8830U && tag <= 0x8835U)
                 || (tag == 0x8827U
                     && portable_has_sensitivity_type(arena, entries))))
@@ -10192,7 +10337,7 @@ namespace {
         return process_portable_exif_property(arena, entries, prefix, ifd, tag,
                                               portable_tag_name,
                                               exiftool_gpsdatetime_alias,
-                                              e.value, w, claims);
+                                              e.value, w, claims, e.flags);
     }
 
     static bool process_portable_exif_xmp_alias_entry(
@@ -10214,7 +10359,7 @@ namespace {
 
         return process_portable_exif_property(arena, entries, "xmp", ifd, tag,
                                               alias_name, false, e.value, w,
-                                              claims);
+                                              claims, e.flags);
     }
 
     static bool iptc_portable_text_value(const ByteArena& arena,
@@ -10713,12 +10858,14 @@ namespace {
     static bool portable_exif_property_would_emit(
         std::string_view prefix, std::string_view ifd, uint16_t tag,
         std::string_view name, const ByteArena& arena,
-        std::span<const Entry> entries, const MetaValue& v) noexcept
+        std::span<const Entry> entries, const MetaValue& v,
+        EntryFlags flags = EntryFlags::None) noexcept
     {
         SpanWriter w(std::span<std::byte> {}, 0U);
         const uint64_t before = w.needed;
         if (emit_portable_exif_tag_property_override(&w, prefix, ifd, tag, name,
-                                                     arena, entries, v)) {
+                                                     arena, entries, v,
+                                                     flags)) {
             return w.needed > before;
         }
         return emit_portable_property(&w, prefix, name, arena, v)
@@ -10768,7 +10915,8 @@ namespace {
                 const uint16_t tag = e.key.data.exif_tag.tag;
                 if (ifd == "exififd"
                     && (portable_exif_ex_identity_tag(tag)
-                        || detail::environment_tag(tag)
+                        || detail::environment_tag(tag) || tag == 0xa500U
+                        || detail::composite_tag(tag)
                         || (tag >= 0x8830U && tag <= 0x8835U)
                         || (tag == 0x8827U
                             && portable_has_sensitivity_type(arena, entries))))
@@ -10809,10 +10957,13 @@ namespace {
 
                 if (portable_exif_property_would_emit(prefix, ifd, tag,
                                                       portable_tag_name, arena,
-                                                      entries, e.value)) {
+                                                      entries, e.value,
+                                                      e.flags)) {
                     (void)out->insert(PortablePropertyGeneratedShape {
                         PortablePropertyKey { prefix, portable_tag_name },
-                        (tag == 0xa432U || tag == 0x9214U || tag == 0xa214U)
+                        tag == 0xa462U ? PortablePropertyShape::Structured
+                        : (tag == 0xa432U || tag == 0x9214U || tag == 0xa214U
+                           || tag == 0x9101U || tag == 0xa461U)
                             ? PortablePropertyShape::Indexed
                             : PortablePropertyShape::Scalar });
                 }
@@ -10822,7 +10973,8 @@ namespace {
                 if (!xmp_alias_name.empty()
                     && portable_exif_property_would_emit("xmp", ifd, tag,
                                                          xmp_alias_name, arena,
-                                                         entries, e.value)) {
+                                                         entries, e.value,
+                                                         e.flags)) {
                     (void)out->insert(PortablePropertyGeneratedShape {
                         PortablePropertyKey { "xmp", xmp_alias_name },
                         PortablePropertyShape::Scalar });
@@ -14068,6 +14220,8 @@ dump_xmp_portable_impl(const MetaStore& store, std::span<std::byte> out,
                 && entry.key.kind == MetaKeyKind::ExifTag
                 && (portable_exif_ex_identity_tag(entry.key.data.exif_tag.tag)
                     || detail::environment_tag(entry.key.data.exif_tag.tag)
+                    || entry.key.data.exif_tag.tag == 0xa500U
+                    || detail::composite_tag(entry.key.data.exif_tag.tag)
                     || (entry.key.data.exif_tag.tag >= 0x8830U
                         && entry.key.data.exif_tag.tag <= 0x8835U))
                 && arena_string(arena, entry.key.data.exif_tag.ifd)

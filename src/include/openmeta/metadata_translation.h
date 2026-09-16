@@ -372,6 +372,10 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpWaterDepth,
     XmpAcceleration,
     XmpCameraElevationAngle,
+    XmpGamma,
+    XmpCompressedBitsPerPixel,
+    XmpComponentsConfiguration,
+    XmpCompositeImage,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -518,6 +522,91 @@ MetadataCaptureTranslationResult
 translate_xmp_environment_metadata(
     const MetaStore& source,
     const MetadataEnvironmentTranslationOptions& options, MetaStore* out_store);
+
+/// Experimental image-encoding metadata contract; these calls do not alter pixels.
+inline constexpr uint32_t kMetadataImageEncodingTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataImageEncodingTranslationMaxAddedEntries = 3U;
+inline constexpr uint64_t kMetadataImageEncodingTranslationMaxTotalTextBytes
+    = 768U;
+
+struct MetadataImageEncodingTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    bool gamma_to_exif                     = true;
+    bool compressed_bits_per_pixel_to_exif = true;
+    bool components_configuration_to_exif  = true;
+    uint32_t max_added_entries
+        = kMetadataImageEncodingTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataImageEncodingTranslationMaxTotalTextBytes;
+};
+
+/**
+ * Translate Gamma and CompressedBitsPerPixel as exact nonnegative RATIONALs,
+ * and ComponentsConfiguration as four UNDEFINED bytes with codes 0..6.
+ * Gamma accepts exifEX and legacy exif; the other two use exif. Components
+ * accept a typed unsigned array or four dense one-based indexed properties.
+ * The host asserts correspondence to the encoded pixels. No channel reorder,
+ * gamma application, compression measurement or pixel inference occurs.
+ * Existing target-image transfer filtering remains applicable.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_image_encoding_metadata(
+    const MetaStore& source,
+    const MetadataImageEncodingTranslationOptions& options,
+    MetaStore* out_store);
+
+inline constexpr uint32_t kMetadataCompositeTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataCompositeTranslationMaxAddedEntries = 3U;
+inline constexpr uint32_t kMetadataCompositeTranslationMaxExposureValues = 4096U;
+inline constexpr uint64_t kMetadataCompositeTranslationMaxTotalTextBytes
+    = 1024ULL * 1024ULL;
+
+struct MetadataCompositeTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    uint32_t max_added_entries = kMetadataCompositeTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataCompositeTranslationMaxTotalTextBytes;
+    uint32_t max_exposure_values
+        = kMetadataCompositeTranslationMaxExposureValues;
+};
+
+/**
+ * Reconcile CompositeImage and its two companions as one bounded transaction.
+ * Canonical sources use exifEX and the full EXIF property names; legacy exif
+ * and ExifTool CompositeImageCount/CompositeImageExposureTimes aliases are
+ * explicit alternatives. Mixing aliases for one field fails.
+ *
+ * CompositeImage is 0..3; companions require 2 or 3, and 3 requires both.
+ * Counts are total >=2 and used ==0 (unavailable) or 2..total. Exposure times
+ * use the CIPA structure: seven summary rationals, NumberOfSequences, optional
+ * NumberOfImagesInSequences and dense Values. The list contains m*n values,
+ * bounded by max_exposure_values, and agrees with the total count when present.
+ * Summary 0/0 means unavailable; m=0 omits n and Values. Finite values are
+ * exact nonnegative seconds; no totals, extrema or exposure models are inferred.
+ *
+ * Any selected member selects the complete source group, including clean
+ * companions. Missing native companions are removed only by ReplaceExisting.
+ * A deleted CompositeImage with absent/deleted companions removes the group.
+ * New A462 byte payloads are little-endian; decoded big-endian bytes retain
+ * their raw content and EntryFlags::ValueBigEndian provenance. Typed Set with
+ * wire hints resets that flag for the newly supplied little-endian payload.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_composite_metadata(
+    const MetaStore& source, const MetadataCompositeTranslationOptions& options,
+    MetaStore* out_store);
 
 inline constexpr uint32_t kMetadataApexTranslationContractVersion   = 1U;
 inline constexpr uint32_t kMetadataApexTranslationMaxAddedEntries   = 5U;

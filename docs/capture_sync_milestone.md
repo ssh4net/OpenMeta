@@ -1,8 +1,18 @@
-# Capture synchronization milestones: 0.5.4–0.5.6
+# Capture synchronization milestones: 0.5.4–0.5.7
 
 Audit date: 2026-09-14. The original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing API signatures, ABI 3, or host synchronization responsibilities.
+
+## Encoding and composite capture in 0.5.7
+
+Two more APIs cover Gamma, compressed bits per pixel, component configuration,
+and the three-field composite group. The current fixture has 61 native tags
+across fourteen APIs. Direct serialization retains all 61; target transfer
+filters the three encoding fields under the existing destination-image policy.
+Composite exposure data retains exact fractions and unavailable summaries,
+including raw big-endian values through snapshot persistence. See
+[the contracts](translation.md#image-encoding-and-composite-capture-057).
 
 ## Typed editing and new fields in 0.5.6
 
@@ -13,7 +23,7 @@ Three additional capture fields and six environment fields now share the
 translation, portable-output and persistence qualification. The environment
 contract preserves unknown-denominator sentinels before rational reduction.
 
-The current combined fixture covers twelve APIs and 55 unique targets, typed
+The 0.5.6 combined fixture covers twelve APIs and 55 unique targets, typed
 XMP edits, exact finite and unknown rationals, and serialized transfer snapshots
 through JPEG, classic TIFF and BigTIFF add/replace paths. Python exposes the two
 new translators; installed shared-library checks exercise authoring, typed
@@ -41,7 +51,7 @@ originals. FocalLength portable fractions express millimeters without ` mm`.
 
 ## Implemented capture targets
 
-Twelve explicit reverse APIs cover **55 distinct ExifIFD tags**. The count includes
+Fourteen explicit reverse APIs cover **61 distinct ExifIFD tags**. The count includes
 camera text and excludes GPS, dates, geometry, IPTC and vendor MakerNotes.
 It is an inventory count, not a percentage of all EXIF or competitor coverage.
 All function names below have the prefix `translate_xmp_` and suffix
@@ -63,9 +73,12 @@ All function names below have the prefix `translate_xmp_` and suffix
 | capture_additional | 3 | FocalLengthIn35mmFilm A405, FileSource A300, SceneType A301 |
 | environment | 6 | Temperature 9400, Humidity 9401, Pressure 9402, WaterDepth 9403, Acceleration 9404, CameraElevationAngle 9405 |
 
-Tag IDs are hexadecimal. The 57 API mappings include two shared targets:
+| image_encoding | 3 | Gamma A500, CompressedBitsPerPixel 9102, ComponentsConfiguration 9101 |
+| composite | 3 | CompositeImage A460, SourceImageNumberOfCompositeImage A461, SourceExposureTimesOfCompositeImage A462 |
+
+Tag IDs are hexadecimal. The 63 API mappings include two shared targets:
 ISO belongs to basic capture and sensitivity; ExposureBiasValue belongs to
-basic capture and APEX. Counting each shared tag once gives 55.
+basic capture and APEX. Counting each shared tag once gives 61.
 
 ## Historical 0.5.4 qualification and gaps
 
@@ -145,18 +158,16 @@ policies. Its acceptance checks are:
    once against the final patch.
 
 The additional capture and environment batches are implemented in 0.5.6.
-Next, define the encoded-image/calibration contracts and composite capture group
-dependencies before extending those families.
+Encoding and composite contracts are implemented in 0.5.7. Next, define the
+bounded structured/opaque field layouts and their byte-order rules.
 
 ## Remaining field families
 
-These are candidate families outside the twelve capture contracts, not a complete
+These are candidate families outside the fourteen capture contracts, not a complete
 remaining-tags denominator. Read/display support does not imply reverse support.
 
 | Family | Examples | Work needed before implementation |
 | --- | --- | --- |
-| Image encoding/calibration | Gamma A500, CompressedBitsPerPixel 9102, ComponentsConfiguration 9101 | Distinguish descriptive values from data tied to encoded pixels. |
-| Composite capture | CompositeImage A460, SourceImageNumberOfCompositeImage A461, SourceExposureTimesOfCompositeImage A462 | Group dependencies and bounded binary layout. |
 | Structured or opaque data | OECF 8828, SpatialFrequencyResponse A20C, CFAPattern A302, DeviceSettingDescription A40B | Typed layouts, byte order, bounds and persistence evidence. |
 | Text/version extensions | UserComment 9286; EXIF 3 text fields and UTF-8 extensions | Encoding contracts and explicit version policy; current camera text remains printable ASCII. |
 | MakerNotes | Vendor/version-specific offsets and integrity fields | Continue the separate rewrite-trust work; generic opaque authoring does not establish safe relocation. |

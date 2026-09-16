@@ -1,5 +1,31 @@
 # OpenMeta Changes
 
+## 0.5.7 - 2026-09-16
+
+Changes compared with `0.5.6`. ABI remains 3.
+
+### Added
+
+- Add bounded C++ and Python image-encoding and composite-capture translation
+  for six tags, bringing the combined capture inventory to 61 tags across
+  fourteen APIs. Preserve exact fractions, unavailable summary values and
+  complete composite group transactions.
+- Validate native shapes, source counts and exposure-list bounds during typed
+  editing. Emit canonical structured EXIF/XMP with explicit legacy aliases.
+- Preserve decoded big-endian composite bytes with `ValueBigEndian` provenance;
+  convert embedded fields during EXIF serialization and TIFF/BigTIFF transfer.
+  Snapshot v1 layout is unchanged; the new flag requires a 0.5.7 reader.
+
+### Changed
+
+- Apply the existing source-image transfer filter to canonical CIPA Gamma.
+  Direct EXIF serialization retains encoding fields; target transfer excludes
+  them because destination pixels may have different encoding.
+- Use portable CMake commands for DNG test-fixture copies on SMB mounts.
+- Extend the combined workflow through both TIFF byte orders, positional reads,
+  snapshot persistence, Python and the installed shared-library API. Preparation
+  can allocate; conflicting shared-object access remains host synchronized.
+
 ## 0.5.6 - 2026-09-15
 
 Changes compared with `0.5.5`. ABI remains 3.

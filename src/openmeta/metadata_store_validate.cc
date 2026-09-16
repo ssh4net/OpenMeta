@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "metadata_capture_fields_internal.h"
+#include "metadata_encoding_fields_internal.h"
 
 #include "openmeta/validate.h"
 
@@ -79,6 +80,12 @@ namespace {
         { SchemaIfd::ExifIfd, 0xA001U, kShort, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0xA002U, kShort | kLong, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0xA003U, kShort | kLong, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA500U, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9102U, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9101U, kUndefined, 4U, 4U, true },
+        { SchemaIfd::ExifIfd, 0xA460U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA461U, kShort, 2U, 2U, true },
+        { SchemaIfd::ExifIfd, 0xA462U, kUndefined, 58U, 0U, true },
         { SchemaIfd::ExifIfd, 0xA405U, kShort, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0xA300U, kUndefined, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0xA301U, kUndefined, 1U, 1U, true },
@@ -463,7 +470,9 @@ namespace {
             if (zero
                 && !(value.elem_type == MetaElementType::URational
                      && value.data.ur.numer == 0U
-                     && lens_unknown_aperture_slot(store, entry, 0U))) {
+                     && (lens_unknown_aperture_slot(store, entry, 0U)
+                         || detail::composite_unknown_summary(store.arena(),
+                                                              entry)))) {
                 append_issue(
                     out, options, ValidateIssueSeverity::Error,
                     MetadataValidationIssueCode::RationalDenominatorZero, id,
@@ -791,6 +800,17 @@ namespace {
                                                        entry.value)) {
             append_issue(out, options, ValidateIssueSeverity::Error,
                          MetadataValidationIssueCode::ScalarOutOfRange, id,
+                         kInvalidEntryId, entry.key.kind, tag);
+        }
+        if (ifd == "exififd"
+            && ((detail::encoding_tag(tag)
+                 && !detail::encoding_value_valid(store.arena(), tag,
+                                                  entry.value))
+                || (detail::composite_tag(tag)
+                    && !detail::composite_value_valid(
+                        store.arena(), tag, entry.value, entry.flags)))) {
+            append_issue(out, options, ValidateIssueSeverity::Error,
+                         MetadataValidationIssueCode::InvalidValueShape, id,
                          kInvalidEntryId, entry.key.kind, tag);
         }
         if (type == 2U && entry.value.kind == MetaValueKind::Text) {
@@ -1190,6 +1210,24 @@ validate_store(const MetaStore& store,
         }
     }
     validate_duplicate_singletons(store, options, &out);
+    if (options.validate_schema
+        && !detail::composite_group_valid(store.arena(), store.entries())) {
+        EntryId first = kInvalidEntryId;
+        for (EntryId id = 0U; id < store.entries().size(); ++id) {
+            const Entry& entry = store.entry(id);
+            if (entry.key.kind == MetaKeyKind::ExifTag
+                && detail::composite_tag(entry.key.data.exif_tag.tag)
+                && detail::primary_exif_entry(store.arena(), entry,
+                                              entry.key.data.exif_tag.tag)) {
+                first = id;
+                break;
+            }
+        }
+        append_issue(&out, options, ValidateIssueSeverity::Error,
+                     MetadataValidationIssueCode::InvalidValueShape, first,
+                     kInvalidEntryId, MetaKeyKind::ExifTag, 0xa460U);
+    }
+
     if (store.is_finalized()) {
         validate_image_context(store, options, &out);
     }

@@ -63,8 +63,9 @@ Unicode/transliteration behavior, multilingual gates, and an optional immutable
 index for repeated searches over large stores.
 
 The 0.5.6 batch adds exact-key typed editing plus three additional capture and
-six environment mappings. Capture-related translation now covers 55 unique
-ExifIFD targets across twelve APIs. The combined author/edit/translate/persist
+six environment mappings. The 0.5.7 encoding/composite batch adds six more
+fields. Capture-related translation now covers 61 unique
+ExifIFD targets across fourteen APIs. The combined author/edit/translate/persist
 workflow includes exact unknown-denominator handling; see
 [capture synchronization milestones](capture_sync_milestone.md).
 

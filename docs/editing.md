@@ -171,7 +171,7 @@ compact them. Existing lower store ceilings remain in force. Preparation may
 allocate. The host must synchronize conflicting access to shared objects;
 there are no library atomics or mutexes in this path.
 
-The combined capture fixture now edits typed XMP, translates twelve API groups,
+The combined capture fixture now edits typed XMP, translates fourteen API groups,
 serializes/restores a transfer snapshot, and checks native and portable values
 through JPEG, classic TIFF and BigTIFF add/replace workflows. Exact-key authoring
 and editing remain C++ APIs; Python retains logical editing and exposes the two

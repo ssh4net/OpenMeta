@@ -25,7 +25,7 @@ The APIs are experimental and versioned by
 Workflow
 --------
 
-See :doc:`capture_sync_milestone` for the twelve capture APIs, 55 distinct native
+See :doc:`capture_sync_milestone` for the fourteen capture APIs, 61 distinct native
 targets, shared-target composition and the 0.5.5 portable round-trip fixes.
 Primary ExifIFD FNumber, FocalLength and DigitalZoomRatio emit exact fractions;
 FocalLength is in millimeters without the display suffix `` mm``. Invalid native
@@ -1843,7 +1843,7 @@ the XMP namespace and ordered-array mappings follow
 `CIPA DC-X010-2017 <https://cipa.jp/std/documents/e/DC-X010-2017.pdf>`_.
 Requiring explicit complete groups and positive resolutions is this bounded
 OpenMeta contract. This is not full Exif conformance or downstream acceptance.
-The spatial milestone brought coverage to 46 targets across ten APIs; 0.5.6 extends it to 55 targets across twelve APIs.
+The spatial milestone brought coverage to 46 targets across ten APIs; 0.5.7 extends it to 61 targets across fourteen APIs.
 
 Additional capture and environment fields (0.5.6)
 -------------------------------------------------
@@ -1882,3 +1882,40 @@ native replacement is emitted; invalid native values preserve existing XMP.
 
 References: `CIPA Exif 2.32 <https://www.cipa.jp/std/documents/e/DC-X008-Translation-2019-E.pdf>`_
 and `CIPA Exif metadata for XMP <https://www.cipa.jp/std/documents/e/DC-X010-2017.pdf>`_.
+
+Image Encoding and Composite Capture (0.5.7)
+------------------------------------------
+
+``translate_xmp_image_encoding_metadata`` / ``Document.translate_image_encoding_metadata``
+cover Gamma, CompressedBitsPerPixel and ComponentsConfiguration. Rationals allow
+zero with a positive denominator and preserve exact fractions. Components are
+four codes in 0..6. Gamma uses CIPA ``exifEX`` with explicit legacy ``exif``;
+the other two use ``exif``.
+
+``translate_xmp_composite_metadata`` / ``Document.translate_composite_metadata``
+reconcile CompositeImage and its two companions as one bounded transaction.
+Codes are 0..3; companions require 2 or 3, and code 3 requires both. Source
+counts are total >=2 and used 0 (unavailable) or 2..total. The exposure payload
+has seven summary rationals, then SHORT m at offset 56. Summary 0/0 means
+unavailable. When m is zero the payload ends at 58 bytes. Otherwise SHORT n at
+58 is positive and exactly m*n rational values follow at offset 60. The list
+contains at least two values, agrees with the total count, and has at most
+4096 values. Finite seconds are nonnegative; totals and extrema are not inferred.
+
+Canonical XMP uses the full native names in ``http://cipa.jp/exif/1.0/`` and
+structured summary members with ordered Values. ExifTool short roots and legacy
+Adobe exif are explicit alternatives. Mixed aliases, sparse values and invalid
+group dependencies fail transactionally. Any selected member selects its complete
+source group; dirty tombstones can remove the list when m becomes zero.
+
+Native validation, typed editing and portable output share these contracts.
+New payloads are little-endian. Decoded big-endian bytes stay raw with
+``EntryFlags::ValueBigEndian``; typed Set clears this flag for new little-endian
+bytes. Serialization and transfer convert the embedded fields. Snapshot v1
+layout is unchanged; snapshots using the new flag require 0.5.7 or later.
+
+Direct EXIF serialization retains all six fields. Target transfer filters the
+three source encoding fields because they may not describe destination pixels.
+Preparation can allocate. Conflicting shared-object access remains host owned.
+See the detailed `field and binary-layout contracts
+<https://github.com/ssh4net/OpenMeta/blob/main/docs/translation.md#image-encoding-and-composite-capture-057>`_.

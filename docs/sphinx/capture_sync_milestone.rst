@@ -4,7 +4,7 @@ Capture Synchronization Milestone
 Audit date: 2026-09-14. Original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing signatures, ABI 3 or host synchronization responsibilities.
-Twelve explicit reverse APIs now cover **55 distinct ExifIFD tags**,
+Fourteen explicit reverse APIs now cover **61 distinct ExifIFD tags**,
 including camera text and excluding GPS, dates, geometry, IPTC and MakerNotes.
 This count does not measure all-EXIF or competitor coverage.
 
@@ -93,8 +93,15 @@ The API stems below have the prefix ``translate_xmp_`` and suffix
      - 6
      - Temperature, Humidity, Pressure, WaterDepth, Acceleration, CameraElevationAngle
 
-ISO and ExposureBiasValue are each shared by two APIs. The 57 mappings
-therefore cover 55 distinct tags.
+   * - image_encoding
+     - 3
+     - Gamma, CompressedBitsPerPixel, ComponentsConfiguration
+   * - composite
+     - 3
+     - CompositeImage, SourceImageNumberOfCompositeImage, SourceExposureTimesOfCompositeImage
+
+ISO and ExposureBiasValue are each shared by two APIs. The 63 mappings
+therefore cover 61 distinct tags.
 
 Historical 0.5.4 Qualification and Gaps
 ---------------------------------------
@@ -155,8 +162,17 @@ The 0.5.5 fix retains API signatures and covers these acceptance checks:
    independent reads, and one platform matrix against the final patch.
 
 The additional capture and environment batches are implemented in 0.5.6.
-Next, define image encoding/calibration field contracts and composite capture
-groups; structured/opaque OECF, CFA and device data; UserComment and EXIF text
+Encoding and composite capture are implemented in 0.5.7. Next, define
+structured/opaque OECF, CFA and device data, then UserComment and EXIF text
 encoding/version extensions. MakerNote rewrite trust remains vendor-specific.
 Read/display support does not establish reverse writeback support. Downstream
 application acceptance and whole-corpus qualification are outside this audit.
+
+Encoding and Composite Capture in 0.5.7
+--------------------------------------
+
+Two new APIs extend the combined fixture to 61 native tags across fourteen APIs.
+Direct serialization retains all 61. Target transfer filters the three source
+encoding fields under the existing destination-image policy, retaining 58.
+Composite exposure data retains exact fractions and unavailable summaries across
+both TIFF byte orders and snapshot persistence. See :doc:`translation`.

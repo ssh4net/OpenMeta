@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "metadata_encoding_fields_internal.h"
+
 #include "openmeta/metadata_transfer.h"
 
 #include "metadata_patch_internal.h"
@@ -6989,6 +6991,21 @@ namespace {
         out->type  = 0U;
         out->count = 0U;
 
+        if (e.key.kind == MetaKeyKind::ExifTag
+            && e.key.data.exif_tag.tag == 0xa462U
+            && detail::primary_exif_entry(store.arena(), e, 0xa462U)) {
+            if (!detail::composite_value_valid(store.arena(), 0xa462U, v,
+                                               e.flags))
+                return false;
+            const auto raw = store.arena().span(v.data.span);
+            out->value.assign(raw.begin(), raw.end());
+            if (any(e.flags, EntryFlags::ValueBigEndian)
+                && !detail::composite_swap_bytes(out->value, false))
+                return false;
+            out->type  = 7U;
+            out->count = static_cast<uint32_t>(out->value.size());
+            return true;
+        }
         if (v.kind == MetaValueKind::Text) {
             out->type                                   = 2U;  // ASCII
             const std::span<const std::byte> text_bytes = store.arena().span(
@@ -8796,13 +8813,22 @@ namespace {
 
     static bool convert_parsed_ifd_endian(ParsedTiffIfd* ifd,
                                           TiffEndian from_endian,
-                                          TiffEndian to_endian) noexcept
+                                          TiffEndian to_endian,
+                                          bool composite = false) noexcept
     {
         if (!ifd || !ifd->present) {
             return true;
         }
         for (size_t i = 0; i < ifd->entries.size(); ++i) {
             ParsedTiffIfdEntry& e = ifd->entries[i];
+            if (composite && e.tag == 0xa462U && e.type == 7U
+                && from_endian != to_endian) {
+                if (!detail::composite_swap_bytes(e.payload,
+                                                  from_endian
+                                                      == TiffEndian::Little))
+                    return false;
+                continue;
+            }
             if (!convert_tiff_payload_endian_inplace(&e.payload, e.type,
                                                      e.count, from_endian,
                                                      to_endian)) {
@@ -8830,7 +8856,8 @@ namespace {
                 return false;
             }
         }
-        if (!convert_parsed_ifd_endian(&exif->exif_ifd, from_endian, to_endian)
+        if (!convert_parsed_ifd_endian(&exif->exif_ifd, from_endian, to_endian,
+                                       true)
             || !convert_parsed_ifd_endian(&exif->gps_ifd, from_endian, to_endian)
             || !convert_parsed_ifd_endian(&exif->interop_ifd, from_endian,
                                           to_endian)) {
@@ -9766,6 +9793,9 @@ namespace {
         }
         if (ns == "http://ns.adobe.com/exif/1.0/") {
             return is_exif_xmp_image_dependent_transfer_property(name);
+        }
+        if (ns == "http://cipa.jp/exif/1.0/" && name == "Gamma") {
+            return true;
         }
         if (ns == "http://ns.adobe.com/photoshop/1.0/") {
             return is_photoshop_xmp_image_dependent_transfer_property(name);

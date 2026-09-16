@@ -928,6 +928,47 @@ with tempfile.TemporaryDirectory() as temporary:
         assert getattr(restored, 'translate_' + stem + '_metadata')(source_mode=mode).entry_count == restored.entry_count + len(fields)
         assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'encoding_composite.jpg'
+    xml = b'<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:e=\"http://ns.adobe.com/exif/1.0/\" xmlns:x=\"http://cipa.jp/exif/1.0/\"><x:Gamma>11/5</x:Gamma><e:CompressedBitsPerPixel>7/3</e:CompressedBitsPerPixel>\\n<e:ComponentsConfiguration><rdf:Seq><rdf:li>1</rdf:li><rdf:li>2</rdf:li><rdf:li>3</rdf:li><rdf:li>0</rdf:li></rdf:Seq></e:ComponentsConfiguration>\\n<x:CompositeImage>3</x:CompositeImage>\\n<x:SourceImageNumberOfCompositeImage><rdf:Seq><rdf:li>4</rdf:li><rdf:li>2</rdf:li></rdf:Seq></x:SourceImageNumberOfCompositeImage>\\n<x:SourceExposureTimesOfCompositeImage rdf:parseType=\"Resource\">\\n<x:TotalExposurePeriod>5/3</x:TotalExposurePeriod><x:SumOfExposureTimesOfAll>4/3</x:SumOfExposureTimesOfAll>\\n<x:SumOfExposureTimesOfUsed>0/0</x:SumOfExposureTimesOfUsed>\\n<x:MaxExposureTimesOfAll>1/2</x:MaxExposureTimesOfAll><x:MaxExposureTimesOfUsed>0/0</x:MaxExposureTimesOfUsed>\\n<x:MinExposureTimesOfAll>1/6</x:MinExposureTimesOfAll><x:MinExposureTimesOfUsed>0/0</x:MinExposureTimesOfUsed>\\n<x:NumberOfSequences>2</x:NumberOfSequences><x:NumberOfImagesInSequences>2</x:NumberOfImagesInSequences>\\n<x:Values><rdf:Seq><rdf:li>1/2</rdf:li><rdf:li>1/6</rdf:li><rdf:li>1/2</rdf:li><rdf:li>1/6</rdf:li></rdf:Seq></x:Values>\\n</x:SourceExposureTimesOfCompositeImage></rdf:Description></rdf:RDF>'
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    document = openmeta.read(str(path))
+    count = document.entry_count
+    mode = openmeta.MetadataCaptureTranslationSourceMode.All
+    translated = document
+    for api in ('image_encoding', 'composite'):
+        method = getattr(document, 'translate_' + api + '_metadata')
+        assert getattr(openmeta, 'METADATA_' + api.upper() + '_TRANSLATION_CONTRACT_VERSION') == 1
+        assert method().entry_count == count
+        assert method(source_mode=mode).entry_count == count + 3
+        translated = getattr(translated, 'translate_' + api + '_metadata')(source_mode=mode)
+        for bound, limit in [('max_added_entries', 2), ('max_operations', 2), ('max_total_text_bytes', 1)]:
+            try:
+                method(source_mode=mode, **{bound: limit})
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(api + ' ignored ' + bound)
+    assert translated.entry_count == count + 6
+    for name in ('XmpGamma', 'XmpCompressedBitsPerPixel', 'XmpComponentsConfiguration', 'XmpCompositeImage', 'XmpTemperature'):
+        assert getattr(openmeta.MetadataCaptureTranslationMapping, name).name == name
+    try:
+        document.translate_composite_metadata(source_mode=mode, max_exposure_values=3)
+    except ValueError as error:
+        assert 'source_limit_exceeded' in str(error)
+    else:
+        raise AssertionError('composite ignored the exposure bound')
+    payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
+    assert b'<exifEX:Gamma>11/5</exifEX:Gamma>' in payload
+    assert b'<exifEX:SumOfExposureTimesOfUsed>0/0</exifEX:SumOfExposureTimesOfUsed>' in payload
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    restored = openmeta.read(str(path))
+    result = restored.translate_image_encoding_metadata(source_mode=mode).translate_composite_metadata(source_mode=mode)
+    assert result.entry_count == restored.entry_count + 6
+    assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

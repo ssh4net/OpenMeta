@@ -509,7 +509,7 @@ The 0.5.6 editing/translation batch
 
 Exact-key typed editing now covers supported EXIF/IPTC/XMP and private/custom
 entries with complete candidate validation and explicit wire-hint replacement.
-Three additional capture and six environment fields bring capture-related
-translation to 55 unique ExifIFD targets across twelve APIs. See
+Three additional capture, six environment and six encoding/composite fields bring capture-related
+translation to 61 unique ExifIFD targets across fourteen APIs. See
 :doc:`editing`, :doc:`translation` and :doc:`capture_sync_milestone`.
 Fuzzy Search remains the lowest priority, after Adapters and Utilities.

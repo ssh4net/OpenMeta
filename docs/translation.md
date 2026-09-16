@@ -1613,3 +1613,84 @@ Contracts follow the native definitions in
 [CIPA Exif 2.32](https://www.cipa.jp/std/documents/e/DC-X008-Translation-2019-E.pdf)
 and the namespace/property mappings in
 [CIPA Exif metadata for XMP](https://www.cipa.jp/std/documents/e/DC-X010-2017.pdf).
+
+## Image encoding and composite capture (0.5.7)
+
+C++ `translate_xmp_image_encoding_metadata` and Python
+`Document.translate_image_encoding_metadata` cover Gamma (A500),
+CompressedBitsPerPixel (9102), and ComponentsConfiguration (9101). Gamma uses
+`exifEX` (`http://cipa.jp/exif/1.0/`); legacy `exif` is an explicit alternative.
+The other two use `exif` (`http://ns.adobe.com/exif/1.0/`). Gamma and compressed
+bits per pixel accept finite nonnegative unsigned rationals, including zero.
+Explicit fractions retain their numerator and denominator. Unit suffixes and
+physical interpretation are not accepted. ComponentsConfiguration is exactly
+four codes in 0..6, supplied as a typed unsigned array or dense `[1]..[4]`
+properties. Native storage is UNDEFINED count four. No component order or
+uniqueness is inferred.
+
+C++ `translate_xmp_composite_metadata` and Python
+`Document.translate_composite_metadata` reconcile three native fields as one
+transaction:
+
+| Native tag | Contract |
+| --- | --- |
+| CompositeImage A460 | SHORT count one: 0 unknown, 1 non-composite, 2 general composite, 3 composite captured while shooting. Companions require code 2 or 3; code 3 requires both. |
+| SourceImageNumberOfCompositeImage A461 | SHORT count two: total >=2; used is 0 (unavailable) or 2..total. |
+| SourceExposureTimesOfCompositeImage A462 | Bounded UNDEFINED structure with seven summary rationals and an optional exposure list, described below. |
+
+Canonical XMP uses the full property names in `exifEX`. Explicit alternatives
+are the legacy Adobe `exif` namespace and ExifTool's short roots
+`CompositeImageCount` and `CompositeImageExposureTimes`. Mixing roots or
+namespaces within one property is ambiguous. The abandoned CIPA `/2.32/`
+namespace is not an implicit alias.
+
+The exposure structure has seven unsigned rational members, in this order:
+`TotalExposurePeriod`, `SumOfExposureTimesOfAll`, `SumOfExposureTimesOfUsed`,
+`MaxExposureTimesOfAll`, `MaxExposureTimesOfUsed`, `MinExposureTimesOfAll`, and
+`MinExposureTimesOfUsed`. Each finite value is nonnegative seconds; `0/0` means
+unavailable. Native offsets 0..55 contain these seven rationals. A SHORT
+`NumberOfSequences` (m) follows at offset 56. If m is zero, the payload ends at
+58 bytes and has no n or Values. Otherwise a positive SHORT
+`NumberOfImagesInSequences` (n) follows at offset 58, and exactly m*n rationals
+follow at offset 60. XMP `Values` is an ordered sequence or typed URational
+array. Each list value has a positive denominator, including when its numerator
+is zero. The list contains at least two values and agrees with the total source
+count when that companion exists. Summary totals and extrema are not computed
+or cross-checked against the list.
+
+Both APIs use the capture source modes, conflict policies, result statuses and
+per-call transaction rules. Any selected composite member selects its complete
+source group, including clean companions. `ReplaceExisting` also removes
+missing native companions. Deleting CompositeImage together with its companions
+removes the group. Dirty tombstones can remove n and Values when changing m to
+zero. Duplicate, sparse, qualified, incomplete and mixed root/indexed structures
+fail without publishing the candidate. Limits include three added entries per
+API, the existing 1024-operation ceiling, 128 text bytes per property, 768 total
+text bytes for encoding and 1 MiB for composite capture. Composite translation
+has a configurable limit of at most 4096 exposure values.
+
+Typed native editing and validation enforce the same individual and group
+constraints. Portable output validates a native group before replacing source
+XMP, emits exact fractions and canonical structured fields, and can remove stale
+managed companions when a valid native code 0 or 1 replaces a composite group.
+Invalid native metadata does not suppress valid source XMP.
+
+New A462 payloads are little-endian. Decoding a big-endian TIFF retains the raw
+bytes and sets `EntryFlags::ValueBigEndian`. Typed Set and low-level
+`SetValueWithWire` clear this flag for new little-endian data; plain low-level
+`SetValue` retains it, so its caller must preserve the existing byte order.
+Canonical EXIF serialization writes little-endian values. Transfer converts the
+embedded structure to the destination TIFF byte order. Snapshot v1 layout and
+existing golden bytes are unchanged; snapshots using the new flag require
+OpenMeta 0.5.7 or later. Host-facing raw values remain intact.
+
+Target transfer continues to filter all three source encoding fields, including
+canonical CIPA Gamma, because these properties can depend on the source pixels.
+Direct EXIF serialization retains all six fields. The combined fixture therefore
+has 61 native tags before transfer and 58 retained source tags afterward. No
+codec processing, pixel rewrite or automatic image calibration is added.
+
+The binary layout follows CIPA DC-008-Translation-2023-E, section 4.6.6.7.49,
+Figure 25. XMP uses CIPA DC-010-2024, section 6.5 and Table A.5:
+[EXIF specification](https://www.cipa.jp/std/documents/download_e.html?DC-008-Translation-2023-E),
+[EXIF/XMP mapping](https://www.cipa.jp/std/documents/download_e.html?CIPA_DC-010-2024_E).

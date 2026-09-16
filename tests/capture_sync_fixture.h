@@ -47,6 +47,18 @@ inline constexpr std::string_view kCaptureSyncXml = R"xml(
 <x:Temperature>-41/2</x:Temperature><x:Humidity>301/3</x:Humidity>
 <x:Pressure>30397/30</x:Pressure><x:WaterDepth>-1/3</x:WaterDepth>
 <x:Acceleration>980665</x:Acceleration><x:CameraElevationAngle>-180</x:CameraElevationAngle>
+<x:Gamma>11/5</x:Gamma><e:CompressedBitsPerPixel>7/3</e:CompressedBitsPerPixel>
+<e:ComponentsConfiguration><rdf:Seq><rdf:li>1</rdf:li><rdf:li>2</rdf:li><rdf:li>3</rdf:li><rdf:li>0</rdf:li></rdf:Seq></e:ComponentsConfiguration>
+<x:CompositeImage>3</x:CompositeImage>
+<x:SourceImageNumberOfCompositeImage><rdf:Seq><rdf:li>4</rdf:li><rdf:li>2</rdf:li></rdf:Seq></x:SourceImageNumberOfCompositeImage>
+<x:SourceExposureTimesOfCompositeImage rdf:parseType="Resource">
+<x:TotalExposurePeriod>5/3</x:TotalExposurePeriod><x:SumOfExposureTimesOfAll>4/3</x:SumOfExposureTimesOfAll>
+<x:SumOfExposureTimesOfUsed>0/0</x:SumOfExposureTimesOfUsed>
+<x:MaxExposureTimesOfAll>1/2</x:MaxExposureTimesOfAll><x:MaxExposureTimesOfUsed>0/0</x:MaxExposureTimesOfUsed>
+<x:MinExposureTimesOfAll>1/6</x:MinExposureTimesOfAll><x:MinExposureTimesOfUsed>0/0</x:MinExposureTimesOfUsed>
+<x:NumberOfSequences>2</x:NumberOfSequences><x:NumberOfImagesInSequences>2</x:NumberOfImagesInSequences>
+<x:Values><rdf:Seq><rdf:li>1/2</rdf:li><rdf:li>1/6</rdf:li><rdf:li>1/2</rdf:li><rdf:li>1/6</rdf:li></rdf:Seq></x:Values>
+</x:SourceExposureTimesOfCompositeImage>
 </rdf:Description></rdf:RDF>)xml";
 
 inline bool
@@ -172,6 +184,19 @@ capture_sync_translate_step(MetaStore& store, unsigned step)
                    &store)
                    .status
                == ok;
+    case 12:
+        return translate_xmp_image_encoding_metadata(
+                   store, { .source_mode = all, .conflict_policy = replace },
+                   &store)
+                   .status
+               == ok;
+    case 13:
+        return translate_xmp_composite_metadata(store,
+                                                { .source_mode     = all,
+                                                  .conflict_policy = replace },
+                                                &store)
+                   .status
+               == ok;
     default: return false;
     }
 }
@@ -179,14 +204,15 @@ capture_sync_translate_step(MetaStore& store, unsigned step)
 inline bool
 capture_sync_translate(MetaStore& store, bool reverse = false)
 {
-    for (unsigned step = 0; step < 12U; ++step)
-        if (!capture_sync_translate_step(store, reverse ? 11U - step : step))
+    for (unsigned step = 0; step < 14U; ++step)
+        if (!capture_sync_translate_step(store, reverse ? 13U - step : step))
             return false;
     return true;
 }
 
 inline void
-capture_sync_expect_native(const MetaStore& actual, const MetaStore& expected)
+capture_sync_expect_native(const MetaStore& actual, const MetaStore& expected,
+                           bool transferred = false)
 {
     unsigned count = 0U;
     for (const Entry& entry : expected.entries()) {
@@ -205,6 +231,11 @@ capture_sync_expect_native(const MetaStore& actual, const MetaStore& expected)
         key.data.exif_tag.ifd = "exififd";
         key.data.exif_tag.tag = tag;
         const auto ids        = actual.find_all(key);
+        if (transferred
+            && (tag == 0xa500U || tag == 0x9101U || tag == 0x9102U)) {
+            EXPECT_TRUE(ids.empty());
+            continue;
+        }
         ASSERT_EQ(ids.size(), 1U);
         const MetaValue& a = actual.entry(ids[0]).value;
         const MetaValue& b = entry.value;
@@ -230,7 +261,19 @@ capture_sync_expect_native(const MetaStore& actual, const MetaStore& expected)
                 const auto av = actual.arena().span(a.data.span);
                 const auto bv = expected.arena().span(b.data.span);
                 ASSERT_EQ(av.size(), bv.size());
-                EXPECT_EQ(std::memcmp(av.data(), bv.data(), av.size()), 0);
+                if (tag == 0xa462U
+                    && any(actual.entry(ids[0]).flags,
+                           EntryFlags::ValueBigEndian)
+                           != any(entry.flags, EntryFlags::ValueBigEndian)) {
+                    for (size_t off = 0U; off < av.size();) {
+                        const size_t width = off == 56U || off == 58U ? 2U : 4U;
+                        ASSERT_LE(off + width, av.size());
+                        for (size_t j = 0U; j < width; ++j)
+                            EXPECT_EQ(av[off + j], bv[off + width - 1U - j]);
+                        off += width;
+                    }
+                } else
+                    EXPECT_EQ(std::memcmp(av.data(), bv.data(), av.size()), 0);
             } else if (a.elem_type == MetaElementType::URational) {
                 EXPECT_EQ(a.data.ur.numer, b.data.ur.numer);
                 EXPECT_EQ(a.data.ur.denom, b.data.ur.denom);
@@ -243,7 +286,7 @@ capture_sync_expect_native(const MetaStore& actual, const MetaStore& expected)
         }
         ++count;
     }
-    EXPECT_EQ(count, 55U);
+    EXPECT_EQ(count, transferred ? 58U : 61U);
 }
 
 }  // namespace openmeta::test

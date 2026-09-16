@@ -50841,7 +50841,7 @@ TEST(MetadataTransferApi,
 }
 
 TEST(MetadataTransferApi,
-     CaptureSyncTypedEditsAndTwelveApiSnapshotsRoundTripAcrossContainers)
+     CaptureSyncTypedEditsAndFourteenApiSnapshotsRoundTripAcrossContainers)
 {
     using namespace openmeta;
     MetaStore source;
@@ -50866,7 +50866,7 @@ TEST(MetadataTransferApi,
     ASSERT_EQ(
         deserialize_transfer_source_snapshot(bytes, &restored_snapshot).status,
         TransferStatus::Ok);
-    for (unsigned container : { 0U, 1U, 2U }) {
+    for (unsigned container : { 0U, 1U, 2U, 3U, 4U }) {
         for (bool replacing : { false, true }) {
             for (const auto policy : { XmpConflictPolicy::CurrentBehavior,
                                        XmpConflictPolicy::ExistingWins,
@@ -50888,9 +50888,19 @@ TEST(MetadataTransferApi,
                 options.execute.edit_requested = true;
                 options.execute.edit_apply     = true;
                 auto input = container == 0U ? make_jpeg_with_segments({})
-                             : container == 1U
+                             : container == 1U || container == 3U
                                  ? make_minimal_tiff_little_endian()
                                  : make_minimal_bigtiff_little_endian();
+                if (container >= 3U) {
+                    input[0] = input[1] = std::byte { 'M' };
+                    std::swap(input[2], input[3]);
+                    if (container == 3U)
+                        std::reverse(input.begin() + 4, input.begin() + 8);
+                    else {
+                        std::swap(input[4], input[5]);
+                        std::reverse(input.begin() + 8, input.begin() + 16);
+                    }
+                }
                 if (replacing) {
                     MetaStore old;
                     Entry entry;
@@ -50913,7 +50923,83 @@ TEST(MetadataTransferApi,
                 MetaStore decoded;
                 ASSERT_TRUE(decode_transfer_roundtrip_store(
                     written.execute.edited_output, &decoded));
-                test::capture_sync_expect_native(decoded, source);
+                test::capture_sync_expect_native(decoded, source, true);
+                const auto composite_ids = decoded.find_all(
+                    exif_key_view("exififd", 0xa462U));
+                ASSERT_EQ(composite_ids.size(), 1U);
+                const Entry& composite = decoded.entry(composite_ids[0]);
+                EXPECT_EQ(any(composite.flags, EntryFlags::ValueBigEndian),
+                          container >= 3U);
+                for (const auto tag : { 0xa460U, 0xa461U, 0xa462U }) {
+                    const auto ids = decoded.find_all(
+                        exif_key_view("exififd", static_cast<uint16_t>(tag)));
+                    ASSERT_EQ(ids.size(), 1U);
+                    ASSERT_TRUE(validate_entry(decoded, ids[0]).ok());
+                }
+                if (container >= 3U) {
+                    SnapshotCallbackState callback {
+                        written.execute.edited_output
+                    };
+                    const auto callback_source
+                        = make_callback_random_access_source(
+                            callback.bytes.size(), &callback, snapshot_read_at);
+                    const auto range = make_random_access_source_range(
+                        callback_source, 0U, callback.bytes.size());
+                    std::array<std::byte, 64> window {};
+                    std::array<std::byte, 8192> value {};
+                    std::array<ExifIfdRef, 32> ifds {};
+                    ExifRandomAccessScratch scratch;
+                    scratch.read_window = window;
+                    scratch.value       = value;
+                    MetaStore positional;
+                    const auto read
+                        = decode_exif_tiff_random_access(range, positional,
+                                                         ifds, scratch, {});
+                    ASSERT_EQ(read.decode.status, ExifDecodeStatus::Ok);
+                    ASSERT_TRUE(read.complete());
+                    positional.finalize();
+                    test::capture_sync_expect_native(positional, source, true);
+                    const auto positional_ids = positional.find_all(
+                        exif_key_view("exififd", 0xa462U));
+                    ASSERT_EQ(positional_ids.size(), 1U);
+                    EXPECT_TRUE(any(positional.entry(positional_ids[0]).flags,
+                                    EntryFlags::ValueBigEndian));
+                    const auto before = decoded.arena().span(
+                        composite.value.data.span);
+                    const std::vector<std::byte> raw_before(before.begin(),
+                                                            before.end());
+                    std::vector<std::byte> persisted;
+                    ASSERT_EQ(serialize_transfer_source_snapshot(
+                                  build_transfer_source_snapshot(decoded),
+                                  &persisted)
+                                  .status,
+                              TransferStatus::Ok);
+                    TransferSourceSnapshot reopened;
+                    ASSERT_EQ(deserialize_transfer_source_snapshot(persisted,
+                                                                   &reopened)
+                                  .status,
+                              TransferStatus::Ok);
+                    EXPECT_TRUE(
+                        any(reopened.store.entry(composite_ids[0]).flags,
+                            EntryFlags::ValueBigEndian));
+                    const auto stored = reopened.store.arena().span(
+                        reopened.store.entry(composite_ids[0]).value.data.span);
+                    EXPECT_EQ(std::vector<std::byte>(stored.begin(),
+                                                     stored.end()),
+                              raw_before);
+                    auto jpeg_options = options;
+                    jpeg_options.prepare.target_format
+                        = TransferTargetFormat::Jpeg;
+                    const auto migrated = execute_prepared_transfer_snapshot(
+                        reopened, make_jpeg_with_segments({}), jpeg_options);
+                    ASSERT_EQ(migrated.execute.edit_apply.status,
+                              TransferStatus::Ok);
+                    MetaStore migrated_store;
+                    ASSERT_TRUE(decode_transfer_roundtrip_store(
+                        migrated.execute.edited_output, &migrated_store));
+                    test::capture_sync_expect_native(migrated_store, source,
+                                                     true);
+                }
                 EXPECT_TRUE(
                     store_has_any_text_entry(decoded,
                                              exif_key_view("ifd0", 0x010fU),
@@ -50934,7 +51020,7 @@ TEST(MetadataTransferApi,
                           XmpDecodeStatus::Ok);
                 roundtrip.finalize();
                 ASSERT_TRUE(test::capture_sync_translate(roundtrip));
-                test::capture_sync_expect_native(roundtrip, source);
+                test::capture_sync_expect_native(roundtrip, source, true);
             }
         }
     }

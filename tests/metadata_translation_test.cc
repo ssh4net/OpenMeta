@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "capture_sync_fixture.h"
+#include "openmeta/exif_tiff_decode.h"
+#include "openmeta/exif_tiff_serialize.h"
 #include "openmeta/exif_value_names.h"
 #include "openmeta/meta_edit.h"
 #include "openmeta/metadata_editing.h"
@@ -11,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -7407,7 +7410,7 @@ namespace {
     }
 
     TEST(MetadataCaptureSync,
-         TwelveApisRoundTripTogetherAndKeepCallTransactions)
+         FourteenApisRoundTripTogetherAndKeepCallTransactions)
     {
         const auto xml = test::kCaptureSyncXml;
         MetaStore source;
@@ -7435,10 +7438,10 @@ namespace {
                   MetadataCaptureTranslationStatus::NativeConflict);
         EXPECT_EQ(translated.entries().size(), partial_count);
         ASSERT_TRUE(test::capture_sync_translate(translated));
-        EXPECT_EQ(translated.entries().size(), source_count + 55U);
+        EXPECT_EQ(translated.entries().size(), source_count + 61U);
         EXPECT_EQ(source.entries().size(), source_count);
         ASSERT_TRUE(test::capture_sync_translate(translated, true));
-        EXPECT_EQ(translated.entries().size(), source_count + 55U);
+        EXPECT_EQ(translated.entries().size(), source_count + 61U);
         for (bool existing : { false, true }) {
             for (const auto policy : { XmpConflictPolicy::CurrentBehavior,
                                        XmpConflictPolicy::ExistingWins,
@@ -7793,5 +7796,620 @@ namespace {
             }
         }
     }
+}  // namespace
+}  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    constexpr std::string_view kEncodingExif = "http://ns.adobe.com/exif/1.0/";
+    constexpr std::string_view kEncodingCipa = "http://cipa.jp/exif/1.0/";
+    constexpr auto kEncodingAll = MetadataCaptureTranslationSourceMode::All;
+    constexpr auto kEncodingReplace
+        = MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+    constexpr auto kEncodingOk = MetadataCaptureTranslationStatus::Ok;
+
+    static MetaStore encoding_source()
+    {
+        MetaStore store;
+        const auto xml = test::kCaptureSyncXml;
+        EXPECT_EQ(decode_xmp_packet(
+                      std::as_bytes(std::span(xml.data(), xml.size())), store)
+                      .status,
+                  XmpDecodeStatus::Ok);
+        store.finalize();
+        return store;
+    }
+
+    static void encoding_change(MetaStore& store, std::string_view path,
+                                std::string_view text, bool remove = false,
+                                std::string_view ns = kEncodingCipa)
+    {
+        const auto ids = store.find_all(make_xmp_property_key_view(ns, path));
+        ASSERT_EQ(ids.size(), 1U) << path;
+        MetaEdit edit;
+        if (remove)
+            edit.tombstone(ids[0]);
+        else
+            edit.set_value(ids[0],
+                           make_text(edit.arena(), text, TextEncoding::Utf8));
+        store = commit(store, std::span(&edit, 1U));
+    }
+
+    static std::string encoding_packet(const MetaStore& store,
+                                       bool native = true)
+    {
+        XmpPortableOptions options;
+        options.include_exif         = native;
+        options.include_existing_xmp = !native;
+        options.include_iptc         = false;
+        std::array<std::byte, 32768> buffer {};
+        const auto result = dump_xmp_portable(store, buffer, options);
+        EXPECT_EQ(result.status, XmpDumpStatus::Ok);
+        return std::string(reinterpret_cast<const char*>(buffer.data()),
+                           result.written);
+    }
+
+    static void
+    encoding_expect_rollback(MetaStore& source, bool composite,
+                             const MetadataCompositeTranslationOptions& options
+                             = { .source_mode = kEncodingAll })
+    {
+        const Entry* entries = source.entries().data();
+        const auto raw       = source.arena().bytes();
+        const std::vector<std::byte> before(raw.begin(), raw.end());
+        const auto result
+            = composite
+                  ? translate_xmp_composite_metadata(source, options, &source)
+                  : translate_xmp_image_encoding_metadata(
+                        source, { .source_mode = kEncodingAll }, &source);
+        EXPECT_NE(result.status, kEncodingOk);
+        EXPECT_EQ(source.entries().data(), entries);
+        ASSERT_EQ(source.arena().bytes().size(), before.size());
+        EXPECT_EQ(std::memcmp(source.arena().bytes().data(), before.data(),
+                              before.size()),
+                  0);
+    }
+
+    TEST(MetadataImageEncoding,
+         ExactRationalsComponentsAndNativeOnlyPortableRoundTrip)
+    {
+        MetaStore source = encoding_source();
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_image_encoding_metadata(source, {}, &output)
+                      .source_properties,
+                  0U);
+        const auto result = translate_xmp_image_encoding_metadata(
+            source, { .source_mode = kEncodingAll }, &output);
+        ASSERT_EQ(result.status, kEncodingOk);
+        EXPECT_EQ(result.entries_added, 3U);
+        const Entry* gamma      = active_exif_entry(output, "exififd", 0xa500U);
+        const Entry* bits       = active_exif_entry(output, "exififd", 0x9102U);
+        const Entry* components = active_exif_entry(output, "exififd", 0x9101U);
+        ASSERT_NE(gamma, nullptr);
+        ASSERT_NE(bits, nullptr);
+        ASSERT_NE(components, nullptr);
+        EXPECT_EQ(gamma->value.data.ur.numer, 11U);
+        EXPECT_EQ(gamma->value.data.ur.denom, 5U);
+        EXPECT_EQ(bits->value.data.ur.numer, 7U);
+        EXPECT_EQ(bits->value.data.ur.denom, 3U);
+        EXPECT_EQ(components->value.kind, MetaValueKind::Bytes);
+        EXPECT_EQ(components->value.count, 4U);
+        const auto bytes = output.arena().span(components->value.data.span);
+        const std::array<std::byte, 4> expected = {
+            std::byte { 1 }, std::byte { 2 }, std::byte { 3 }, std::byte { 0 }
+        };
+        EXPECT_EQ(std::memcmp(bytes.data(), expected.data(), 4U), 0);
+        const std::string xml = encoding_packet(output);
+        EXPECT_NE(xml.find("<exifEX:Gamma>11/5</exifEX:Gamma>"),
+                  std::string::npos);
+        EXPECT_NE(
+            xml.find(
+                "<exif:CompressedBitsPerPixel>7/3</exif:CompressedBitsPerPixel>"),
+            std::string::npos);
+        EXPECT_NE(xml.find("xmlns:exifEX=\"http://cipa.jp/exif/1.0/\""),
+                  std::string::npos);
+        MetaStore restored;
+        ASSERT_EQ(decode_xmp_packet(std::as_bytes(
+                                        std::span(xml.data(), xml.size())),
+                                    restored)
+                      .status,
+                  XmpDecodeStatus::Ok);
+        restored.finalize();
+        ASSERT_EQ(translate_xmp_image_encoding_metadata(
+                      restored, { .source_mode = kEncodingAll }, &restored)
+                      .status,
+                  kEncodingOk);
+        EXPECT_EQ(translate_xmp_image_encoding_metadata(
+                      restored, { .source_mode = kEncodingAll }, &restored)
+                      .entries_added,
+                  0U);
+        EXPECT_TRUE(validate_store(restored).ok());
+    }
+
+    TEST(MetadataImageEncoding, InvalidBatchRollsBackAndPreservesOriginalOutput)
+    {
+        for (std::string_view value :
+             { "-1", "1/0", "nan", "2.2 gamma", "2 mm", "1/4294967296" }) {
+            MetaStore source = encoding_source();
+            encoding_change(source, "Gamma", value);
+            encoding_expect_rollback(source, false);
+        }
+        for (std::string_view value : { "7", "-1", "1/2", "65536" }) {
+            MetaStore source = encoding_source();
+            encoding_change(source, "ComponentsConfiguration[4]", value, false,
+                            kEncodingExif);
+            encoding_expect_rollback(source, false);
+        }
+        MetaStore source = encoding_source();
+        encoding_change(source, "ComponentsConfiguration[4]", "", true,
+                        kEncodingExif);
+        encoding_expect_rollback(source, false);
+    }
+
+    TEST(MetadataImageEncoding, TypedArraysZeroValuesAliasesAndLimits)
+    {
+        MetaStore fresh;
+        constexpr std::array<uint16_t, 4> codes = { 4U, 5U, 6U, 0U };
+        const std::array<MetadataAuthoringEntry, 3> authored = {
+            { { make_xmp_property_key_view(kEncodingCipa, "Gamma"),
+                make_value_view_urational(0U, 7U) },
+              { make_xmp_property_key_view(kEncodingExif,
+                                           "CompressedBitsPerPixel"),
+                make_value_view_urational(UINT32_MAX, UINT32_MAX) },
+              { make_xmp_property_key_view(kEncodingExif,
+                                           "ComponentsConfiguration"),
+                make_value_view_array(MetaElementType::U16,
+                                      std::as_bytes(std::span(codes)), 4U) } }
+        };
+        ASSERT_TRUE(create_metadata_store(authored, &fresh).ok());
+        ASSERT_EQ(
+            translate_xmp_image_encoding_metadata(fresh, {}, &fresh).status,
+            kEncodingOk);
+        EXPECT_TRUE(validate_store(fresh).ok());
+        const auto gamma = active_exif_entry(fresh, "exififd", 0xa500U);
+        ASSERT_NE(gamma, nullptr);
+        EXPECT_EQ(gamma->value.data.ur.numer, 0U);
+        MetaStore bounded = encoding_source();
+        MetaStore output;
+        auto result = translate_xmp_image_encoding_metadata(
+            bounded, { .source_mode = kEncodingAll, .max_added_entries = 2U },
+            &output);
+        EXPECT_EQ(result.status,
+                  MetadataCaptureTranslationStatus::EntryLimitExceeded);
+        EXPECT_TRUE(output.entries().empty());
+        result = translate_xmp_image_encoding_metadata(
+            bounded, { .source_mode = kEncodingAll, .max_operations = 2U },
+            &output);
+        EXPECT_EQ(result.status,
+                  MetadataCaptureTranslationStatus::OperationLimitExceeded);
+        result = translate_xmp_image_encoding_metadata(
+            bounded,
+            { .source_mode = kEncodingAll, .max_total_text_bytes = 1U },
+            &output);
+        EXPECT_EQ(result.status,
+                  MetadataCaptureTranslationStatus::SourceLimitExceeded);
+        MetaEdit duplicate;
+        Entry alias;
+        alias.key   = make_xmp_property_key(duplicate.arena(), kEncodingExif,
+                                            "Gamma");
+        alias.value = make_u16(2U);
+        alias.flags = EntryFlags::Dirty;
+        duplicate.add_entry(alias);
+        bounded = commit(bounded, std::span(&duplicate, 1U));
+        encoding_expect_rollback(bounded, false);
+    }
+
+    TEST(MetadataComposite, StructuredSequencesUnknownSummariesAndRoundTrip)
+    {
+        MetaStore source = encoding_source();
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_composite_metadata(source, {}, &output)
+                      .source_properties,
+                  0U);
+        const auto result = translate_xmp_composite_metadata(
+            source, { .source_mode = kEncodingAll }, &output);
+        ASSERT_EQ(result.status, kEncodingOk);
+        EXPECT_EQ(result.entries_added, 3U);
+        EXPECT_EQ(result.groups_translated, 1U);
+        EXPECT_TRUE(validate_store(output).ok());
+        const Entry* entry = active_exif_entry(output, "exififd", 0xa462U);
+        ASSERT_NE(entry, nullptr);
+        ASSERT_EQ(entry->value.kind, MetaValueKind::Bytes);
+        const auto raw = output.arena().span(entry->value.data.span);
+        ASSERT_EQ(raw.size(), 92U);
+        EXPECT_EQ(raw[56], std::byte { 2 });
+        EXPECT_EQ(raw[58], std::byte { 2 });
+        for (size_t i = 16U; i < 24U; ++i)
+            EXPECT_EQ(raw[i], std::byte { 0 });
+        const std::string xml = encoding_packet(output);
+        EXPECT_NE(
+            xml.find(
+                "<exifEX:SourceExposureTimesOfCompositeImage rdf:parseType=\"Resource\">"),
+            std::string::npos);
+        EXPECT_NE(
+            xml.find(
+                "<exifEX:SumOfExposureTimesOfUsed>0/0</exifEX:SumOfExposureTimesOfUsed>"),
+            std::string::npos);
+        MetaStore restored;
+        ASSERT_EQ(decode_xmp_packet(std::as_bytes(
+                                        std::span(xml.data(), xml.size())),
+                                    restored)
+                      .status,
+                  XmpDecodeStatus::Ok);
+        restored.finalize();
+        ASSERT_EQ(translate_xmp_composite_metadata(
+                      restored, { .source_mode = kEncodingAll }, &restored)
+                      .status,
+                  kEncodingOk);
+        const Entry* reread = active_exif_entry(restored, "exififd", 0xa462U);
+        ASSERT_NE(reread, nullptr);
+        EXPECT_EQ(
+            std::memcmp(restored.arena().span(reread->value.data.span).data(),
+                        raw.data(), raw.size()),
+            0);
+        EXPECT_EQ(translate_xmp_composite_metadata(
+                      output, { .source_mode = kEncodingAll }, &output)
+                      .groups_unchanged,
+                  1U);
+    }
+
+    TEST(MetadataComposite, UnavailableSequenceListAndUsedCountRemainExplicit)
+    {
+        MetaStore source = encoding_source();
+        encoding_change(source, "SourceImageNumberOfCompositeImage[2]", "0");
+        encoding_change(source,
+                        "SourceExposureTimesOfCompositeImage/NumberOfSequences",
+                        "0");
+        encoding_change(
+            source,
+            "SourceExposureTimesOfCompositeImage/NumberOfImagesInSequences", "",
+            true);
+        for (unsigned i = 1U; i <= 4U; ++i)
+            encoding_change(source,
+                            "SourceExposureTimesOfCompositeImage/Values["
+                                + std::to_string(i) + "]",
+                            "", true);
+        ASSERT_EQ(translate_xmp_composite_metadata(
+                      source, { .source_mode = kEncodingAll }, &source)
+                      .status,
+                  kEncodingOk);
+        EXPECT_TRUE(validate_store(source).ok());
+        const Entry* entry = active_exif_entry(source, "exififd", 0xa462U);
+        ASSERT_NE(entry, nullptr);
+        EXPECT_EQ(entry->value.count, 58U);
+        const std::string portable = encoding_packet(source);
+        EXPECT_NE(portable.find(
+                      "<exifEX:NumberOfSequences>0</exifEX:NumberOfSequences>"),
+                  std::string::npos);
+        EXPECT_EQ(portable.find("<exifEX:Values>"), std::string::npos);
+    }
+
+    TEST(MetadataComposite, IncompleteInvalidAndAliasedGroupsRollback)
+    {
+        const std::array<std::pair<std::string_view, std::string_view>, 10> bad = {
+            { { "CompositeImage", "4" },
+              { "CompositeImage", "1" },
+              { "SourceImageNumberOfCompositeImage[1]", "1" },
+              { "SourceImageNumberOfCompositeImage[1]", "3" },
+              { "SourceImageNumberOfCompositeImage[2]", "1" },
+              { "SourceImageNumberOfCompositeImage[2]", "5" },
+              { "SourceExposureTimesOfCompositeImage/NumberOfImagesInSequences",
+                "1" },
+              { "SourceExposureTimesOfCompositeImage/TotalExposurePeriod",
+                "1/0" },
+              { "SourceExposureTimesOfCompositeImage/Values[4]", "0/0" },
+              { "SourceExposureTimesOfCompositeImage/Values[4]", "-1/3" } }
+        };
+        for (const auto& item : bad) {
+            SCOPED_TRACE(item.first);
+            MetaStore source = encoding_source();
+            encoding_change(source, item.first, item.second);
+            encoding_expect_rollback(source, true);
+        }
+        for (std::string_view path :
+             { "CompositeImage", "SourceImageNumberOfCompositeImage[1]",
+               "SourceExposureTimesOfCompositeImage/TotalExposurePeriod",
+               "SourceExposureTimesOfCompositeImage/Values[4]" }) {
+            MetaStore source = encoding_source();
+            encoding_change(source, path, "", true);
+            encoding_expect_rollback(source, true);
+        }
+        MetaStore source = encoding_source();
+        MetaEdit edit;
+        Entry alias;
+        alias.key   = make_xmp_property_key(edit.arena(), kEncodingCipa,
+                                            "CompositeImageCount[1]");
+        alias.value = make_u16(4U);
+        alias.flags = EntryFlags::Dirty;
+        edit.add_entry(alias);
+        source = commit(source, std::span(&edit, 1U));
+        encoding_expect_rollback(source, true);
+    }
+
+    TEST(MetadataComposite, GroupConflictPolicyLimitsDirtySelectionAndDeletion)
+    {
+        MetaStore source = encoding_source();
+        ASSERT_EQ(translate_xmp_composite_metadata(
+                      source, { .source_mode = kEncodingAll }, &source)
+                      .status,
+                  kEncodingOk);
+        encoding_change(
+            source, "SourceExposureTimesOfCompositeImage/TotalExposurePeriod",
+            "2");
+        MetaStore output;
+        EXPECT_EQ(translate_xmp_composite_metadata(source, {}, &output).status,
+                  MetadataCaptureTranslationStatus::NativeConflict);
+        EXPECT_TRUE(output.entries().empty());
+        EXPECT_EQ(
+            translate_xmp_composite_metadata(
+                source,
+                { .conflict_policy
+                  = MetadataCaptureTranslationConflictPolicy::PreserveExisting },
+                &output)
+                .groups_preserved,
+            1U);
+        EXPECT_EQ(translate_xmp_composite_metadata(
+                      source, { .conflict_policy = kEncodingReplace }, &source)
+                      .groups_translated,
+                  1U);
+        MetaStore bounded = encoding_source();
+        encoding_expect_rollback(bounded, true,
+                                 { .source_mode       = kEncodingAll,
+                                   .max_added_entries = 2U });
+        encoding_expect_rollback(bounded, true,
+                                 { .source_mode    = kEncodingAll,
+                                   .max_operations = 2U });
+        encoding_expect_rollback(bounded, true,
+                                 { .source_mode          = kEncodingAll,
+                                   .max_total_text_bytes = 1U });
+        encoding_expect_rollback(bounded, true,
+                                 { .source_mode         = kEncodingAll,
+                                   .max_exposure_values = 3U });
+        MetaEdit edit;
+        for (EntryId id = 0U; id < source.entries().size(); ++id) {
+            const Entry& entry = source.entry(id);
+            if (entry.key.kind != MetaKeyKind::XmpProperty)
+                continue;
+            const auto bytes = source.arena().span(
+                entry.key.data.xmp_property.property_path);
+            const std::string_view path(reinterpret_cast<const char*>(
+                                            bytes.data()),
+                                        bytes.size());
+            if (path == "CompositeImage"
+                || path.starts_with("SourceImageNumberOfCompositeImage")
+                || path.starts_with("SourceExposureTimesOfCompositeImage"))
+                edit.tombstone(id);
+        }
+        source = commit(source, std::span(&edit, 1U));
+        ASSERT_EQ(translate_xmp_composite_metadata(
+                      source, { .conflict_policy = kEncodingReplace }, &source)
+                      .status,
+                  kEncodingOk);
+        EXPECT_EQ(active_exif_entry(source, "exififd", 0xa460U), nullptr);
+        EXPECT_EQ(active_exif_entry(source, "exififd", 0xa461U), nullptr);
+        EXPECT_EQ(active_exif_entry(source, "exififd", 0xa462U), nullptr);
+    }
+
+    TEST(MetadataComposite, TypedNativeGroupEditingRejectsBrokenRelationships)
+    {
+        MetaStore source = encoding_source();
+        ASSERT_EQ(translate_xmp_composite_metadata(
+                      source, { .source_mode = kEncodingAll }, &source)
+                      .status,
+                  kEncodingOk);
+        MetadataTypedEditingOperation operation;
+        operation.kind        = MetadataEditingOperationKind::Set;
+        operation.entry.key   = make_exif_tag_key_view("exififd", 0xa460U);
+        operation.entry.value = make_value_view_u16(1U);
+        const Entry* before   = source.entries().data();
+        EXPECT_FALSE(
+            edit_metadata_typed(source, std::span(&operation, 1U), &source)
+                .ok());
+        EXPECT_EQ(source.entries().data(), before);
+        std::array<MetadataTypedEditingOperation, 3> operations {};
+        operations[0] = operation;
+        for (size_t i = 1U; i < 3U; ++i) {
+            operations[i].kind = MetadataEditingOperationKind::Remove;
+            operations[i].entry.key
+                = make_exif_tag_key_view("exififd",
+                                         static_cast<uint16_t>(0xa460U + i));
+        }
+        ASSERT_TRUE(edit_metadata_typed(source, operations, &source).ok());
+        EXPECT_TRUE(validate_store(source).ok());
+        for (const auto policy : { XmpConflictPolicy::CurrentBehavior,
+                                   XmpConflictPolicy::ExistingWins,
+                                   XmpConflictPolicy::GeneratedWins }) {
+            XmpPortableOptions options;
+            options.include_existing_xmp = true;
+            options.conflict_policy      = policy;
+            options.existing_standard_namespace_policy
+                = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+            std::array<std::byte, 32768> bytes {};
+            const auto dumped = dump_xmp_portable(source, bytes, options);
+            ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+            const std::string_view xml(reinterpret_cast<const char*>(
+                                           bytes.data()),
+                                       dumped.written);
+            EXPECT_NE(xml.find(
+                          "<exifEX:CompositeImage>1</exifEX:CompositeImage>"),
+                      std::string_view::npos);
+            EXPECT_EQ(xml.find("SourceImageNumberOfCompositeImage"),
+                      std::string_view::npos);
+            EXPECT_EQ(xml.find("SourceExposureTimesOfCompositeImage"),
+                      std::string_view::npos);
+        }
+    }
+
+    TEST(MetadataComposite, InvalidNativeCannotSuppressValidSourceStructure)
+    {
+        MetaStore source = encoding_source();
+        MetaEdit edit;
+        Entry entry;
+        entry.key   = make_exif_tag_key(edit.arena(), "exififd", 0xa460U);
+        entry.value = make_u16(3U);
+        edit.add_entry(entry);
+        source = commit(source, std::span(&edit, 1U));
+        EXPECT_FALSE(validate_store(source).ok());
+        XmpPortableOptions options;
+        options.include_existing_xmp = true;
+        options.existing_standard_namespace_policy
+            = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+        std::array<std::byte, 32768> buffer {};
+        const auto result = dump_xmp_portable(source, buffer, options);
+        ASSERT_EQ(result.status, XmpDumpStatus::Ok);
+        MetaStore restored;
+        ASSERT_EQ(decode_xmp_packet(std::span(buffer.data(), result.written),
+                                    restored)
+                      .status,
+                  XmpDecodeStatus::Ok);
+        restored.finalize();
+        ASSERT_EQ(translate_xmp_composite_metadata(
+                      restored, { .source_mode = kEncodingAll }, &restored)
+                      .status,
+                  kEncodingOk);
+        EXPECT_TRUE(validate_store(restored).ok());
+    }
+    TEST(MetadataComposite, BinaryBoundsByteOrderAndTypedReplacement)
+    {
+        MetaStore source = encoding_source();
+        ASSERT_TRUE(test::capture_sync_translate(source));
+        const Entry* exposure = active_exif_entry(source, "exififd", 0xa462U);
+        ASSERT_NE(exposure, nullptr);
+        const auto payload = source.arena().span(exposure->value.data.span);
+        const std::vector<std::byte> little(payload.begin(), payload.end());
+        const std::array<size_t, 8> sizes = { 0U,  55U, 57U, 58U,
+                                              59U, 60U, 91U, 93U };
+        for (size_t size : sizes) {
+            SCOPED_TRACE(size);
+            auto bad = little;
+            bad.resize(size);
+            MetadataTypedEditingOperation operation;
+            operation.kind        = MetadataEditingOperationKind::Set;
+            operation.entry.key   = make_exif_tag_key_view("exififd", 0xa462U);
+            operation.entry.value = make_value_view_bytes(bad);
+            const auto* before    = source.entries().data();
+            EXPECT_FALSE(
+                edit_metadata_typed(source, std::span(&operation, 1U), &source)
+                    .ok());
+            EXPECT_EQ(source.entries().data(), before);
+        }
+        for (size_t offset : { 4U, 56U, 58U, 64U }) {
+            auto bad    = little;
+            bad[offset] = std::byte { 0 };
+            MetadataTypedEditingOperation operation;
+            operation.kind        = MetadataEditingOperationKind::Set;
+            operation.entry.key   = make_exif_tag_key_view("exififd", 0xa462U);
+            operation.entry.value = make_value_view_bytes(bad);
+            EXPECT_FALSE(
+                edit_metadata_typed(source, std::span(&operation, 1U), &source)
+                    .ok());
+        }
+        auto big = little;
+        for (size_t off = 0U; off < big.size();) {
+            const size_t width = off == 56U || off == 58U ? 2U : 4U;
+            std::reverse(big.begin() + off, big.begin() + off + width);
+            off += width;
+        }
+        MetaEdit edit;
+        const auto ids = source.find_all(
+            make_exif_tag_key_view("exififd", 0xa462U));
+        ASSERT_EQ(ids.size(), 1U);
+        edit.tombstone(ids[0]);
+        Entry entry;
+        entry.key   = make_exif_tag_key(edit.arena(), "exififd", 0xa462U);
+        entry.value = make_bytes(edit.arena(), big);
+        entry.flags = EntryFlags::ValueBigEndian;
+        edit.add_entry(entry);
+        source = commit(source, std::span(&edit, 1U));
+        ASSERT_TRUE(validate_store(source).ok());
+        // Portable and canonical EXIF serialization read byte order without
+        // changing the raw source value exposed to the host.
+        const std::string xml = encoding_packet(source);
+        EXPECT_NE(
+            xml.find(
+                "<exifEX:TotalExposurePeriod>5/3</exifEX:TotalExposurePeriod>"),
+            std::string::npos);
+        const auto measured = serialize_exif_tiff(source, {});
+        ASSERT_EQ(measured.status, ExifTiffSerializeStatus::OutputTruncated);
+        std::vector<std::byte> tiff(measured.needed);
+        ASSERT_TRUE(serialize_exif_tiff(source, tiff).ok());
+        std::array<ExifIfdRef, 16> ifds {};
+        MetaStore decoded;
+        ASSERT_EQ(decode_exif_tiff(tiff, decoded, ifds, {}).status,
+                  ExifDecodeStatus::Ok);
+        decoded.finalize();
+        test::capture_sync_expect_native(decoded, source);
+        const auto original = active_exif_entry(source, "exififd", 0xa462U);
+        ASSERT_NE(original, nullptr);
+        const auto unchanged = source.arena().span(original->value.data.span);
+        EXPECT_EQ(std::vector<std::byte>(unchanged.begin(), unchanged.end()),
+                  big);
+        MetadataTypedEditingOperation replacement;
+        replacement.kind        = MetadataEditingOperationKind::Set;
+        replacement.entry.key   = make_exif_tag_key_view("exififd", 0xa462U);
+        replacement.entry.value = make_value_view_bytes(little);
+        ASSERT_TRUE(
+            edit_metadata_typed(source, std::span(&replacement, 1U), &source)
+                .ok());
+        EXPECT_FALSE(any(active_exif_entry(source, "exififd", 0xa462U)->flags,
+                         EntryFlags::ValueBigEndian));
+        EXPECT_TRUE(validate_store(source).ok());
+    }
+
+    TEST(MetadataComposite, ExplicitAliasesAndBoundedTypedExposureArrays)
+    {
+        constexpr std::array<std::string_view, 7> summaries
+            = { "TotalExposurePeriod",      "SumOfExposureTimesOfAll",
+                "SumOfExposureTimesOfUsed", "MaxExposureTimesOfAll",
+                "MaxExposureTimesOfUsed",   "MinExposureTimesOfAll",
+                "MinExposureTimesOfUsed" };
+        for (const auto count : { 2U, 4096U, 4097U }) {
+            SCOPED_TRACE(count);
+            MetaStore source;
+            add_xmp_value(&source, kInvalidBlockId, kEncodingCipa,
+                          "CompositeImage", make_u16(3U), EntryFlags::Dirty,
+                          0U);
+            const std::array<uint16_t, 2> counts
+                = { static_cast<uint16_t>(count), 0U };
+            add_xmp_value(&source, kInvalidBlockId, kEncodingCipa,
+                          "CompositeImageCount",
+                          make_u16_array(source.arena(), counts),
+                          EntryFlags::Dirty, 0U);
+            for (const auto name : summaries)
+                add_xmp_value(&source, kInvalidBlockId, kEncodingCipa,
+                              "CompositeImageExposureTimes/"
+                                  + std::string(name),
+                              make_urational(0U, 0U), EntryFlags::Dirty, 0U);
+            add_xmp_value(&source, kInvalidBlockId, kEncodingCipa,
+                          "CompositeImageExposureTimes/NumberOfSequences",
+                          make_u16(1U), EntryFlags::Dirty, 0U);
+            add_xmp_value(
+                &source, kInvalidBlockId, kEncodingCipa,
+                "CompositeImageExposureTimes/NumberOfImagesInSequences",
+                make_u16(static_cast<uint16_t>(count)), EntryFlags::Dirty, 0U);
+            const std::vector<URational> values(count, { 0U, 7U });
+            add_xmp_value(&source, kInvalidBlockId, kEncodingCipa,
+                          "CompositeImageExposureTimes/Values",
+                          make_urational_array(source.arena(), values),
+                          EntryFlags::Dirty, 0U);
+            source.finalize();
+            MetaStore output;
+            const auto result = translate_xmp_composite_metadata(source, {},
+                                                                 &output);
+            if (count > 4096U) {
+                EXPECT_EQ(result.status,
+                          MetadataCaptureTranslationStatus::SourceLimitExceeded);
+                EXPECT_TRUE(output.entries().empty());
+            } else {
+                ASSERT_EQ(result.status, kEncodingOk);
+                EXPECT_TRUE(validate_store(output).ok());
+                const auto exposure = active_exif_entry(output, "exififd",
+                                                        0xa462U);
+                ASSERT_NE(exposure, nullptr);
+                EXPECT_EQ(exposure->value.count, 60U + count * 8U);
+            }
+        }
+    }
+
 }  // namespace
 }  // namespace openmeta

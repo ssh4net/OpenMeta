@@ -611,7 +611,7 @@ serialize_transfer_source_snapshot(
         if (!key_is_valid(entry.key, arena.size())
             || !value_is_valid(entry.value, arena.size())
             || !origin_is_valid(entry.origin, block_count, arena.size())
-            || (static_cast<uint8_t>(entry.flags) & 0xC0U) != 0U) {
+            || (static_cast<uint8_t>(entry.flags) & 0x80U) != 0U) {
             return snapshot_io_error(
                 TransferStatus::InvalidArgument,
                 TransferSourceSnapshotIoCode::InvalidSnapshot,
@@ -841,7 +841,7 @@ deserialize_transfer_source_snapshot(
         uint8_t flags = 0U;
         if (!read_key(&reader, &entry.key) || !read_value(&reader, &entry.value)
             || !read_origin(&reader, &entry.origin) || !reader.u8(&flags)
-            || (flags & 0xC0U) != 0U) {
+            || (flags & 0x80U) != 0U) {
             return snapshot_io_error(
                 TransferStatus::Malformed,
                 TransferSourceSnapshotIoCode::Malformed,

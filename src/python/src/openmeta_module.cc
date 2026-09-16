@@ -6523,6 +6523,104 @@ translate_environment_metadata_document(
 }
 
 static std::shared_ptr<PyDocument>
+translate_image_encoding_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataCaptureTranslationSourceMode source_mode,
+    MetadataCaptureTranslationConflictPolicy conflict_policy,
+    bool gamma_to_exif, bool compressed_bits_per_pixel_to_exif,
+    bool components_configuration_to_exif, uint32_t max_added_entries,
+    uint32_t max_operations, uint32_t max_text_bytes_per_property,
+    uint64_t max_total_text_bytes)
+{
+    MetadataImageEncodingTranslationOptions options;
+    options.source_mode     = source_mode;
+    options.conflict_policy = conflict_policy;
+    options.gamma_to_exif   = gamma_to_exif;
+    options.compressed_bits_per_pixel_to_exif
+        = compressed_bits_per_pixel_to_exif;
+    options.components_configuration_to_exif = components_configuration_to_exif;
+    options.max_added_entries                = max_added_entries;
+    options.max_operations                   = max_operations;
+    options.max_text_bytes_per_property      = max_text_bytes_per_property;
+    options.max_total_text_bytes             = max_total_text_bytes;
+
+    MetaStore translated;
+    MetadataCaptureTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_image_encoding_metadata(source->store, options,
+                                                       &translated);
+    }
+    if (result.status != MetadataCaptureTranslationStatus::Ok) {
+        std::string message = "metadata image encoding translation failed: ";
+        message += metadata_capture_translation_status_name(result.status);
+        if (result.failed_mapping != MetadataCaptureTranslationMapping::None) {
+            message += " for ";
+            message += metadata_capture_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
+translate_composite_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataCaptureTranslationSourceMode source_mode,
+    MetadataCaptureTranslationConflictPolicy conflict_policy,
+    uint32_t max_exposure_values, uint32_t max_added_entries,
+    uint32_t max_operations, uint32_t max_text_bytes_per_property,
+    uint64_t max_total_text_bytes)
+{
+    MetadataCompositeTranslationOptions options;
+    options.max_exposure_values         = max_exposure_values;
+    options.source_mode                 = source_mode;
+    options.conflict_policy             = conflict_policy;
+    options.max_added_entries           = max_added_entries;
+    options.max_operations              = max_operations;
+    options.max_text_bytes_per_property = max_text_bytes_per_property;
+    options.max_total_text_bytes        = max_total_text_bytes;
+
+    MetaStore translated;
+    MetadataCaptureTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_composite_metadata(source->store, options,
+                                                  &translated);
+    }
+    if (result.status != MetadataCaptureTranslationStatus::Ok) {
+        std::string message = "metadata composite translation failed: ";
+        message += metadata_capture_translation_status_name(result.status);
+        if (result.failed_mapping != MetadataCaptureTranslationMapping::None) {
+            message += " for ";
+            message += metadata_capture_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
 translate_capture_additional_metadata_document(
     std::shared_ptr<PyDocument> source,
     MetadataCaptureTranslationSourceMode source_mode,
@@ -9259,6 +9357,20 @@ NB_MODULE(_openmeta, m)
         = nb::int_(kMetadataCaptureAdditionalTranslationMaxAddedEntries);
     m.attr("METADATA_CAPTURE_ADDITIONAL_TRANSLATION_MAX_TOTAL_TEXT_BYTES")
         = nb::int_(kMetadataCaptureAdditionalTranslationMaxTotalTextBytes);
+    m.attr("METADATA_IMAGE_ENCODING_TRANSLATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataImageEncodingTranslationContractVersion);
+    m.attr("METADATA_IMAGE_ENCODING_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
+        kMetadataImageEncodingTranslationMaxAddedEntries);
+    m.attr("METADATA_IMAGE_ENCODING_TRANSLATION_MAX_TOTAL_TEXT_BYTES")
+        = nb::int_(kMetadataImageEncodingTranslationMaxTotalTextBytes);
+    m.attr("METADATA_COMPOSITE_TRANSLATION_CONTRACT_VERSION") = nb::int_(
+        kMetadataCompositeTranslationContractVersion);
+    m.attr("METADATA_COMPOSITE_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
+        kMetadataCompositeTranslationMaxAddedEntries);
+    m.attr("METADATA_COMPOSITE_TRANSLATION_MAX_TOTAL_TEXT_BYTES") = nb::int_(
+        kMetadataCompositeTranslationMaxTotalTextBytes);
+    m.attr("METADATA_COMPOSITE_TRANSLATION_MAX_EXPOSURE_VALUES") = nb::int_(
+        kMetadataCompositeTranslationMaxExposureValues);
     m.attr("METADATA_ENVIRONMENT_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataEnvironmentTranslationContractVersion);
     m.attr("METADATA_ENVIRONMENT_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
@@ -9501,7 +9613,29 @@ NB_MODULE(_openmeta, m)
         .value("XmpSubjectArea",
                MetadataCaptureTranslationMapping::XmpSubjectArea)
         .value("XmpSubjectLocation",
-               MetadataCaptureTranslationMapping::XmpSubjectLocation);
+               MetadataCaptureTranslationMapping::XmpSubjectLocation)
+        .value("XmpFocalLengthIn35mmFilm",
+               MetadataCaptureTranslationMapping::XmpFocalLengthIn35mmFilm)
+        .value("XmpFileSource",
+               MetadataCaptureTranslationMapping::XmpFileSource)
+        .value("XmpSceneType", MetadataCaptureTranslationMapping::XmpSceneType)
+        .value("XmpTemperature",
+               MetadataCaptureTranslationMapping::XmpTemperature)
+        .value("XmpHumidity", MetadataCaptureTranslationMapping::XmpHumidity)
+        .value("XmpPressure", MetadataCaptureTranslationMapping::XmpPressure)
+        .value("XmpWaterDepth",
+               MetadataCaptureTranslationMapping::XmpWaterDepth)
+        .value("XmpAcceleration",
+               MetadataCaptureTranslationMapping::XmpAcceleration)
+        .value("XmpCameraElevationAngle",
+               MetadataCaptureTranslationMapping::XmpCameraElevationAngle)
+        .value("XmpGamma", MetadataCaptureTranslationMapping::XmpGamma)
+        .value("XmpCompressedBitsPerPixel",
+               MetadataCaptureTranslationMapping::XmpCompressedBitsPerPixel)
+        .value("XmpComponentsConfiguration",
+               MetadataCaptureTranslationMapping::XmpComponentsConfiguration)
+        .value("XmpCompositeImage",
+               MetadataCaptureTranslationMapping::XmpCompositeImage);
 
 
     m.attr("METADATA_FLASH_TRANSLATION_CONTRACT_VERSION") = nb::int_(
@@ -10559,6 +10693,35 @@ NB_MODULE(_openmeta, m)
              = kMetadataCaptureTranslationMaxTextBytesPerProperty,
              "max_total_text_bytes"_a
              = kMetadataApexTranslationMaxTotalTextBytes)
+        .def("translate_image_encoding_metadata",
+             &translate_image_encoding_metadata_document,
+             "source_mode"_a = MetadataCaptureTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+             "gamma_to_exif"_a                     = true,
+             "compressed_bits_per_pixel_to_exif"_a = true,
+             "components_configuration_to_exif"_a  = true,
+             "max_added_entries"_a
+             = kMetadataImageEncodingTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataCaptureTranslationMaxOperations,
+             "max_text_bytes_per_property"_a
+             = kMetadataCaptureTranslationMaxTextBytesPerProperty,
+             "max_total_text_bytes"_a
+             = kMetadataImageEncodingTranslationMaxTotalTextBytes)
+        .def("translate_composite_metadata",
+             &translate_composite_metadata_document,
+             "source_mode"_a = MetadataCaptureTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+             "max_exposure_values"_a
+             = kMetadataCompositeTranslationMaxExposureValues,
+             "max_added_entries"_a
+             = kMetadataCompositeTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataCaptureTranslationMaxOperations,
+             "max_text_bytes_per_property"_a
+             = kMetadataCaptureTranslationMaxTextBytesPerProperty,
+             "max_total_text_bytes"_a
+             = kMetadataCompositeTranslationMaxTotalTextBytes)
         .def("translate_capture_additional_metadata",
              &translate_capture_additional_metadata_document,
              "source_mode"_a = MetadataCaptureTranslationSourceMode::DirtyOnly,
