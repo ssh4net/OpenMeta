@@ -133,3 +133,11 @@ High-throughput hosts should use [Host Adoption Profile v1](host_adoption_profil
 for read/state compatibility and
 [Prepared Transfer Handoff v1](prepared_transfer_handoff.md) for stable target
 preparation, then query format capabilities separately.
+
+The 0.5.8 structured capture batch adds OECF, SpatialFrequencyResponse,
+CFAPattern and DeviceSettingDescription through
+`translate_xmp_structured_capture_metadata` and its Python counterpart.
+The current combined inventory is 65 distinct native tags across fifteen APIs
+(62 retained by compatible-file transfer). ABI 3 and host synchronization
+remain unchanged; big-endian snapshots for the four new fields need a 0.5.8
+reader. See [Structured capture data](translation.md#structured-capture-data-058).

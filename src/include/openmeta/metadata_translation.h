@@ -376,6 +376,10 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpCompressedBitsPerPixel,
     XmpComponentsConfiguration,
     XmpCompositeImage,
+    XmpOecf,
+    XmpSpatialFrequencyResponse,
+    XmpCfaPattern,
+    XmpDeviceSettingDescription,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -606,6 +610,69 @@ struct MetadataCompositeTranslationOptions final {
 MetadataCaptureTranslationResult
 translate_xmp_composite_metadata(
     const MetaStore& source, const MetadataCompositeTranslationOptions& options,
+    MetaStore* out_store);
+
+inline constexpr uint32_t kMetadataStructuredCaptureTranslationContractVersion
+    = 1U;
+inline constexpr uint32_t kMetadataStructuredCaptureTranslationMaxAddedEntries
+    = 4U;
+inline constexpr uint32_t kMetadataStructuredCaptureTranslationMaxColumns = 256U;
+inline constexpr uint32_t kMetadataStructuredCaptureTranslationMaxValues = 4096U;
+inline constexpr uint32_t
+    kMetadataStructuredCaptureTranslationMaxTextBytesPerProperty
+    = 4096U;
+inline constexpr uint64_t kMetadataStructuredCaptureTranslationMaxTotalTextBytes
+    = 1024ULL * 1024ULL;
+inline constexpr uint32_t kMetadataStructuredCaptureTranslationMaxPayloadBytes
+    = 1024U * 1024U;
+
+struct MetadataStructuredCaptureTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    bool oecf_to_exif                       = true;
+    bool spatial_frequency_response_to_exif = true;
+    bool cfa_pattern_to_exif                = true;
+    bool device_setting_description_to_exif = true;
+    uint32_t max_added_entries
+        = kMetadataStructuredCaptureTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_columns    = kMetadataStructuredCaptureTranslationMaxColumns;
+    uint32_t max_values     = kMetadataStructuredCaptureTranslationMaxValues;
+    uint32_t max_text_bytes_per_property
+        = kMetadataStructuredCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataStructuredCaptureTranslationMaxTotalTextBytes;
+    uint32_t max_payload_bytes
+        = kMetadataStructuredCaptureTranslationMaxPayloadBytes;
+};
+
+/**
+ * Translate exif:OECF, SpatialFrequencyResponse, CFAPattern and
+ * DeviceSettingDescription together, with independent field conflict policies.
+ * Each selected structure requires positive SHORT Columns/Rows and dense Values.
+ * OECF/SFR also require one ASCII Names item per column and rows*columns exact
+ * signed/unsigned rationals. CFA requires rows*columns codes 0..6. Device
+ * settings are ordered UTF-8 text; display dimensions do not determine their
+ * count. Text must be representable in XML 1.0, without embedded NULs.
+ *
+ * Columns is canonical; the published CIPA spelling Columus is an explicit
+ * alternative for OECF/SFR. Mixed aliases or root/child representations fail.
+ * Numeric Values may be typed arrays; text arrays use dense indexed children.
+ * A root Bytes value supplies a validated little-endian native payload instead.
+ * Any eligible member selects the complete structure, including clean siblings.
+ * All-deleted structures remove native values; partial shapes fail atomically.
+ *
+ * New payload headers/rationals use little-endian. Device strings each have a
+ * UTF-16LE BOM and terminator. Decoded bytes retain their original content and
+ * ValueBigEndian provenance; string BOMs determine their own byte order.
+ * Preparation may allocate. Hosts synchronize conflicting object access.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_structured_capture_metadata(
+    const MetaStore& source,
+    const MetadataStructuredCaptureTranslationOptions& options,
     MetaStore* out_store);
 
 inline constexpr uint32_t kMetadataApexTranslationContractVersion   = 1U;

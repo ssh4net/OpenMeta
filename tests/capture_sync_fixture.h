@@ -59,6 +59,16 @@ inline constexpr std::string_view kCaptureSyncXml = R"xml(
 <x:NumberOfSequences>2</x:NumberOfSequences><x:NumberOfImagesInSequences>2</x:NumberOfImagesInSequences>
 <x:Values><rdf:Seq><rdf:li>1/2</rdf:li><rdf:li>1/6</rdf:li><rdf:li>1/2</rdf:li><rdf:li>1/6</rdf:li></rdf:Seq></x:Values>
 </x:SourceExposureTimesOfCompositeImage>
+<e:OECF rdf:parseType="Resource"><e:Columns>2</e:Columns><e:Rows>2</e:Rows>
+<e:Names><rdf:Seq><rdf:li> log input </rdf:li><rdf:li>R&amp;G</rdf:li></rdf:Seq></e:Names>
+<e:Values><rdf:Seq><rdf:li>-3/2</rdf:li><rdf:li>124/10</rdf:li><rdf:li>-1/-2</rdf:li><rdf:li>-2147483648/2147483647</rdf:li></rdf:Seq></e:Values></e:OECF>
+<e:SpatialFrequencyResponse rdf:parseType="Resource"><e:Columns>2</e:Columns><e:Rows>2</e:Rows>
+<e:Names><rdf:Seq><rdf:li>Frequency</rdf:li><rdf:li>Response</rdf:li></rdf:Seq></e:Names>
+<e:Values><rdf:Seq><rdf:li>1/10</rdf:li><rdf:li>1/1</rdf:li><rdf:li>2/10</rdf:li><rdf:li>9/10</rdf:li></rdf:Seq></e:Values></e:SpatialFrequencyResponse>
+<e:CFAPattern rdf:parseType="Resource"><e:Columns>3</e:Columns><e:Rows>2</e:Rows>
+<e:Values><rdf:Seq><rdf:li>0</rdf:li><rdf:li>1</rdf:li><rdf:li>2</rdf:li><rdf:li>3</rdf:li><rdf:li>4</rdf:li><rdf:li>6</rdf:li></rdf:Seq></e:Values></e:CFAPattern>
+<e:DeviceSettingDescription rdf:parseType="Resource"><e:Columns>32</e:Columns><e:Rows>2</e:Rows>
+<e:Values><rdf:Seq><rdf:li> &#26085;&#26412;&#35486; &amp; &lt; &gt; &#13;&#10;&#9; </rdf:li><rdf:li>&#128512;</rdf:li><rdf:li></rdf:li></rdf:Seq></e:Values></e:DeviceSettingDescription>
 </rdf:Description></rdf:RDF>)xml";
 
 inline bool
@@ -197,6 +207,12 @@ capture_sync_translate_step(MetaStore& store, unsigned step)
                                                 &store)
                    .status
                == ok;
+    case 14:
+        return translate_xmp_structured_capture_metadata(
+                   store, { .source_mode = all, .conflict_policy = replace },
+                   &store)
+                   .status
+               == ok;
     default: return false;
     }
 }
@@ -204,8 +220,8 @@ capture_sync_translate_step(MetaStore& store, unsigned step)
 inline bool
 capture_sync_translate(MetaStore& store, bool reverse = false)
 {
-    for (unsigned step = 0; step < 14U; ++step)
-        if (!capture_sync_translate_step(store, reverse ? 13U - step : step))
+    for (unsigned step = 0; step < 15U; ++step)
+        if (!capture_sync_translate_step(store, reverse ? 14U - step : step))
             return false;
     return true;
 }
@@ -261,10 +277,49 @@ capture_sync_expect_native(const MetaStore& actual, const MetaStore& expected,
                 const auto av = actual.arena().span(a.data.span);
                 const auto bv = expected.arena().span(b.data.span);
                 ASSERT_EQ(av.size(), bv.size());
-                if (tag == 0xa462U
+                if ((tag == 0x8828U || tag == 0xa20cU || tag == 0xa302U
+                     || tag == 0xa40bU)
                     && any(actual.entry(ids[0]).flags,
                            EntryFlags::ValueBigEndian)
                            != any(entry.flags, EntryFlags::ValueBigEndian)) {
+                    for (size_t off = 0U; off < 4U; off += 2U) {
+                        EXPECT_EQ(av[off], bv[off + 1U]);
+                        EXPECT_EQ(av[off + 1U], bv[off]);
+                    }
+                    size_t offset = 4U;
+                    if (tag == 0x8828U || tag == 0xa20cU) {
+                        const bool expected_big
+                            = any(entry.flags, EntryFlags::ValueBigEndian);
+                        const uint32_t columns
+                            = std::to_integer<uint8_t>(
+                                  bv[expected_big ? 1U : 0U])
+                              + 256U
+                                    * std::to_integer<uint8_t>(
+                                        bv[expected_big ? 0U : 1U]);
+                        for (uint32_t col = 0U; col < columns; ++col) {
+                            while (offset < bv.size()
+                                   && bv[offset] != std::byte { 0 }) {
+                                EXPECT_EQ(av[offset], bv[offset]);
+                                ++offset;
+                            }
+                            ASSERT_LT(offset, bv.size());
+                            EXPECT_EQ(av[offset], bv[offset]);
+                            ++offset;
+                        }
+                        for (; offset < bv.size(); offset += 4U) {
+                            ASSERT_LE(offset + 4U, bv.size());
+                            for (size_t j = 0U; j < 4U; ++j)
+                                EXPECT_EQ(av[offset + j], bv[offset + 3U - j]);
+                        }
+                    } else
+                        EXPECT_EQ(std::memcmp(av.data() + 4U, bv.data() + 4U,
+                                              av.size() - 4U),
+                                  0);
+                } else if (tag == 0xa462U
+                           && any(actual.entry(ids[0]).flags,
+                                  EntryFlags::ValueBigEndian)
+                                  != any(entry.flags,
+                                         EntryFlags::ValueBigEndian)) {
                     for (size_t off = 0U; off < av.size();) {
                         const size_t width = off == 56U || off == 58U ? 2U : 4U;
                         ASSERT_LE(off + width, av.size());
@@ -286,7 +341,7 @@ capture_sync_expect_native(const MetaStore& actual, const MetaStore& expected,
         }
         ++count;
     }
-    EXPECT_EQ(count, transferred ? 58U : 61U);
+    EXPECT_EQ(count, transferred ? 62U : 65U);
 }
 
 }  // namespace openmeta::test

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "metadata_capture_fields_internal.h"
-#include "metadata_encoding_fields_internal.h"
+#include "metadata_structured_fields_internal.h"
 
 #include "openmeta/xmp_dump.h"
 
@@ -296,6 +296,13 @@ namespace {
                 w->append("&gt;");
                 continue;
             }
+            if (c == 0x09U || c == 0x0aU || c == 0x0dU || c == 0x7fU) {
+                w->append(c == 0x09U   ? "&#9;"
+                          : c == 0x0aU ? "&#10;"
+                          : c == 0x0dU ? "&#13;"
+                                       : "&#127;");
+                continue;
+            }
             if (c >= 0x20U && c <= 0x7EU) {
                 w->append_char(static_cast<char>(c));
                 continue;
@@ -342,9 +349,13 @@ namespace {
                 continue;
             }
 
-            // XML 1.0 allows TAB/CR/LF and 0x20..; escape other control bytes.
-            if (c == 0x09U || c == 0x0AU || c == 0x0DU
-                || (c >= 0x20U && c != 0x7FU)) {
+            // A literal CR is normalized by XML readers, including CR/LF pairs.
+            if (c == 0x0DU || c == 0x7FU) {
+                w->append(c == 0x0DU ? "&#13;" : "&#127;");
+                continue;
+            }
+            // XML 1.0 allows TAB/LF and 0x20..; escape other control bytes.
+            if (c == 0x09U || c == 0x0AU || c >= 0x20U) {
                 w->append_char(static_cast<char>(c));
                 continue;
             }
@@ -4423,6 +4434,124 @@ namespace {
                && value.data.ur.numer > 0U && value.data.ur.denom > 0U;
     }
 
+    static void append_capture_codepoint(uint32_t code, SpanWriter* w) noexcept
+    {
+        if (code == 9U || code == 10U || code == 13U || code == 127U) {
+            w->append("&#");
+            append_u64_dec(code, w);
+            w->append(";");
+            return;
+        }
+        std::array<char, 4> bytes {};
+        size_t size = 0U;
+        if (code < 0x80U) {
+            bytes[0] = static_cast<char>(code);
+            size     = 1U;
+        } else if (code < 0x800U) {
+            bytes[0] = static_cast<char>(0xc0U | (code >> 6U));
+            bytes[1] = static_cast<char>(0x80U | (code & 0x3fU));
+            size     = 2U;
+        } else if (code < 0x10000U) {
+            bytes[0] = static_cast<char>(0xe0U | (code >> 12U));
+            bytes[1] = static_cast<char>(0x80U | ((code >> 6U) & 0x3fU));
+            bytes[2] = static_cast<char>(0x80U | (code & 0x3fU));
+            size     = 3U;
+        } else {
+            bytes[0] = static_cast<char>(0xf0U | (code >> 18U));
+            bytes[1] = static_cast<char>(0x80U | ((code >> 12U) & 0x3fU));
+            bytes[2] = static_cast<char>(0x80U | ((code >> 6U) & 0x3fU));
+            bytes[3] = static_cast<char>(0x80U | (code & 0x3fU));
+            size     = 4U;
+        }
+        append_xml_safe_utf8(std::string_view(bytes.data(), size), w);
+    }
+
+    static bool emit_structured_capture_property(
+        SpanWriter* w, std::string_view name, const ByteArena& arena,
+        uint16_t tag, const MetaValue& value, EntryFlags flags) noexcept
+    {
+        const std::span<const std::byte> raw = arena.span(value.data.span);
+        const bool little = !any(flags, EntryFlags::ValueBigEndian);
+        detail::StructuredCaptureView view;
+        if (!detail::structured_capture_view(raw, tag, little, &view))
+            return true;
+        w->append(kIndent3);
+        w->append("<exif:");
+        w->append(name);
+        w->append(" rdf:parseType=\"Resource\">\n");
+        w->append(kIndent4);
+        w->append("<exif:Columns>");
+        append_u64_dec(view.columns, w);
+        w->append("</exif:Columns>\n");
+        w->append(kIndent4);
+        w->append("<exif:Rows>");
+        append_u64_dec(view.rows, w);
+        w->append("</exif:Rows>\n");
+        if (tag == 0x8828U || tag == 0xa20cU) {
+            w->append(kIndent4);
+            w->append("<exif:Names><rdf:Seq>\n");
+            size_t offset = 4U;
+            for (uint32_t i = 0U; i < view.columns; ++i) {
+                w->append(kIndent4);
+                w->append("<rdf:li>");
+                while (raw[offset] != std::byte { 0 })
+                    append_capture_codepoint(std::to_integer<uint8_t>(
+                                                 raw[offset++]),
+                                             w);
+                ++offset;
+                w->append("</rdf:li>\n");
+            }
+            w->append(kIndent4);
+            w->append("</rdf:Seq></exif:Names>\n");
+        }
+        w->append(kIndent4);
+        w->append("<exif:Values><rdf:Seq>\n");
+        size_t offset = view.values_offset;
+        for (uint32_t i = 0U; i < view.values_count; ++i) {
+            w->append(kIndent4);
+            w->append("<rdf:li>");
+            if (tag == 0xa40bU) {
+                std::span<const std::byte> text;
+                bool text_little = true;
+                if (!detail::capture_setting(raw, &offset, &text, &text_little))
+                    return true;
+                size_t cursor = 0U;
+                while (cursor < text.size()) {
+                    uint32_t code = 0U;
+                    if (!detail::capture_utf16_next(text, &cursor, text_little,
+                                                    &code))
+                        return true;
+                    append_capture_codepoint(code, w);
+                }
+            } else if (tag == 0xa302U)
+                append_u64_dec(std::to_integer<uint8_t>(raw[offset++]), w);
+            else {
+                const uint32_t n = detail::composite_uint(raw, offset, 4U,
+                                                          little);
+                const uint32_t d = detail::composite_uint(raw, offset + 4U, 4U,
+                                                          little);
+                if (tag == 0x8828U)
+                    append_i64_dec(std::bit_cast<int32_t>(n), w);
+                else
+                    append_u64_dec(n, w);
+                w->append("/");
+                if (tag == 0x8828U)
+                    append_i64_dec(std::bit_cast<int32_t>(d), w);
+                else
+                    append_u64_dec(d, w);
+                offset += 8U;
+            }
+            w->append("</rdf:li>\n");
+        }
+        w->append(kIndent4);
+        w->append("</rdf:Seq></exif:Values>\n");
+        w->append(kIndent3);
+        w->append("</exif:");
+        w->append(name);
+        w->append(">\n");
+        return true;
+    }
+
     static bool emit_composite_exposure_property(SpanWriter* w,
                                                  std::string_view prefix,
                                                  std::string_view name,
@@ -4500,6 +4629,12 @@ namespace {
 
         if (!portable_capture_scalar_value_valid(arena, ifd, tag, v))
             return true;
+        if (ifd == "exififd" && detail::structured_capture_tag(tag)) {
+            if (!detail::structured_capture_value_valid(arena, tag, v, flags))
+                return true;
+            return emit_structured_capture_property(w, name, arena, tag, v,
+                                                    flags);
+        }
         if (ifd == "exififd" && detail::composite_tag(tag)) {
             if (!detail::composite_group_valid(arena, entries))
                 return true;
@@ -10230,6 +10365,9 @@ namespace {
             return false;
         }
 
+        if (ifd == "exififd" && detail::structured_capture_tag(tag)
+            && !detail::structured_capture_value_valid(arena, tag, v, flags))
+            return false;
         if (ifd == "exififd" && detail::composite_tag(tag)
             && !detail::composite_group_valid(arena, entries))
             return false;
@@ -10273,7 +10411,9 @@ namespace {
         bool new_claim = false;
         if (!claim_portable_property_key(
                 claims, prefix, emitted_name, PortablePropertyOwner::Exif,
-                tag == 0xa462U ? PortablePropertyShape::Structured
+                (tag == 0xa462U
+                 || (ifd == "exififd" && detail::structured_capture_tag(tag)))
+                    ? PortablePropertyShape::Structured
                 : (tag == 0xa432U || tag == 0x9214U || tag == 0xa214U
                    || tag == 0x9101U || tag == 0xa461U)
                     ? PortablePropertyShape::Indexed
@@ -10961,7 +11101,10 @@ namespace {
                                                       e.flags)) {
                     (void)out->insert(PortablePropertyGeneratedShape {
                         PortablePropertyKey { prefix, portable_tag_name },
-                        tag == 0xa462U ? PortablePropertyShape::Structured
+                        (tag == 0xa462U
+                         || (ifd == "exififd"
+                             && detail::structured_capture_tag(tag)))
+                            ? PortablePropertyShape::Structured
                         : (tag == 0xa432U || tag == 0x9214U || tag == 0xa214U
                            || tag == 0x9101U || tag == 0xa461U)
                             ? PortablePropertyShape::Indexed

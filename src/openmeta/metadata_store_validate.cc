@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "metadata_capture_fields_internal.h"
-#include "metadata_encoding_fields_internal.h"
+#include "metadata_structured_fields_internal.h"
 
 #include "openmeta/validate.h"
 
@@ -86,6 +86,10 @@ namespace {
         { SchemaIfd::ExifIfd, 0xA460U, kShort, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0xA461U, kShort, 2U, 2U, true },
         { SchemaIfd::ExifIfd, 0xA462U, kUndefined, 58U, 0U, true },
+        { SchemaIfd::ExifIfd, 0x8828U, kUndefined, 13U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA20CU, kUndefined, 13U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA302U, kUndefined, 5U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA40BU, kUndefined, 8U, 0U, true },
         { SchemaIfd::ExifIfd, 0xA405U, kShort, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0xA300U, kUndefined, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0xA301U, kUndefined, 1U, 1U, true },
@@ -803,9 +807,12 @@ namespace {
                          kInvalidEntryId, entry.key.kind, tag);
         }
         if (ifd == "exififd"
-            && ((detail::encoding_tag(tag)
-                 && !detail::encoding_value_valid(store.arena(), tag,
-                                                  entry.value))
+            && ((detail::structured_capture_tag(tag)
+                 && !detail::structured_capture_value_valid(
+                     store.arena(), tag, entry.value, entry.flags))
+                || (detail::encoding_tag(tag)
+                    && !detail::encoding_value_valid(store.arena(), tag,
+                                                     entry.value))
                 || (detail::composite_tag(tag)
                     && !detail::composite_value_valid(
                         store.arena(), tag, entry.value, entry.flags)))) {

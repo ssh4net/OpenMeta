@@ -509,7 +509,19 @@ The 0.5.6 editing/translation batch
 
 Exact-key typed editing now covers supported EXIF/IPTC/XMP and private/custom
 entries with complete candidate validation and explicit wire-hint replacement.
-Three additional capture, six environment and six encoding/composite fields bring capture-related
-translation to 61 unique ExifIFD targets across fourteen APIs. See
+Three additional capture, six environment, six encoding/composite and four
+structured fields bring capture-related translation to 65 unique ExifIFD targets
+across fifteen APIs. See
 :doc:`editing`, :doc:`translation` and :doc:`capture_sync_milestone`.
 Fuzzy Search remains the lowest priority, after Adapters and Utilities.
+
+Structured Capture Update (0.5.8)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+OECF, SpatialFrequencyResponse, CFAPattern and DeviceSettingDescription add
+four native targets in one transaction through
+``translate_xmp_structured_capture_metadata`` and its Python counterpart.
+The current combined inventory is 65 distinct native tags across fifteen APIs
+(62 retained by compatible-file transfer). ABI 3 and host synchronization
+remain unchanged; big-endian snapshots for these four tags need a 0.5.8
+reader. See :doc:`translation` for the encoding, bounds and conflict contract.

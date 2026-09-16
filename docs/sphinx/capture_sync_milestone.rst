@@ -4,7 +4,7 @@ Capture Synchronization Milestone
 Audit date: 2026-09-14. Original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing signatures, ABI 3 or host synchronization responsibilities.
-Fourteen explicit reverse APIs now cover **61 distinct ExifIFD tags**,
+Fifteen explicit reverse APIs now cover **65 distinct ExifIFD tags**,
 including camera text and excluding GPS, dates, geometry, IPTC and MakerNotes.
 This count does not measure all-EXIF or competitor coverage.
 
@@ -100,8 +100,12 @@ The API stems below have the prefix ``translate_xmp_`` and suffix
      - 3
      - CompositeImage, SourceImageNumberOfCompositeImage, SourceExposureTimesOfCompositeImage
 
-ISO and ExposureBiasValue are each shared by two APIs. The 63 mappings
-therefore cover 61 distinct tags.
+   * - structured_capture
+     - 4
+     - OECF, SpatialFrequencyResponse, CFAPattern, DeviceSettingDescription
+
+ISO and ExposureBiasValue are each shared by two APIs. The 67 mappings
+therefore cover 65 distinct tags.
 
 Historical 0.5.4 Qualification and Gaps
 ---------------------------------------
@@ -162,17 +166,28 @@ The 0.5.5 fix retains API signatures and covers these acceptance checks:
    independent reads, and one platform matrix against the final patch.
 
 The additional capture and environment batches are implemented in 0.5.6.
-Encoding and composite capture are implemented in 0.5.7. Next, define
-structured/opaque OECF, CFA and device data, then UserComment and EXIF text
-encoding/version extensions. MakerNote rewrite trust remains vendor-specific.
+Encoding and composite capture are implemented in 0.5.7 and structured
+capture in 0.5.8. Next, define UserComment and EXIF text encoding/version
+extensions. MakerNote rewrite trust remains vendor-specific.
 Read/display support does not establish reverse writeback support. Downstream
 application acceptance and whole-corpus qualification are outside this audit.
 
 Encoding and Composite Capture in 0.5.7
---------------------------------------
+---------------------------------------
 
 Two new APIs extend the combined fixture to 61 native tags across fourteen APIs.
 Direct serialization retains all 61. Target transfer filters the three source
 encoding fields under the existing destination-image policy, retaining 58.
 Composite exposure data retains exact fractions and unavailable summaries across
 both TIFF byte orders and snapshot persistence. See :doc:`translation`.
+
+Structured Capture Update (0.5.8)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+OECF, SpatialFrequencyResponse, CFAPattern and DeviceSettingDescription add
+four native targets in one transaction through
+``translate_xmp_structured_capture_metadata`` and its Python counterpart.
+The current combined inventory is 65 distinct native tags across fifteen APIs
+(62 retained by compatible-file transfer). ABI 3 and host synchronization
+remain unchanged; big-endian snapshots for these four tags need a 0.5.8
+reader. See :doc:`translation` for the encoding, bounds and conflict contract.

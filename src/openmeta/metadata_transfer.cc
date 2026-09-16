@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "metadata_encoding_fields_internal.h"
+#include "metadata_structured_fields_internal.h"
 
 #include "openmeta/metadata_transfer.h"
 
@@ -6992,6 +6992,24 @@ namespace {
         out->count = 0U;
 
         if (e.key.kind == MetaKeyKind::ExifTag
+            && detail::structured_capture_tag(e.key.data.exif_tag.tag)
+            && detail::primary_exif_entry(store.arena(), e,
+                                          e.key.data.exif_tag.tag)) {
+            const uint16_t tag = e.key.data.exif_tag.tag;
+            if (!detail::structured_capture_value_valid(store.arena(), tag, v,
+                                                        e.flags))
+                return false;
+            const std::span<const std::byte> raw = store.arena().span(
+                v.data.span);
+            out->value.assign(raw.begin(), raw.end());
+            if (any(e.flags, EntryFlags::ValueBigEndian)
+                && !detail::structured_capture_swap(out->value, tag, false))
+                return false;
+            out->type  = 7U;
+            out->count = static_cast<uint32_t>(out->value.size());
+            return true;
+        }
+        if (e.key.kind == MetaKeyKind::ExifTag
             && e.key.data.exif_tag.tag == 0xa462U
             && detail::primary_exif_entry(store.arena(), e, 0xa462U)) {
             if (!detail::composite_value_valid(store.arena(), 0xa462U, v,
@@ -8821,6 +8839,14 @@ namespace {
         }
         for (size_t i = 0; i < ifd->entries.size(); ++i) {
             ParsedTiffIfdEntry& e = ifd->entries[i];
+            if (composite && detail::structured_capture_tag(e.tag)
+                && e.type == 7U && from_endian != to_endian) {
+                if (!detail::structured_capture_swap(e.payload, e.tag,
+                                                     from_endian
+                                                         == TiffEndian::Little))
+                    return false;
+                continue;
+            }
             if (composite && e.tag == 0xa462U && e.type == 7U
                 && from_endian != to_endian) {
                 if (!detail::composite_swap_bytes(e.payload,
@@ -9812,6 +9838,9 @@ namespace {
     static bool is_xmp_raw_color_calibration_transfer_property(
         std::string_view ns, std::string_view path) noexcept
     {
+        if (ns == "http://ns.adobe.com/exif/1.0/"
+            && xmp_transfer_property_base(path) == "CFAPattern")
+            return true;
         if (ns == "http://ns.adobe.com/dng/1.0/") {
             return true;
         }

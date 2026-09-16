@@ -208,9 +208,10 @@ if(NOT _rv_write_tiff EQUAL 0)
     "failed to write target tiff fixture (${_rv_write_tiff})\nstdout:\n${_out_write_tiff}\nstderr:\n${_err_write_tiff}")
 endif()
 
+# Generate each DNG fixture directly: filesystem copies can fail on SMB mounts.
 execute_process(
   COMMAND "${_openmeta_test_python}" -c
-    "from pathlib import Path; b=bytearray(); b+=b'II'; b+=(42).to_bytes(2,'little'); b+=(8).to_bytes(4,'little'); b+=(0).to_bytes(2,'little'); b+=(0).to_bytes(4,'little'); Path(r'''${_target_dng}''').write_bytes(bytes(b))"
+    "from pathlib import Path; b=bytearray(); b+=b'II'; b+=(42).to_bytes(2,'little'); b+=(8).to_bytes(4,'little'); b+=(0).to_bytes(2,'little'); b+=(0).to_bytes(4,'little'); [Path(p).write_bytes(bytes(b)) for p in (r'''${_target_dng}''', r'''${_sdk_target_dng}''', r'''${_sdk_target_dng_before}''')]"
   RESULT_VARIABLE _rv_write_dng
   OUTPUT_VARIABLE _out_write_dng
   ERROR_VARIABLE _err_write_dng
@@ -219,15 +220,6 @@ if(NOT _rv_write_dng EQUAL 0)
   message(FATAL_ERROR
     "failed to write target dng fixture (${_rv_write_dng})\nstdout:\n${_out_write_dng}\nstderr:\n${_err_write_dng}")
 endif()
-# CMake 3.28 COPY_FILE can fail on SMB mounts even when both paths are writable.
-# The portable copy command also supports the project's CMake 3.20 minimum.
-foreach(_sdk_copy IN ITEMS "${_sdk_target_dng}" "${_sdk_target_dng_before}")
-  execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E copy "${_target_dng}" "${_sdk_copy}"
-    COMMAND_ERROR_IS_FATAL ANY
-  )
-endforeach()
-
 # Minimal classic big-endian TIFF target (MM + 42 + IFD0 at offset 8 with 0 entries)
 execute_process(
   COMMAND "${_openmeta_test_python}" -c

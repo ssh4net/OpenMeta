@@ -930,12 +930,13 @@ Suggested delivery sequence:
    Version 0.4.142 adds six independent camera/lens/spectral printable-ASCII
    fields in one combined batch, including canonical portable namespaces and
    shared transaction, persistence and platform checks. The capture-related
-   APIs now cover 61 distinct ExifIFD targets across fourteen APIs, including camera
+   APIs now cover 65 distinct ExifIFD targets across fifteen APIs, including camera
    text and excluding GPS. ISO and ExposureBiasValue each overlap two APIs.
    Version 0.5.6 adds exact-key typed editing, additional capture scalars and
    six environment fields. Version 0.5.7 adds six encoding/composite fields,
    including bounded binary exposure structure and byte-order conversion.
-   Existing target-image filtering retains 58 of the 61 source tags.
+   Version 0.5.8 adds four structured capture fields.
+   Existing target-image filtering retains 62 of the 65 source tags.
    Portable capture round-trip closure builds on 0.5.5; see
    `docs/capture_sync_milestone.md` for evidence, gaps and acceptance checks.
    Geographic inference and arbitrary structured-location merging remain excluded.
@@ -1215,3 +1216,11 @@ transfer work.
 The main opportunity now is to make the current bounded transfer core easier
 to use and easier to trust across the primary export targets, instead of
 continuing to expand read-only surface area first.
+
+The 0.5.8 structured capture batch adds OECF, SpatialFrequencyResponse,
+CFAPattern and DeviceSettingDescription through
+`translate_xmp_structured_capture_metadata` and its Python counterpart.
+The current combined inventory is 65 distinct native tags across fifteen APIs
+(62 retained by compatible-file transfer). ABI 3 and host synchronization
+remain unchanged; big-endian snapshots for the four new fields need a 0.5.8
+reader. See [Structured capture data](translation.md#structured-capture-data-058).

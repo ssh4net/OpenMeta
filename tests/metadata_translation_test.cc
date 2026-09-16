@@ -3249,6 +3249,7 @@ namespace {
         }
     }
 
+
 }  // namespace
 }  // namespace openmeta
 
@@ -7410,7 +7411,7 @@ namespace {
     }
 
     TEST(MetadataCaptureSync,
-         FourteenApisRoundTripTogetherAndKeepCallTransactions)
+         FifteenApisRoundTripTogetherAndKeepCallTransactions)
     {
         const auto xml = test::kCaptureSyncXml;
         MetaStore source;
@@ -7438,10 +7439,10 @@ namespace {
                   MetadataCaptureTranslationStatus::NativeConflict);
         EXPECT_EQ(translated.entries().size(), partial_count);
         ASSERT_TRUE(test::capture_sync_translate(translated));
-        EXPECT_EQ(translated.entries().size(), source_count + 61U);
+        EXPECT_EQ(translated.entries().size(), source_count + 65U);
         EXPECT_EQ(source.entries().size(), source_count);
         ASSERT_TRUE(test::capture_sync_translate(translated, true));
-        EXPECT_EQ(translated.entries().size(), source_count + 61U);
+        EXPECT_EQ(translated.entries().size(), source_count + 65U);
         for (bool existing : { false, true }) {
             for (const auto policy : { XmpConflictPolicy::CurrentBehavior,
                                        XmpConflictPolicy::ExistingWins,
@@ -8409,6 +8410,577 @@ namespace {
                 EXPECT_EQ(exposure->value.count, 60U + count * 8U);
             }
         }
+    }
+
+    static constexpr std::array<uint16_t, 4> kStructuredTags
+        = { 0x8828U, 0xa20cU, 0xa302U, 0xa40bU };
+    static constexpr std::array<std::string_view, 4> kStructuredNames
+        = { "OECF", "SpatialFrequencyResponse", "CFAPattern",
+            "DeviceSettingDescription" };
+
+    static std::vector<std::byte>
+    structured_native_bytes(const MetaStore& store, uint16_t tag)
+    {
+        const Entry* entry = active_exif_entry(store, "exififd", tag);
+        if (!entry) {
+            ADD_FAILURE() << tag;
+            return {};
+        }
+        const auto bytes = store.arena().span(entry->value.data.span);
+        return { bytes.begin(), bytes.end() };
+    }
+
+    static void
+    structured_rollback(MetaStore& source,
+                        MetadataStructuredCaptureTranslationOptions options = {
+                            .source_mode = kEncodingAll })
+    {
+        const Entry* before = source.entries().data();
+        const auto bytes    = source.arena().bytes();
+        const std::vector<std::byte> original(bytes.begin(), bytes.end());
+        EXPECT_NE(translate_xmp_structured_capture_metadata(source, options,
+                                                            &source)
+                      .status,
+                  kEncodingOk);
+        EXPECT_EQ(source.entries().data(), before);
+        EXPECT_EQ(std::vector<std::byte>(source.arena().bytes().begin(),
+                                         source.arena().bytes().end()),
+                  original);
+    }
+
+    TEST(MetadataStructuredCapture, ExactTablesUnicodeAndPortableRoundTrip)
+    {
+        MetaStore source = encoding_source();
+        MetaStore translated;
+        EXPECT_EQ(translate_xmp_structured_capture_metadata(source, {},
+                                                            &translated)
+                      .source_properties,
+                  0U);
+        const auto result = translate_xmp_structured_capture_metadata(
+            source, { .source_mode = kEncodingAll }, &translated);
+        ASSERT_EQ(result.status, kEncodingOk)
+            << metadata_capture_translation_status_name(result.status);
+        EXPECT_EQ(result.entries_added, 4U);
+        EXPECT_EQ(result.groups_translated, 4U);
+        EXPECT_TRUE(validate_store(translated).ok());
+        const std::string xml = encoding_packet(translated);
+        EXPECT_NE(xml.find("<rdf:li> log input </rdf:li>"), std::string::npos);
+        EXPECT_NE(xml.find("<rdf:li>-2147483648/2147483647</rdf:li>"),
+                  std::string::npos);
+        EXPECT_NE(xml.find("<rdf:li>-1/-2</rdf:li>"), std::string::npos);
+        EXPECT_NE(xml.find("<rdf:li>124/10</rdf:li>"), std::string::npos);
+        EXPECT_NE(xml.find("&#13;&#10;&#9;"), std::string::npos);
+        EXPECT_NE(xml.find("<rdf:li></rdf:li>"), std::string::npos);
+        MetaStore restored;
+        ASSERT_EQ(decode_xmp_packet(std::as_bytes(
+                                        std::span(xml.data(), xml.size())),
+                                    restored)
+                      .status,
+                  XmpDecodeStatus::Ok);
+        restored.finalize();
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                      restored, { .source_mode = kEncodingAll }, &restored)
+                      .status,
+                  kEncodingOk);
+        for (uint16_t tag : kStructuredTags)
+            EXPECT_EQ(structured_native_bytes(restored, tag),
+                      structured_native_bytes(translated, tag));
+        const std::array<std::byte, 10> cfa = {
+            std::byte { 3 }, std::byte { 0 }, std::byte { 2 }, std::byte { 0 },
+            std::byte { 0 }, std::byte { 1 }, std::byte { 2 }, std::byte { 3 },
+            std::byte { 4 }, std::byte { 6 }
+        };
+        EXPECT_EQ(structured_native_bytes(translated, 0xa302U),
+                  std::vector<std::byte>(cfa.begin(), cfa.end()));
+        EXPECT_EQ(translate_xmp_structured_capture_metadata(
+                      translated, { .source_mode = kEncodingAll }, &translated)
+                      .groups_unchanged,
+                  4U);
+
+        for (TextEncoding text_encoding :
+             { TextEncoding::Ascii, TextEncoding::Utf8 }) {
+            MetaStore controls;
+            add_xmp_text(&controls, kInvalidBlockId, kEncodingExif,
+                         "DeviceSettingDescription/Columns", "1",
+                         EntryFlags::Dirty, 0U);
+            add_xmp_text(&controls, kInvalidBlockId, kEncodingExif,
+                         "DeviceSettingDescription/Rows", "1", EntryFlags::None,
+                         0U);
+            add_xmp_value(&controls, kInvalidBlockId, kEncodingExif,
+                          "DeviceSettingDescription/Values[1]",
+                          make_text(controls.arena(), " \r\n\t\x7f ",
+                                    text_encoding),
+                          EntryFlags::None, 0U);
+            controls.finalize();
+            ASSERT_EQ(translate_xmp_structured_capture_metadata(controls, {},
+                                                                &controls)
+                          .status,
+                      kEncodingOk);
+            XmpPortableOptions options;
+            options.include_existing_xmp = true;
+            options.include_exif         = false;
+            std::array<std::byte, 4096> packet {};
+            const auto dumped = dump_xmp_portable(controls, packet, options);
+            ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+            MetaStore reread;
+            ASSERT_EQ(decode_xmp_packet(std::span(packet.data(), dumped.written),
+                                        reread)
+                          .status,
+                      XmpDecodeStatus::Ok);
+            reread.finalize();
+            ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                          reread, { .source_mode = kEncodingAll }, &reread)
+                          .status,
+                      kEncodingOk);
+            EXPECT_EQ(structured_native_bytes(reread, 0xa40bU),
+                      structured_native_bytes(controls, 0xa40bU));
+        }
+    }
+
+    TEST(MetadataStructuredCapture, DirtyMemberConflictsDeletionAndLateRollback)
+    {
+        MetaStore source = encoding_source();
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                      source, { .source_mode = kEncodingAll }, &source)
+                      .status,
+                  kEncodingOk);
+        const auto original = structured_native_bytes(source, 0x8828U);
+        encoding_change(source, "OECF/Values[1]", "-7/3", false, kEncodingExif);
+        structured_rollback(source, {});
+        auto result = translate_xmp_structured_capture_metadata(
+            source,
+            { .conflict_policy
+              = MetadataCaptureTranslationConflictPolicy::PreserveExisting },
+            &source);
+        ASSERT_EQ(result.status, kEncodingOk);
+        EXPECT_EQ(result.groups_preserved, 1U);
+        EXPECT_EQ(structured_native_bytes(source, 0x8828U), original);
+        result = translate_xmp_structured_capture_metadata(
+            source,
+            { .conflict_policy
+              = MetadataCaptureTranslationConflictPolicy::ReplaceExisting },
+            &source);
+        ASSERT_EQ(result.status, kEncodingOk);
+        EXPECT_EQ(result.entries_updated, 1U);
+        EXPECT_NE(structured_native_bytes(source, 0x8828U), original);
+        encoding_change(source, "DeviceSettingDescription/Values[2]",
+                        std::string_view("bad\0setting", 11U), false,
+                        kEncodingExif);
+        structured_rollback(
+            source,
+            { .source_mode = kEncodingAll,
+              .conflict_policy
+              = MetadataCaptureTranslationConflictPolicy::ReplaceExisting });
+        encoding_change(source, "DeviceSettingDescription/Values[2]", "valid",
+                        false, kEncodingExif);
+        MetaEdit remove;
+        for (EntryId id = 0U; id < source.entries().size(); ++id) {
+            const Entry& entry = source.entry(id);
+            if (entry.key.kind != MetaKeyKind::XmpProperty)
+                continue;
+            const auto bytes = source.arena().span(
+                entry.key.data.xmp_property.property_path);
+            const std::string_view path(reinterpret_cast<const char*>(
+                                            bytes.data()),
+                                        bytes.size());
+            if (path.starts_with("OECF/"))
+                remove.tombstone(id);
+        }
+        source = commit(source, std::span(&remove, 1U));
+        result = translate_xmp_structured_capture_metadata(
+            source,
+            { .conflict_policy
+              = MetadataCaptureTranslationConflictPolicy::ReplaceExisting },
+            &source);
+        ASSERT_EQ(result.status, kEncodingOk);
+        EXPECT_EQ(result.entries_removed, 1U);
+        EXPECT_EQ(active_exif_entry(source, "exififd", 0x8828U), nullptr);
+        EXPECT_NE(active_exif_entry(source, "exififd", 0xa20cU), nullptr);
+    }
+
+    TEST(MetadataStructuredCapture, SourceShapesAliasesAndResourceBudgets)
+    {
+        for (const auto change :
+             { std::pair { "OECF/Columns", "0" },
+               std::pair { "OECF/Rows", "65536" },
+               std::pair { "OECF/Values[1]", "2147483648/1" },
+               std::pair { "OECF/Values[1]", "1/0" },
+               std::pair { "SpatialFrequencyResponse/Values[1]", "-1/2" },
+               std::pair { "SpatialFrequencyResponse/Values[1]",
+                           "1/4294967296" },
+               std::pair { "CFAPattern/Values[6]", "7" } }) {
+            SCOPED_TRACE(change.first);
+            SCOPED_TRACE(change.second);
+            MetaStore source = encoding_source();
+            encoding_change(source, change.first, change.second, false,
+                            kEncodingExif);
+            structured_rollback(source);
+        }
+        for (const std::string_view path :
+             { "OECF/Names[3]", "CFAPattern/Values[01]", "CFAPattern/Values[7]",
+               "OECF/Values[1]?xml:lang", "OECF/other:Rows",
+               "DeviceSettingDescription/Names[1]" }) {
+            MetaStore source = encoding_source();
+            MetaEdit edit;
+            Entry entry;
+            entry.key   = make_xmp_property_key(edit.arena(), kEncodingExif,
+                                                path);
+            entry.value = make_text(edit.arena(), "1", TextEncoding::Ascii);
+            entry.flags = EntryFlags::Dirty;
+            edit.add_entry(entry);
+            source = commit(source, std::span(&edit, 1U));
+            structured_rollback(source);
+        }
+        MetaStore source  = encoding_source();
+        const auto column = source.find_all(
+            make_xmp_property_key_view(kEncodingExif, "OECF/Columns"));
+        ASSERT_EQ(column.size(), 1U);
+        MetaEdit alias;
+        Entry alternative;
+        alternative.key   = make_xmp_property_key(alias.arena(), kEncodingExif,
+                                                  "OECF/Columus");
+        alternative.value = make_u16(2U);
+        alternative.flags = EntryFlags::Dirty;
+        alias.add_entry(alternative);
+        MetaStore ambiguous = commit(source, std::span(&alias, 1U));
+        structured_rollback(ambiguous);
+        MetaStore only_alias;
+        add_xmp_value(&only_alias, kInvalidBlockId, kEncodingExif,
+                      "OECF/Columus", make_u16(1U), EntryFlags::Dirty, 0U);
+        add_xmp_value(&only_alias, kInvalidBlockId, kEncodingExif, "OECF/Rows",
+                      make_u16(1U), EntryFlags::None, 0U);
+        add_xmp_text(&only_alias, kInvalidBlockId, kEncodingExif,
+                     "OECF/Names[1]", "", EntryFlags::None, 0U);
+        add_xmp_text(&only_alias, kInvalidBlockId, kEncodingExif,
+                     "OECF/Values[1]", "-1/-2", EntryFlags::None, 0U);
+        only_alias.finalize();
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(only_alias, {},
+                                                            &only_alias)
+                      .status,
+                  kEncodingOk);
+        EXPECT_NE(
+            encoding_packet(only_alias).find("<exif:Columns>1</exif:Columns>"),
+            std::string::npos);
+        for (unsigned budget = 0U; budget < 6U; ++budget) {
+            auto options = MetadataStructuredCaptureTranslationOptions {
+                .source_mode = kEncodingAll
+            };
+            if (budget == 0U)
+                options.max_added_entries = 3U;
+            if (budget == 1U)
+                options.max_operations = 3U;
+            if (budget == 2U)
+                options.max_columns = 1U;
+            if (budget == 3U)
+                options.max_values = 3U;
+            if (budget == 4U)
+                options.max_text_bytes_per_property = 2U;
+            if (budget == 5U)
+                options.max_total_text_bytes = 8U;
+            structured_rollback(source, options);
+        }
+    }
+
+    TEST(MetadataStructuredCapture, TypedArraysAndExactPayloadLimit)
+    {
+        for (const uint32_t count : { 4096U, 4097U }) {
+            MetaStore source;
+            add_xmp_value(&source, kInvalidBlockId, kEncodingExif,
+                          "CFAPattern/Columns",
+                          make_u16(count == 4096U ? 256U : 17U),
+                          EntryFlags::Dirty, 0U);
+            add_xmp_value(&source, kInvalidBlockId, kEncodingExif,
+                          "CFAPattern/Rows",
+                          make_u16(count == 4096U ? 16U : 241U),
+                          EntryFlags::None, 0U);
+            const std::vector<uint8_t> codes(count, 1U);
+            add_xmp_value(&source, kInvalidBlockId, kEncodingExif,
+                          "CFAPattern/Values",
+                          make_u8_array(source.arena(), codes),
+                          EntryFlags::None, 0U);
+            source.finalize();
+            if (count == 4097U) {
+                structured_rollback(source);
+                continue;
+            }
+            ASSERT_EQ(translate_xmp_structured_capture_metadata(source, {},
+                                                                &source)
+                          .status,
+                      kEncodingOk);
+            EXPECT_EQ(structured_native_bytes(source, 0xa302U).size(), 4100U);
+        }
+        for (bool signed_values : { false, true }) {
+            MetaStore source;
+            const std::string name = signed_values ? "OECF"
+                                                   : "SpatialFrequencyResponse";
+            add_xmp_value(&source, kInvalidBlockId, kEncodingExif,
+                          name + "/Columns", make_u16(1U), EntryFlags::Dirty,
+                          0U);
+            add_xmp_value(&source, kInvalidBlockId, kEncodingExif,
+                          name + "/Rows", make_u16(2U), EntryFlags::None, 0U);
+            add_xmp_text(&source, kInvalidBlockId, kEncodingExif,
+                         name + "/Names[1]", "n", EntryFlags::None, 0U);
+            const std::array<SRational, 2> signed_pairs = {
+                SRational { INT32_MIN, -1 }, SRational { INT32_MAX, INT32_MIN }
+            };
+            const std::array<URational, 2> unsigned_pairs = {
+                URational { UINT32_MAX, 1U }, URational { 0U, UINT32_MAX }
+            };
+            const MetaValue values
+                = signed_values
+                      ? make_srational_array(source.arena(), signed_pairs)
+                      : make_urational_array(source.arena(), unsigned_pairs);
+            add_xmp_value(&source, kInvalidBlockId, kEncodingExif,
+                          name + "/Values", values, EntryFlags::None, 0U);
+            source.finalize();
+            ASSERT_EQ(translate_xmp_structured_capture_metadata(source, {},
+                                                                &source)
+                          .status,
+                      kEncodingOk);
+            EXPECT_TRUE(validate_store(source).ok());
+        }
+        MetaStore source;
+        add_xmp_value(&source, kInvalidBlockId, kEncodingExif,
+                      "DeviceSettingDescription/Columns", make_u16(1U),
+                      EntryFlags::Dirty, 0U);
+        add_xmp_value(&source, kInvalidBlockId, kEncodingExif,
+                      "DeviceSettingDescription/Rows", make_u16(1U),
+                      EntryFlags::None, 0U);
+        add_xmp_text(&source, kInvalidBlockId, kEncodingExif,
+                     "DeviceSettingDescription/Values[1]", "\xf0\x9f\x98\x80",
+                     EntryFlags::None, 0U);
+        source.finalize();
+        structured_rollback(source, { .source_mode       = kEncodingAll,
+                                      .max_payload_bytes = 11U });
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                      source, { .max_payload_bytes = 12U }, &source)
+                      .status,
+                  kEncodingOk);
+        EXPECT_EQ(structured_native_bytes(source, 0xa40bU).size(), 12U);
+    }
+
+    TEST(MetadataStructuredCapture,
+         BinaryBoundsTypedValidationAndSourceFallback)
+    {
+        MetaStore valid = encoding_source();
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                      valid, { .source_mode = kEncodingAll }, &valid)
+                      .status,
+                  kEncodingOk);
+        for (size_t i = 0U; i < kStructuredTags.size(); ++i) {
+            const uint16_t tag = kStructuredTags[i];
+            const auto good    = structured_native_bytes(valid, tag);
+            for (size_t size = 0U; size < good.size(); ++size) {
+                // Device settings may end after any complete string.
+                if (tag == 0xa40bU && size >= 8U
+                    && good[size - 1U] == std::byte { 0 }
+                    && good[size - 2U] == std::byte { 0 })
+                    continue;
+                SCOPED_TRACE(tag);
+                SCOPED_TRACE(size);
+                MetaStore raw_source;
+                add_xmp_value(&raw_source, kInvalidBlockId, kEncodingExif,
+                              kStructuredNames[i],
+                              make_bytes(raw_source.arena(),
+                                         std::span(good.data(), size)),
+                              EntryFlags::Dirty, 0U);
+                raw_source.finalize();
+                structured_rollback(raw_source);
+                MetadataTypedEditingOperation set;
+                set.kind        = MetadataEditingOperationKind::Set;
+                set.entry.key   = make_exif_tag_key_view("exififd", tag);
+                set.entry.value = make_value_view_bytes(
+                    std::span(good.data(), size));
+                const Entry* before = valid.entries().data();
+                EXPECT_FALSE(
+                    edit_metadata_typed(valid, std::span(&set, 1U), &valid)
+                        .ok());
+                EXPECT_EQ(valid.entries().data(), before);
+            }
+            MetaStore raw_source;
+            add_xmp_value(&raw_source, kInvalidBlockId, kEncodingExif,
+                          kStructuredNames[i],
+                          make_bytes(raw_source.arena(), good),
+                          EntryFlags::Dirty, 0U);
+            raw_source.finalize();
+            ASSERT_EQ(translate_xmp_structured_capture_metadata(raw_source, {},
+                                                                &raw_source)
+                          .status,
+                      kEncodingOk);
+            EXPECT_EQ(structured_native_bytes(raw_source, tag), good);
+            auto bad         = good;
+            bad[0]           = std::byte { 0 };
+            bad[1]           = std::byte { 0 };
+            MetaStore source = encoding_source();
+            Entry malformed;
+            malformed.key   = make_exif_tag_key(source.arena(), "exififd", tag);
+            malformed.value = make_bytes(source.arena(), bad);
+            source.add_entry(malformed);
+            source.finalize();
+            for (auto policy : { XmpConflictPolicy::CurrentBehavior,
+                                 XmpConflictPolicy::ExistingWins,
+                                 XmpConflictPolicy::GeneratedWins }) {
+                XmpPortableOptions options;
+                options.conflict_policy      = policy;
+                options.include_existing_xmp = true;
+                options.existing_standard_namespace_policy
+                    = XmpExistingStandardNamespacePolicy::CanonicalizeManaged;
+                std::array<std::byte, 32768> bytes {};
+                const auto dumped = dump_xmp_portable(source, bytes, options);
+                ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+                MetaStore restored;
+                ASSERT_EQ(decode_xmp_packet(std::span(bytes.data(),
+                                                      dumped.written),
+                                            restored)
+                              .status,
+                          XmpDecodeStatus::Ok);
+                restored.finalize();
+                ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                              restored, { .source_mode = kEncodingAll },
+                              &restored)
+                              .status,
+                          kEncodingOk);
+                EXPECT_EQ(structured_native_bytes(restored, tag), good);
+            }
+        }
+    }
+
+    TEST(MetadataStructuredCapture, MalformedUnicodeAsciiAndRationalBytes)
+    {
+        for (std::string_view invalid :
+             { std::string_view("\xc0\xaf", 2U),
+               std::string_view("\xed\xa0\x80", 3U),
+               std::string_view("\xf4\x90\x80\x80", 4U),
+               std::string_view("\xe2\x82", 2U),
+               std::string_view("\x01", 1U) }) {
+            MetaStore source = encoding_source();
+            encoding_change(source, "DeviceSettingDescription/Values[1]",
+                            invalid, false, kEncodingExif);
+            structured_rollback(source);
+            source = encoding_source();
+            encoding_change(source, "OECF/Names[1]", invalid, false,
+                            kEncodingExif);
+            structured_rollback(source);
+        }
+        for (const std::vector<std::byte>& raw :
+             { std::vector<std::byte> { std::byte { 1 }, std::byte { 0 },
+                                        std::byte { 1 }, std::byte { 0 },
+                                        std::byte { 'A' }, std::byte { 0 },
+                                        std::byte { 0 }, std::byte { 0 } },
+               std::vector<std::byte> { std::byte { 1 }, std::byte { 0 },
+                                        std::byte { 1 }, std::byte { 0 },
+                                        std::byte { 0xff }, std::byte { 0xfe },
+                                        std::byte { 0 }, std::byte { 0xd8 },
+                                        std::byte { 0 }, std::byte { 0 } },
+               std::vector<std::byte> { std::byte { 1 }, std::byte { 0 },
+                                        std::byte { 1 }, std::byte { 0 },
+                                        std::byte { 0xff }, std::byte { 0xfe },
+                                        std::byte { 0 }, std::byte { 0xdc },
+                                        std::byte { 0 }, std::byte { 0 } } }) {
+            MetaStore source;
+            add_xmp_value(&source, kInvalidBlockId, kEncodingExif,
+                          "DeviceSettingDescription",
+                          make_bytes(source.arena(), raw), EntryFlags::Dirty,
+                          0U);
+            source.finalize();
+            structured_rollback(source);
+        }
+
+        MetaStore valid = encoding_source();
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                      valid, { .source_mode = kEncodingAll }, &valid)
+                      .status,
+                  kEncodingOk);
+        for (uint16_t tag : { 0x8828U, 0xa20cU }) {
+            auto raw = structured_native_bytes(valid, tag);
+            std::fill(raw.end() - 4, raw.end(), std::byte { 0 });
+            MetaStore source;
+            add_xmp_value(&source, kInvalidBlockId, kEncodingExif,
+                          tag == 0x8828U ? "OECF" : "SpatialFrequencyResponse",
+                          make_bytes(source.arena(), raw), EntryFlags::Dirty,
+                          0U);
+            source.finalize();
+            structured_rollback(source);
+            MetadataTypedEditingOperation set;
+            set.kind        = MetadataEditingOperationKind::Set;
+            set.entry.key   = make_exif_tag_key_view("exififd", tag);
+            set.entry.value = make_value_view_bytes(raw);
+            EXPECT_FALSE(
+                edit_metadata_typed(valid, std::span(&set, 1U), &valid).ok());
+        }
+    }
+
+    TEST(MetadataStructuredCapture, BigEndianMixedStringBomsAndTypedReplacement)
+    {
+        // Big-endian dimensions, then independent BE and LE UTF-16 strings.
+        const std::array<std::byte, 16> big
+            = { std::byte { 0 },    std::byte { 4 },    std::byte { 0 },
+                std::byte { 1 },    std::byte { 0xfe }, std::byte { 0xff },
+                std::byte { 0x65 }, std::byte { 0xe5 }, std::byte { 0 },
+                std::byte { 0 },    std::byte { 0xff }, std::byte { 0xfe },
+                std::byte { 'A' },  std::byte { 0 },    std::byte { 0 },
+                std::byte { 0 } };
+        MetaStore source;
+        Entry entry;
+        entry.key   = make_exif_tag_key(source.arena(), "exififd", 0xa40bU);
+        entry.value = make_bytes(source.arena(), big);
+        entry.flags = EntryFlags::ValueBigEndian;
+        source.add_entry(entry);
+        source.finalize();
+        ASSERT_TRUE(validate_store(source).ok());
+        const auto measured = serialize_exif_tiff(source, {});
+        ASSERT_EQ(measured.status, ExifTiffSerializeStatus::OutputTruncated);
+        std::vector<std::byte> tiff(measured.needed);
+        ASSERT_TRUE(serialize_exif_tiff(source, tiff).ok());
+        MetaStore decoded;
+        std::array<ExifIfdRef, 16> ifds {};
+        ASSERT_EQ(decode_exif_tiff(tiff, decoded, ifds, {}).status,
+                  ExifDecodeStatus::Ok);
+        decoded.finalize();
+        auto little = big;
+        std::swap(little[0], little[1]);
+        std::swap(little[2], little[3]);
+        EXPECT_EQ(structured_native_bytes(decoded, 0xa40bU),
+                  std::vector<std::byte>(little.begin(), little.end()));
+        EXPECT_EQ(structured_native_bytes(source, 0xa40bU),
+                  std::vector<std::byte>(big.begin(), big.end()));
+        const auto xml = encoding_packet(source);
+        MetaStore restored;
+        ASSERT_EQ(decode_xmp_packet(std::as_bytes(
+                                        std::span(xml.data(), xml.size())),
+                                    restored)
+                      .status,
+                  XmpDecodeStatus::Ok);
+        restored.finalize();
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                      restored, { .source_mode = kEncodingAll }, &restored)
+                      .status,
+                  kEncodingOk);
+        MetaEdit native;
+        const Entry* translated = active_exif_entry(restored, "exififd",
+                                                    0xa40bU);
+        ASSERT_NE(translated, nullptr);
+        Entry copied;
+        copied.key   = make_exif_tag_key(native.arena(), "exififd", 0xa40bU);
+        copied.value = make_bytes(native.arena(), big);
+        copied.flags = EntryFlags::ValueBigEndian;
+        native.add_entry(copied);
+        const auto ids = restored.find_all(
+            make_exif_tag_key_view("exififd", 0xa40bU));
+        native.tombstone(ids[0]);
+        restored = commit(restored, std::span(&native, 1U));
+        EXPECT_EQ(translate_xmp_structured_capture_metadata(
+                      restored, { .source_mode = kEncodingAll }, &restored)
+                      .groups_unchanged,
+                  1U);
+        MetadataTypedEditingOperation set;
+        set.kind        = MetadataEditingOperationKind::Set;
+        set.entry.key   = make_exif_tag_key_view("exififd", 0xa40bU);
+        set.entry.value = make_value_view_bytes(little);
+        ASSERT_TRUE(
+            edit_metadata_typed(source, std::span(&set, 1U), &source).ok());
+        EXPECT_FALSE(any(active_exif_entry(source, "exififd", 0xa40bU)->flags,
+                         EntryFlags::ValueBigEndian));
     }
 
 }  // namespace

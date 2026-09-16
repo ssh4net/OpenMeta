@@ -1694,3 +1694,83 @@ The binary layout follows CIPA DC-008-Translation-2023-E, section 4.6.6.7.49,
 Figure 25. XMP uses CIPA DC-010-2024, section 6.5 and Table A.5:
 [EXIF specification](https://www.cipa.jp/std/documents/download_e.html?DC-008-Translation-2023-E),
 [EXIF/XMP mapping](https://www.cipa.jp/std/documents/download_e.html?CIPA_DC-010-2024_E).
+
+## Structured capture data (0.5.8)
+
+`translate_xmp_structured_capture_metadata(source, options, &output)` adds four
+independent field groups in one transaction. Python exposes
+`Document.translate_structured_capture_metadata(...)` and returns a new document
+with the same policies and limits. Defaults select dirty sources and fail on
+native conflicts; preparation may allocate. The host synchronizes conflicting
+access to shared objects.
+
+| EXIF field | Tag | Canonical `exif:` structure |
+| --- | --- | --- |
+| OECF | 8828 | Columns, Rows, Names, Values (signed rational pairs) |
+| SpatialFrequencyResponse | A20C | Columns, Rows, Names, Values (unsigned rational pairs) |
+| CFAPattern | A302 | Columns, Rows, Values (color codes 0 through 6) |
+| DeviceSettingDescription | A40B | Columns, Rows, Values (ordered setting strings) |
+
+The namespace is `http://ns.adobe.com/exif/1.0/`. Dimensions are positive SHORT
+values. Tables require one NUL-free ASCII name per column and exactly
+Columns times Rows values. CFA requires the same number of color codes.
+Device dimensions describe the display; they do not determine the number of
+settings. At least one setting is required; individual strings may be empty.
+No dimensions, photographic relationships or CFA byte-order heuristics are
+inferred. Legacy SpatialFrequencyResponse 920C is outside this contract.
+
+Table values preserve explicit numerator/denominator pairs without reduction.
+OECF accepts signed 32-bit components, including negative denominators;
+SpatialFrequencyResponse accepts unsigned 32-bit components. Zero denominators
+are rejected. Device settings accept valid UTF-8 representable in XML 1.0.
+Embedded NULs, invalid Unicode and disallowed XML characters are rejected.
+Spaces, tabs, CR/LF, DEL and supplementary characters retain their values.
+
+The canonical spelling is `Columns`. The published CIPA table spelling
+`Columus` is an explicit OECF/SFR input alias. Mixed aliases, qualifiers,
+sparse indices and root/child mixtures fail. Text lists use dense one-based
+paths such as `OECF/Names[1]`. Numeric Values may instead be typed rational
+arrays or unsigned integer arrays for CFA. A root Bytes value is an alternative
+validated little-endian native payload. Any selected member selects the whole
+structure, including clean companions. All-deleted source members remove the
+field; partially populated active structures fail. PreserveExisting,
+FailOnConflict and ReplaceExisting act independently on the four fields, but
+any error rolls back the entire call.
+
+Default hard limits are 256 columns, 4096 values per field, 4096 bytes per text
+property, 1 MiB total source text per call, 1 MiB native payload per field,
+four added entries and 1024 edit operations. Options may lower these limits.
+They cannot increase them. Typed native editing validates the same wire layout
+and character rules; raw decoding retains malformed data for inspection.
+Portable output skips malformed native structures without suppressing valid
+existing XMP.
+
+Native UNDEFINED payloads use two SHORT dimensions. Tables then contain
+NUL-terminated ASCII names and rational pairs; CFA contains byte codes.
+Each device string has its own UTF-16 BOM and terminator. Newly authored
+strings use UTF-16LE; decoded strings may mix BOM byte orders.
+`EntryFlags::ValueBigEndian` records the order of native headers and table
+rational components without changing the raw bytes. EXIF serialization and
+transfer convert those numbers to the destination order while preserving
+string bytes. Typed replacement supplies a new little-endian payload and
+clears the provenance flag. Snapshot v1 has no layout change, but snapshots
+carrying big-endian values for these four tags require OpenMeta 0.5.8 or later.
+Older 0.5.7 readers only understand this flag for composite exposure data.
+Snapshots produced before 0.5.8 can lack byte-order provenance for these four
+fields. Reopen the original container with 0.5.8 when recovering those
+big-endian values; the old raw payload alone does not establish its byte order.
+
+Compatible-file transfer retains these four fields. Rendered-image transfer
+removes CFAPattern from both EXIF and XMP under the existing calibration policy.
+It does not transform image samples or infer a replacement pattern.
+
+The combined fixture now covers 65 distinct ExifIFD tags across fifteen APIs;
+target transfer retains 62 after its existing three encoding-field exclusions.
+The structured batch includes JPEG, classic TIFF and BigTIFF, both TIFF byte
+orders, snapshot persistence, source fallback, native-only and retained-XMP
+round trips, Unicode and transactional failures. This is a supported-profile
+inventory, not a claim of complete EXIF or arbitrary RDF editing.
+
+Layout references: CIPA DC-008-Translation-2023-E, Figures 16, 20, 21 and 23;
+CIPA DC-010-2024-E, corresponding EXIF/XMP structure mappings. Source PDFs and
+independent encoded-file qualification remain in OpenMeta-internal.

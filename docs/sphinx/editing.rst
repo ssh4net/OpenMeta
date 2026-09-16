@@ -138,5 +138,16 @@ limits. Every supplied value must be valid even if later overwritten; selected
 schema and complete candidate validation can reject unrelated malformed base
 metadata. Preparation can allocate; the host synchronizes conflicting access.
 
-The combined fixture edits typed XMP, translates fourteen groups and checks
+The combined fixture edits typed XMP, translates fifteen groups and checks
 serialized snapshots through JPEG, classic TIFF and BigTIFF add/replace paths.
+
+Structured Capture Update (0.5.8)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+OECF, SpatialFrequencyResponse, CFAPattern and DeviceSettingDescription add
+four native targets in one transaction through
+``translate_xmp_structured_capture_metadata`` and its Python counterpart.
+The current combined inventory is 65 distinct native tags across fifteen APIs
+(62 retained by compatible-file transfer). ABI 3 and host synchronization
+remain unchanged; big-endian snapshots for these four tags need a 0.5.8
+reader. See :doc:`translation` for the encoding, bounds and conflict contract.

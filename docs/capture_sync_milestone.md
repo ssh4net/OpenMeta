@@ -1,8 +1,16 @@
-# Capture synchronization milestones: 0.5.4–0.5.7
+# Capture synchronization milestones: 0.5.4–0.5.8
 
 Audit date: 2026-09-14. The original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing API signatures, ABI 3, or host synchronization responsibilities.
+
+## Structured capture in 0.5.8
+
+OECF, SpatialFrequencyResponse, CFAPattern and DeviceSettingDescription add
+four native targets in one API. The combined fixture now covers 65 targets
+across fifteen APIs; compatible-file transfer retains 62. Exact rational pairs,
+Unicode, empty settings and TIFF byte order survive the qualified round trips.
+See [the contract](translation.md#structured-capture-data-058).
 
 ## Encoding and composite capture in 0.5.7
 
@@ -51,7 +59,7 @@ originals. FocalLength portable fractions express millimeters without ` mm`.
 
 ## Implemented capture targets
 
-Fourteen explicit reverse APIs cover **61 distinct ExifIFD tags**. The count includes
+Fifteen explicit reverse APIs cover **65 distinct ExifIFD tags**. The count includes
 camera text and excludes GPS, dates, geometry, IPTC and vendor MakerNotes.
 It is an inventory count, not a percentage of all EXIF or competitor coverage.
 All function names below have the prefix `translate_xmp_` and suffix
@@ -75,10 +83,11 @@ All function names below have the prefix `translate_xmp_` and suffix
 
 | image_encoding | 3 | Gamma A500, CompressedBitsPerPixel 9102, ComponentsConfiguration 9101 |
 | composite | 3 | CompositeImage A460, SourceImageNumberOfCompositeImage A461, SourceExposureTimesOfCompositeImage A462 |
+| structured_capture | 4 | OECF 8828, SpatialFrequencyResponse A20C, CFAPattern A302, DeviceSettingDescription A40B |
 
-Tag IDs are hexadecimal. The 63 API mappings include two shared targets:
+Tag IDs are hexadecimal. The 67 API mappings include two shared targets:
 ISO belongs to basic capture and sensitivity; ExposureBiasValue belongs to
-basic capture and APEX. Counting each shared tag once gives 61.
+basic capture and APEX. Counting each shared tag once gives 65.
 
 ## Historical 0.5.4 qualification and gaps
 
@@ -158,17 +167,16 @@ policies. Its acceptance checks are:
    once against the final patch.
 
 The additional capture and environment batches are implemented in 0.5.6.
-Encoding and composite contracts are implemented in 0.5.7. Next, define the
-bounded structured/opaque field layouts and their byte-order rules.
+Encoding/composite contracts are implemented in 0.5.7 and structured capture
+contracts in 0.5.8. Next, define text/comment encoding and EXIF version policy.
 
 ## Remaining field families
 
-These are candidate families outside the fourteen capture contracts, not a complete
+These are candidate families outside the fifteen capture contracts, not a complete
 remaining-tags denominator. Read/display support does not imply reverse support.
 
 | Family | Examples | Work needed before implementation |
 | --- | --- | --- |
-| Structured or opaque data | OECF 8828, SpatialFrequencyResponse A20C, CFAPattern A302, DeviceSettingDescription A40B | Typed layouts, byte order, bounds and persistence evidence. |
 | Text/version extensions | UserComment 9286; EXIF 3 text fields and UTF-8 extensions | Encoding contracts and explicit version policy; current camera text remains printable ASCII. |
 | MakerNotes | Vendor/version-specific offsets and integrity fields | Continue the separate rewrite-trust work; generic opaque authoring does not establish safe relocation. |
 

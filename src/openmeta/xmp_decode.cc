@@ -3,6 +3,7 @@
 #include "openmeta/xmp_decode.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -201,6 +202,22 @@ namespace {
                                                 std::string_view path,
                                                 std::string_view value) noexcept
     {
+        if (ns == kXmpNsExif) {
+            constexpr std::array<std::string_view, 3> roots
+                = { "OECF/", "SpatialFrequencyResponse/",
+                    "DeviceSettingDescription/" };
+            for (const std::string_view root : roots) {
+                if (!path.starts_with(root))
+                    continue;
+                std::string_view tail = path.substr(root.size());
+                if (tail.starts_with("exif:"))
+                    tail.remove_prefix(5U);
+                const std::string_view member = root == roots[2] ? "Values["
+                                                                 : "Names[";
+                if (tail.starts_with(member) && tail.back() == ']')
+                    return value;
+            }
+        }
         if ((ns == kXmpNsExif
              && (path == "SpectralSensitivity" || path == "ImageUniqueID"))
             || ((ns == kXmpNsExif || ns == "http://cipa.jp/exif/1.0/")

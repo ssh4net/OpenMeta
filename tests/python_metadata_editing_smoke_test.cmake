@@ -969,6 +969,51 @@ with tempfile.TemporaryDirectory() as temporary:
     assert result.entry_count == restored.entry_count + 6
     assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'structured_capture.jpg'
+    xml = b'''<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:e=\"http://ns.adobe.com/exif/1.0/\"><e:OECF rdf:parseType=\"Resource\"><e:Columns>2</e:Columns><e:Rows>2</e:Rows>
+<e:Names><rdf:Seq><rdf:li> log input </rdf:li><rdf:li>R&amp;G</rdf:li></rdf:Seq></e:Names>
+<e:Values><rdf:Seq><rdf:li>-3/2</rdf:li><rdf:li>124/10</rdf:li><rdf:li>-1/-2</rdf:li><rdf:li>-2147483648/2147483647</rdf:li></rdf:Seq></e:Values></e:OECF>
+<e:SpatialFrequencyResponse rdf:parseType=\"Resource\"><e:Columns>2</e:Columns><e:Rows>2</e:Rows>
+<e:Names><rdf:Seq><rdf:li>Frequency</rdf:li><rdf:li>Response</rdf:li></rdf:Seq></e:Names>
+<e:Values><rdf:Seq><rdf:li>1/10</rdf:li><rdf:li>1/1</rdf:li><rdf:li>2/10</rdf:li><rdf:li>9/10</rdf:li></rdf:Seq></e:Values></e:SpatialFrequencyResponse>
+<e:CFAPattern rdf:parseType=\"Resource\"><e:Columns>3</e:Columns><e:Rows>2</e:Rows>
+<e:Values><rdf:Seq><rdf:li>0</rdf:li><rdf:li>1</rdf:li><rdf:li>2</rdf:li><rdf:li>3</rdf:li><rdf:li>4</rdf:li><rdf:li>6</rdf:li></rdf:Seq></e:Values></e:CFAPattern>
+<e:DeviceSettingDescription rdf:parseType=\"Resource\"><e:Columns>32</e:Columns><e:Rows>2</e:Rows>
+<e:Values><rdf:Seq><rdf:li> &#26085;&#26412;&#35486; &amp; &lt; &gt; &#13;&#10;&#9; </rdf:li><rdf:li>&#128512;</rdf:li><rdf:li></rdf:li></rdf:Seq></e:Values></e:DeviceSettingDescription>
+</rdf:Description></rdf:RDF>'''
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    document = openmeta.read(str(path))
+    count = document.entry_count
+    mode = openmeta.MetadataCaptureTranslationSourceMode.All
+    assert document.translate_structured_capture_metadata().entry_count == count
+    translated = document.translate_structured_capture_metadata(source_mode=mode)
+    assert translated.entry_count == count + 4
+    assert translated.translate_structured_capture_metadata(source_mode=mode).entry_count == translated.entry_count
+    assert openmeta.METADATA_STRUCTURED_CAPTURE_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_STRUCTURED_CAPTURE_TRANSLATION_MAX_VALUES == 4096
+    for name in ('XmpOecf', 'XmpSpatialFrequencyResponse', 'XmpCfaPattern', 'XmpDeviceSettingDescription'):
+        assert getattr(openmeta.MetadataCaptureTranslationMapping, name).name == name
+    for bound, limit in [('max_added_entries', 3), ('max_operations', 3), ('max_columns', 1), ('max_values', 3), ('max_payload_bytes', 4), ('max_text_bytes_per_property', 1), ('max_total_text_bytes', 1)]:
+        try:
+            document.translate_structured_capture_metadata(source_mode=mode, **{bound: limit})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('structured capture ignored ' + bound)
+    payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
+    assert b'<rdf:li>-1/-2</rdf:li>' in payload
+    assert b'<rdf:li> log input </rdf:li>' in payload
+    assert b'&#13;&#10;&#9;' in payload
+    assert b'<rdf:li></rdf:li>' in payload
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    restored = openmeta.read(str(path)).translate_structured_capture_metadata(source_mode=mode)
+    again, _ = restored.dump_xmp_portable(include_existing_xmp=False)
+    assert again == payload
+    assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

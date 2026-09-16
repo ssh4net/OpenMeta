@@ -50841,7 +50841,7 @@ TEST(MetadataTransferApi,
 }
 
 TEST(MetadataTransferApi,
-     CaptureSyncTypedEditsAndFourteenApiSnapshotsRoundTripAcrossContainers)
+     CaptureSyncTypedEditsAndFifteenApiSnapshotsRoundTripAcrossContainers)
 {
     using namespace openmeta;
     MetaStore source;
@@ -50930,7 +50930,8 @@ TEST(MetadataTransferApi,
                 const Entry& composite = decoded.entry(composite_ids[0]);
                 EXPECT_EQ(any(composite.flags, EntryFlags::ValueBigEndian),
                           container >= 3U);
-                for (const auto tag : { 0xa460U, 0xa461U, 0xa462U }) {
+                for (const auto tag : { 0xa460U, 0xa461U, 0xa462U, 0x8828U,
+                                        0xa20cU, 0xa302U, 0xa40bU }) {
                     const auto ids = decoded.find_all(
                         exif_key_view("exififd", static_cast<uint16_t>(tag)));
                     ASSERT_EQ(ids.size(), 1U);
@@ -51022,6 +51023,50 @@ TEST(MetadataTransferApi,
                 ASSERT_TRUE(test::capture_sync_translate(roundtrip));
                 test::capture_sync_expect_native(roundtrip, source, true);
             }
+        }
+    }
+}
+
+TEST(MetadataTransferApi, StructuredCaptureRenderedImageDropsNativeAndXmpCfa)
+{
+    using namespace openmeta;
+    MetaStore source;
+    const auto xml = test::kCaptureSyncXml;
+    ASSERT_EQ(decode_xmp_packet(std::as_bytes(std::span(xml.data(), xml.size())),
+                                source)
+                  .status,
+              XmpDecodeStatus::Ok);
+    source.finalize();
+    ASSERT_TRUE(test::capture_sync_translate(source));
+    for (unsigned container : { 0U, 1U, 2U }) {
+        ExecutePreparedTransferSnapshotOptions options;
+        options.prepare.target_format     = container == 0U
+                                                ? TransferTargetFormat::Jpeg
+                                                : TransferTargetFormat::Tiff;
+        options.prepare.profile.safety    = TransferSafetyMode::RenderedImage;
+        options.prepare.include_exif_app1 = true;
+        options.prepare.include_xmp_app1  = true;
+        options.prepare.xmp_include_existing = true;
+        options.execute.edit_requested       = true;
+        options.execute.edit_apply           = true;
+        const auto input  = container == 0U ? make_jpeg_with_segments({})
+                            : container == 1U
+                                ? make_minimal_tiff_little_endian()
+                                : make_minimal_bigtiff_little_endian();
+        const auto result = execute_prepared_transfer_snapshot(
+            build_transfer_source_snapshot(source), input, options);
+        ASSERT_EQ(result.execute.edit_apply.status, TransferStatus::Ok);
+        MetaStore restored;
+        ASSERT_TRUE(
+            decode_transfer_roundtrip_store(result.execute.edited_output,
+                                            &restored));
+        EXPECT_TRUE(
+            restored.find_all(exif_key_view("exififd", 0xa302U)).empty());
+        EXPECT_FALSE(
+            payload_contains_ascii(result.execute.edited_output, "CFAPattern"));
+        for (uint16_t tag : { 0x8828U, 0xa20cU, 0xa40bU }) {
+            ASSERT_EQ(restored.find_all(exif_key_view("exififd", tag)).size(),
+                      1U);
         }
     }
 }

@@ -1,5 +1,19 @@
 # OpenMeta Changes
 
+## 0.5.8 - 2026-09-17
+
+- Add transactional structured capture translation for OECF,
+  SpatialFrequencyResponse, CFAPattern and DeviceSettingDescription, with a
+  matching Python method. Validate dimensions, exact rational pairs, CFA codes,
+  ASCII table names and UTF-16 settings before publishing the candidate.
+- Preserve native byte order, per-string BOMs, Unicode, empty settings and text
+  whitespace through portable XMP and EXIF serialization. Existing XMP text now
+  preserves carriage returns and DEL with XML character references.
+- Extend the combined capture fixture to 65 distinct native tags across fifteen
+  APIs. Rendered-image transfer filters both native and XMP CFA patterns.
+- Keep ABI 3 and host synchronization responsibilities. Snapshot v1 layout is
+  unchanged; big-endian structured capture values require a 0.5.8 reader.
+
 ## 0.5.7 - 2026-09-16
 
 Changes compared with `0.5.6`. ABI remains 3.

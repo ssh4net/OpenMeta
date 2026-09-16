@@ -64,8 +64,8 @@ index for repeated searches over large stores.
 
 The 0.5.6 batch adds exact-key typed editing plus three additional capture and
 six environment mappings. The 0.5.7 encoding/composite batch adds six more
-fields. Capture-related translation now covers 61 unique
-ExifIFD targets across fourteen APIs. The combined author/edit/translate/persist
+fields; the 0.5.8 structured batch adds four more. Capture-related translation
+now covers 65 unique ExifIFD targets across fifteen APIs. The combined author/edit/translate/persist
 workflow includes exact unknown-denominator handling; see
 [capture synchronization milestones](capture_sync_milestone.md).
 
@@ -1820,3 +1820,11 @@ prefix is `/usr`.
 
 When both `OPENMETA_BUILD_SPHINX_DOCS=ON` and `OPENMETA_BUILD_DOCS=ON`, the
 Doxygen HTML output is installed under `share/doc/OpenMeta/doxygen/html`.
+
+The 0.5.8 structured capture batch adds OECF, SpatialFrequencyResponse,
+CFAPattern and DeviceSettingDescription through
+`translate_xmp_structured_capture_metadata` and its Python counterpart.
+The current combined inventory is 65 distinct native tags across fifteen APIs
+(62 retained by compatible-file transfer). ABI 3 and host synchronization
+remain unchanged; big-endian snapshots for the four new fields need a 0.5.8
+reader. See [Structured capture data](translation.md#structured-capture-data-058).

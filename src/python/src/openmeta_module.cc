@@ -6621,6 +6621,64 @@ translate_composite_metadata_document(
 }
 
 static std::shared_ptr<PyDocument>
+translate_structured_capture_metadata_document(
+    std::shared_ptr<PyDocument> source,
+    MetadataCaptureTranslationSourceMode source_mode,
+    MetadataCaptureTranslationConflictPolicy conflict_policy, bool oecf_to_exif,
+    bool spatial_frequency_response_to_exif, bool cfa_pattern_to_exif,
+    bool device_setting_description_to_exif, uint32_t max_columns,
+    uint32_t max_values, uint32_t max_payload_bytes, uint32_t max_added_entries,
+    uint32_t max_operations, uint32_t max_text_bytes_per_property,
+    uint64_t max_total_text_bytes)
+{
+    MetadataStructuredCaptureTranslationOptions options;
+    options.oecf_to_exif = oecf_to_exif;
+    options.spatial_frequency_response_to_exif
+        = spatial_frequency_response_to_exif;
+    options.cfa_pattern_to_exif = cfa_pattern_to_exif;
+    options.device_setting_description_to_exif
+        = device_setting_description_to_exif;
+    options.max_columns                 = max_columns;
+    options.max_values                  = max_values;
+    options.max_payload_bytes           = max_payload_bytes;
+    options.source_mode                 = source_mode;
+    options.conflict_policy             = conflict_policy;
+    options.max_added_entries           = max_added_entries;
+    options.max_operations              = max_operations;
+    options.max_text_bytes_per_property = max_text_bytes_per_property;
+    options.max_total_text_bytes        = max_total_text_bytes;
+
+    MetaStore translated;
+    MetadataCaptureTranslationResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_xmp_structured_capture_metadata(source->store,
+                                                           options,
+                                                           &translated);
+    }
+    if (result.status != MetadataCaptureTranslationStatus::Ok) {
+        std::string message = "metadata structured capture translation failed: ";
+        message += metadata_capture_translation_status_name(result.status);
+        if (result.failed_mapping != MetadataCaptureTranslationMapping::None) {
+            message += " for ";
+            message += metadata_capture_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
+static std::shared_ptr<PyDocument>
 translate_capture_additional_metadata_document(
     std::shared_ptr<PyDocument> source,
     MetadataCaptureTranslationSourceMode source_mode,
@@ -9363,6 +9421,22 @@ NB_MODULE(_openmeta, m)
         kMetadataImageEncodingTranslationMaxAddedEntries);
     m.attr("METADATA_IMAGE_ENCODING_TRANSLATION_MAX_TOTAL_TEXT_BYTES")
         = nb::int_(kMetadataImageEncodingTranslationMaxTotalTextBytes);
+    m.attr("METADATA_STRUCTURED_CAPTURE_TRANSLATION_CONTRACT_VERSION")
+        = nb::int_(kMetadataStructuredCaptureTranslationContractVersion);
+    m.attr("METADATA_STRUCTURED_CAPTURE_TRANSLATION_MAX_ADDED_ENTRIES")
+        = nb::int_(kMetadataStructuredCaptureTranslationMaxAddedEntries);
+    m.attr("METADATA_STRUCTURED_CAPTURE_TRANSLATION_MAX_COLUMNS") = nb::int_(
+        kMetadataStructuredCaptureTranslationMaxColumns);
+    m.attr("METADATA_STRUCTURED_CAPTURE_TRANSLATION_MAX_VALUES") = nb::int_(
+        kMetadataStructuredCaptureTranslationMaxValues);
+    m.attr("METADATA_STRUCTURED_CAPTURE_TRANSLATION_MAX_PAYLOAD_BYTES")
+        = nb::int_(kMetadataStructuredCaptureTranslationMaxPayloadBytes);
+    m.attr(
+        "METADATA_STRUCTURED_CAPTURE_TRANSLATION_MAX_TEXT_BYTES_PER_PROPERTY")
+        = nb::int_(
+            kMetadataStructuredCaptureTranslationMaxTextBytesPerProperty);
+    m.attr("METADATA_STRUCTURED_CAPTURE_TRANSLATION_MAX_TOTAL_TEXT_BYTES")
+        = nb::int_(kMetadataStructuredCaptureTranslationMaxTotalTextBytes);
     m.attr("METADATA_COMPOSITE_TRANSLATION_CONTRACT_VERSION") = nb::int_(
         kMetadataCompositeTranslationContractVersion);
     m.attr("METADATA_COMPOSITE_TRANSLATION_MAX_ADDED_ENTRIES") = nb::int_(
@@ -9635,7 +9709,14 @@ NB_MODULE(_openmeta, m)
         .value("XmpComponentsConfiguration",
                MetadataCaptureTranslationMapping::XmpComponentsConfiguration)
         .value("XmpCompositeImage",
-               MetadataCaptureTranslationMapping::XmpCompositeImage);
+               MetadataCaptureTranslationMapping::XmpCompositeImage)
+        .value("XmpOecf", MetadataCaptureTranslationMapping::XmpOecf)
+        .value("XmpSpatialFrequencyResponse",
+               MetadataCaptureTranslationMapping::XmpSpatialFrequencyResponse)
+        .value("XmpCfaPattern",
+               MetadataCaptureTranslationMapping::XmpCfaPattern)
+        .value("XmpDeviceSettingDescription",
+               MetadataCaptureTranslationMapping::XmpDeviceSettingDescription);
 
 
     m.attr("METADATA_FLASH_TRANSLATION_CONTRACT_VERSION") = nb::int_(
@@ -10708,6 +10789,26 @@ NB_MODULE(_openmeta, m)
              = kMetadataCaptureTranslationMaxTextBytesPerProperty,
              "max_total_text_bytes"_a
              = kMetadataImageEncodingTranslationMaxTotalTextBytes)
+        .def("translate_structured_capture_metadata",
+             &translate_structured_capture_metadata_document,
+             "source_mode"_a = MetadataCaptureTranslationSourceMode::DirtyOnly,
+             "conflict_policy"_a
+             = MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+             "oecf_to_exif"_a                       = true,
+             "spatial_frequency_response_to_exif"_a = true,
+             "cfa_pattern_to_exif"_a                = true,
+             "device_setting_description_to_exif"_a = true,
+             "max_columns"_a = kMetadataStructuredCaptureTranslationMaxColumns,
+             "max_values"_a  = kMetadataStructuredCaptureTranslationMaxValues,
+             "max_payload_bytes"_a
+             = kMetadataStructuredCaptureTranslationMaxPayloadBytes,
+             "max_added_entries"_a
+             = kMetadataStructuredCaptureTranslationMaxAddedEntries,
+             "max_operations"_a = kMetadataCaptureTranslationMaxOperations,
+             "max_text_bytes_per_property"_a
+             = kMetadataStructuredCaptureTranslationMaxTextBytesPerProperty,
+             "max_total_text_bytes"_a
+             = kMetadataStructuredCaptureTranslationMaxTotalTextBytes)
         .def("translate_composite_metadata",
              &translate_composite_metadata_document,
              "source_mode"_a = MetadataCaptureTranslationSourceMode::DirtyOnly,

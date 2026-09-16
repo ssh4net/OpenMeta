@@ -9,6 +9,7 @@
 
 #include "exif_tiff_decode_internal.h"
 #include "geotiff_decode_internal.h"
+#include "metadata_structured_fields_internal.h"
 
 #include <array>
 #include <cstring>
@@ -4736,8 +4737,9 @@ decode_exif_tiff_contiguous(std::span<const std::byte> tiff_bytes,
                 continue;
             }
 
-            if (ifd_name == "exififd" && tag == 0xa462U && type == 7U
-                && !cfg.le)
+            if (ifd_name == "exififd"
+                && (tag == 0xa462U || detail::structured_capture_tag(tag))
+                && type == 7U && !cfg.le)
                 entry.flags |= EntryFlags::ValueBigEndian;
             maybe_mark_contextual_name(ifd_name, tag, store, &entry);
             if (store.add_entry(entry) == kInvalidEntryId) {
@@ -5378,7 +5380,9 @@ namespace exif_internal {
                                                 ifd_entry.count32, 0U,
                                                 ref.value_bytes, store.arena(),
                                                 options.limits, status_out);
-                if (ifd_name == "exififd" && ifd_entry.tag == 0xa462U
+                if (ifd_name == "exififd"
+                    && (ifd_entry.tag == 0xa462U
+                        || detail::structured_capture_tag(ifd_entry.tag))
                     && ifd_entry.type == 7U && !value_cfg.le)
                     entry.flags |= EntryFlags::ValueBigEndian;
             }
@@ -6521,8 +6525,9 @@ decode_exif_tiff_random_access(
                     || tag == 0x014AU)) {
                 continue;
             }
-            if (ifd_name == "exififd" && tag == 0xa462U && type == 7U
-                && !cfg.le)
+            if (ifd_name == "exififd"
+                && (tag == 0xa462U || detail::structured_capture_tag(tag))
+                && type == 7U && !cfg.le)
                 entry.flags |= EntryFlags::ValueBigEndian;
             maybe_mark_contextual_name(ifd_name, tag, store, &entry);
             if (store.add_entry(entry) == kInvalidEntryId) {

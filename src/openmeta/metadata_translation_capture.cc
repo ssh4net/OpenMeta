@@ -2,7 +2,7 @@
 
 #include "openmeta/metadata_translation.h"
 
-#include "metadata_encoding_fields_internal.h"
+#include "metadata_structured_fields_internal.h"
 
 #include "openmeta/exif_value_names.h"
 #include "openmeta/meta_edit.h"
@@ -81,6 +81,10 @@ namespace {
         CompositeImage,
         SourceImageNumberOfCompositeImage,
         SourceExposureTimesOfCompositeImage,
+        Oecf,
+        SpatialFrequencyResponse,
+        CfaPattern,
+        DeviceSettingDescription,
     };
 
     enum class NumericParseStatus : uint8_t {
@@ -1053,6 +1057,10 @@ namespace {
         case NativeCaptureField::SourceExposureTimesOfCompositeImage:
             tag = 0xa462U;
             break;
+        case NativeCaptureField::Oecf: tag = 0x8828U; break;
+        case NativeCaptureField::SpatialFrequencyResponse: tag = 0xa20cU; break;
+        case NativeCaptureField::CfaPattern: tag = 0xa302U; break;
+        case NativeCaptureField::DeviceSettingDescription: tag = 0xa40bU; break;
         }
         return entry.key.data.exif_tag.tag == tag;
     }
@@ -1121,6 +1129,18 @@ namespace {
             const auto raw = arena.span(actual.data.span);
             if (raw.size() != group.bytes.size())
                 return false;
+            if (group.field >= NativeCaptureField::Oecf
+                && group.field
+                       <= NativeCaptureField::DeviceSettingDescription) {
+                constexpr std::array<uint16_t, 4> tags = { 0x8828U, 0xa20cU,
+                                                           0xa302U, 0xa40bU };
+                const size_t index = static_cast<size_t>(group.field)
+                                     - static_cast<size_t>(
+                                         NativeCaptureField::Oecf);
+                return detail::structured_capture_equal(
+                    raw, !any(flags, EntryFlags::ValueBigEndian), group.bytes,
+                    tags[index]);
+            }
             if (group.field
                     != NativeCaptureField::SourceExposureTimesOfCompositeImage
                 || !any(flags, EntryFlags::ValueBigEndian))
@@ -1351,6 +1371,10 @@ namespace {
         case NativeCaptureField::SourceExposureTimesOfCompositeImage:
             tag = 0xa462U;
             break;
+        case NativeCaptureField::Oecf: tag = 0x8828U; break;
+        case NativeCaptureField::SpatialFrequencyResponse: tag = 0xa20cU; break;
+        case NativeCaptureField::CfaPattern: tag = 0xa302U; break;
+        case NativeCaptureField::DeviceSettingDescription: tag = 0xa40bU; break;
         }
         return make_exif_tag_key(arena, "exififd", tag);
     }
@@ -2511,6 +2535,417 @@ namespace {
         return Status::Ok;
     }
 
+    static MetadataCaptureTranslationStatus
+    structured_raw_text_budget(std::span<const std::byte> raw, uint16_t tag,
+                               const detail::StructuredCaptureView& view,
+                               CaptureTextLimits* limits) noexcept
+    {
+        using Status         = MetadataCaptureTranslationStatus;
+        size_t offset        = 4U;
+        const uint32_t count = tag == 0xa40bU   ? view.values_count
+                               : tag == 0xa302U ? 0U
+                                                : view.columns;
+        for (uint32_t i = 0U; i < count; ++i) {
+            uint64_t bytes = 0U;
+            if (tag == 0xa40bU) {
+                std::span<const std::byte> text;
+                bool little = true;
+                if (!detail::capture_setting(raw, &offset, &text, &little))
+                    return Status::InvalidSourceValue;
+                size_t cursor = 0U;
+                while (cursor < text.size()) {
+                    uint32_t code = 0U;
+                    if (!detail::capture_utf16_next(text, &cursor, little,
+                                                    &code))
+                        return Status::InvalidSourceValue;
+                    bytes += code < 0x80U      ? 1U
+                             : code < 0x800U   ? 2U
+                             : code < 0x10000U ? 3U
+                                               : 4U;
+                }
+            } else {
+                const size_t start = offset;
+                while (raw[offset] != std::byte { 0 })
+                    ++offset;
+                bytes = offset++ - start;
+            }
+            if (bytes > limits->property)
+                return Status::ValueTooLong;
+            if (bytes > limits->total || limits->used > limits->total - bytes)
+                return Status::SourceLimitExceeded;
+            limits->used += bytes;
+        }
+        return Status::Ok;
+    }
+
+    static MetadataCaptureTranslationStatus
+    structured_rational(const ByteArena& arena, const MetaValue& value,
+                        bool is_signed, uint32_t* numer,
+                        uint32_t* denom) noexcept
+    {
+        using Status = MetadataCaptureTranslationStatus;
+        if (!is_signed) {
+            MetaValue parsed;
+            const Status status = parse_encoding_rational(arena, value,
+                                                          &parsed);
+            if (status == Status::Ok) {
+                *numer = parsed.data.ur.numer;
+                *denom = parsed.data.ur.denom;
+            }
+            return status;
+        }
+        if (value.kind != MetaValueKind::Text
+            && (value.kind != MetaValueKind::Scalar || value.count != 1U))
+            return Status::InvalidSourceValue;
+        if (value.kind == MetaValueKind::Scalar && value.count == 1U
+            && value.elem_type == MetaElementType::SRational) {
+            if (value.data.sr.denom == 0)
+                return Status::InvalidNumericValue;
+            *numer = static_cast<uint32_t>(value.data.sr.numer);
+            *denom = static_cast<uint32_t>(value.data.sr.denom);
+            return Status::Ok;
+        }
+        if (value.kind == MetaValueKind::Text) {
+            const std::string_view text = arena_text(arena, value.data.span);
+            const size_t slash          = text.find('/');
+            if (slash != std::string_view::npos) {
+                const std::array<std::string_view, 2> parts
+                    = { text.substr(0U, slash), text.substr(slash + 1U) };
+                std::array<uint32_t, 2> words {};
+                for (size_t i = 0U; i < 2U; ++i) {
+                    std::string_view part = parts[i];
+                    const bool negative = !part.empty() && part.front() == '-';
+                    if (!part.empty() && (negative || part.front() == '+'))
+                        part.remove_prefix(1U);
+                    uint64_t magnitude              = 0U;
+                    const NumericParseStatus status = parse_digits(part,
+                                                                   &magnitude);
+                    if (status != NumericParseStatus::Ok)
+                        return numeric_status(status);
+                    if (magnitude > static_cast<uint64_t>(INT32_MAX)
+                                        + (negative ? 1U : 0U))
+                        return Status::ValueOutOfRange;
+                    words[i] = negative ? 0U - static_cast<uint32_t>(magnitude)
+                                        : static_cast<uint32_t>(magnitude);
+                }
+                if (words[1] == 0U)
+                    return Status::InvalidNumericValue;
+                *numer = words[0];
+                *denom = words[1];
+                return Status::Ok;
+            }
+        }
+        ExactRatio ratio;
+        if (value.kind == MetaValueKind::Text) {
+            const NumericParseStatus parsed
+                = parse_exact_ratio(arena_text(arena, value.data.span), true,
+                                    &ratio, false);
+            if (parsed != NumericParseStatus::Ok)
+                return numeric_status(parsed);
+        } else {
+            int64_t n  = 0;
+            uint64_t u = 0U;
+            if (scalar_signed(value, &n)) {
+                if (n == INT64_MIN)
+                    return Status::ValueOutOfRange;
+                ratio.negative  = n < 0;
+                ratio.numerator = static_cast<uint64_t>(n < 0 ? -n : n);
+            } else if (scalar_unsigned(value, &u))
+                ratio.numerator = u;
+            else
+                return Status::InvalidSourceValue;
+        }
+        if (ratio.numerator
+                > static_cast<uint64_t>(INT32_MAX) + (ratio.negative ? 1U : 0U)
+            || ratio.denominator == 0U || ratio.denominator > INT32_MAX)
+            return Status::ValueOutOfRange;
+        *numer = ratio.negative ? 0U - static_cast<uint32_t>(ratio.numerator)
+                                : static_cast<uint32_t>(ratio.numerator);
+        *denom = static_cast<uint32_t>(ratio.denominator);
+        return Status::Ok;
+    }
+
+    static MetadataCaptureTranslationStatus read_structured_capture(
+        const MetaStore& store, std::string_view name, uint16_t tag,
+        const MetadataStructuredCaptureTranslationOptions& options,
+        CaptureTextLimits* limits, CapturePlannedGroup* group,
+        std::vector<std::byte>* payload,
+        MetadataCaptureTranslationResult* result)
+    {
+        using Status     = MetadataCaptureTranslationStatus;
+        const bool table = tag == 0x8828U || tag == 0xa20cU;
+        // Root, Columns, Rows, Names root, Values root, then Names and Values items.
+        const uint32_t values_begin = 5U + options.max_columns;
+        std::vector<CaptureSource> sources(values_begin + options.max_values);
+        uint32_t last_name = 0U, last_value = 0U, seen = 0U;
+        for (EntryId id = 0U; id < store.entries().size(); ++id) {
+            const Entry& entry = store.entry(id);
+            if (any(entry.flags, EntryFlags::Deleted)
+                && !any(entry.flags, EntryFlags::Dirty))
+                continue;
+            std::string_view root, tail, ns;
+            if (!encoding_path(store, entry, std::span(&name, 1U), false, &root,
+                               &tail, &ns))
+                continue;
+            result->failed_source_entry = id;
+            uint32_t slot               = 0U;
+            if (!tail.empty()) {
+                if (tail.front() != '/')
+                    return Status::UnsupportedSourceShape;
+                tail.remove_prefix(1U);
+                if (tail.starts_with("exif:"))
+                    tail.remove_prefix(5U);
+                if (tail == "Columns" || (table && tail == "Columus"))
+                    slot = 1U;
+                else if (tail == "Rows")
+                    slot = 2U;
+                else {
+                    const bool names = table && tail.starts_with("Names");
+                    if (!names && !tail.starts_with("Values"))
+                        return Status::UnsupportedSourceShape;
+                    tail.remove_prefix(names ? 5U : 6U);
+                    uint32_t index = 0U;
+                    if (!tail.empty()) {
+                        const Status status
+                            = dense_index(tail,
+                                          names ? options.max_columns
+                                                : options.max_values,
+                                          &index);
+                        if (status != Status::Ok)
+                            return status;
+                    }
+                    slot = index == 0U
+                               ? (names ? 3U : 4U)
+                               : (names ? 5U : values_begin) + index - 1U;
+                    if (!any(entry.flags, EntryFlags::Deleted)) {
+                        if (names && index > last_name)
+                            last_name = index;
+                        if (!names && index > last_value)
+                            last_value = index;
+                    }
+                }
+            }
+            if (sources[slot].found)
+                return Status::AmbiguousSource;
+            sources[slot] = { true, any(entry.flags, EntryFlags::Deleted), id,
+                              &entry.value };
+            ++seen;
+            ++result->source_properties;
+            if (group->source_entry == kInvalidEntryId)
+                group->source_entry = id;
+        }
+        if (sources[0].found) {
+            if (seen != 1U)
+                return Status::UnsupportedSourceShape;
+            if (sources[0].deleted)
+                return Status::Ok;
+            const MetaValue& value = *sources[0].value;
+            if (value.kind != MetaValueKind::Bytes
+                || value.count != value.data.span.size)
+                return Status::InvalidSourceValue;
+            const std::span<const std::byte> raw = store.arena().span(
+                value.data.span);
+            if (raw.size() != value.count)
+                return Status::InvalidSourceValue;
+            if (raw.size() > options.max_payload_bytes)
+                return Status::SourceLimitExceeded;
+            detail::StructuredCaptureView view;
+            if (!detail::structured_capture_view(raw, tag, true, &view))
+                return Status::InvalidSourceValue;
+            if (view.columns > options.max_columns
+                || view.values_count > options.max_values)
+                return Status::SourceLimitExceeded;
+            const Status status = structured_raw_text_budget(raw, tag, view,
+                                                             limits);
+            if (status != Status::Ok)
+                return status;
+            payload->assign(raw.begin(), raw.end());
+            group->present = true;
+            group->bytes   = *payload;
+            return Status::Ok;
+        }
+        bool active = false;
+        for (const CaptureSource& property : sources)
+            active = active || (property.found && !property.deleted);
+        if (!active)
+            return Status::Ok;
+        std::array<uint16_t, 2> dimensions {};
+        for (size_t i = 0U; i < 2U; ++i) {
+            const CaptureSource& property = sources[i + 1U];
+            if (!property.found || property.deleted)
+                return Status::IncompleteSource;
+            result->failed_source_entry = property.entry_id;
+            Status status = capture_text_budget(store, *property.value, limits);
+            if (status == Status::Ok)
+                status = parse_spatial_short(store.arena(), *property.value,
+                                             false, &dimensions[i]);
+            if (status != Status::Ok)
+                return status;
+            if (dimensions[i] == 0U)
+                return Status::ValueOutOfRange;
+        }
+        if (dimensions[0] > options.max_columns)
+            return Status::SourceLimitExceeded;
+        const uint32_t count = tag == 0xa40bU
+                                   ? last_value
+                                   : static_cast<uint32_t>(dimensions[0])
+                                         * dimensions[1];
+        if (count > options.max_values)
+            return Status::SourceLimitExceeded;
+        if (count == 0U || (table && last_name != dimensions[0]))
+            return Status::IncompleteSource;
+        if (sources[3].found && !sources[3].deleted)
+            return Status::UnsupportedSourceShape;
+        const bool typed = sources[4].found && !sources[4].deleted;
+        if (typed && (last_value != 0U || tag == 0xa40bU))
+            return Status::UnsupportedSourceShape;
+        if (!typed && last_value != count)
+            return Status::IncompleteSource;
+        payload->reserve(4U + count * (tag == 0xa302U ? 1U : 8U));
+        composite_append_uint(payload, dimensions[0], 2U);
+        composite_append_uint(payload, dimensions[1], 2U);
+        if (table) {
+            for (uint32_t i = 0U; i < dimensions[0]; ++i) {
+                const CaptureSource& property = sources[5U + i];
+                if (!property.found || property.deleted)
+                    return Status::IncompleteSource;
+                result->failed_source_entry = property.entry_id;
+                if (property.value->kind != MetaValueKind::Text)
+                    return Status::InvalidSourceValue;
+                const Status status
+                    = capture_text_budget(store, *property.value, limits);
+                if (status != Status::Ok)
+                    return status;
+                const std::string_view text
+                    = arena_text(store.arena(), property.value->data.span);
+                if (payload->size() + text.size() + 1U
+                    > options.max_payload_bytes)
+                    return Status::SourceLimitExceeded;
+                for (char c : text) {
+                    const uint8_t code = static_cast<uint8_t>(c);
+                    if (code >= 128U || !detail::capture_xml_character(code))
+                        return Status::InvalidSourceValue;
+                    payload->push_back(static_cast<std::byte>(code));
+                }
+                payload->push_back(std::byte { 0 });
+            }
+        }
+        std::span<const std::byte> array;
+        size_t width = 0U;
+        if (typed) {
+            const MetaValue& value      = *sources[4].value;
+            result->failed_source_entry = sources[4].entry_id;
+            if (value.kind != MetaValueKind::Array || value.count != count)
+                return Status::InvalidSourceValue;
+            if (tag == 0xa302U)
+                width = value.elem_type == MetaElementType::U8    ? 1U
+                        : value.elem_type == MetaElementType::U16 ? 2U
+                        : value.elem_type == MetaElementType::U32 ? 4U
+                                                                  : 0U;
+            else if (value.elem_type
+                     == (tag == 0x8828U ? MetaElementType::SRational
+                                        : MetaElementType::URational))
+                width = 8U;
+            array = store.arena().span(value.data.span);
+            if (width == 0U || array.size() != count * width
+                || array.size() != value.data.span.size)
+                return Status::InvalidSourceValue;
+        }
+        for (uint32_t i = 0U; i < count; ++i) {
+            MetaValue value;
+            if (typed) {
+                if (width == 8U) {
+                    if (tag == 0x8828U) {
+                        SRational pair {};
+                        std::memcpy(&pair, array.data() + i * width, width);
+                        value = make_srational(pair.numer, pair.denom);
+                    } else {
+                        URational pair {};
+                        std::memcpy(&pair, array.data() + i * width, width);
+                        value = make_urational(pair.numer, pair.denom);
+                    }
+                } else {
+                    uint32_t code = 0U;
+                    if (width == 1U)
+                        code = std::to_integer<uint8_t>(array[i]);
+                    else if (width == 2U) {
+                        uint16_t n = 0U;
+                        std::memcpy(&n, array.data() + i * width, width);
+                        code = n;
+                    } else
+                        std::memcpy(&code, array.data() + i * width, width);
+                    value = make_u32(code);
+                }
+            } else {
+                const CaptureSource& property = sources[values_begin + i];
+                if (!property.found || property.deleted)
+                    return Status::IncompleteSource;
+                result->failed_source_entry = property.entry_id;
+                value                       = *property.value;
+                const Status status = capture_text_budget(store, value, limits);
+                if (status != Status::Ok)
+                    return status;
+            }
+            if (tag == 0xa40bU) {
+                if (value.kind != MetaValueKind::Text)
+                    return Status::InvalidSourceValue;
+                const std::string_view text = arena_text(store.arena(),
+                                                         value.data.span);
+                size_t cursor               = 0U;
+                uint64_t encoded_bytes      = 4U;
+                while (cursor < text.size()) {
+                    uint32_t code = 0U;
+                    if (!detail::capture_utf8_next(text, &cursor, &code))
+                        return Status::InvalidSourceValue;
+                    encoded_bytes += code < 0x10000U ? 2U : 4U;
+                }
+                if (payload->size() + encoded_bytes > options.max_payload_bytes)
+                    return Status::SourceLimitExceeded;
+                composite_append_uint(payload, 0xfeffU, 2U);
+                size_t offset = 0U;
+                while (offset < text.size()) {
+                    uint32_t code = 0U;
+                    if (!detail::capture_utf8_next(text, &offset, &code))
+                        return Status::InvalidSourceValue;
+                    if (code >= 0x10000U) {
+                        code -= 0x10000U;
+                        composite_append_uint(payload, 0xd800U + (code >> 10U),
+                                              2U);
+                        composite_append_uint(payload,
+                                              0xdc00U + (code & 0x3ffU), 2U);
+                    } else
+                        composite_append_uint(payload, code, 2U);
+                }
+                composite_append_uint(payload, 0U, 2U);
+            } else if (tag == 0xa302U) {
+                uint16_t code       = 0U;
+                const Status status = parse_spatial_short(store.arena(), value,
+                                                          false, &code);
+                if (status != Status::Ok)
+                    return status;
+                if (code > 6U)
+                    return Status::ValueOutOfRange;
+                if (payload->size() >= options.max_payload_bytes)
+                    return Status::SourceLimitExceeded;
+                payload->push_back(static_cast<std::byte>(code));
+            } else {
+                uint32_t numer = 0U, denom = 0U;
+                const Status status = structured_rational(store.arena(), value,
+                                                          tag == 0x8828U,
+                                                          &numer, &denom);
+                if (status != Status::Ok)
+                    return status;
+                if (payload->size() + 8U > options.max_payload_bytes)
+                    return Status::SourceLimitExceeded;
+                composite_append_uint(payload, numer, 4U);
+                composite_append_uint(payload, denom, 4U);
+            }
+        }
+        group->present = true;
+        group->bytes   = *payload;
+        return Status::Ok;
+    }
+
 }  // namespace
 
 MetadataCaptureTranslationResult
@@ -3203,6 +3638,95 @@ translate_xmp_environment_metadata(
         ++result.source_properties;
         groups[count++] = group;
     }
+    return apply_capture_groups(source, std::span(groups.data(), count),
+                                options.conflict_policy,
+                                options.max_added_entries,
+                                options.max_operations, result, out_store);
+}
+
+MetadataCaptureTranslationResult
+translate_xmp_structured_capture_metadata(
+    const MetaStore& source,
+    const MetadataStructuredCaptureTranslationOptions& options,
+    MetaStore* out_store)
+{
+    using Status  = MetadataCaptureTranslationStatus;
+    using Mode    = MetadataCaptureTranslationSourceMode;
+    using Policy  = MetadataCaptureTranslationConflictPolicy;
+    using Mapping = MetadataCaptureTranslationMapping;
+    if (!out_store)
+        return capture_error(Status::NullOutput);
+    if (!source.is_finalized())
+        return capture_error(Status::SourceNotFinalized);
+    if ((options.source_mode != Mode::All
+         && options.source_mode != Mode::DirtyOnly)
+        || (options.conflict_policy != Policy::PreserveExisting
+            && options.conflict_policy != Policy::FailOnConflict
+            && options.conflict_policy != Policy::ReplaceExisting)
+        || (!options.oecf_to_exif && !options.spatial_frequency_response_to_exif
+            && !options.cfa_pattern_to_exif
+            && !options.device_setting_description_to_exif)
+        || options.max_added_entries == 0U
+        || options.max_added_entries
+               > kMetadataStructuredCaptureTranslationMaxAddedEntries
+        || options.max_operations == 0U
+        || options.max_operations > kMetadataCaptureTranslationMaxOperations
+        || options.max_columns == 0U
+        || options.max_columns > kMetadataStructuredCaptureTranslationMaxColumns
+        || options.max_values == 0U
+        || options.max_values > kMetadataStructuredCaptureTranslationMaxValues
+        || options.max_text_bytes_per_property == 0U
+        || options.max_text_bytes_per_property
+               > kMetadataStructuredCaptureTranslationMaxTextBytesPerProperty
+        || options.max_total_text_bytes == 0U
+        || options.max_total_text_bytes
+               > kMetadataStructuredCaptureTranslationMaxTotalTextBytes
+        || options.max_payload_bytes < 4U
+        || options.max_payload_bytes
+               > kMetadataStructuredCaptureTranslationMaxPayloadBytes)
+        return capture_error(Status::InvalidOptions);
+    constexpr std::array<std::string_view, 4> paths
+        = { "OECF", "SpatialFrequencyResponse", "CFAPattern",
+            "DeviceSettingDescription" };
+    constexpr std::array<uint16_t, 4> tags = { 0x8828U, 0xa20cU, 0xa302U,
+                                               0xa40bU };
+    constexpr std::array<NativeCaptureField, 4> fields = {
+        NativeCaptureField::Oecf, NativeCaptureField::SpatialFrequencyResponse,
+        NativeCaptureField::CfaPattern,
+        NativeCaptureField::DeviceSettingDescription
+    };
+    constexpr std::array<Mapping, 4> mappings
+        = { Mapping::XmpOecf, Mapping::XmpSpatialFrequencyResponse,
+            Mapping::XmpCfaPattern, Mapping::XmpDeviceSettingDescription };
+    const std::array<bool, 4> enabled = {
+        options.oecf_to_exif, options.spatial_frequency_response_to_exif,
+        options.cfa_pattern_to_exif, options.device_setting_description_to_exif
+    };
+    std::array<CapturePlannedGroup, 4> groups {};
+    std::array<std::vector<std::byte>, 4> payloads;
+    CaptureTextLimits limits { options.max_text_bytes_per_property,
+                               options.max_total_text_bytes };
+    MetadataCaptureTranslationResult result;
+    size_t count = 0U;
+    for (size_t i = 0U; i < paths.size(); ++i) {
+        if (!enabled[i]
+            || !encoding_selected(source, std::span(&paths[i], 1U), false,
+                                  options.source_mode))
+            continue;
+        CapturePlannedGroup& group = groups[count++];
+        group.mapping              = mappings[i];
+        group.field                = fields[i];
+        result.failed_mapping      = mappings[i];
+        const Status status = read_structured_capture(source, paths[i], tags[i],
+                                                      options, &limits, &group,
+                                                      &payloads[i], &result);
+        if (status != Status::Ok) {
+            result.status = status;
+            return result;
+        }
+    }
+    result.failed_mapping      = Mapping::None;
+    result.failed_source_entry = kInvalidEntryId;
     return apply_capture_groups(source, std::span(groups.data(), count),
                                 options.conflict_policy,
                                 options.max_added_entries,
@@ -4256,6 +4780,13 @@ metadata_capture_translation_mapping_name(
         return "xmp_components_configuration";
     case MetadataCaptureTranslationMapping::XmpCompositeImage:
         return "xmp_composite_image";
+    case MetadataCaptureTranslationMapping::XmpOecf: return "xmp_oecf";
+    case MetadataCaptureTranslationMapping::XmpSpatialFrequencyResponse:
+        return "xmp_spatial_frequency_response";
+    case MetadataCaptureTranslationMapping::XmpCfaPattern:
+        return "xmp_cfa_pattern";
+    case MetadataCaptureTranslationMapping::XmpDeviceSettingDescription:
+        return "xmp_device_setting_description";
     case MetadataCaptureTranslationMapping::XmpFocalPlaneResolution:
         return "xmp_focal_plane_resolution";
     case MetadataCaptureTranslationMapping::XmpSubjectArea:
