@@ -25,7 +25,7 @@ The APIs are experimental and versioned by
 Workflow
 --------
 
-See :doc:`capture_sync_milestone` for the fifteen capture APIs, 65 distinct native
+See :doc:`capture_sync_milestone` for the sixteen capture APIs, 75 distinct native
 targets, shared-target composition and the 0.5.5 portable round-trip fixes.
 Primary ExifIFD FNumber, FocalLength and DigitalZoomRatio emit exact fractions;
 FocalLength is in millimeters without the display suffix `` mm``. Invalid native

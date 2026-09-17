@@ -91,15 +91,15 @@ All function names below have the prefix `translate_xmp_` and suffix
 | capture_spatial | 5 | FocalPlaneXResolution A20E, FocalPlaneYResolution A20F, FocalPlaneResolutionUnit A210, SubjectArea 9214, SubjectLocation A214 |
 | capture_additional | 3 | FocalLengthIn35mmFilm A405, FileSource A300, SceneType A301 |
 | environment | 6 | Temperature 9400, Humidity 9401, Pressure 9402, WaterDepth 9403, Acceleration 9404, CameraElevationAngle 9405 |
-
 | image_encoding | 3 | Gamma A500, CompressedBitsPerPixel 9102, ComponentsConfiguration 9101 |
 | composite | 3 | CompositeImage A460, SourceImageNumberOfCompositeImage A461, SourceExposureTimesOfCompositeImage A462 |
 | structured_capture | 4 | OECF 8828, SpatialFrequencyResponse A20C, CFAPattern A302, DeviceSettingDescription A40B |
 | exif_text | 13 (10 new) | ExifVersion 9000, FlashpixVersion A000, UserComment 9286, ImageTitle A436, Photographer A437, ImageEditor A438, CameraFirmware A439, RAWDevelopingSoftware A43A, ImageEditingSoftware A43B, MetadataEditingSoftware A43C, CameraOwnerName A430, LensMake A433, LensModel A434 |
 
-Tag IDs are hexadecimal. The 67 API mappings include two shared targets:
+Tag IDs are hexadecimal. The 80 API mappings include five shared targets:
 ISO belongs to basic capture and sensitivity; ExposureBiasValue belongs to
-basic capture and APEX. The new text API also overlaps owner/lens tags. Counting each shared tag once gives 75.
+basic capture and APEX. CameraOwnerName, LensMake and LensModel belong to
+camera text and EXIF text. Counting each shared tag once gives 75.
 
 ## Historical 0.5.4 qualification and gaps
 
@@ -181,8 +181,9 @@ policies. Its acceptance checks are:
 The additional capture and environment batches are implemented in 0.5.6.
 Encoding/composite contracts are implemented in 0.5.7 and structured capture
 contracts in 0.5.8; text/comment/version contracts are implemented in 0.5.9.
-Next, review the remaining standard EXIF authoring gaps as a group, then select
-the next bounded writeback family. Fuzzy search remains lowest priority.
+The [standard EXIF inventory](exif_authoring_inventory.md) selects validation
+consistency for existing writeback fields next, followed by the six EXIF 3.1
+development/correction fields. Fuzzy search remains lowest priority.
 
 ## Remaining field families
 
@@ -191,7 +192,9 @@ remaining-tags denominator. Read/display support does not imply reverse support.
 
 | Family | Examples | Work needed before implementation |
 | --- | --- | --- |
-| Remaining EXIF authoring/profile rules | Mandatory-tag relationships and remaining standard fields | Inventory concrete gaps against the existing contracts before selecting another batch. |
+| Existing-field validation | Missing schema entries and legal Interop tag IDs | Close the 64 routed-field schema gaps and false Interop rejection as one batch. |
+| EXIF 3.1 development/correction | Six fields A40D–A412 | Define packed values, structured XMP, UTF-8 and explicit version policy. |
+| Other standard authoring/profile rules | IFD0 descriptive fields, color/Interop, LearningOptOutIn and RelatedSoundFile | Define host authority, encoding and companion relationships; see the inventory. |
 | MakerNotes | Vendor/version-specific offsets and integrity fields | Continue the separate rewrite-trust work; generic opaque authoring does not establish safe relocation. |
 
 The audit does not reopen downstream application acceptance or claim arbitrary

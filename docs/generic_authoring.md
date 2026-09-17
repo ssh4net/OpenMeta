@@ -84,6 +84,11 @@ Unknown/private EXIF tags remain allowed by default. Applications can change
 extensible: absence from the initial schema does not mean that a private tag is
 invalid.
 
+The [standard EXIF inventory](exif_authoring_inventory.md) records gaps between
+the 0.5.9 fixed schema and existing reverse translators, including false
+`WrongIfd` rejection of InteroperabilityIndex. Successful detached-store
+validation does not establish complete-file EXIF conformance.
+
 Wire hints are optional. TIFF type hints are useful when one in-memory byte
 payload may legally serialize as `BYTE`, `SBYTE`, or `UNDEFINED`. Array payloads
 contain native in-memory elements; canonical TIFF serialization converts them

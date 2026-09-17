@@ -1,5 +1,5 @@
 Capture Synchronization Milestone
-====================================
+=================================
 
 Audit date: 2026-09-14. Original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
@@ -23,7 +23,7 @@ installed shared-library check exercises the new C++ entry points. See
 The earlier audit observations below retain their historical 46-target scope.
 
 Fixes in 0.5.5
-------------------
+--------------
 
 Primary ExifIFD FNumber, FocalLength and DigitalZoomRatio emit exact fractions.
 Native rational and sensitivity scalar types/counts and ranges are checked
@@ -103,9 +103,12 @@ The API stems below have the prefix ``translate_xmp_`` and suffix
    * - structured_capture
      - 4
      - OECF, SpatialFrequencyResponse, CFAPattern, DeviceSettingDescription
+   * - exif_text
+     - 13 (10 new)
+     - UserComment, versions, EXIF 3 text and shared UTF-8 owner/lens fields
 
-ISO and ExposureBiasValue are each shared by two APIs. The 67 mappings
-therefore cover 65 distinct tags.
+ISO, ExposureBiasValue, CameraOwnerName, LensMake and LensModel are each
+shared by two APIs. The 80 mappings therefore cover 75 distinct tags.
 
 Historical 0.5.4 Qualification and Gaps
 ---------------------------------------
@@ -167,8 +170,10 @@ The 0.5.5 fix retains API signatures and covers these acceptance checks:
 
 The additional capture and environment batches are implemented in 0.5.6.
 Encoding and composite capture are implemented in 0.5.7 and structured
-capture in 0.5.8. Next, define UserComment and EXIF text encoding/version
-extensions. MakerNote rewrite trust remains vendor-specific.
+capture in 0.5.8. Text/comment/version contracts are implemented in 0.5.9.
+The :doc:`exif_authoring_inventory` selects existing-field validation next,
+followed by six EXIF 3.1 development/correction fields.
+MakerNote rewrite trust remains vendor-specific.
 Read/display support does not establish reverse writeback support. Downstream
 application acceptance and whole-corpus qualification are outside this audit.
 
@@ -193,7 +198,7 @@ remain unchanged; big-endian snapshots for these four tags need a 0.5.8
 reader. See :doc:`translation` for the encoding, bounds and conflict contract.
 
 EXIF Text and Version Update (0.5.9)
------------------------------------
+------------------------------------
 
 The new ``translate_xmp_exif_text_metadata`` API adds ten ExifIFD tags:
 UserComment, both version fields and seven EXIF 3 text properties. It also
@@ -207,7 +212,8 @@ on type129; direct TIFF byte checks and FFmpeg pixel hashes qualify the new data
 ExifTool's legacy UserComment decoder is not an EXIF 3 UTF-8 oracle. See
 :doc:`translation` for the full contract and reader limitations.
 
-Next, inventory remaining standard EXIF authoring and profile gaps as a group.
+The remaining standard fields and profile gaps are recorded in
+:doc:`exif_authoring_inventory`, including the next batch's acceptance criteria.
 Copyright's two-part NUL-separated representation remains outside this text
 extension. Downstream application acceptance stays on hold; fuzzy search remains
 lowest priority.
