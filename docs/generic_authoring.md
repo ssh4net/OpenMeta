@@ -84,10 +84,34 @@ Unknown/private EXIF tags remain allowed by default. Applications can change
 extensible: absence from the initial schema does not mean that a private tag is
 invalid.
 
-The [standard EXIF inventory](exif_authoring_inventory.md) records gaps between
-the 0.5.9 fixed schema and existing reverse translators, including false
-`WrongIfd` rejection of InteroperabilityIndex. Successful detached-store
-validation does not establish complete-file EXIF conformance.
+The [standard EXIF inventory](exif_authoring_inventory.md) records the 0.5.9
+baseline. In 0.5.10, all 64 previously missing reverse-target schemas are
+registered, along with five Interop fields and three structural pointers.
+Valid InteroperabilityIndex no longer fails because GPS uses the same numeric ID.
+Successful detached-store validation does not establish complete-file EXIF
+conformance.
+
+Known capture/GPS fields now check their native types, counts and singleton
+rules. Shared enum checks cover capture settings, Flash and LightSource.
+Value checks also cover sensitivity scalars, rational denominators/sentinels,
+lens and subject arrays, GPS references/bearings, ASCII text and encoded GPS
+text prefixes. GainControl remains SHORT according to its detailed tag
+definition. Malformed known values formerly accepted as unknown can now fail
+default authoring, typed editing and canonical serialization.
+
+Detached native data does not inherit XMP translator length/precision limits or
+mandatory companion groups. Subsecond strings may exceed nine digits and retain
+space padding. Native signed APEX denominators remain nonzero, including negative
+values; the narrower reverse and portable contracts are unchanged. Native
+focal-plane units 1 through 5 remain supported, while reverse translation accepts
+only 2 and 3. Lens `0/0` is allowed only in its two unknown aperture slots.
+GPS JIS, Unicode and undefined-code bodies remain opaque after prefix validation;
+this check does not certify their character encoding. ASCII bodies must be 7-bit.
+Pointer rules check type/count, not the existence or correctness of target IFDs.
+
+Portable output applies the shared field checks before claiming a replacement.
+When retained XMP is enabled, invalid managed native values leave eligible
+existing properties available under the documented conflict policy.
 
 Wire hints are optional. TIFF type hints are useful when one in-memory byte
 payload may legally serialize as `BYTE`, `SBYTE`, or `UNDEFINED`. Array payloads

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "metadata_capture_fields_internal.h"
+
 #include "openmeta/metadata_translation.h"
 
 #include "metadata_structured_fields_internal.h"
@@ -3270,35 +3272,33 @@ translate_xmp_capture_settings_metadata(
         NativeCaptureField field;
         MetadataCaptureTranslationMapping mapping;
         uint16_t tag;
-        uint16_t max_code;
     };
     static constexpr std::array<Setting, 12> settings {
         { { "ExposureProgram", NativeCaptureField::ExposureProgram,
-            MetadataCaptureTranslationMapping::XmpExposureProgram, 0x8822U, 8U },
+            MetadataCaptureTranslationMapping::XmpExposureProgram, 0x8822U },
           { "MeteringMode", NativeCaptureField::MeteringMode,
-            MetadataCaptureTranslationMapping::XmpMeteringMode, 0x9207U, 6U },
+            MetadataCaptureTranslationMapping::XmpMeteringMode, 0x9207U },
           { "SensingMethod", NativeCaptureField::SensingMethod,
-            MetadataCaptureTranslationMapping::XmpSensingMethod, 0xa217U, 8U },
+            MetadataCaptureTranslationMapping::XmpSensingMethod, 0xa217U },
           { "CustomRendered", NativeCaptureField::CustomRendered,
-            MetadataCaptureTranslationMapping::XmpCustomRendered, 0xa401U, 1U },
+            MetadataCaptureTranslationMapping::XmpCustomRendered, 0xa401U },
           { "ExposureMode", NativeCaptureField::ExposureMode,
-            MetadataCaptureTranslationMapping::XmpExposureMode, 0xa402U, 2U },
+            MetadataCaptureTranslationMapping::XmpExposureMode, 0xa402U },
           { "WhiteBalance", NativeCaptureField::WhiteBalance,
-            MetadataCaptureTranslationMapping::XmpWhiteBalance, 0xa403U, 1U },
+            MetadataCaptureTranslationMapping::XmpWhiteBalance, 0xa403U },
           { "SceneCaptureType", NativeCaptureField::SceneCaptureType,
-            MetadataCaptureTranslationMapping::XmpSceneCaptureType, 0xa406U,
-            3U },
+            MetadataCaptureTranslationMapping::XmpSceneCaptureType, 0xa406U },
           { "GainControl", NativeCaptureField::GainControl,
-            MetadataCaptureTranslationMapping::XmpGainControl, 0xa407U, 4U },
+            MetadataCaptureTranslationMapping::XmpGainControl, 0xa407U },
           { "Contrast", NativeCaptureField::Contrast,
-            MetadataCaptureTranslationMapping::XmpContrast, 0xa408U, 2U },
+            MetadataCaptureTranslationMapping::XmpContrast, 0xa408U },
           { "Saturation", NativeCaptureField::Saturation,
-            MetadataCaptureTranslationMapping::XmpSaturation, 0xa409U, 2U },
+            MetadataCaptureTranslationMapping::XmpSaturation, 0xa409U },
           { "Sharpness", NativeCaptureField::Sharpness,
-            MetadataCaptureTranslationMapping::XmpSharpness, 0xa40aU, 2U },
+            MetadataCaptureTranslationMapping::XmpSharpness, 0xa40aU },
           { "SubjectDistanceRange", NativeCaptureField::SubjectDistanceRange,
-            MetadataCaptureTranslationMapping::XmpSubjectDistanceRange, 0xa40cU,
-            3U } }
+            MetadataCaptureTranslationMapping::XmpSubjectDistanceRange,
+            0xa40cU } }
     };
     std::array<CapturePlannedGroup, 12> groups {};
     size_t count        = 0U;
@@ -3342,12 +3342,8 @@ translate_xmp_capture_settings_metadata(
                         bool matched = false;
                         for (uint16_t candidate = 0U; candidate <= 255U;
                              ++candidate) {
-                            const bool valid = candidate <= setting.max_code
-                                               || (setting.tag == 0x9207U
-                                                   && candidate == 255U);
-                            if (!valid
-                                || (setting.tag == 0xa217U
-                                    && (candidate == 0U || candidate == 6U)))
+                            if (!detail::capture_enum_code_valid(setting.tag,
+                                                                 candidate))
                                 continue;
                             const std::string_view label
                                 = exif_tag_numeric_value_name("exififd",
@@ -3378,9 +3374,7 @@ translate_xmp_capture_settings_metadata(
                     code = static_cast<uint64_t>(signed_code);
             }
             if (status == Status::Ok
-                && ((code > setting.max_code
-                     && !(setting.tag == 0x9207U && code == 255U))
-                    || (setting.tag == 0xa217U && (code == 0U || code == 6U))))
+                && !detail::capture_enum_code_valid(setting.tag, code))
                 status = Status::ValueOutOfRange;
             if (status == Status::Ok) {
                 group.value   = make_u16(static_cast<uint16_t>(code));
@@ -4364,7 +4358,7 @@ translate_xmp_flash_metadata(const MetaStore& source,
                                            | (values[2U] << 3U)
                                            | (values[1U] << 5U)
                                            | (values[3U] << 6U);
-        if (code > 127U || ((code >> 1U) & 3U) == 1U)
+        if (!detail::capture_enum_code_valid(0x9209U, code))
             return flash_error(Status::ValueOutOfRange, group.source_entry);
         group.value = make_u16(static_cast<uint16_t>(code));
     }
@@ -4457,9 +4451,7 @@ translate_xmp_light_source_metadata(
                     uint32_t matches = 0U;
                     for (uint16_t candidate = 0U; candidate <= 255U;
                          ++candidate) {
-                        if (!(candidate <= 4U
-                              || (candidate >= 9U && candidate <= 34U)
-                              || candidate == 255U))
+                        if (!detail::capture_enum_code_valid(0x9208U, candidate))
                             continue;
                         const std::string_view label = exif_light_source_name(
                             candidate);
@@ -4488,7 +4480,7 @@ translate_xmp_light_source_metadata(
                 code = static_cast<uint64_t>(signed_code);
         }
         if (status == Status::Ok
-            && !(code <= 4U || (code >= 9U && code <= 34U) || code == 255U))
+            && !detail::capture_enum_code_valid(0x9208U, code))
             status = Status::ValueOutOfRange;
         if (status == Status::Ok) {
             group.value   = make_u16(static_cast<uint16_t>(code));

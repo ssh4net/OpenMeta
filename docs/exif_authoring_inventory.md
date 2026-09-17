@@ -4,6 +4,15 @@ Audit date: 2026-09-17. Implementation baseline: **OpenMeta C++ 0.5.9**, ABI 3,
 commit `6d04da1`. This inventory records current behavior and selects the next
 batch. It does not add fields or change the library version.
 
+**0.5.10 implementation update:** the validation batch selected below is now
+implemented. All 64 routed fields have fixed schema entries; five registered
+Interop fields and three structural pointers are also recognized. MeteringMode
+type/value checks and legal Interop ID handling are covered by combined
+authoring/editing/serialization regressions. See
+[the validation contract](generic_authoring.md#validation). The counts and
+runtime observations below retain the historical 0.5.9 audit baseline.
+The next writeback family is the six development/correction fields.
+
 ## Scope and sources
 
 The denominator is the primary-image data fields in CIPA Tables 6, 8, 9, 14

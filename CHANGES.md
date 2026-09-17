@@ -1,5 +1,19 @@
 # OpenMeta Changes
 
+## 0.5.10 - 2026-09-17
+
+- Add fixed type/count schemas for 64 existing reverse-translation targets
+  (41 ExifIFD and 23 GPS), five registered Interop fields and three structural
+  pointers. Strict unknown-tag validation now accepts these legal fields.
+- Share capture enum and native-value checks across validation, translation
+  and portable output. Reject malformed authoring and typed edits without
+  publishing partial results; retain valid existing XMP when native values
+  cannot be emitted. Preserve defined sentinels and native value ranges.
+- Qualify the complete field batch through canonical serialization, snapshots
+  and combined capture/GPS metadata. Detached validation does not imply a
+  complete-file profile. Public API signatures, ABI 3, snapshot v1 and host
+  synchronization responsibilities remain unchanged.
+
 ## 0.5.9 - 2026-09-17
 
 - Add bounded C++ and Python EXIF text/version translation for ten new tags,

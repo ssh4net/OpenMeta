@@ -4,6 +4,12 @@ Standard EXIF Authoring Inventory
 Audit date: 2026-09-17. Baseline: **C++ 0.5.9**, ABI 3, commit ``6d04da1``.
 This is an inventory and next-batch decision; library behavior is unchanged.
 
+**0.5.10 update:** the selected validation batch is implemented. The 64 routed
+fields now have fixed schemas; five registered Interop fields and three
+structural pointers are recognized. The following counts and probe observations
+remain the historical 0.5.9 baseline. See :doc:`generic_authoring` for the current
+validation boundary. Six EXIF 3.1 development/correction fields are next.
+
 Scope and counts
 ----------------
 

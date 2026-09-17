@@ -171,8 +171,8 @@ The 0.5.5 fix retains API signatures and covers these acceptance checks:
 The additional capture and environment batches are implemented in 0.5.6.
 Encoding and composite capture are implemented in 0.5.7 and structured
 capture in 0.5.8. Text/comment/version contracts are implemented in 0.5.9.
-The :doc:`exif_authoring_inventory` selects existing-field validation next,
-followed by six EXIF 3.1 development/correction fields.
+The :doc:`exif_authoring_inventory` selected existing-field validation,
+implemented in 0.5.10. Six EXIF 3.1 development/correction fields are next.
 MakerNote rewrite trust remains vendor-specific.
 Read/display support does not establish reverse writeback support. Downstream
 application acceptance and whole-corpus qualification are outside this audit.

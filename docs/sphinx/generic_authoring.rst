@@ -54,3 +54,29 @@ authoritative for dimensions, channel layout, CFA, levels, color transforms,
 and frame-varying capture facts.
 
 See the complete contract in ``docs/generic_authoring.md``.
+
+Standard field validation in 0.5.10
+----------------------------------
+
+All 64 reverse targets missing fixed schemas in the 0.5.9 audit now have native
+IFD/type/count/singleton rules. Five registered Interop fields and three structural
+pointers are recognized. InteroperabilityIndex no longer fails merely because
+GPS reuses its numeric ID. See :doc:`exif_authoring_inventory`.
+
+Shared checks cover capture enums, Flash, LightSource, sensitivity values,
+rationals/sentinels, lens and subject arrays, GPS references/bearings, ASCII text
+and encoded GPS prefixes. GainControl remains SHORT per its detailed definition.
+Malformed known values formerly accepted as unknown can now fail default
+construction, typed editing or canonical serialization. Invalid native values
+leave eligible retained XMP available when existing-XMP output is enabled.
+
+Detached stores do not acquire mandatory complete-file companions or translator
+text/precision limits. Subsecond text can exceed nine digits and retain spaces.
+Native APEX denominators may be negative but not zero. Native focal-plane units
+1--5 remain accepted; reverse translation retains its narrower 2/3 contract.
+Lens 0/0 remains restricted to the two unknown aperture slots. GPS JIS, Unicode
+and undefined-code bodies stay opaque after prefix validation; ASCII bodies
+must be 7-bit. Pointer schemas check type/count, not target existence.
+
+Unknown/private policy, host synchronization, ABI 3 and snapshot v1 layout
+remain unchanged. These rules do not establish full EXIF file conformance.

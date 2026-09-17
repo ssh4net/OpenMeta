@@ -1025,6 +1025,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/metadata_capabilities_test.cc
     tests/metadata_concepts_test.cc
     tests/metadata_authoring_serialize_test.cc
+    tests/metadata_standard_validation_test.cc
     tests/metadata_creation_test.cc
     tests/metadata_editing_test.cc
     tests/metadata_editing_transfer_test.cc

@@ -803,3 +803,16 @@ requirements are explicit. ABI 3, snapshot v1 layout and host synchronization
 responsibilities remain unchanged. BOM-less big-endian UserComment snapshots
 require a 0.5.9 reader. See the EXIF text/version translation contract for limits
 and the recorded OIIO/ExifTool reader limitations.
+
+Standard Validation Update (0.5.10)
+-----------------------------------
+
+Fixed schemas now cover 64 existing reverse targets, five registered Interop
+fields and three structural pointers. Authoring, typed editing and canonical
+serialization reject malformed known fields that previously followed the
+unknown-tag policy. Strict unknown-tag validation accepts valid fields in this
+batch. Native enum and value checks also govern portable-output eligibility.
+This is a validation behavior change; public signatures, ABI 3, snapshot v1
+layout and host synchronization responsibilities are unchanged. Detached
+validation does not enforce mandatory complete-file companions. See
+:doc:`generic_authoring` for the bounded validation contract.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "metadata_capture_fields_internal.h"
+#include "metadata_gps_fields_internal.h"
 #include "metadata_text_fields_internal.h"
 
 #include "openmeta/xmp_dump.h"
@@ -4324,17 +4325,7 @@ namespace {
         if (count != 4U || raw.size() != 4U * sizeof(URational)) {
             return true;
         }
-        std::array<URational, 4> values {};
-        std::memcpy(values.data(), raw.data(), sizeof(values));
-        for (size_t i = 0U; i < values.size(); ++i) {
-            const URational r = values[i];
-            if (i >= 2U && r.numer == 0U && r.denom == 0U)
-                continue;
-            if (r.numer == 0U || r.denom == 0U)
-                return true;
-        }
-        if (static_cast<uint64_t>(values[0].numer) * values[1].denom
-            > static_cast<uint64_t>(values[1].numer) * values[0].denom)
+        if (!detail::lens_specification_value_valid(arena, v))
             return true;
 
         w->append(kIndent3);
@@ -4378,8 +4369,12 @@ namespace {
                                         std::string_view ifd, uint16_t tag,
                                         const MetaValue& value) noexcept
     {
+        if (ifd == "gpsifd")
+            return detail::gps_field_value_valid(arena, tag, value);
         if (ifd != "exififd")
             return true;
+        if (!detail::standard_capture_value_valid(arena, tag, value))
+            return false;
         if (tag == 0x9000U || tag == 0xa000U) {
             uint32_t version = 0U;
             return detail::exif_version_value(arena, value, tag, &version);

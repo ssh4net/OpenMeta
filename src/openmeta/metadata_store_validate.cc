@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "metadata_capture_fields_internal.h"
+#include "metadata_gps_fields_internal.h"
 #include "metadata_text_fields_internal.h"
 
 #include "openmeta/validate.h"
@@ -117,6 +118,47 @@ namespace {
         { SchemaIfd::ExifIfd, 0x9403U, kSRational, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0x9404U, kRational, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0x9405U, kSRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x8822U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x8824U, kAscii, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0x8830U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x8831U, kLong, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x8832U, kLong, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x8833U, kLong, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x8834U, kLong, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x8835U, kLong, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9201U, kSRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9202U, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9203U, kSRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9205U, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9206U, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9207U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9208U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9209U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0x9214U, kShort, 2U, 4U, true },
+        { SchemaIfd::ExifIfd, 0x9290U, kAscii, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0x9291U, kAscii, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0x9292U, kAscii, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA20BU, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA20EU, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA20FU, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA210U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA214U, kShort, 2U, 2U, true },
+        { SchemaIfd::ExifIfd, 0xA215U, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA217U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA401U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA402U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA403U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA404U, kRational, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA406U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA407U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA408U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA409U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA40AU, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA40CU, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA420U, kAscii, 33U, 33U, true },
+        { SchemaIfd::ExifIfd, 0xA431U, kAscii, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA432U, kRational, 4U, 4U, true },
+        { SchemaIfd::ExifIfd, 0xA435U, kAscii, 1U, 0U, true },
         { SchemaIfd::GpsIfd, 0x0000U, kByte, 4U, 4U, true },
         { SchemaIfd::GpsIfd, 0x0001U, kAscii, 2U, 2U, true },
         { SchemaIfd::GpsIfd, 0x0002U, kRational, 3U, 3U, true },
@@ -126,6 +168,37 @@ namespace {
         { SchemaIfd::GpsIfd, 0x0006U, kRational, 1U, 1U, true },
         { SchemaIfd::GpsIfd, 0x0007U, kRational, 3U, 3U, true },
         { SchemaIfd::GpsIfd, 0x001DU, kAscii, 11U, 11U, true },
+        { SchemaIfd::GpsIfd, 0x0008U, kAscii, 1U, 0U, true },
+        { SchemaIfd::GpsIfd, 0x0009U, kAscii, 2U, 2U, true },
+        { SchemaIfd::GpsIfd, 0x000AU, kAscii, 2U, 2U, true },
+        { SchemaIfd::GpsIfd, 0x000BU, kRational, 1U, 1U, true },
+        { SchemaIfd::GpsIfd, 0x000CU, kAscii, 2U, 2U, true },
+        { SchemaIfd::GpsIfd, 0x000DU, kRational, 1U, 1U, true },
+        { SchemaIfd::GpsIfd, 0x000EU, kAscii, 2U, 2U, true },
+        { SchemaIfd::GpsIfd, 0x000FU, kRational, 1U, 1U, true },
+        { SchemaIfd::GpsIfd, 0x0010U, kAscii, 2U, 2U, true },
+        { SchemaIfd::GpsIfd, 0x0011U, kRational, 1U, 1U, true },
+        { SchemaIfd::GpsIfd, 0x0012U, kAscii, 1U, 0U, true },
+        { SchemaIfd::GpsIfd, 0x0013U, kAscii, 2U, 2U, true },
+        { SchemaIfd::GpsIfd, 0x0014U, kRational, 3U, 3U, true },
+        { SchemaIfd::GpsIfd, 0x0015U, kAscii, 2U, 2U, true },
+        { SchemaIfd::GpsIfd, 0x0016U, kRational, 3U, 3U, true },
+        { SchemaIfd::GpsIfd, 0x0017U, kAscii, 2U, 2U, true },
+        { SchemaIfd::GpsIfd, 0x0018U, kRational, 1U, 1U, true },
+        { SchemaIfd::GpsIfd, 0x0019U, kAscii, 2U, 2U, true },
+        { SchemaIfd::GpsIfd, 0x001AU, kRational, 1U, 1U, true },
+        { SchemaIfd::GpsIfd, 0x001BU, kUndefined, 8U, 0U, true },
+        { SchemaIfd::GpsIfd, 0x001CU, kUndefined, 8U, 0U, true },
+        { SchemaIfd::GpsIfd, 0x001EU, kShort, 1U, 1U, true },
+        { SchemaIfd::GpsIfd, 0x001FU, kRational, 1U, 1U, true },
+        { SchemaIfd::InteropIfd, 0x0001U, kAscii, 1U, 0U, true },
+        { SchemaIfd::InteropIfd, 0x0002U, kUndefined, 4U, 4U, true },
+        { SchemaIfd::InteropIfd, 0x1000U, kAscii, 1U, 0U, true },
+        { SchemaIfd::InteropIfd, 0x1001U, kShort | kLong, 1U, 1U, true },
+        { SchemaIfd::InteropIfd, 0x1002U, kShort | kLong, 1U, 1U, true },
+        { SchemaIfd::Ifd0, 0x8769U, kLong, 1U, 1U, true },
+        { SchemaIfd::Ifd0, 0x8825U, kLong, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA005U, kLong, 1U, 1U, true },
         { SchemaIfd::RawIfd, 0x828DU, kShort, 2U, 2U, true },
         { SchemaIfd::RawIfd, 0x828EU, kByte, 1U, 0U, true },
         { SchemaIfd::RawIfd, 0xC612U, kByte, 4U, 4U, true },
@@ -817,6 +890,23 @@ namespace {
             || (schema->max_count != 0U && count > schema->max_count)) {
             append_issue(out, options, ValidateIssueSeverity::Error,
                          MetadataValidationIssueCode::WrongCount, id,
+                         kInvalidEntryId, entry.key.kind, tag);
+        }
+        if ((schema->type_mask & type_bit(type)) != 0U
+            && count >= schema->min_count
+            && (schema->max_count == 0U || count <= schema->max_count)
+            && ((ifd == "exififd"
+                 && !detail::standard_capture_value_valid(store.arena(), tag,
+                                                          entry.value))
+                || (ifd == "gpsifd"
+                    && !detail::gps_field_value_valid(store.arena(), tag,
+                                                      entry.value)))) {
+            const MetadataValidationIssueCode code
+                = type == 2U ? MetadataValidationIssueCode::InvalidText
+                  : detail::capture_enum_tag(tag) || tag == 0x001eU
+                      ? MetadataValidationIssueCode::ScalarOutOfRange
+                      : MetadataValidationIssueCode::InvalidValueShape;
+            append_issue(out, options, ValidateIssueSeverity::Error, code, id,
                          kInvalidEntryId, entry.key.kind, tag);
         }
         if (ifd == "exififd" && detail::additional_capture_tag(tag)

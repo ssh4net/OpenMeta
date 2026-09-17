@@ -152,3 +152,16 @@ requirements are explicit. ABI 3, snapshot v1 layout and host synchronization
 responsibilities remain unchanged. BOM-less big-endian UserComment snapshots
 require a 0.5.9 reader. See the EXIF text/version translation contract for limits
 and the recorded OIIO/ExifTool reader limitations.
+
+## Standard validation update (0.5.10)
+
+The 64 previously unrecognized capture/date/GPS reverse targets now have fixed
+schemas. Five Interop fields and three structural pointers are also recognized.
+Malformed known field types, counts and covered values can now fail default
+authoring, typed editing and canonical serialization. Valid InteroperabilityIndex
+is accepted despite its numeric ID overlap with GPS. Portable output preserves
+eligible existing XMP when the corresponding native value fails shared checks.
+
+Public signatures, contract versions, ABI 3, snapshot v1 layout and host-owned
+synchronization remain unchanged. No mandatory complete-file profile is imposed.
+See [generic validation](generic_authoring.md#validation) for scope and limits.

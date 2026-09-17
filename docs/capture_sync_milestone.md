@@ -181,9 +181,9 @@ policies. Its acceptance checks are:
 The additional capture and environment batches are implemented in 0.5.6.
 Encoding/composite contracts are implemented in 0.5.7 and structured capture
 contracts in 0.5.8; text/comment/version contracts are implemented in 0.5.9.
-The [standard EXIF inventory](exif_authoring_inventory.md) selects validation
-consistency for existing writeback fields next, followed by the six EXIF 3.1
-development/correction fields. Fuzzy search remains lowest priority.
+The [standard EXIF inventory](exif_authoring_inventory.md) selected validation
+consistency for existing writeback fields, implemented in 0.5.10. The six EXIF
+3.1 development/correction fields are next. Fuzzy search remains lowest priority.
 
 ## Remaining field families
 
@@ -192,7 +192,7 @@ remaining-tags denominator. Read/display support does not imply reverse support.
 
 | Family | Examples | Work needed before implementation |
 | --- | --- | --- |
-| Existing-field validation | Missing schema entries and legal Interop tag IDs | Close the 64 routed-field schema gaps and false Interop rejection as one batch. |
+| Existing-field validation | Routed-field schemas and legal Interop tag IDs | Implemented in 0.5.10; full file-profile conformance remains separate. |
 | EXIF 3.1 development/correction | Six fields A40D–A412 | Define packed values, structured XMP, UTF-8 and explicit version policy. |
 | Other standard authoring/profile rules | IFD0 descriptive fields, color/Interop, LearningOptOutIn and RelatedSoundFile | Define host authority, encoding and companion relationships; see the inventory. |
 | MakerNotes | Vendor/version-specific offsets and integrity fields | Continue the separate rewrite-trust work; generic opaque authoring does not establish safe relocation. |
