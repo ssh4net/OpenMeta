@@ -30,7 +30,7 @@ enum class EntryFlags : uint8_t {
     /// Entry name has a decode-time contextual display variant.
     ContextualName = 1U << 5U,
     /// Structured EXIF bytes use big-endian integers; unset means little-endian.
-    /// Applies to 8828, A20C, A302, A40B and A462. UTF-16 strings use their BOM.
+    /// Applies to 8828, 9286, A20C, A302, A40B and A462. UTF-16 BOMs override it.
     /// The raw value remains byte-for-byte unchanged after decoding.
     ValueBigEndian = 1U << 6U,
 };

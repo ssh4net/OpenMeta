@@ -180,7 +180,18 @@ capture translation calls.
 The 0.5.8 structured capture batch adds OECF, SpatialFrequencyResponse,
 CFAPattern and DeviceSettingDescription through
 `translate_xmp_structured_capture_metadata` and its Python counterpart.
-The current combined inventory is 65 distinct native tags across fifteen APIs
+The 0.5.8 combined inventory was 65 distinct native tags across fifteen APIs
 (62 retained by compatible-file transfer). ABI 3 and host synchronization
 remain unchanged; big-endian snapshots for the four new fields need a 0.5.8
 reader. See [Structured capture data](translation.md#structured-capture-data-058).
+
+## EXIF text update (0.5.9)
+
+The 0.5.9 text/version batch adds UserComment, both version fields and seven
+EXIF 3 text tags. The new EXIF text API also supports UTF-8 owner/lens fields.
+The combined capture inventory is 75 distinct ExifIFD tags across sixteen APIs;
+compatible-file transfer retains 72. Version and Artist/Software companion
+requirements are explicit. ABI 3, snapshot v1 layout and host synchronization
+responsibilities remain unchanged. BOM-less big-endian UserComment snapshots
+require a 0.5.9 reader. See the EXIF text/version translation contract for limits
+and the recorded OIIO/ExifTool reader limitations.

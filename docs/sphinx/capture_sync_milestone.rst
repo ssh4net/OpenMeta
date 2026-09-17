@@ -4,7 +4,7 @@ Capture Synchronization Milestone
 Audit date: 2026-09-14. Original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing signatures, ABI 3 or host synchronization responsibilities.
-Fifteen explicit reverse APIs now cover **65 distinct ExifIFD tags**,
+Sixteen explicit reverse APIs now cover **75 distinct ExifIFD tags**,
 including camera text and excluding GPS, dates, geometry, IPTC and MakerNotes.
 This count does not measure all-EXIF or competitor coverage.
 
@@ -187,7 +187,27 @@ Structured Capture Update (0.5.8)
 OECF, SpatialFrequencyResponse, CFAPattern and DeviceSettingDescription add
 four native targets in one transaction through
 ``translate_xmp_structured_capture_metadata`` and its Python counterpart.
-The current combined inventory is 65 distinct native tags across fifteen APIs
+The 0.5.8 combined inventory was 65 distinct native tags across fifteen APIs
 (62 retained by compatible-file transfer). ABI 3 and host synchronization
 remain unchanged; big-endian snapshots for these four tags need a 0.5.8
 reader. See :doc:`translation` for the encoding, bounds and conflict contract.
+
+EXIF Text and Version Update (0.5.9)
+-----------------------------------
+
+The new ``translate_xmp_exif_text_metadata`` API adds ten ExifIFD tags:
+UserComment, both version fields and seven EXIF 3 text properties. It also
+supports UTF-8 CameraOwnerName, LensMake and LensModel. The combined inventory
+now covers 75 distinct ExifIFD tags across sixteen APIs; compatible-file transfer
+retains 72. Artist/Software companions and the effective EXIF version are explicit.
+
+The qualification includes exact native wire values, snapshots, both TIFF byte
+orders, Python and an installed shared consumer. The installed OIIO reader aborts
+on type129; direct TIFF byte checks and FFmpeg pixel hashes qualify the new data.
+ExifTool's legacy UserComment decoder is not an EXIF 3 UTF-8 oracle. See
+:doc:`translation` for the full contract and reader limitations.
+
+Next, inventory remaining standard EXIF authoring and profile gaps as a group.
+Copyright's two-part NUL-separated representation remains outside this text
+extension. Downstream application acceptance stays on hold; fuzzy search remains
+lowest priority.

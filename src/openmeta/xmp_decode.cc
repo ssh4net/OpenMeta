@@ -202,6 +202,18 @@ namespace {
                                                 std::string_view path,
                                                 std::string_view value) noexcept
     {
+        if (ns == kXmpNsExif
+            && (path == "ExifVersion" || path == "FlashpixVersion"
+                || path == "UserComment"
+                || path.starts_with("UserComment[@xml:lang=")))
+            return value;
+        if (ns == "http://cipa.jp/exif/1.0/"
+            && (path == "ImageTitle" || path == "Photographer"
+                || path == "ImageEditor" || path == "CameraFirmware"
+                || path == "RAWDevelopingSoftware"
+                || path == "ImageEditingSoftware"
+                || path == "MetadataEditingSoftware"))
+            return value;
         if (ns == kXmpNsExif) {
             constexpr std::array<std::string_view, 3> roots
                 = { "OECF/", "SpatialFrequencyResponse/",

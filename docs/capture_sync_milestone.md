@@ -1,8 +1,19 @@
-# Capture synchronization milestones: 0.5.4–0.5.8
+# Capture synchronization milestones: 0.5.4–0.5.9
 
 Audit date: 2026-09-14. The original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing API signatures, ABI 3, or host synchronization responsibilities.
+
+## EXIF text and version metadata in 0.5.9
+
+The 0.5.9 text/version batch adds UserComment, both version fields and seven
+EXIF 3 text tags. The new EXIF text API also supports UTF-8 owner/lens fields.
+The combined capture inventory is 75 distinct ExifIFD tags across sixteen APIs;
+compatible-file transfer retains 72. Version and Artist/Software companion
+requirements are explicit. ABI 3, snapshot v1 layout and host synchronization
+responsibilities remain unchanged. BOM-less big-endian UserComment snapshots
+require a 0.5.9 reader. See the EXIF text/version translation contract for limits
+and the recorded OIIO/ExifTool reader limitations.
 
 ## Structured capture in 0.5.8
 
@@ -59,7 +70,7 @@ originals. FocalLength portable fractions express millimeters without ` mm`.
 
 ## Implemented capture targets
 
-Fifteen explicit reverse APIs cover **65 distinct ExifIFD tags**. The count includes
+Sixteen explicit reverse APIs cover **75 distinct ExifIFD tags**. The count includes
 camera text and excludes GPS, dates, geometry, IPTC and vendor MakerNotes.
 It is an inventory count, not a percentage of all EXIF or competitor coverage.
 All function names below have the prefix `translate_xmp_` and suffix
@@ -84,10 +95,11 @@ All function names below have the prefix `translate_xmp_` and suffix
 | image_encoding | 3 | Gamma A500, CompressedBitsPerPixel 9102, ComponentsConfiguration 9101 |
 | composite | 3 | CompositeImage A460, SourceImageNumberOfCompositeImage A461, SourceExposureTimesOfCompositeImage A462 |
 | structured_capture | 4 | OECF 8828, SpatialFrequencyResponse A20C, CFAPattern A302, DeviceSettingDescription A40B |
+| exif_text | 13 (10 new) | ExifVersion 9000, FlashpixVersion A000, UserComment 9286, ImageTitle A436, Photographer A437, ImageEditor A438, CameraFirmware A439, RAWDevelopingSoftware A43A, ImageEditingSoftware A43B, MetadataEditingSoftware A43C, CameraOwnerName A430, LensMake A433, LensModel A434 |
 
 Tag IDs are hexadecimal. The 67 API mappings include two shared targets:
 ISO belongs to basic capture and sensitivity; ExposureBiasValue belongs to
-basic capture and APEX. Counting each shared tag once gives 65.
+basic capture and APEX. The new text API also overlaps owner/lens tags. Counting each shared tag once gives 75.
 
 ## Historical 0.5.4 qualification and gaps
 
@@ -168,16 +180,18 @@ policies. Its acceptance checks are:
 
 The additional capture and environment batches are implemented in 0.5.6.
 Encoding/composite contracts are implemented in 0.5.7 and structured capture
-contracts in 0.5.8. Next, define text/comment encoding and EXIF version policy.
+contracts in 0.5.8; text/comment/version contracts are implemented in 0.5.9.
+Next, review the remaining standard EXIF authoring gaps as a group, then select
+the next bounded writeback family. Fuzzy search remains lowest priority.
 
 ## Remaining field families
 
-These are candidate families outside the fifteen capture contracts, not a complete
+These are candidate families outside the sixteen capture contracts, not a complete
 remaining-tags denominator. Read/display support does not imply reverse support.
 
 | Family | Examples | Work needed before implementation |
 | --- | --- | --- |
-| Text/version extensions | UserComment 9286; EXIF 3 text fields and UTF-8 extensions | Encoding contracts and explicit version policy; current camera text remains printable ASCII. |
+| Remaining EXIF authoring/profile rules | Mandatory-tag relationships and remaining standard fields | Inventory concrete gaps against the existing contracts before selecting another batch. |
 | MakerNotes | Vendor/version-specific offsets and integrity fields | Continue the separate rewrite-trust work; generic opaque authoring does not establish safe relocation. |
 
 The audit does not reopen downstream application acceptance or claim arbitrary

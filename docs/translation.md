@@ -1774,3 +1774,97 @@ inventory, not a claim of complete EXIF or arbitrary RDF editing.
 Layout references: CIPA DC-008-Translation-2023-E, Figures 16, 20, 21 and 23;
 CIPA DC-010-2024-E, corresponding EXIF/XMP structure mappings. Source PDFs and
 independent encoded-file qualification remain in OpenMeta-internal.
+
+## EXIF text and version metadata (0.5.9)
+
+`translate_xmp_exif_text_metadata` and Python
+`Document.translate_exif_text_metadata` add one bounded transaction for the
+following properties. Exact canonical namespaces are required.
+
+| XMP property | Native ExifIFD tag | Value contract |
+| --- | --- | --- |
+| exif:ExifVersion | 9000 | Four ASCII digits in UNDEFINED count 4; no NUL. |
+| exif:FlashpixVersion | A000 | `0100` in UNDEFINED count 4; no NUL. |
+| exif:UserComment | 9286 | Character-set prefix plus text; XMP scalar or `[@xml:lang=x-default]`. |
+| exifEX:ImageTitle | A436 | ASCII or UTF-8 text; empty means unknown. |
+| exifEX:Photographer, ImageEditor | A437, A438 | ASCII or UTF-8 text; require explicit native IFD0 Artist. |
+| exifEX:CameraFirmware, RAWDevelopingSoftware, ImageEditingSoftware, MetadataEditingSoftware | A439–A43C | ASCII or UTF-8 text; require explicit native IFD0 Software. |
+| exifEX:CameraOwnerName, LensMake, LensModel | A430, A433, A434 | ASCII or UTF-8 text. These overlap the earlier camera-text API. |
+
+Versions use four digits exactly. The API validates their syntax; accepting a
+future EXIF version number does not establish conformance with that future
+specification. FlashpixVersion is restricted to the defined `0100` value.
+
+Text accepts ASCII or UTF-8 `MetaValue` text with valid XML 1.0 characters.
+Whitespace, empty strings, carriage returns and supplementary Unicode characters
+are preserved. A leading BOM, embedded NUL, invalid UTF-8, UTF-16 source text or
+numeric source fails. Native type 2 and type 129 counts include one terminal
+NUL. Type 129 carries UTF-8 without a BOM. Plain ASCII output uses type 2.
+Decoded type 129 is retained on serialization, including ASCII-only payloads.
+
+The seven new tags and non-ASCII owner/lens text require an explicit effective
+ExifVersion of `0300` or later. The effective version is the native version after
+this call's selected conflict policy. The library does not upgrade it silently.
+Artist and Software must already exist as nonempty native text, with exactly one
+active entry. The caller supplies those values through authoring/editing; the
+translator does not infer them from photographer, editor or software details.
+General store validation checks field shapes and encodings. It is not a complete
+EXIF mandatory-tag/profile validator. These version and companion requirements
+belong to this translation contract.
+
+UserComment authoring uses `ASCII\0\0\0` for ASCII. Non-ASCII uses
+`UNICODE\0` followed by UTF-8 for EXIF 3, or UTF-16LE with a BOM for older or
+missing versions. UNDEFINED comments do not require a terminal NUL. Native
+projection recognizes explicit UTF-16 BOMs in either version family. Without a
+BOM, `UNICODE` follows the declared EXIF version: UTF-8 for EXIF 3 and the TIFF
+byte order for legacy UTF-16. The existing nonstandard `UTF8` marker is accepted
+for reading only. JIS and undefined character sets remain opaque; no guessed
+conversion or new charset dependency is introduced. Raw snapshots preserve the
+original bytes. Semantic translation preserves text, not padding or the original
+character-set choice.
+
+Version changes cannot reinterpret retained comments or downgrade retained
+EXIF 3 text. Supply the comment source with `ReplaceExisting`, or a dirty
+comment tombstone, when changing its encoding family. An explicit UTF-16 BOM
+keeps legacy comments readable independently of the version and TIFF byte order.
+The decoder records `ValueBigEndian` for native UserComment. Snapshot v1 layout
+and ABI 3 remain unchanged; BOM-less big-endian comment snapshots require a
+0.5.9 reader. Older snapshots may lack provenance; reopen their original files
+with 0.5.9 to recover it.
+
+Portable output emits UserComment as one `rdf:Alt` with `x-default`. Other
+language alternatives remain in XMP, including under `CanonicalizeManaged`.
+The reverse API chooses only the scalar/default source. It rejects eligible
+scalar/default duplicates and unsupported structured/indexed shapes. No locale
+is selected automatically. Invalid native comments do not hide valid source XMP.
+
+Defaults follow the capture APIs: `DirtyOnly` and `FailOnConflict`.
+`PreserveExisting`, `ReplaceExisting`, dirty tombstones, independent field
+switches, aliased source/output and complete failure rollback are supported.
+One call can add at most 13 entries, record 1,024 operations, read 65,536 text
+bytes per property and 1,048,576 total text bytes. Preparation may allocate;
+this is separate from prepared allocation-free patch application. Conflicting
+shared-object access remains the host's responsibility; no atomics or mutexes
+are added.
+
+Serializer type-129 support also covers the EXIF-permitted IFD0 text fields:
+ImageDescription, Make, Model, Software and Artist. Copyright remains outside
+this extension because its two-part NUL-separated form needs a separate contract. The older
+camera-text translator keeps its printable-ASCII contract. SpectralSensitivity,
+BodySerialNumber and LensSerialNumber remain outside the UTF-8 extension.
+
+The combined capture fixture covers **75 distinct ExifIFD tags across sixteen
+APIs**. Compatible-file transfer retains 72 after the existing three encoding
+filters. IFD0 companion fields are separate from that inventory.
+
+Compatibility qualification found that the installed OIIO reader aborts with
+`std::bad_alloc` on type-129 JPEG metadata. An isolated diagnostic changed only
+those type codes and read successfully. This is an external reader limitation;
+valid EXIF 3 output keeps type 129. The installed ExifTool also interprets
+`UNICODE` as legacy UTF-16 regardless of ExifVersion. Direct TIFF byte checks
+qualify EXIF 3 text, ExifTool checks XMP, and FFmpeg verifies unchanged decoded
+pixels. Downstream application acceptance remains on hold.
+
+The wire rules follow CIPA EXIF 3.0 Table 4 and the type-129/tag definitions,
+and CIPA DC-010-2024 EXIF/XMP mappings. The original PDFs and the character-code
+table image remain in the private qualification evidence.

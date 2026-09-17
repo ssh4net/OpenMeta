@@ -50841,7 +50841,7 @@ TEST(MetadataTransferApi,
 }
 
 TEST(MetadataTransferApi,
-     CaptureSyncTypedEditsAndFifteenApiSnapshotsRoundTripAcrossContainers)
+     CaptureSyncTypedEditsAndSixteenApiSnapshotsRoundTripAcrossContainers)
 {
     using namespace openmeta;
     MetaStore source;
@@ -50947,7 +50947,8 @@ TEST(MetadataTransferApi,
                     const auto range = make_random_access_source_range(
                         callback_source, 0U, callback.bytes.size());
                     std::array<std::byte, 64> window {};
-                    std::array<std::byte, 8192> value {};
+                    // The combined XMP packet now exceeds the old 8 KiB value window.
+                    std::array<std::byte, 16384> value {};
                     std::array<ExifIfdRef, 32> ifds {};
                     ExifRandomAccessScratch scratch;
                     scratch.read_window = window;

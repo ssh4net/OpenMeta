@@ -69,6 +69,13 @@ inline constexpr std::string_view kCaptureSyncXml = R"xml(
 <e:Values><rdf:Seq><rdf:li>0</rdf:li><rdf:li>1</rdf:li><rdf:li>2</rdf:li><rdf:li>3</rdf:li><rdf:li>4</rdf:li><rdf:li>6</rdf:li></rdf:Seq></e:Values></e:CFAPattern>
 <e:DeviceSettingDescription rdf:parseType="Resource"><e:Columns>32</e:Columns><e:Rows>2</e:Rows>
 <e:Values><rdf:Seq><rdf:li> &#26085;&#26412;&#35486; &amp; &lt; &gt; &#13;&#10;&#9; </rdf:li><rdf:li>&#128512;</rdf:li><rdf:li></rdf:li></rdf:Seq></e:Values></e:DeviceSettingDescription>
+<e:ExifVersion>0300</e:ExifVersion><e:FlashpixVersion>0100</e:FlashpixVersion>
+<e:UserComment><rdf:Alt><rdf:li xml:lang="x-default"> comment &#26085;&#26412; &amp; &#13;&#10;&#9; </rdf:li></rdf:Alt></e:UserComment>
+<x:ImageTitle> title &#26085;&#26412; </x:ImageTitle><x:Photographer>Photographer</x:Photographer>
+<x:ImageEditor>Editor</x:ImageEditor><x:CameraFirmware>Firmware</x:CameraFirmware>
+<x:RAWDevelopingSoftware>Raw developer</x:RAWDevelopingSoftware>
+<x:ImageEditingSoftware>Image editor</x:ImageEditingSoftware>
+<x:MetadataEditingSoftware>Metadata editor</x:MetadataEditingSoftware>
 </rdf:Description></rdf:RDF>)xml";
 
 inline bool
@@ -213,6 +220,13 @@ capture_sync_translate_step(MetaStore& store, unsigned step)
                    &store)
                    .status
                == ok;
+    case 15:
+        return translate_xmp_exif_text_metadata(store,
+                                                { .source_mode     = all,
+                                                  .conflict_policy = replace },
+                                                &store)
+                   .status
+               == ok;
     default: return false;
     }
 }
@@ -220,8 +234,25 @@ capture_sync_translate_step(MetaStore& store, unsigned step)
 inline bool
 capture_sync_translate(MetaStore& store, bool reverse = false)
 {
-    for (unsigned step = 0; step < 15U; ++step)
-        if (!capture_sync_translate_step(store, reverse ? 14U - step : step))
+    // Explicit test authoring supplies the EXIF 3 companion context.
+    std::array<MetadataTypedEditingOperation, 2> companions {};
+    for (size_t i = 0U; i < companions.size(); ++i) {
+        companions[i].kind
+            = store.find_all(make_exif_tag_key_view("ifd0", i == 0U ? 0x013bU
+                                                                    : 0x0131U))
+                      .empty()
+                  ? MetadataEditingOperationKind::Add
+                  : MetadataEditingOperationKind::Set;
+        companions[i].entry.key
+            = make_exif_tag_key_view("ifd0", i == 0U ? 0x013bU : 0x0131U);
+        companions[i].entry.value = make_value_view_text(i == 0U ? "Artist"
+                                                                 : "Software",
+                                                         TextEncoding::Ascii);
+    }
+    if (!edit_metadata_typed(store, companions, &store).ok())
+        return false;
+    for (unsigned step = 0; step < 16U; ++step)
+        if (!capture_sync_translate_step(store, reverse ? 15U - step : step))
             return false;
     return true;
 }
@@ -341,7 +372,7 @@ capture_sync_expect_native(const MetaStore& actual, const MetaStore& expected,
         }
         ++count;
     }
-    EXPECT_EQ(count, transferred ? 62U : 65U);
+    EXPECT_EQ(count, transferred ? 72U : 75U);
 }
 
 }  // namespace openmeta::test

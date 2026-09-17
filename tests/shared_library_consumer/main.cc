@@ -540,7 +540,7 @@ main()
           && capture_sync_packet.find("<exif:ISO>") == std::string_view::npos;
     openmeta::MetaStore typed_source;
     typed_source.finalize();
-    std::array<openmeta::MetadataTypedEditingOperation, 7> typed_operations {};
+    std::array<openmeta::MetadataTypedEditingOperation, 10> typed_operations {};
     typed_operations[0].entry.key
         = openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
                                                "FileSource");
@@ -573,6 +573,23 @@ main()
                                                "CFAPattern/Values");
     typed_operations[6].entry.value = openmeta::make_value_view_array(
         openmeta::MetaElementType::U8, std::as_bytes(std::span(cfa_codes)), 4U);
+    typed_operations[7].entry.key
+        = openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "ExifVersion");
+    typed_operations[7].entry.value
+        = openmeta::make_value_view_text("0300", openmeta::TextEncoding::Ascii);
+    typed_operations[8].entry.key
+        = openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
+                                               "UserComment");
+    typed_operations[8].entry.value
+        = openmeta::make_value_view_text("Unicode \xe6\x97\xa5\xe6\x9c\xac",
+                                         openmeta::TextEncoding::Utf8);
+    typed_operations[9].entry.key
+        = openmeta::make_xmp_property_key_view("http://cipa.jp/exif/1.0/",
+                                               "ImageTitle");
+    typed_operations[9].entry.value
+        = openmeta::make_value_view_text("Image title",
+                                         openmeta::TextEncoding::Ascii);
     const auto typed_edited = openmeta::edit_metadata_typed(typed_source,
                                                             typed_operations,
                                                             &typed_source);
@@ -591,6 +608,9 @@ main()
     const auto structured_result
         = openmeta::translate_xmp_structured_capture_metadata(typed_source, {},
                                                               &typed_source);
+    const auto text_result
+        = openmeta::translate_xmp_exif_text_metadata(typed_source, {},
+                                                     &typed_source);
     const auto typed_dumped = openmeta::dump_xmp_portable(typed_source,
                                                           capture_sync_bytes,
                                                           capture_sync_options);
@@ -599,6 +619,14 @@ main()
                                         typed_dumped.written);
     const bool typed_contract_matches
         = typed_edited.ok()
+          && text_result.status
+                 == openmeta::MetadataCaptureTranslationStatus::Ok
+          && text_result.entries_added == 3U
+          && typed_packet.find(
+                 "<exifEX:ImageTitle>Image title</exifEX:ImageTitle>")
+                 != std::string_view::npos
+          && typed_packet.find("xml:lang=\"x-default\"")
+                 != std::string_view::npos
           && structured_result.status
                  == openmeta::MetadataCaptureTranslationStatus::Ok
           && structured_result.entries_added == 1U

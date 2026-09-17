@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "metadata_capture_fields_internal.h"
-#include "metadata_structured_fields_internal.h"
+#include "metadata_text_fields_internal.h"
 
 #include "openmeta/validate.h"
 
@@ -39,10 +39,13 @@ namespace {
 
     static constexpr uint16_t type_bit(uint16_t type) noexcept
     {
-        return type <= 15U ? static_cast<uint16_t>(1U << type) : 0U;
+        return type == 129U
+                   ? static_cast<uint16_t>(1U << 15U)
+                   : (type <= 14U ? static_cast<uint16_t>(1U << type) : 0U);
     }
 
     static constexpr uint16_t kByte      = type_bit(1U);
+    static constexpr uint16_t kUtf8      = type_bit(129U);
     static constexpr uint16_t kAscii     = type_bit(2U);
     static constexpr uint16_t kShort     = type_bit(3U);
     static constexpr uint16_t kLong      = type_bit(4U);
@@ -51,20 +54,35 @@ namespace {
     static constexpr uint16_t kSRational = type_bit(10U);
 
     static constexpr TagSchema kTagSchemas[] = {
+        { SchemaIfd::Ifd0, 0x010EU, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::Ifd0, 0x013BU, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA430U, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA433U, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA434U, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA436U, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA437U, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA438U, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA439U, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA43AU, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA43BU, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA43CU, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::ExifIfd, 0xA000U, kUndefined, 4U, 4U, true },
+        { SchemaIfd::ExifIfd, 0x9286U, kUndefined, 8U, 0U, true },
+
         { SchemaIfd::ImageIfd, 0x0100U, kShort | kLong, 1U, 1U, true },
         { SchemaIfd::ImageIfd, 0x0101U, kShort | kLong, 1U, 1U, true },
         { SchemaIfd::ImageIfd, 0x0102U, kShort, 1U, 0U, true },
         { SchemaIfd::ImageIfd, 0x0103U, kShort, 1U, 1U, true },
         { SchemaIfd::ImageIfd, 0x0106U, kShort, 1U, 1U, true },
-        { SchemaIfd::Ifd0, 0x010FU, kAscii, 1U, 0U, true },
-        { SchemaIfd::Ifd0, 0x0110U, kAscii, 1U, 0U, true },
+        { SchemaIfd::Ifd0, 0x010FU, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::Ifd0, 0x0110U, kAscii | kUtf8, 1U, 0U, true },
         { SchemaIfd::ImageIfd, 0x0112U, kShort, 1U, 1U, true },
         { SchemaIfd::ImageIfd, 0x0115U, kShort, 1U, 1U, true },
         { SchemaIfd::ImageIfd, 0x011AU, kRational, 1U, 1U, true },
         { SchemaIfd::ImageIfd, 0x011BU, kRational, 1U, 1U, true },
         { SchemaIfd::ImageIfd, 0x011CU, kShort, 1U, 1U, true },
         { SchemaIfd::ImageIfd, 0x0128U, kShort, 1U, 1U, true },
-        { SchemaIfd::Ifd0, 0x0131U, kAscii, 1U, 0U, true },
+        { SchemaIfd::Ifd0, 0x0131U, kAscii | kUtf8, 1U, 0U, true },
         { SchemaIfd::Ifd0, 0x0132U, kAscii, 20U, 20U, true },
         { SchemaIfd::ExifIfd, 0x829AU, kRational, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0x829DU, kRational, 1U, 1U, true },
@@ -732,14 +750,17 @@ namespace {
         }
         const std::string_view ifd = arena_string(store.arena(), ifd_span);
         const uint16_t tag         = entry.key.data.exif_tag.tag;
-        const uint16_t inferred    = inferred_tiff_type(entry.value);
+        const uint16_t inferred
+            = entry.value.kind == MetaValueKind::Text
+                  ? detail::exif_text_wire_type(store.arena(), entry)
+                  : inferred_tiff_type(entry.value);
         uint16_t type              = inferred;
         uint32_t count             = inferred_tiff_count(entry.value);
 
         if (options.validate_wire_hints) {
             if (entry.origin.wire_type.family == WireFamily::Tiff) {
                 const uint16_t hinted = entry.origin.wire_type.code;
-                if (hinted == 0U || hinted > 12U
+                if (hinted == 0U || (hinted > 12U && hinted != 129U)
                     || (hinted != inferred
                         && !(entry.value.kind == MetaValueKind::Bytes
                              && (hinted == 1U || hinted == 6U
@@ -819,6 +840,23 @@ namespace {
             append_issue(out, options, ValidateIssueSeverity::Error,
                          MetadataValidationIssueCode::InvalidValueShape, id,
                          kInvalidEntryId, entry.key.kind, tag);
+        }
+        if (ifd == "exififd" && (tag == 0x9000U || tag == 0xa000U)) {
+            uint32_t version = 0U;
+            if (!detail::exif_version_value(store.arena(), entry.value, tag,
+                                            &version))
+                append_issue(out, options, ValidateIssueSeverity::Error,
+                             MetadataValidationIssueCode::InvalidValueShape, id,
+                             kInvalidEntryId, entry.key.kind, tag);
+        }
+        if (type == 129U || detail::exif_utf8_tag(ifd, tag)) {
+            std::string_view text;
+            if (!detail::exif_text_view(store.arena(), entry.value, true, &text)
+                || (type == 129U
+                    && entry.value.text_encoding != TextEncoding::Utf8))
+                append_issue(out, options, ValidateIssueSeverity::Error,
+                             MetadataValidationIssueCode::InvalidText, id,
+                             kInvalidEntryId, entry.key.kind, tag);
         }
         if (type == 2U && entry.value.kind == MetaValueKind::Text) {
             const std::span<const std::byte> text = store.arena().span(

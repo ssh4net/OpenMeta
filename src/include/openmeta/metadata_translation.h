@@ -380,6 +380,19 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpSpatialFrequencyResponse,
     XmpCfaPattern,
     XmpDeviceSettingDescription,
+    XmpExifVersion,
+    XmpFlashpixVersion,
+    XmpUserComment,
+    XmpImageTitle,
+    XmpPhotographer,
+    XmpImageEditor,
+    XmpCameraFirmware,
+    XmpRAWDevelopingSoftware,
+    XmpImageEditingSoftware,
+    XmpMetadataEditingSoftware,
+    XmpCameraOwnerName,
+    XmpLensMake,
+    XmpLensModel,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -441,6 +454,61 @@ struct MetadataCaptureTranslationResult final {
     uint32_t entries_updated    = 0U;
     uint32_t entries_removed    = 0U;
 };
+
+/// Bounded EXIF text/version translation contract.
+inline constexpr uint32_t kMetadataExifTextTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataExifTextTranslationMaxAddedEntries = 13U;
+inline constexpr uint32_t kMetadataExifTextTranslationMaxTextBytesPerProperty
+    = 65536U;
+inline constexpr uint64_t kMetadataExifTextTranslationMaxTotalTextBytes
+    = 1048576U;
+
+struct MetadataExifTextTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    bool exif_version_to_exif              = true;
+    bool flashpix_version_to_exif          = true;
+    bool user_comment_to_exif              = true;
+    bool image_title_to_exif               = true;
+    bool photographer_to_exif              = true;
+    bool image_editor_to_exif              = true;
+    bool camera_firmware_to_exif           = true;
+    bool raw_developing_software_to_exif   = true;
+    bool image_editing_software_to_exif    = true;
+    bool metadata_editing_software_to_exif = true;
+    bool camera_owner_name_to_exif         = true;
+    bool lens_make_to_exif                 = true;
+    bool lens_model_to_exif                = true;
+    uint32_t max_added_entries = kMetadataExifTextTranslationMaxAddedEntries;
+    uint32_t max_operations    = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataExifTextTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataExifTextTranslationMaxTotalTextBytes;
+};
+
+/**
+ * Translate exif:ExifVersion, FlashpixVersion and UserComment, plus ten
+ * exifEX text properties, in one transaction. UserComment accepts a scalar
+ * or x-default language alternative; other languages remain in XMP.
+ * Versions are exactly four digits; FlashpixVersion supports 0100.
+ * Text is XML-valid ASCII/UTF-8 without a BOM or embedded NUL, with whitespace
+ * preserved. ASCII text uses TIFF type 2; non-ASCII uses EXIF type 129.
+ * The seven EXIF 3 text tags and type 129 require an explicit effective
+ * ExifVersion >= 0300. Photographer/ImageEditor require native IFD0 Artist;
+ * software-detail tags require native IFD0 Software. No values are inferred.
+ * UserComment uses ASCII, EXIF 3 UNICODE/UTF-8, or legacy UNICODE/UTF-16LE
+ * with a BOM according to the effective version. Version edits must preserve
+ * the interpretation of an existing comment or explicitly replace/remove it.
+ * Conflict, tombstone, bounded preparation and host synchronization rules
+ * follow the capture contract. Output is unchanged on failure.
+ */
+MetadataCaptureTranslationResult
+translate_xmp_exif_text_metadata(
+    const MetaStore& source, const MetadataExifTextTranslationOptions& options,
+    MetaStore* out_store);
 
 inline constexpr uint32_t kMetadataCaptureAdditionalTranslationContractVersion
     = 1U;

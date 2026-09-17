@@ -4787,6 +4787,31 @@ metadata_capture_translation_mapping_name(
         return "xmp_cfa_pattern";
     case MetadataCaptureTranslationMapping::XmpDeviceSettingDescription:
         return "xmp_device_setting_description";
+    case MetadataCaptureTranslationMapping::XmpExifVersion:
+        return "xmp_exif_version";
+    case MetadataCaptureTranslationMapping::XmpFlashpixVersion:
+        return "xmp_flashpix_version";
+    case MetadataCaptureTranslationMapping::XmpUserComment:
+        return "xmp_user_comment";
+    case MetadataCaptureTranslationMapping::XmpImageTitle:
+        return "xmp_image_title";
+    case MetadataCaptureTranslationMapping::XmpPhotographer:
+        return "xmp_photographer";
+    case MetadataCaptureTranslationMapping::XmpImageEditor:
+        return "xmp_image_editor";
+    case MetadataCaptureTranslationMapping::XmpCameraFirmware:
+        return "xmp_camera_firmware";
+    case MetadataCaptureTranslationMapping::XmpRAWDevelopingSoftware:
+        return "xmp_raw_developing_software";
+    case MetadataCaptureTranslationMapping::XmpImageEditingSoftware:
+        return "xmp_image_editing_software";
+    case MetadataCaptureTranslationMapping::XmpMetadataEditingSoftware:
+        return "xmp_metadata_editing_software";
+    case MetadataCaptureTranslationMapping::XmpCameraOwnerName:
+        return "xmp_camera_owner_name";
+    case MetadataCaptureTranslationMapping::XmpLensMake: return "xmp_lens_make";
+    case MetadataCaptureTranslationMapping::XmpLensModel:
+        return "xmp_lens_model";
     case MetadataCaptureTranslationMapping::XmpFocalPlaneResolution:
         return "xmp_focal_plane_resolution";
     case MetadataCaptureTranslationMapping::XmpSubjectArea:

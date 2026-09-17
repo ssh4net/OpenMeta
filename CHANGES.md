@@ -1,5 +1,21 @@
 # OpenMeta Changes
 
+## 0.5.9 - 2026-09-17
+
+- Add bounded C++ and Python EXIF text/version translation for ten new tags,
+  with UTF-8 owner/lens support. Require explicit EXIF 3 and Artist/Software
+  companions where applicable. Preserve per-call failure rollback and limits.
+- Support TIFF type 129 serialization and validation for EXIF text. Interpret
+  UserComment by EXIF version and explicit BOM, retain legacy byte order, and
+  preserve exact whitespace and XMP language alternatives.
+- Extend combined capture qualification to 75 distinct native tags across
+  sixteen APIs; compatible-file transfer retains 72. Keep ABI 3 and host-owned
+  synchronization. Snapshot v1 layout is unchanged; big-endian UserComment
+  provenance requires a 0.5.9 reader.
+- Record the installed OIIO type-129 read failure and ExifTool's legacy
+  UserComment interpretation. Qualify EXIF 3 wire bytes and unchanged decoded
+  pixels independently; downstream application acceptance stays on hold.
+
 ## 0.5.8 - 2026-09-17
 
 - Add transactional structured capture translation for OECF,

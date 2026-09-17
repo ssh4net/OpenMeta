@@ -7411,7 +7411,7 @@ namespace {
     }
 
     TEST(MetadataCaptureSync,
-         FifteenApisRoundTripTogetherAndKeepCallTransactions)
+         SixteenApisRoundTripTogetherAndKeepCallTransactions)
     {
         const auto xml = test::kCaptureSyncXml;
         MetaStore source;
@@ -7439,10 +7439,10 @@ namespace {
                   MetadataCaptureTranslationStatus::NativeConflict);
         EXPECT_EQ(translated.entries().size(), partial_count);
         ASSERT_TRUE(test::capture_sync_translate(translated));
-        EXPECT_EQ(translated.entries().size(), source_count + 65U);
+        EXPECT_EQ(translated.entries().size(), source_count + 77U);
         EXPECT_EQ(source.entries().size(), source_count);
         ASSERT_TRUE(test::capture_sync_translate(translated, true));
-        EXPECT_EQ(translated.entries().size(), source_count + 65U);
+        EXPECT_EQ(translated.entries().size(), source_count + 77U);
         for (bool existing : { false, true }) {
             for (const auto policy : { XmpConflictPolicy::CurrentBehavior,
                                        XmpConflictPolicy::ExistingWins,

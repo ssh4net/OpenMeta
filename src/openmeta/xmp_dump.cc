@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "metadata_capture_fields_internal.h"
-#include "metadata_structured_fields_internal.h"
+#include "metadata_text_fields_internal.h"
 
 #include "openmeta/xmp_dump.h"
 
@@ -1417,7 +1417,8 @@ namespace {
     static bool portable_exif_ex_identity_tag(uint16_t tag) noexcept
     {
         return tag == 0xa430U || tag == 0xa431U || tag == 0xa432U
-               || tag == 0xa433U || tag == 0xa434U || tag == 0xa435U;
+               || tag == 0xa433U || tag == 0xa434U || tag == 0xa435U
+               || detail::exif3_text_tag(tag);
     }
 
     static bool portable_sensitivity_value_valid(uint16_t tag,
@@ -4379,6 +4380,14 @@ namespace {
     {
         if (ifd != "exififd")
             return true;
+        if (tag == 0x9000U || tag == 0xa000U) {
+            uint32_t version = 0U;
+            return detail::exif_version_value(arena, value, tag, &version);
+        }
+        if (detail::exif_utf8_tag(ifd, tag)) {
+            std::string_view text;
+            return detail::exif_text_view(arena, value, true, &text);
+        }
         if (detail::encoding_tag(tag))
             return detail::encoding_value_valid(arena, tag, value);
         if (detail::additional_capture_tag(tag))
@@ -4964,6 +4973,8 @@ namespace {
         std::string_view lang;
         uint32_t order         = 0U;
         const MetaValue* value = nullptr;
+        bool user_comment      = false;
+        detail::UserCommentView comment;
     };
 
     struct PortableStructuredProperty final {
@@ -5204,9 +5215,10 @@ namespace {
     portable_property_prefers_lang_alt(std::string_view prefix,
                                        std::string_view name) noexcept
     {
-        return prefix == "dc"
-               && (name == "title" || name == "description"
-                   || name == "rights");
+        return (prefix == "dc"
+                && (name == "title" || name == "description"
+                    || name == "rights"))
+               || (prefix == "exif" && name == "UserComment");
     }
 
     static bool portable_existing_xmp_promotes_scalar_to_lang_alt(
@@ -5215,6 +5227,8 @@ namespace {
         if (prefix == "dc") {
             return name == "title" || name == "description" || name == "rights";
         }
+        if (prefix == "exif" && name == "UserComment")
+            return true;
         if (prefix == "xmpRights") {
             return name == "UsageTerms";
         }
@@ -11001,6 +11015,14 @@ namespace {
         std::span<const Entry> entries, const MetaValue& v,
         EntryFlags flags = EntryFlags::None) noexcept
     {
+        if (!portable_capture_scalar_value_valid(arena, ifd, tag, v))
+            return false;
+        if (ifd == "exififd" && tag == 0x9286U) {
+            uint32_t version = 0U;
+            return detail::exif_store_version(arena, entries, &version)
+                   && detail::user_comment_value(arena, v, version, flags,
+                                                 nullptr);
+        }
         SpanWriter w(std::span<std::byte> {}, 0U);
         const uint64_t before = w.needed;
         if (emit_portable_exif_tag_property_override(&w, prefix, ifd, tag, name,
@@ -11099,11 +11121,16 @@ namespace {
                                                       portable_tag_name, arena,
                                                       entries, e.value,
                                                       e.flags)) {
+                    if (ifd == "exififd" && tag == 0x9286U)
+                        (void)out_lang_alt->insert(PortableGeneratedLangAltKey {
+                            { prefix, portable_tag_name }, "x-default" });
                     (void)out->insert(PortablePropertyGeneratedShape {
                         PortablePropertyKey { prefix, portable_tag_name },
-                        (tag == 0xa462U
-                         || (ifd == "exififd"
-                             && detail::structured_capture_tag(tag)))
+                        (ifd == "exififd" && tag == 0x9286U)
+                            ? PortablePropertyShape::LangAlt
+                        : (tag == 0xa462U
+                           || (ifd == "exififd"
+                               && detail::structured_capture_tag(tag)))
                             ? PortablePropertyShape::Structured
                         : (tag == 0xa432U || tag == 0x9214U || tag == 0xa214U
                            || tag == 0x9101U || tag == 0xa461U)
@@ -11214,7 +11241,9 @@ namespace {
             if (!items[i].value || !xmp_lang_value_is_safe(items[i].lang)) {
                 continue;
             }
-            if (portable_scalar_like_value_supported(arena, *items[i].value)) {
+            if (items[i].user_comment
+                || portable_scalar_like_value_supported(arena,
+                                                        *items[i].value)) {
                 valid += 1U;
             }
         }
@@ -11233,8 +11262,9 @@ namespace {
 
         for (size_t i = 0; i < items.size(); ++i) {
             if (!items[i].value || !xmp_lang_value_is_safe(items[i].lang)
-                || !portable_scalar_like_value_supported(arena,
-                                                         *items[i].value)) {
+                || (!items[i].user_comment
+                    && !portable_scalar_like_value_supported(arena,
+                                                             *items[i].value))) {
                 continue;
             }
             w->append(kIndent4);
@@ -11242,7 +11272,17 @@ namespace {
             w->append("<rdf:li xml:lang=\"");
             w->append(items[i].lang);
             w->append("\">");
-            (void)emit_portable_value_inline(arena, *items[i].value, w);
+            if (items[i].user_comment) {
+                size_t offset = 0U;
+                while (offset < items[i].comment.text.size()) {
+                    uint32_t code = 0U;
+                    (void)detail::user_comment_next(items[i].comment, &offset,
+                                                    &code);
+                    append_capture_codepoint(code, w);
+                }
+            } else {
+                (void)emit_portable_value_inline(arena, *items[i].value, w);
+            }
             w->append("</rdf:li>\n");
         }
 
@@ -14239,6 +14279,29 @@ namespace {
             if (pass == PortablePassKind::Exif) {
                 if (!options.include_exif
                     || e.key.kind != MetaKeyKind::ExifTag) {
+                    continue;
+                }
+                if (detail::primary_exif_entry(arena, e, 0x9286U)) {
+                    uint32_t version = 0U;
+                    detail::UserCommentView view;
+                    bool new_claim = false;
+                    if (detail::exif_store_version(arena, entries, &version)
+                        && detail::user_comment_value(arena, e.value, version,
+                                                      e.flags, &view)
+                        && claim_portable_lang_alt_property_key(
+                            claims, lang_alt_claims, "exif", "UserComment",
+                            "x-default", PortablePropertyOwner::Exif,
+                            &new_claim)) {
+                        PortableLangAltProperty item;
+                        item.prefix       = "exif";
+                        item.base         = "UserComment";
+                        item.lang         = "x-default";
+                        item.order        = static_cast<uint32_t>(i);
+                        item.value        = &e.value;
+                        item.user_comment = true;
+                        item.comment      = view;
+                        lang_alt->push_back(item);
+                    }
                     continue;
                 }
                 if (process_portable_exif_entry(

@@ -1014,6 +1014,40 @@ with tempfile.TemporaryDirectory() as temporary:
     assert again == payload
     assert document.entry_count == count
 
+
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'exif_text.jpg'
+    xml = b'<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:e=\"http://ns.adobe.com/exif/1.0/\" xmlns:x=\"http://cipa.jp/exif/1.0/\"><e:ExifVersion>0300</e:ExifVersion><e:FlashpixVersion>0100</e:FlashpixVersion><e:UserComment><rdf:Alt><rdf:li xml:lang=\"x-default\"> &#26085;&#26412; &#13;&#10;&#9; </rdf:li><rdf:li xml:lang=\"de\">Kommentar</rdf:li></rdf:Alt></e:UserComment><x:ImageTitle>&#26085;&#26412;</x:ImageTitle><x:CameraOwnerName>&#26085;&#26412;</x:CameraOwnerName><x:LensMake>&#26085;&#26412;</x:LensMake><x:LensModel>&#26085;&#26412;</x:LensModel></rdf:Description></rdf:RDF>'
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet)+2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    document = openmeta.read(str(path))
+    count = document.entry_count
+    mode = openmeta.MetadataCaptureTranslationSourceMode.All
+    assert document.translate_exif_text_metadata().entry_count == count
+    translated = document.translate_exif_text_metadata(source_mode=mode)
+    assert translated.entry_count == count + 7
+    assert translated.translate_exif_text_metadata(source_mode=mode).entry_count == translated.entry_count
+    assert openmeta.METADATA_EXIF_TEXT_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_EXIF_TEXT_TRANSLATION_MAX_ADDED_ENTRIES == 13
+    assert openmeta.MetadataCaptureTranslationMapping.XmpUserComment.name == 'XmpUserComment'
+    for bound, limit in [('max_added_entries', 6), ('max_operations', 6), ('max_text_bytes_per_property', 1), ('max_total_text_bytes', 1)]:
+        try:
+            document.translate_exif_text_metadata(source_mode=mode, **{bound: limit})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('EXIF text ignored ' + bound)
+    payload, _ = translated.dump_xmp_portable(include_existing_xmp=True,
+        existing_standard_namespace_policy=openmeta.XmpExistingStandardNamespacePolicy.CanonicalizeManaged)
+    assert b'Kommentar' in payload and b'&#13;&#10;&#9;' in payload
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet)+2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    restored = openmeta.read(str(path)).translate_exif_text_metadata(source_mode=mode)
+    again, _ = restored.dump_xmp_portable(include_existing_xmp=True,
+        existing_standard_namespace_policy=openmeta.XmpExistingStandardNamespacePolicy.CanonicalizeManaged)
+    assert again == payload
+    assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 
