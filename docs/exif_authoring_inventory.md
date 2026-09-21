@@ -11,7 +11,12 @@ type/value checks and legal Interop ID handling are covered by combined
 authoring/editing/serialization regressions. See
 [the validation contract](generic_authoring.md#validation). The counts and
 runtime observations below retain the historical 0.5.9 audit baseline.
-The next writeback family is the six development/correction fields.
+
+**0.5.11 implementation update:** the six EXIF 3.1 development/correction
+fields A40D–A412 now have a shared transactional C++/Python translator, native
+schemas, portable XMP and type-129 serialization. The published
+`DevelopmentCharacterstic` spelling and the explicit 0300/0310 host policy are
+preserved. LearningOptOutIn remains a separate structured contract.
 
 ## Scope and sources
 
@@ -38,8 +43,9 @@ A route means an explicit bounded XMP-to-native API. It does not mean support
 for every legal value, a complete EXIF file profile, or competitor parity.
 Generic exact-key authoring and reading a registry name are separate capabilities.
 
-The sixteen capture APIs have **80 mappings to 75 distinct tags**. Five tags
-have two owners: ISO, ExposureBiasValue, CameraOwnerName, LensMake and LensModel.
+The seventeen capture APIs have **86 mappings to 81 distinct tags**. Five tags
+have two owners: ISO, ExposureBiasValue, CameraOwnerName, LensMake and LensModel;
+the six development/correction fields are new singleton targets.
 See [capture synchronization](capture_sync_milestone.md) for the complete list.
 
 ## Existing validation gaps
@@ -105,8 +111,8 @@ Only three EXIF 3.0 ExifIFD data fields lack a dedicated reverse route:
 | RelatedSoundFile `A004` | Exact-key storage only | Define filename validation and host-owned file association. |
 | MakerNote `927C` | Opaque vendor data | Keep relocation and rewrite trust in the separate vendor workstream. |
 
-EXIF 3.1 adds seven fields. The next writeback family after validation is the
-**six development/correction fields** `A40D`–`A412`:
+EXIF 3.1 adds seven fields. The **six development/correction fields**
+`A40D`–`A412` are implemented in 0.5.11:
 
 - DevelopmentType: one SHORT packs two defined byte values, each chosen from
   `1`, `2` or `4`. XMP represents them as a structure, not one scalar enum.
@@ -119,10 +125,16 @@ EXIF 3.1 adds seven fields. The next writeback family after validation is the
 The published XMP structure uses `exifEX:DevelopmentCharacterstic` and
 `exifEX:FactoryDefault`. The former spelling is intentional here: it matches
 DC-010-2026 Table A.6. Use the namespace URI `http://cipa.jp/exif/1.0/` as the
-identity. Define rendered-image retention/removal for native and XMP values
-together; do not infer processing history from RAW or MakerNote data.
+identity. The host supplies EXIF version 0300 or 0310; the translator does not
+change or infer ExifVersion. Compatible-file and rendered-image transfer retain
+present native and XMP values; no processing history is inferred from RAW or
+MakerNote data.
 
-There is a source inconsistency to resolve explicitly in that implementation:
+LearningOptOutIn `9287` remains the next EXIF 3.1 writeback decision because its
+structured usage and intention data needs a separate bounded contract.
+
+The implementation records a source inconsistency that requires an explicit
+host policy:
 DC-008-2026 section 4.6.6.1.1 specifies `0300` in both its English edition
 (PDF page 58) and [Japanese original][exif31j] (PDF page 60), while DC-010-2026
 Table 7 describes EXIF 3.1 as `0310` (PDF page 14). Do not silently repair the

@@ -1,19 +1,37 @@
-# Capture synchronization milestones: 0.5.4–0.5.9
+# Capture synchronization milestones: 0.5.4–0.5.11
 
 Audit date: 2026-09-14. The original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing API signatures, ABI 3, or host synchronization responsibilities.
 
+## EXIF 3.1 development and correction data in 0.5.11
+
+The six EXIF 3.1 fields A40D–A412 are implemented as one bounded C++ and
+Python transaction. DevelopmentType packs two byte choices (1, 2 or 4) and
+uses the published `exifEX:DevelopmentCharacterstic` and
+`exifEX:FactoryDefault` resource children. DevelopmentTypeDescription uses
+UTF-8 TIFF type 129 even for ASCII text. The three correction switches accept
+0/1; NoiseReduction accepts 0..3.
+
+Selected sources require an explicit host `exif_version` of 0300 or 0310. The
+translator never changes ExifVersion, so it does not hide the DC-008/DC-010
+edition discrepancy. Native schemas, typed editing, portable output and TIFF
+serialization share the same checks. Compatible-file and rendered-image
+transfer retain these fields when present; OpenMeta does not infer processing
+history from RAW or MakerNote data. LearningOptOutIn remains separate.
+
 ## EXIF text and version metadata in 0.5.9
 
 The 0.5.9 text/version batch adds UserComment, both version fields and seven
 EXIF 3 text tags. The new EXIF text API also supports UTF-8 owner/lens fields.
-The combined capture inventory is 75 distinct ExifIFD tags across sixteen APIs;
-compatible-file transfer retains 72. Version and Artist/Software companion
-requirements are explicit. ABI 3, snapshot v1 layout and host synchronization
-responsibilities remain unchanged. BOM-less big-endian UserComment snapshots
-require a 0.5.9 reader. See the EXIF text/version translation contract for limits
-and the recorded OIIO/ExifTool reader limitations.
+The combined capture inventory is now 81 distinct ExifIFD tags across seventeen
+APIs; compatible-file transfer retains the six development/correction fields
+and still filters the three source-encoding fields for rendered-image output.
+Version and Artist/Software companion requirements are explicit. ABI 3,
+snapshot v1 layout and host synchronization responsibilities remain unchanged.
+BOM-less big-endian UserComment snapshots require a 0.5.9 reader. See the EXIF
+text/version and development/correction translation contracts for limits and
+the recorded OIIO/ExifTool reader limitations.
 
 ## Structured capture in 0.5.8
 
@@ -70,7 +88,7 @@ originals. FocalLength portable fractions express millimeters without ` mm`.
 
 ## Implemented capture targets
 
-Sixteen explicit reverse APIs cover **75 distinct ExifIFD tags**. The count includes
+Seventeen explicit reverse APIs cover **81 distinct ExifIFD tags**. The count includes
 camera text and excludes GPS, dates, geometry, IPTC and vendor MakerNotes.
 It is an inventory count, not a percentage of all EXIF or competitor coverage.
 All function names below have the prefix `translate_xmp_` and suffix
@@ -95,11 +113,13 @@ All function names below have the prefix `translate_xmp_` and suffix
 | composite | 3 | CompositeImage A460, SourceImageNumberOfCompositeImage A461, SourceExposureTimesOfCompositeImage A462 |
 | structured_capture | 4 | OECF 8828, SpatialFrequencyResponse A20C, CFAPattern A302, DeviceSettingDescription A40B |
 | exif_text | 13 (10 new) | ExifVersion 9000, FlashpixVersion A000, UserComment 9286, ImageTitle A436, Photographer A437, ImageEditor A438, CameraFirmware A439, RAWDevelopingSoftware A43A, ImageEditingSoftware A43B, MetadataEditingSoftware A43C, CameraOwnerName A430, LensMake A433, LensModel A434 |
+| development_correction | 6 | DevelopmentType A40D, DevelopmentTypeDescription A40E, DistortionCorrection A40F, ChromaticAberrationCorrection A410, ShadingCorrection A411, NoiseReduction A412 |
 
-Tag IDs are hexadecimal. The 80 API mappings include five shared targets:
+Tag IDs are hexadecimal. The 86 API mappings include five shared targets and
+six new singleton development/correction targets:
 ISO belongs to basic capture and sensitivity; ExposureBiasValue belongs to
 basic capture and APEX. CameraOwnerName, LensMake and LensModel belong to
-camera text and EXIF text. Counting each shared tag once gives 75.
+camera text and EXIF text. Counting each shared tag once gives 81.
 
 ## Historical 0.5.4 qualification and gaps
 
@@ -183,7 +203,8 @@ Encoding/composite contracts are implemented in 0.5.7 and structured capture
 contracts in 0.5.8; text/comment/version contracts are implemented in 0.5.9.
 The [standard EXIF inventory](exif_authoring_inventory.md) selected validation
 consistency for existing writeback fields, implemented in 0.5.10. The six EXIF
-3.1 development/correction fields are next. Fuzzy search remains lowest priority.
+3.1 development/correction fields are implemented in 0.5.11; LearningOptOutIn
+remains separate. Fuzzy search remains lowest priority.
 
 ## Remaining field families
 
@@ -193,7 +214,7 @@ remaining-tags denominator. Read/display support does not imply reverse support.
 | Family | Examples | Work needed before implementation |
 | --- | --- | --- |
 | Existing-field validation | Routed-field schemas and legal Interop tag IDs | Implemented in 0.5.10; full file-profile conformance remains separate. |
-| EXIF 3.1 development/correction | Six fields A40D–A412 | Define packed values, structured XMP, UTF-8 and explicit version policy. |
+| EXIF 3.1 development/correction | Six fields A40D–A412 | Implemented in 0.5.11; maintain the bounded version, value and transfer policy. |
 | Other standard authoring/profile rules | IFD0 descriptive fields, color/Interop, LearningOptOutIn and RelatedSoundFile | Define host authority, encoding and companion relationships; see the inventory. |
 | MakerNotes | Vendor/version-specific offsets and integrity fields | Continue the separate rewrite-trust work; generic opaque authoring does not establish safe relocation. |
 

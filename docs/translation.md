@@ -1868,3 +1868,50 @@ pixels. Downstream application acceptance remains on hold.
 The wire rules follow CIPA EXIF 3.0 Table 4 and the type-129/tag definitions,
 and CIPA DC-010-2024 EXIF/XMP mappings. The original PDFs and the character-code
 table image remain in the private qualification evidence.
+
+## EXIF 3.1 development and correction data (0.5.11)
+
+`translate_xmp_development_correction_metadata` and Python
+`Document.translate_development_correction_metadata` project six EXIF 3.1
+ExifIFD fields in one bounded transaction. The canonical XMP namespace is
+`http://cipa.jp/exif/1.0/` (normally `exifEX`).
+
+| XMP property | Native tag | Native value |
+| --- | --- | --- |
+| `exifEX:DevelopmentType` | A40D | One SHORT. The high and low bytes are each 1, 2 or 4. |
+| `exifEX:DevelopmentTypeDescription` | A40E | UTF-8 text, TIFF type 129 even when the text is ASCII. |
+| `exifEX:DistortionCorrection` | A40F | SHORT 0 or 1. |
+| `exifEX:ChromaticAberrationCorrection` | A410 | SHORT 0 or 1. |
+| `exifEX:ShadingCorrection` | A411 | SHORT 0 or 1. |
+| `exifEX:NoiseReduction` | A412 | SHORT 0 through 3. |
+
+`DevelopmentType` is an RDF resource with exactly the published children
+`DevelopmentCharacterstic` and `FactoryDefault`. The spelling of
+`DevelopmentCharacterstic` is part of the wire contract. Root values,
+additional children, indexed forms, duplicate eligible sources and partial
+deletion fail without publishing a candidate. The description requires valid
+UTF-8 XML text; whitespace is preserved and no BOM or character-set conversion
+is inferred.
+
+The caller supplies `exif_version` as an explicit host policy. A selected
+source requires exactly `300` or `310`; `0` returns `IncompleteSource`. The
+translator never creates, upgrades, downgrades or otherwise changes native
+`ExifVersion`. This records the DC-008 `0300` and DC-010 `0310` source
+discrepancy without silently choosing one edition. Defaults remain `DirtyOnly`
+and `FailOnConflict`. `PreserveExisting`, `ReplaceExisting`, dirty tombstones,
+per-field switches and resource limits follow the capture translation contract.
+The call can add at most six entries, read 65,536 bytes per property and
+1,048,576 total source text bytes. Preparation may allocate; the commit is one
+transaction and conflicting shared-object access remains host-owned.
+
+Native validation, typed editing, canonical portable XMP and TIFF serialization
+share the same value checks. Portable output emits the packed A40D value as the
+two-child resource and emits A40E with type 129. Compatible-file and rendered-
+image transfer retain these standard processing-history fields when they are
+present. OpenMeta does not infer correction history from RAW or MakerNote data,
+and it does not add a value when the source has none.
+
+The combined capture inventory is now **81 distinct ExifIFD tags across
+seventeen APIs**; the six fields are new and do not overlap the prior 75-tag
+set. `LearningOptOutIn` (9287), complete-file EXIF profiles and arbitrary RDF
+graph editing remain separate work.

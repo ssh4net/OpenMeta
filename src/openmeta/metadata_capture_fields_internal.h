@@ -3,6 +3,8 @@
 
 #include "openmeta/meta_value.h"
 
+#include "metadata_development_fields_internal.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -117,6 +119,13 @@ standard_capture_value_valid(const ByteArena& arena, uint16_t tag,
                && value.elem_type == MetaElementType::U32 && value.data.u64 > 0U
                && value.data.u64 <= UINT32_MAX;
     switch (tag) {
+    case 0xa40dU:
+    case 0xa40eU:
+    case 0xa40fU:
+    case 0xa410U:
+    case 0xa411U:
+    case 0xa412U:
+        return development_correction_value_valid(arena, tag, value);
     case 0x9201U:
     case 0x9203U:
         return value.kind == MetaValueKind::Scalar && value.count == 1U

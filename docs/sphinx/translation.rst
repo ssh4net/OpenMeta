@@ -20,13 +20,14 @@ The APIs are experimental and versioned by
 ``kMetadataIptcTranslationContractVersion == 1`` and
 ``kMetadataGpsTranslationContractVersion == 1`` and
 ``kMetadataStructuredLocationTranslationContractVersion == 1`` and
-``kMetadataGpsNavigationTranslationContractVersion == 1``.
+``kMetadataGpsNavigationTranslationContractVersion == 1`` and
+``kMetadataDevelopmentCorrectionTranslationContractVersion == 1``.
 
 Workflow
 --------
 
-See :doc:`capture_sync_milestone` for the sixteen capture APIs, 75 distinct native
-targets, shared-target composition and the 0.5.5 portable round-trip fixes.
+See :doc:`capture_sync_milestone` for the seventeen capture APIs, 81 distinct
+native targets, shared-target composition and the portable round-trip fixes.
 Primary ExifIFD FNumber, FocalLength and DigitalZoomRatio emit exact fractions;
 FocalLength is in millimeters without the display suffix `` mm``. Invalid native
 types/counts and values leave valid existing XMP available. Regenerate older
@@ -2097,9 +2098,10 @@ this extension because its two-part NUL-separated form needs a separate contract
 camera-text translator keeps its printable-ASCII contract. SpectralSensitivity,
 BodySerialNumber and LensSerialNumber remain outside the UTF-8 extension.
 
-The combined capture fixture covers **75 distinct ExifIFD tags across sixteen
-APIs**. Compatible-file transfer retains 72 after the existing three encoding
-filters. IFD0 companion fields are separate from that inventory.
+The combined capture fixture covers **81 distinct ExifIFD tags across seventeen
+APIs**. Compatible-file transfer retains the six development/correction fields
+and still filters the three source-encoding fields for rendered-image output.
+IFD0 companion fields are separate from that inventory.
 
 Compatibility qualification found that the installed OIIO reader aborts with
 ``std::bad_alloc`` on type-129 JPEG metadata. An isolated diagnostic changed only
@@ -2112,3 +2114,21 @@ pixels. Downstream application acceptance remains on hold.
 The wire rules follow CIPA EXIF 3.0 Table 4 and the type-129/tag definitions,
 and CIPA DC-010-2024 EXIF/XMP mappings. The original PDFs and the character-code
 table image remain in the private qualification evidence.
+
+EXIF 3.1 Development and Correction Data (0.5.11)
+===================================================
+
+``translate_xmp_development_correction_metadata`` and
+``Document.translate_development_correction_metadata`` add one bounded
+transaction for A40D-A412. ``DevelopmentType`` is a SHORT with high and low
+bytes chosen from 1, 2, and 4. Its XMP resource uses the published
+``DevelopmentCharacterstic`` and ``FactoryDefault`` children. A40E is UTF-8
+TIFF type 129 even for ASCII text. A40F-A411 accept 0/1 and A412 accepts 0..3.
+
+The caller must provide ``exif_version`` 300 or 310 for a selected source.
+OpenMeta never changes or infers ``ExifVersion``. Root or indexed forms,
+partial resources, duplicate sources and invalid values fail atomically.
+Native validation, typed editing, portable XMP and TIFF serialization share the
+same rules. Compatible-file and rendered-image transfer retain present values;
+RAW and MakerNote processing history is not inferred. LearningOptOutIn and
+complete-file profile validation remain separate.

@@ -195,3 +195,14 @@ requirements are explicit. ABI 3, snapshot v1 layout and host synchronization
 responsibilities remain unchanged. BOM-less big-endian UserComment snapshots
 require a 0.5.9 reader. See the EXIF text/version translation contract for limits
 and the recorded OIIO/ExifTool reader limitations.
+
+## EXIF 3.1 development and correction update (0.5.11)
+
+Typed editing and native validation use the same A40D–A412 contracts as
+`translate_xmp_development_correction_metadata`: packed DevelopmentType,
+published `DevelopmentCharacterstic` spelling, UTF-8 type-129 description and
+bounded correction codes. The reverse translator requires an explicit host
+EXIF version policy of 0300 or 0310 and commits the complete selected batch
+atomically. Transfer retains present values, including rendered-image transfer;
+it does not infer RAW or MakerNote processing history. See
+[the translation contract](translation.md#exif-31-development-and-correction-data-0511).

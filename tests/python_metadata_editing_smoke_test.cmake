@@ -1048,6 +1048,46 @@ with tempfile.TemporaryDirectory() as temporary:
     assert again == payload
     assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'development_correction.jpg'
+    xml = b'<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:x=\"http://cipa.jp/exif/1.0/\"><x:DevelopmentType rdf:parseType=\"Resource\"><x:DevelopmentCharacterstic>1</x:DevelopmentCharacterstic><x:FactoryDefault>4</x:FactoryDefault></x:DevelopmentType><x:DevelopmentTypeDescription>Developed by host</x:DevelopmentTypeDescription><x:DistortionCorrection>1</x:DistortionCorrection><x:ChromaticAberrationCorrection>0</x:ChromaticAberrationCorrection><x:ShadingCorrection>1</x:ShadingCorrection><x:NoiseReduction>3</x:NoiseReduction></rdf:Description></rdf:RDF>'
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    document = openmeta.read(str(path))
+    count = document.entry_count
+    mode = openmeta.MetadataCaptureTranslationSourceMode.All
+    assert document.translate_development_correction_metadata().entry_count == count
+    try:
+        document.translate_development_correction_metadata(source_mode=mode)
+    except ValueError as error:
+        assert 'incomplete_source' in str(error)
+    else:
+        raise AssertionError('development correction accepted an implicit EXIF version')
+    translated = document.translate_development_correction_metadata(source_mode=mode, exif_version=310)
+    assert translated.entry_count == count + 6
+    assert translated.translate_development_correction_metadata(source_mode=mode, exif_version=310).entry_count == translated.entry_count
+    assert openmeta.METADATA_DEVELOPMENT_CORRECTION_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_DEVELOPMENT_CORRECTION_TRANSLATION_MAX_ADDED_ENTRIES == 6
+    for name in ('XmpDevelopmentType', 'XmpDevelopmentTypeDescription', 'XmpDistortionCorrection', 'XmpChromaticAberrationCorrection', 'XmpShadingCorrection', 'XmpNoiseReduction'):
+        assert getattr(openmeta.MetadataCaptureTranslationMapping, name).name == name
+    for bound, limit in [('max_added_entries', 5), ('max_operations', 5), ('max_text_bytes_per_property', 1), ('max_total_text_bytes', 1)]:
+        try:
+            document.translate_development_correction_metadata(source_mode=mode, exif_version=310, **{bound: limit})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('development correction ignored ' + bound)
+    payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
+    assert b'<exifEX:DevelopmentType rdf:parseType=\"Resource\">' in payload
+    assert b'<exifEX:DevelopmentCharacterstic>1</exifEX:DevelopmentCharacterstic>' in payload
+    assert b'<exifEX:FactoryDefault>4</exifEX:FactoryDefault>' in payload
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    restored = openmeta.read(str(path)).translate_development_correction_metadata(source_mode=mode, exif_version=300)
+    again, _ = restored.dump_xmp_portable(include_existing_xmp=False)
+    assert again == payload
+    assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

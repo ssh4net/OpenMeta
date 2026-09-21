@@ -165,3 +165,16 @@ eligible existing XMP when the corresponding native value fails shared checks.
 Public signatures, contract versions, ABI 3, snapshot v1 layout and host-owned
 synchronization remain unchanged. No mandatory complete-file profile is imposed.
 See [generic validation](generic_authoring.md#validation) for scope and limits.
+
+## EXIF 3.1 development and correction update (0.5.11)
+
+The experimental `translate_xmp_development_correction_metadata` contract and
+its Python counterpart add the six EXIF 3.1 development/correction fields
+A40D–A412. The packed DevelopmentType resource, published
+`DevelopmentCharacterstic` spelling, UTF-8 type-129 description, explicit
+0300/0310 host version policy, value bounds and transaction rules are versioned
+by `kMetadataDevelopmentCorrectionTranslationContractVersion == 1`.
+Native schema validation, typed editing, portable output and serialization use
+the same checks. ABI 3, snapshot v1 and host-owned synchronization remain
+unchanged. LearningOptOutIn and complete-file profile validation remain outside
+this contract. See [development and correction data](translation.md#exif-31-development-and-correction-data-0511).

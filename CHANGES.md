@@ -1,5 +1,21 @@
 # OpenMeta Changes
 
+## 0.5.11 - 2026-09-20
+
+- Add one bounded C++ and Python translation contract for the six EXIF 3.1
+  development/correction fields A40D–A412. DevelopmentType packs the two
+  defined byte choices and emits the published `DevelopmentCharacterstic` /
+  `FactoryDefault` XMP resource; DevelopmentTypeDescription always serializes
+  as UTF-8 TIFF type 129, including ASCII text.
+- Validate the new native schemas and value ranges through authoring, editing,
+  translation, portable XMP and TIFF serialization. Require an explicit host
+  EXIF version policy of 0300 or 0310 for selected writeback; never infer or
+  mutate ExifVersion. The complete batch is transactional and host-owned
+  synchronization remains unchanged.
+- Keep the development/correction values as explicit metadata during transfer,
+  including rendered-image transfer. OpenMeta does not infer processing history
+  from RAW or MakerNote fields. ABI 3 and snapshot v1 remain unchanged.
+
 ## 0.5.10 - 2026-09-17
 
 - Add fixed type/count schemas for 64 existing reverse-translation targets

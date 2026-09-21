@@ -4866,6 +4866,18 @@ metadata_capture_translation_mapping_name(
         return "xmp_focal_length";
     case MetadataCaptureTranslationMapping::XmpExposureCompensation:
         return "xmp_exposure_compensation";
+    case MetadataCaptureTranslationMapping::XmpDevelopmentType:
+        return "xmp_development_type";
+    case MetadataCaptureTranslationMapping::XmpDevelopmentTypeDescription:
+        return "xmp_development_type_description";
+    case MetadataCaptureTranslationMapping::XmpDistortionCorrection:
+        return "xmp_distortion_correction";
+    case MetadataCaptureTranslationMapping::XmpChromaticAberrationCorrection:
+        return "xmp_chromatic_aberration_correction";
+    case MetadataCaptureTranslationMapping::XmpShadingCorrection:
+        return "xmp_shading_correction";
+    case MetadataCaptureTranslationMapping::XmpNoiseReduction:
+        return "xmp_noise_reduction";
     }
     return "unknown";
 }

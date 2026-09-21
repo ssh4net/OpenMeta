@@ -804,6 +804,17 @@ responsibilities remain unchanged. BOM-less big-endian UserComment snapshots
 require a 0.5.9 reader. See the EXIF text/version translation contract for limits
 and the recorded OIIO/ExifTool reader limitations.
 
+EXIF 3.1 Development and Correction Update (0.5.11)
+=====================================================
+
+The experimental ``translate_xmp_development_correction_metadata`` contract
+and its Python counterpart add A40D-A412 with a packed DevelopmentType
+resource, the published ``DevelopmentCharacterstic`` spelling, UTF-8 type-129
+description and bounded correction codes. Selected writeback requires an
+explicit host version of 0300 or 0310. The translator never changes
+``ExifVersion``. ABI 3, snapshot v1 and host-owned synchronization remain
+unchanged. See :doc:`translation`.
+
 Standard Validation Update (0.5.10)
 -----------------------------------
 

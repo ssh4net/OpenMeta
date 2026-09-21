@@ -2,13 +2,14 @@ Standard EXIF Authoring Inventory
 =================================
 
 Audit date: 2026-09-17. Baseline: **C++ 0.5.9**, ABI 3, commit ``6d04da1``.
-This is an inventory and next-batch decision; library behavior is unchanged.
+This is an inventory and batch decision.
 
 **0.5.10 update:** the selected validation batch is implemented. The 64 routed
 fields now have fixed schemas; five registered Interop fields and three
 structural pointers are recognized. The following counts and probe observations
 remain the historical 0.5.9 baseline. See :doc:`generic_authoring` for the current
-validation boundary. Six EXIF 3.1 development/correction fields are next.
+validation boundary. The six EXIF 3.1 development/correction fields are
+implemented in 0.5.11; LearningOptOutIn remains separate.
 
 Scope and counts
 ----------------
@@ -51,8 +52,9 @@ Tag IDs are hexadecimal.
 The ExifIFD editions overlap and must not be added. A reverse route is a bounded
 XMP-to-native contract, not all-value support, complete-file conformance or
 competitor parity. Generic exact-key authoring and registry names are separate.
-The sixteen capture APIs have 80 mappings to 75 tags. ISO, ExposureBiasValue,
-CameraOwnerName, LensMake and LensModel each have two owners; see
+The seventeen capture APIs have 86 mappings to 81 tags. ISO, ExposureBiasValue,
+CameraOwnerName, LensMake and LensModel each have two owners; the six
+development/correction fields are new singleton targets; see
 :doc:`capture_sync_milestone`.
 
 Validation findings and selected next batch
@@ -99,8 +101,8 @@ The three remaining EXIF 3.0 ExifIFD fields are ColorSpace A001 (host target
 override exists; color/ICC/Interop agreement needs a contract), RelatedSoundFile
 A004 (host file association) and MakerNote 927C (separate vendor rewrite trust).
 
-After validation, the next writeback family is the six EXIF 3.1
-development/correction fields A40D--A412:
+The six EXIF 3.1 development/correction fields A40D--A412 are implemented in
+0.5.11:
 
 * DevelopmentType: SHORT containing two bytes, each chosen from 1, 2 or 4;
   XMP uses a structure.
@@ -111,15 +113,16 @@ development/correction fields A40D--A412:
 DC-010-2026 Table A.6 spells the structure fields
 ``exifEX:DevelopmentCharacterstic`` and ``exifEX:FactoryDefault``. Preserve that
 published spelling and use namespace URI ``http://cipa.jp/exif/1.0/``.
-Define native/XMP rendered-image retention together; do not infer processing
-history from RAW or MakerNote data.
+Native and XMP values are retained together during rendered-image transfer; do
+not infer processing history from RAW or MakerNote data.
 
 Version policy needs an explicit decision: DC-008-2026 section 4.6.6.1.1 says
 ``0300`` in English (PDF page 58) and the `Japanese original`_ (PDF page 60),
 whereas DC-010-2026 Table 7 describes EXIF 3.1 as ``0310`` (PDF page 14).
-Record the source discrepancy and chosen host-supplied policy; do not silently
-repair the text or automatically upgrade versions. LearningOptOutIn 9287 is
-the seventh new field and needs a separate bounded usage/intention contract.
+Record the source discrepancy and chosen host-supplied policy; the translator
+requires 0300 or 0310 for selected writeback and never changes ExifVersion.
+LearningOptOutIn 9287 is the seventh new field and needs a separate bounded
+usage/intention contract.
 
 IFD0 ImageDescription, Artist and Copyright lack dedicated reverse routes;
 descriptive reverse currently targets IPTC. Broader UTF-8, two-part Copyright,

@@ -393,6 +393,12 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpCameraOwnerName,
     XmpLensMake,
     XmpLensModel,
+    XmpDevelopmentType,
+    XmpDevelopmentTypeDescription,
+    XmpDistortionCorrection,
+    XmpChromaticAberrationCorrection,
+    XmpShadingCorrection,
+    XmpNoiseReduction,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -741,6 +747,61 @@ MetadataCaptureTranslationResult
 translate_xmp_structured_capture_metadata(
     const MetaStore& source,
     const MetadataStructuredCaptureTranslationOptions& options,
+    MetaStore* out_store);
+
+/// EXIF 3.1 development and correction writeback contract version.
+inline constexpr uint32_t kMetadataDevelopmentCorrectionTranslationContractVersion
+    = 1U;
+inline constexpr uint32_t
+    kMetadataDevelopmentCorrectionTranslationMaxAddedEntries = 6U;
+inline constexpr uint32_t
+    kMetadataDevelopmentCorrectionTranslationMaxTextBytesPerProperty = 65536U;
+inline constexpr uint64_t
+    kMetadataDevelopmentCorrectionTranslationMaxTotalTextBytes = 1048576ULL;
+
+/**
+ * \brief Translate EXIF 3.1 development and correction XMP properties.
+ *
+ * The CIPA EXIF extension namespace is
+ * `http://cipa.jp/exif/1.0/` (normally `exifEX`). DevelopmentType is a
+ * resource with the published children `DevelopmentCharacterstic` and
+ * `FactoryDefault`; the spelling of `Characterstic` is part of the wire
+ * contract. DevelopmentTypeDescription is written as TIFF type 129 even for
+ * ASCII text. Correction values are bounded to their EXIF choices.
+ *
+ * A non-zero `exif_version` is required whenever a selected source is
+ * translated and must be exactly 300 or 310. The value is a host policy for
+ * the source discrepancy in the published CIPA material; this call never
+ * creates, changes or infers ExifVersion. A zero value therefore rejects a
+ * selected source with IncompleteSource. Preparation allocates; the commit is
+ * one transaction and hosts synchronize conflicting object access.
+ */
+struct MetadataDevelopmentCorrectionTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    bool development_type_to_exif                = true;
+    bool development_type_description_to_exif    = true;
+    bool distortion_correction_to_exif           = true;
+    bool chromatic_aberration_correction_to_exif = true;
+    bool shading_correction_to_exif              = true;
+    bool noise_reduction_to_exif                 = true;
+    /// Explicit host policy: 0 requires no selected source; use 300 or 310.
+    uint32_t exif_version = 0U;
+    uint32_t max_added_entries
+        = kMetadataDevelopmentCorrectionTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataDevelopmentCorrectionTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataDevelopmentCorrectionTranslationMaxTotalTextBytes;
+};
+
+MetadataCaptureTranslationResult
+translate_xmp_development_correction_metadata(
+    const MetaStore& source,
+    const MetadataDevelopmentCorrectionTranslationOptions& options,
     MetaStore* out_store);
 
 inline constexpr uint32_t kMetadataApexTranslationContractVersion   = 1U;

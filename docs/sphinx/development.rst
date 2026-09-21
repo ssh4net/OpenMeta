@@ -537,3 +537,13 @@ requirements are explicit. ABI 3, snapshot v1 layout and host synchronization
 responsibilities remain unchanged. BOM-less big-endian UserComment snapshots
 require a 0.5.9 reader. See the EXIF text/version translation contract for limits
 and the recorded OIIO/ExifTool reader limitations.
+
+EXIF 3.1 Development and Correction Update (0.5.11)
+=====================================================
+
+The six development/correction fields A40D-A412 use one transactional C++ and
+Python contract. The host selects EXIF version 0300 or 0310 for selected
+writeback; no version is inferred or changed. Shared validators cover editing,
+translation, portable XMP and serialization. Present standard values remain in
+transfer output, including rendered-image output; RAW and MakerNote history is
+not inferred. See :doc:`translation`.

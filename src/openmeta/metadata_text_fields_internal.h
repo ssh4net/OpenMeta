@@ -15,8 +15,8 @@ inline bool
 exif_utf8_tag(std::string_view ifd, uint16_t tag) noexcept
 {
     return (ifd == "exififd"
-            && (exif3_text_tag(tag) || tag == 0xa430U || tag == 0xa433U
-                || tag == 0xa434U))
+            && (exif3_text_tag(tag) || tag == 0xa40eU || tag == 0xa430U
+                || tag == 0xa433U || tag == 0xa434U))
            || (ifd == "ifd0"
                && (tag == 0x010eU || tag == 0x010fU || tag == 0x0110U
                    || tag == 0x0131U || tag == 0x013bU));
@@ -72,6 +72,8 @@ exif_text_wire_type(const ByteArena& arena, const Entry& e) noexcept
                                ifd_raw.size());
     if (!exif_utf8_tag(ifd, e.key.data.exif_tag.tag))
         return 2U;
+    if (e.key.data.exif_tag.tag == 0xa40eU)
+        return 129U;
     if (e.origin.wire_type.family == WireFamily::Tiff
         && e.origin.wire_type.code == 129U)
         return 129U;

@@ -4,7 +4,7 @@ Capture Synchronization Milestone
 Audit date: 2026-09-14. Original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing signatures, ABI 3 or host synchronization responsibilities.
-Sixteen explicit reverse APIs now cover **75 distinct ExifIFD tags**,
+Seventeen explicit reverse APIs now cover **81 distinct ExifIFD tags**,
 including camera text and excluding GPS, dates, geometry, IPTC and MakerNotes.
 This count does not measure all-EXIF or competitor coverage.
 
@@ -106,9 +106,12 @@ The API stems below have the prefix ``translate_xmp_`` and suffix
    * - exif_text
      - 13 (10 new)
      - UserComment, versions, EXIF 3 text and shared UTF-8 owner/lens fields
+   * - development_correction
+     - 6
+     - DevelopmentType, DevelopmentTypeDescription and four correction fields
 
 ISO, ExposureBiasValue, CameraOwnerName, LensMake and LensModel are each
-shared by two APIs. The 80 mappings therefore cover 75 distinct tags.
+shared by two APIs. The 86 mappings therefore cover 81 distinct tags.
 
 Historical 0.5.4 Qualification and Gaps
 ---------------------------------------
@@ -172,7 +175,8 @@ The additional capture and environment batches are implemented in 0.5.6.
 Encoding and composite capture are implemented in 0.5.7 and structured
 capture in 0.5.8. Text/comment/version contracts are implemented in 0.5.9.
 The :doc:`exif_authoring_inventory` selected existing-field validation,
-implemented in 0.5.10. Six EXIF 3.1 development/correction fields are next.
+implemented in 0.5.10. The six EXIF 3.1 development/correction fields are
+implemented in 0.5.11; LearningOptOutIn remains separate.
 MakerNote rewrite trust remains vendor-specific.
 Read/display support does not establish reverse writeback support. Downstream
 application acceptance and whole-corpus qualification are outside this audit.
@@ -211,6 +215,18 @@ orders, Python and an installed shared consumer. The installed OIIO reader abort
 on type129; direct TIFF byte checks and FFmpeg pixel hashes qualify the new data.
 ExifTool's legacy UserComment decoder is not an EXIF 3 UTF-8 oracle. See
 :doc:`translation` for the full contract and reader limitations.
+
+EXIF 3.1 Development and Correction Update (0.5.11)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The six A40D-A412 development/correction fields use one bounded C++ and Python
+transaction. DevelopmentType packs two choices from 1, 2 and 4 into a SHORT
+and emits the published ``DevelopmentCharacterstic`` / ``FactoryDefault`` XMP
+resource. A40E is UTF-8 TIFF type 129; A40F-A411 accept 0/1 and A412 accepts
+0..3. The host supplies EXIF version 0300 or 0310 for selected writeback.
+OpenMeta does not change ExifVersion or infer RAW/MakerNote processing history.
+Present values remain in compatible-file and rendered-image transfer. See
+:doc:`translation`.
 
 The remaining standard fields and profile gaps are recorded in
 :doc:`exif_authoring_inventory`, including the next batch's acceptance criteria.

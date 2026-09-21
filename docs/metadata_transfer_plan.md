@@ -1235,3 +1235,13 @@ requirements are explicit. ABI 3, snapshot v1 layout and host synchronization
 responsibilities remain unchanged. BOM-less big-endian UserComment snapshots
 require a 0.5.9 reader. See the EXIF text/version translation contract for limits
 and the recorded OIIO/ExifTool reader limitations.
+
+## EXIF 3.1 development and correction update (0.5.11)
+
+The six development/correction fields A40D–A412 now have a shared transactional
+translator, native schema validation, portable XMP and type-129 serialization.
+The host must provide EXIF version 0300 or 0310 for selected writeback; no
+version is inferred or changed. Compatible-file and rendered-image transfer
+retain these standard processing-history fields when present. OpenMeta does not
+infer processing history from RAW or MakerNote data. See
+[the translation contract](translation.md#exif-31-development-and-correction-data-0511).
