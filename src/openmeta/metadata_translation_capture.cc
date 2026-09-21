@@ -4878,6 +4878,18 @@ metadata_capture_translation_mapping_name(
         return "xmp_shading_correction";
     case MetadataCaptureTranslationMapping::XmpNoiseReduction:
         return "xmp_noise_reduction";
+    case MetadataCaptureTranslationMapping::XmpLearningOptOutIn:
+        return "xmp_learning_opt_out_in";
+    case MetadataCaptureTranslationMapping::XmpTiffImageDescription:
+        return "xmp_tiff_image_description";
+    case MetadataCaptureTranslationMapping::XmpTiffArtist:
+        return "xmp_tiff_artist";
+    case MetadataCaptureTranslationMapping::XmpTiffCopyright:
+        return "xmp_tiff_copyright";
+    case MetadataCaptureTranslationMapping::XmpColorSpace:
+        return "xmp_color_space";
+    case MetadataCaptureTranslationMapping::XmpRelatedSoundFile:
+        return "xmp_related_sound_file";
     }
     return "unknown";
 }

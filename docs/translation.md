@@ -18,7 +18,9 @@ The APIs are experimental and versioned by
 `kMetadataIptcTranslationContractVersion == 1` and
 `kMetadataGpsTranslationContractVersion == 1` and
 `kMetadataStructuredLocationTranslationContractVersion == 1` and
-`kMetadataGpsNavigationTranslationContractVersion == 1`.
+`kMetadataGpsNavigationTranslationContractVersion == 1` and
+`kMetadataLearningOptOutInTranslationContractVersion == 1` and
+`kMetadataProfileTranslationContractVersion == 1`.
 
 ## Workflow
 
@@ -36,7 +38,8 @@ invoke it implicitly:
    `translate_xmp_iptc_metadata(...)`, `translate_xmp_gps_metadata(...)`,
    `translate_xmp_structured_location_metadata(...)`,
    `translate_xmp_gps_navigation_metadata(...)`,
-   or the required combination with
+   `translate_xmp_learning_opt_out_in_metadata(...)`,
+   `translate_xmp_profile_metadata(...)`, or the required combination with
    explicit mapping and conflict options.
 3. Pass the returned finalized store to transfer preparation or a writer.
 
@@ -1913,5 +1916,58 @@ and it does not add a value when the source has none.
 
 The combined capture inventory is now **81 distinct ExifIFD tags across
 seventeen APIs**; the six fields are new and do not overlap the prior 75-tag
-set. `LearningOptOutIn` (9287), complete-file EXIF profiles and arbitrary RDF
-graph editing remain separate work.
+set. The profile and LearningOptOutIn contracts below are separate from the
+capture inventory and do not impose a complete-file profile.
+
+## EXIF 3.1 LearningOptOutIn data (0.5.12)
+
+`translate_xmp_learning_opt_out_in_metadata` and
+`Document.translate_learning_opt_out_in_metadata` project one exact
+`http://cipa.jp/exif/1.0/` structure into ExifIFD tag `0x9287` (TIFF type 7).
+The selected source has `LearningOptOutIn/NumberOfSets` and either a typed
+`LearningOptOutIn/Values` array or dense scalar leaves
+`LearningOptOutIn/Values[1]` through `[2*n]`. Each pair is usage/intention:
+the first usage is zero, usage values are unique, usage is 0..4 and intention
+is 0..2. Root values, sparse indexes, duplicate sources and partial deletion
+fail atomically. A dirty tombstone removes the native tag only with
+`ReplaceExisting`.
+
+The caller supplies `exif_version` as `300` or `310` when a source is selected;
+the translator never creates or changes ExifVersion. The default policy is
+`DirtyOnly` plus `FailOnConflict`; `PreserveExisting`, `ReplaceExisting`,
+bounded set/text/operation limits and host-owned synchronization follow the
+other translation contracts. Native type-7 bytes retain `ValueBigEndian`
+provenance, while new payloads use canonical little-endian words. Portable XMP
+emits the same structure as an `rdf:Seq`.
+
+## Profile and authoring data (0.5.12)
+
+`translate_xmp_profile_metadata` and
+`Document.translate_xmp_profile_metadata` provide one bounded transaction for
+the following exact properties:
+
+| XMP source | Native destination | Requirements |
+| --- | --- | --- |
+| `tiff:ImageDescription` | IFD0 `0x010E` | Non-empty valid EXIF text; ASCII uses TIFF type 2 and UTF-8 uses type 129. |
+| `tiff:Artist` | IFD0 `0x013B` | Same text contract as ImageDescription. |
+| `tiff:Copyright` | IFD0 `0x8298` | One scalar native part; an existing two-part NUL value is preserved or conflicts under the selected policy. |
+| `exif:ColorSpace` | ExifIFD `0xA001` | Numeric `1` or `65535`, or the labels `sRGB` and `Uncalibrated`. |
+| `exif:RelatedSoundFile` | ExifIFD `0xA004` | Printable ASCII 8.3 filename without path separators. |
+
+Namespaces and paths must match exactly. No ICC profile, image dimension,
+color agreement, audio-file association or companion inference is performed.
+Each selected field reconciles independently; duplicate eligible sources,
+invalid values, limits and conflicts fail before publication. Dirty tombstones
+remove native values only with `ReplaceExisting`. Preparation may allocate and
+the commit is transactional; callers synchronize conflicting access to a
+shared `MetaStore`.
+
+## JP2 and JPH qualification boundary
+
+The existing JP2 writer path also accepts boxed JPH brands. It replaces selected
+Exif/XML carriers, preserves unknown UUID boxes and the codestream, and updates
+an existing `jp2h/colr` ICC child without synthesizing a missing `jp2h`. Focused
+tests cover ordinary and extended boxes, zero-length terminal boxes, positional
+scans that skip codestream bytes, and both `jp2 ` and `jph ` brands. Real-file
+ICC/read-back and OIIO/iRAW consumer acceptance remain external qualification
+gates.

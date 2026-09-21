@@ -1088,6 +1088,70 @@ with tempfile.TemporaryDirectory() as temporary:
     assert again == payload
     assert document.entry_count == count
 
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'learning_opt_out_in.jpg'
+    xml = b'<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:x=\"http://cipa.jp/exif/1.0/\"><x:LearningOptOutIn rdf:parseType=\"Resource\"><x:NumberOfSets>3</x:NumberOfSets><x:Values><rdf:Seq><rdf:li>0</rdf:li><rdf:li>2</rdf:li><rdf:li>1</rdf:li><rdf:li>1</rdf:li><rdf:li>4</rdf:li><rdf:li>0</rdf:li></rdf:Seq></x:Values></x:LearningOptOutIn></rdf:Description></rdf:RDF>'
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    document = openmeta.read(str(path))
+    count = document.entry_count
+    mode = openmeta.MetadataCaptureTranslationSourceMode.All
+    assert document.translate_learning_opt_out_in_metadata().entry_count == count
+    translated = document.translate_learning_opt_out_in_metadata(source_mode=mode, exif_version=310)
+    assert translated.entry_count == count + 1
+    assert translated.translate_learning_opt_out_in_metadata(source_mode=mode, exif_version=310).entry_count == translated.entry_count
+    assert openmeta.METADATA_LEARNING_OPT_OUT_IN_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_LEARNING_OPT_OUT_IN_TRANSLATION_MAX_SETS == 64
+    assert openmeta.MetadataCaptureTranslationMapping.XmpLearningOptOutIn.name == 'XmpLearningOptOutIn'
+    for bound, limit in [('max_added_entries', 0), ('max_operations', 0), ('max_sets', 0), ('max_text_bytes_per_property', 0), ('max_total_text_bytes', 1)]:
+        try:
+            translated.translate_learning_opt_out_in_metadata(source_mode=mode, exif_version=310, **{bound: limit})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('LearningOptOutIn ignored ' + bound)
+    payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
+    assert b'<exifEX:LearningOptOutIn rdf:parseType=\"Resource\">' in payload
+    assert b'<exifEX:NumberOfSets>3</exifEX:NumberOfSets>' in payload
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    restored = openmeta.read(str(path)).translate_learning_opt_out_in_metadata(source_mode=mode, exif_version=300)
+    again, _ = restored.dump_xmp_portable(include_existing_xmp=False)
+    assert again == payload
+    assert document.entry_count == count
+
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'profile_authoring.jpg'
+    xml = b'<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:t=\"http://ns.adobe.com/tiff/1.0/\" xmlns:e=\"http://ns.adobe.com/exif/1.0/\"><t:ImageDescription>A scene</t:ImageDescription><t:Artist>A. Photographer</t:Artist><t:Copyright>Copyright 2026</t:Copyright><e:ColorSpace>sRGB</e:ColorSpace><e:RelatedSoundFile>SOUND.WAV</e:RelatedSoundFile></rdf:Description></rdf:RDF>'
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    document = openmeta.read(str(path))
+    count = document.entry_count
+    mode = openmeta.MetadataCaptureTranslationSourceMode.All
+    translated = document.translate_xmp_profile_metadata(source_mode=mode)
+    assert translated.entry_count == count + 5
+    assert translated.translate_xmp_profile_metadata(source_mode=mode).entry_count == translated.entry_count
+    assert openmeta.METADATA_PROFILE_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_PROFILE_TRANSLATION_MAX_ADDED_ENTRIES == 5
+    for name in ('XmpTiffImageDescription', 'XmpTiffArtist', 'XmpTiffCopyright', 'XmpColorSpace', 'XmpRelatedSoundFile'):
+        assert getattr(openmeta.MetadataCaptureTranslationMapping, name).name == name
+    for bound, limit in [('max_added_entries', 4), ('max_operations', 4), ('max_text_bytes_per_property', 1), ('max_total_text_bytes', 1)]:
+        try:
+            document.translate_xmp_profile_metadata(source_mode=mode, **{bound: limit})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('profile translation ignored ' + bound)
+    payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
+    assert b'<tiff:ImageDescription>A scene</tiff:ImageDescription>' in payload
+    assert b'<exif:ColorSpace>sRGB</exif:ColorSpace>' in payload
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    restored = openmeta.read(str(path)).translate_xmp_profile_metadata(source_mode=mode)
+    again, _ = restored.dump_xmp_portable(include_existing_xmp=False)
+    assert again == payload
+    assert document.entry_count == count
+
 print('openmeta metadata editing smoke ok')
 ")
 

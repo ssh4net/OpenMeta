@@ -21,7 +21,9 @@ The APIs are experimental and versioned by
 ``kMetadataGpsTranslationContractVersion == 1`` and
 ``kMetadataStructuredLocationTranslationContractVersion == 1`` and
 ``kMetadataGpsNavigationTranslationContractVersion == 1`` and
-``kMetadataDevelopmentCorrectionTranslationContractVersion == 1``.
+``kMetadataDevelopmentCorrectionTranslationContractVersion == 1`` and
+``kMetadataLearningOptOutInTranslationContractVersion == 1`` and
+``kMetadataProfileTranslationContractVersion == 1``.
 
 Workflow
 --------
@@ -47,6 +49,8 @@ invoke it implicitly:
    ``translate_xmp_iptc_metadata(...)``, ``translate_xmp_gps_metadata(...)``,
    ``translate_xmp_structured_location_metadata(...)``,
    ``translate_xmp_gps_navigation_metadata(...)``,
+   ``translate_xmp_learning_opt_out_in_metadata(...)``,
+   ``translate_xmp_profile_metadata(...)``,
    or the required combination
    with explicit mapping and conflict options.
 3. Pass the returned finalized store to transfer preparation or a writer.
@@ -2131,4 +2135,50 @@ partial resources, duplicate sources and invalid values fail atomically.
 Native validation, typed editing, portable XMP and TIFF serialization share the
 same rules. Compatible-file and rendered-image transfer retain present values;
 RAW and MakerNote processing history is not inferred. LearningOptOutIn and
-complete-file profile validation remain separate.
+profile authoring are covered by the 0.5.12 sections below; complete-file
+profile validation remains separate.
+
+EXIF 3.1 LearningOptOutIn Data (0.5.12)
+=======================================
+
+``translate_xmp_learning_opt_out_in_metadata`` and its Python counterpart
+project one exact ``http://cipa.jp/exif/1.0/`` structure into ExifIFD tag
+``0x9287`` (TIFF type 7). The source has ``NumberOfSets`` and either a typed
+``Values`` array or dense scalar leaves ``Values[1]`` through ``[2*n]``.
+Usage/intention pairs require first usage zero, unique usage values 0..4 and
+intention values 0..2. Root values, sparse indexes, duplicate sources and
+partial deletion fail atomically. A dirty tombstone removes the native value
+only with ``ReplaceExisting``.
+
+The caller supplies ``exif_version`` 300 or 310 for selected sources. New
+payloads use canonical little-endian words; decoded big-endian values retain
+``ValueBigEndian``. Defaults remain ``DirtyOnly`` and ``FailOnConflict`` and
+preparation may allocate while the commit is transactional.
+
+Profile and Authoring Data (0.5.12)
+===================================
+
+``translate_xmp_profile_metadata`` projects these exact properties in one
+bounded transaction:
+
+* ``tiff:ImageDescription`` -> IFD0 ``0x010E``;
+* ``tiff:Artist`` -> IFD0 ``0x013B``;
+* scalar ``tiff:Copyright`` -> IFD0 ``0x8298``;
+* ``exif:ColorSpace`` (1/65535 or ``sRGB``/``Uncalibrated``) -> ``0xA001``;
+* printable ASCII 8.3 ``exif:RelatedSoundFile`` -> ``0xA004``.
+
+Text encoding, legacy two-part Copyright conflict behavior, filename
+validation, limits, tombstones and host-owned synchronization are explicit.
+No ICC profile, image dimension, color agreement or audio-file association is
+inferred. Complete-file profile validation remains outside this contract.
+
+JP2 and JPH Qualification Boundary
+===================================
+
+The existing JP2 writer path accepts boxed JPH brands, replaces selected
+Exif/XML carriers, preserves unknown UUID boxes and the codestream, and updates
+an existing ``jp2h/colr`` child without synthesizing ``jp2h``. Focused tests
+cover ordinary and extended boxes, terminal zero-length boxes, positional
+scans that skip codestream bytes, and both ``jp2`` and ``jph`` brands.
+Real-file ICC/read-back and OIIO/iRAW consumer acceptance remain external
+qualification gates.

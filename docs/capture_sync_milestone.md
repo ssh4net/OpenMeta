@@ -1,8 +1,26 @@
-# Capture synchronization milestones: 0.5.4–0.5.11
+# Capture synchronization milestones: 0.5.4–0.5.12
 
 Audit date: 2026-09-14. The original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing API signatures, ABI 3, or host synchronization responsibilities.
+
+## EXIF 3.1 LearningOptOutIn and profile authoring in 0.5.12
+
+The seventh EXIF 3.1 field, `LearningOptOutIn` `9287`, now has a bounded C++
+and Python transaction. It accepts the exact `exifEX` usage/intention structure,
+validates complete dense pairs, preserves native byte-order provenance and
+requires an explicit host EXIF version of 0300 or 0310. Dirty tombstones remove
+the native value only under `ReplaceExisting`.
+
+The same release adds one profile transaction for IFD0 `ImageDescription`
+`010E`, `Artist` `013B`, scalar `Copyright` `8298`, ExifIFD `ColorSpace` `A001`
+and `RelatedSoundFile` `A004`. It defines text/filename validation and legacy
+two-part Copyright conflict behavior. It does not infer ICC, image or audio
+authority and does not impose a complete-file profile.
+
+Existing JP2 and boxed JPH rewrite support is covered by focused ordinary,
+extended, terminal-box and positional-scan tests. Downstream OIIO/iRAW
+acceptance and real-file ICC/read-back remain external gates.
 
 ## EXIF 3.1 development and correction data in 0.5.11
 
@@ -18,7 +36,8 @@ translator never changes ExifVersion, so it does not hide the DC-008/DC-010
 edition discrepancy. Native schemas, typed editing, portable output and TIFF
 serialization share the same checks. Compatible-file and rendered-image
 transfer retain these fields when present; OpenMeta does not infer processing
-history from RAW or MakerNote data. LearningOptOutIn remains separate.
+history from RAW or MakerNote data. LearningOptOutIn is added by the 0.5.12
+contract below.
 
 ## EXIF text and version metadata in 0.5.9
 
@@ -203,8 +222,9 @@ Encoding/composite contracts are implemented in 0.5.7 and structured capture
 contracts in 0.5.8; text/comment/version contracts are implemented in 0.5.9.
 The [standard EXIF inventory](exif_authoring_inventory.md) selected validation
 consistency for existing writeback fields, implemented in 0.5.10. The six EXIF
-3.1 development/correction fields are implemented in 0.5.11; LearningOptOutIn
-remains separate. Fuzzy search remains lowest priority.
+3.1 development/correction fields are implemented in 0.5.11 and
+LearningOptOutIn/profile authoring are implemented in 0.5.12. Fuzzy search
+remains lowest priority.
 
 ## Remaining field families
 
@@ -215,7 +235,7 @@ remaining-tags denominator. Read/display support does not imply reverse support.
 | --- | --- | --- |
 | Existing-field validation | Routed-field schemas and legal Interop tag IDs | Implemented in 0.5.10; full file-profile conformance remains separate. |
 | EXIF 3.1 development/correction | Six fields A40D–A412 | Implemented in 0.5.11; maintain the bounded version, value and transfer policy. |
-| Other standard authoring/profile rules | IFD0 descriptive fields, color/Interop, LearningOptOutIn and RelatedSoundFile | Define host authority, encoding and companion relationships; see the inventory. |
+| Other standard authoring/profile rules | IFD0 descriptive fields, color/Interop, LearningOptOutIn and RelatedSoundFile | Bounded 0.5.12 routes exist; complete-file authority and companion validation remain separate. |
 | MakerNotes | Vendor/version-specific offsets and integrity fields | Continue the separate rewrite-trust work; generic opaque authoring does not establish safe relocation. |
 
 The audit does not reopen downstream application acceptance or claim arbitrary

@@ -9,7 +9,14 @@ fields now have fixed schemas; five registered Interop fields and three
 structural pointers are recognized. The following counts and probe observations
 remain the historical 0.5.9 baseline. See :doc:`generic_authoring` for the current
 validation boundary. The six EXIF 3.1 development/correction fields are
-implemented in 0.5.11; LearningOptOutIn remains separate.
+implemented in 0.5.11; LearningOptOutIn is covered by the next bounded
+structured contract.
+
+**0.5.12 update:** ``LearningOptOutIn`` 9287 now has a bounded C++/Python
+transaction with exact ``exifEX`` structure and native type-7 validation. The
+profile transaction covers IFD0 ``ImageDescription``, ``Artist``, scalar
+``Copyright``, ExifIFD ``ColorSpace`` and ``RelatedSoundFile``. These routes do
+not create a mandatory complete-file profile or infer ICC, image or audio facts.
 
 Scope and counts
 ----------------
@@ -97,9 +104,9 @@ inferred companions. Conflicting shared-object access remains host-synchronized.
 Remaining writeback and profile work
 ------------------------------------
 
-The three remaining EXIF 3.0 ExifIFD fields are ColorSpace A001 (host target
-override exists; color/ICC/Interop agreement needs a contract), RelatedSoundFile
-A004 (host file association) and MakerNote 927C (separate vendor rewrite trust).
+Only MakerNote 927C remains without a dedicated EXIF 3.0 reverse route. The
+0.5.12 profile transaction covers ColorSpace A001 and RelatedSoundFile A004;
+ICC, target-image and audio-file authority remains host-owned.
 
 The six EXIF 3.1 development/correction fields A40D--A412 are implemented in
 0.5.11:
@@ -121,17 +128,21 @@ Version policy needs an explicit decision: DC-008-2026 section 4.6.6.1.1 says
 whereas DC-010-2026 Table 7 describes EXIF 3.1 as ``0310`` (PDF page 14).
 Record the source discrepancy and chosen host-supplied policy; the translator
 requires 0300 or 0310 for selected writeback and never changes ExifVersion.
-LearningOptOutIn 9287 is the seventh new field and needs a separate bounded
-usage/intention contract.
+LearningOptOutIn 9287 is the seventh EXIF 3.1 field. Its complete bounded
+usage/intention structure and explicit 0300/0310 host policy are implemented.
 
-IFD0 ImageDescription, Artist and Copyright lack dedicated reverse routes;
-descriptive reverse currently targets IPTC. Broader UTF-8, two-part Copyright,
-Artist/owner/photographer and Software/editor relationships need profile work.
+The 0.5.12 profile transaction provides dedicated routes for IFD0
+ImageDescription, Artist, scalar Copyright, ColorSpace and RelatedSoundFile.
+An existing legacy two-part NUL Copyright value is preserved or conflicts by
+policy; arbitrary two-part Copyright authoring and broader companion
+relationships remain outside the route.
 The other twenty unrouted Table 6 fields describe raster/color/layout facts and
 need host/encoder authority. Full mandatory-tag and color/Interop validation
 requires file/container/version context beyond today's dimensions/CFA context.
 
-Downstream OIIO/iRAW acceptance stays on hold. C/Rust and vendor rewrite
+Downstream OIIO/iRAW acceptance stays on hold pending consumer runs. Existing
+JP2 and boxed JPH rewrite support is covered by focused tests; real-file
+ICC/read-back remains external qualification. C/Rust and vendor rewrite
 guarantees are unchanged. Fuzzy search remains lowest priority.
 
 .. _EXIF 3.0, corrected 2024 edition: https://www.cipa.jp/std/documents/download_e.html?CIPA_DC-008-2024-E=

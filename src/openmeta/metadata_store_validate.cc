@@ -2,6 +2,7 @@
 
 #include "metadata_capture_fields_internal.h"
 #include "metadata_gps_fields_internal.h"
+#include "metadata_learning_fields_internal.h"
 #include "metadata_text_fields_internal.h"
 
 #include "openmeta/validate.h"
@@ -57,6 +58,7 @@ namespace {
     static constexpr TagSchema kTagSchemas[] = {
         { SchemaIfd::Ifd0, 0x010EU, kAscii | kUtf8, 1U, 0U, true },
         { SchemaIfd::Ifd0, 0x013BU, kAscii | kUtf8, 1U, 0U, true },
+        { SchemaIfd::Ifd0, 0x8298U, kAscii | kUtf8, 1U, 0U, true },
         { SchemaIfd::ExifIfd, 0xA430U, kAscii | kUtf8, 1U, 0U, true },
         { SchemaIfd::ExifIfd, 0xA433U, kAscii | kUtf8, 1U, 0U, true },
         { SchemaIfd::ExifIfd, 0xA434U, kAscii | kUtf8, 1U, 0U, true },
@@ -69,6 +71,7 @@ namespace {
         { SchemaIfd::ExifIfd, 0xA43CU, kAscii | kUtf8, 1U, 0U, true },
         { SchemaIfd::ExifIfd, 0xA000U, kUndefined, 4U, 4U, true },
         { SchemaIfd::ExifIfd, 0x9286U, kUndefined, 8U, 0U, true },
+        { SchemaIfd::ExifIfd, 0x9287U, kUndefined, 6U, 0U, true },
 
         { SchemaIfd::ImageIfd, 0x0100U, kShort | kLong, 1U, 1U, true },
         { SchemaIfd::ImageIfd, 0x0101U, kShort | kLong, 1U, 1U, true },
@@ -97,6 +100,7 @@ namespace {
         { SchemaIfd::ExifIfd, 0x9204U, kSRational, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0x920AU, kRational, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0xA001U, kShort, 1U, 1U, true },
+        { SchemaIfd::ExifIfd, 0xA004U, kAscii, 1U, 13U, true },
         { SchemaIfd::ExifIfd, 0xA002U, kShort | kLong, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0xA003U, kShort | kLong, 1U, 1U, true },
         { SchemaIfd::ExifIfd, 0xA500U, kRational, 1U, 1U, true },
@@ -903,7 +907,8 @@ namespace {
             && (schema->max_count == 0U || count <= schema->max_count)
             && ((ifd == "exififd"
                  && !detail::standard_capture_value_valid(store.arena(), tag,
-                                                          entry.value))
+                                                          entry.value,
+                                                          entry.flags))
                 || (ifd == "gpsifd"
                     && !detail::gps_field_value_valid(store.arena(), tag,
                                                       entry.value)))) {

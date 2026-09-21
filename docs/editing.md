@@ -206,3 +206,13 @@ EXIF version policy of 0300 or 0310 and commits the complete selected batch
 atomically. Transfer retains present values, including rendered-image transfer;
 it does not infer RAW or MakerNote processing history. See
 [the translation contract](translation.md#exif-31-development-and-correction-data-0511).
+
+## EXIF 3.1 LearningOptOutIn and profile authoring update (0.5.12)
+
+Typed editing and native validation now share the bounded LearningOptOutIn and
+profile translation contracts. LearningOptOutIn requires a complete
+`exifEX` usage/intention structure and an explicit EXIF 0300/0310 host policy.
+Profile writeback covers ImageDescription, Artist, scalar Copyright, ColorSpace
+and RelatedSoundFile; it does not infer ICC, image or audio authority or impose
+complete-file companions. Failed validation, limits, conflicts and tombstones
+remain transactional. See [the translation contract](translation.md#exif-31-learningoptoutin-data-0512).

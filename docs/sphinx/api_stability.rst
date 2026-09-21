@@ -203,6 +203,24 @@ Host-facing API map
        conflicts, and resource limits are explicit; unrepresentable decimals
        fail instead of being approximated. Python remains a thin
        detached-document wrapper. See :doc:`translation`.
+   * - EXIF 3.1 LearningOptOutIn translation:
+       ``translate_xmp_learning_opt_out_in_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental v1
+     - Bounded transactional projection of the exact ``exifEX``
+       usage/intention structure into native tag ``0x9287``. First usage,
+       duplicate usage, complete shape, explicit 0300/0310 version policy,
+       byte-order provenance, conflicts, tombstones and limits are explicit.
+       Python mirrors the detached-store transaction. See :doc:`translation`.
+   * - Profile authoring translation: ``translate_xmp_profile_metadata(...)``
+     - ``openmeta/metadata_translation.h``
+     - Experimental v1
+     - Bounded transactional projection of TIFF ImageDescription, Artist and
+       scalar Copyright plus EXIF ColorSpace and printable 8.3
+       RelatedSoundFile into native EXIF. Text encoding, legacy two-part
+       Copyright conflict behavior, filename validation and limits are
+       explicit; ICC/image/audio inference is not performed. Python mirrors
+       the detached-store transaction. See :doc:`translation`.
    * - Target-bound image-geometry translation:
        ``translate_xmp_image_geometry(...)``
      - ``openmeta/metadata_translation.h``, ``openmeta/metadata_transfer.h``
@@ -803,6 +821,17 @@ requirements are explicit. ABI 3, snapshot v1 layout and host synchronization
 responsibilities remain unchanged. BOM-less big-endian UserComment snapshots
 require a 0.5.9 reader. See the EXIF text/version translation contract for limits
 and the recorded OIIO/ExifTool reader limitations.
+
+EXIF 3.1 LearningOptOutIn and Profile Authoring Update (0.5.12)
+=================================================================
+
+The experimental LearningOptOutIn and profile translation contracts are
+versioned by ``kMetadataLearningOptOutInTranslationContractVersion == 1`` and
+``kMetadataProfileTranslationContractVersion == 1``. ABI 3, snapshot v1 and
+host-owned synchronization remain unchanged. The contracts are bounded and
+transactional, but they do not impose mandatory complete-file companions,
+rewrite arbitrary RDF, infer ICC/image/audio authority, or close downstream
+OIIO/iRAW acceptance. See :doc:`translation`.
 
 EXIF 3.1 Development and Correction Update (0.5.11)
 =====================================================

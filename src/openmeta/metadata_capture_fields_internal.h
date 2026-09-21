@@ -4,6 +4,7 @@
 #include "openmeta/meta_value.h"
 
 #include "metadata_development_fields_internal.h"
+#include "metadata_learning_fields_internal.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -108,7 +109,8 @@ lens_specification_value_valid(const ByteArena& arena,
 
 inline bool
 standard_capture_value_valid(const ByteArena& arena, uint16_t tag,
-                             const MetaValue& value) noexcept
+                             const MetaValue& value,
+                             EntryFlags flags = EntryFlags::None) noexcept
 {
     if (capture_enum_tag(tag))
         return value.kind == MetaValueKind::Scalar && value.count == 1U
@@ -126,6 +128,8 @@ standard_capture_value_valid(const ByteArena& arena, uint16_t tag,
     case 0xa411U:
     case 0xa412U:
         return development_correction_value_valid(arena, tag, value);
+    case 0x9287U:
+        return learning_opt_out_in_value_valid(arena, value, flags);
     case 0x9201U:
     case 0x9203U:
         return value.kind == MetaValueKind::Scalar && value.count == 1U

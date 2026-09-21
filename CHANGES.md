@@ -1,5 +1,24 @@
 # OpenMeta Changes
 
+## 0.5.12 - 2026-09-21
+
+- Add bounded C++ and Python writeback for EXIF 3.1 `LearningOptOutIn`
+  (`0x9287`). The transaction accepts the exact `exifEX` usage/intention
+  structure, validates the first usage and duplicate rules, preserves native
+  byte-order provenance and requires an explicit EXIF version policy of 0300
+  or 0310.
+- Add one profile transaction for `tiff:ImageDescription`, `tiff:Artist`,
+  scalar `tiff:Copyright`, `exif:ColorSpace` and printable ASCII
+  `exif:RelatedSoundFile`. Copyright's legacy two-part NUL representation is
+  preserved or reported as a conflict; no ICC, image, or audio association is
+  inferred.
+- Extend shared validation, portable XMP, Python smoke coverage and native
+  regression tests. Existing JP2 and boxed JPH rewrite paths are qualified for
+  metadata-carrier replacement and codestream/unknown-box preservation;
+  downstream OIIO and iRAW acceptance still requires their consumer runs.
+- Keep ABI 3, snapshot v1 and host-owned synchronization responsibilities
+  unchanged. Preparation may allocate; translation commits remain transactional.
+
 ## 0.5.11 - 2026-09-20
 
 - Add one bounded C++ and Python translation contract for the six EXIF 3.1

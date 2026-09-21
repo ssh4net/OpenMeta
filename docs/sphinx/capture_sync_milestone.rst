@@ -176,7 +176,8 @@ Encoding and composite capture are implemented in 0.5.7 and structured
 capture in 0.5.8. Text/comment/version contracts are implemented in 0.5.9.
 The :doc:`exif_authoring_inventory` selected existing-field validation,
 implemented in 0.5.10. The six EXIF 3.1 development/correction fields are
-implemented in 0.5.11; LearningOptOutIn remains separate.
+implemented in 0.5.11; LearningOptOutIn/profile authoring are implemented in
+0.5.12.
 MakerNote rewrite trust remains vendor-specific.
 Read/display support does not establish reverse writeback support. Downstream
 application acceptance and whole-corpus qualification are outside this audit.
@@ -233,3 +234,18 @@ The remaining standard fields and profile gaps are recorded in
 Copyright's two-part NUL-separated representation remains outside this text
 extension. Downstream application acceptance stays on hold; fuzzy search remains
 lowest priority.
+
+EXIF 3.1 LearningOptOutIn and Profile Authoring Update (0.5.12)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The bounded LearningOptOutIn transaction projects the exact ``exifEX``
+usage/intention structure into tag ``0x9287``, validates dense pairs and
+requires an explicit host EXIF version of 0300 or 0310. The profile transaction
+covers IFD0 ImageDescription, Artist and scalar Copyright plus ExifIFD
+ColorSpace and RelatedSoundFile. It defines text/filename and legacy
+two-part-Copyright conflict rules without inferring ICC, image or audio
+authority or imposing a complete-file profile.
+
+Existing JP2 and boxed JPH rewrite support is covered by focused carrier,
+codestream-preservation and positional-scan tests. Downstream OIIO/iRAW
+acceptance and real-file ICC/read-back remain external gates.

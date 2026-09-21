@@ -16,7 +16,14 @@ runtime observations below retain the historical 0.5.9 audit baseline.
 fields A40D–A412 now have a shared transactional C++/Python translator, native
 schemas, portable XMP and type-129 serialization. The published
 `DevelopmentCharacterstic` spelling and the explicit 0300/0310 host policy are
-preserved. LearningOptOutIn remains a separate structured contract.
+preserved. LearningOptOutIn is covered by the next bounded structured contract.
+
+**0.5.12 implementation update:** `LearningOptOutIn` 9287 now has a bounded
+C++/Python transaction with exact `exifEX` structure and native type-7
+validation. The profile transaction also covers IFD0 `ImageDescription`,
+`Artist`, scalar `Copyright`, ExifIFD `ColorSpace` and `RelatedSoundFile`.
+These routes define source encoding, conflict and limit behavior; they do not
+create a mandatory complete-file profile or infer ICC, image or audio facts.
 
 ## Scope and sources
 
@@ -103,12 +110,12 @@ Synchronization of conflicting shared-object access remains host-owned.
 
 ## Remaining writeback families
 
-Only three EXIF 3.0 ExifIFD data fields lack a dedicated reverse route:
+Only one EXIF 3.0 ExifIFD data field lacks a dedicated reverse route:
 
 | Field | Existing boundary | Next decision |
 | --- | --- | --- |
-| ColorSpace `A001` | Host target override exists | Define color/ICC/Interop authority and agreement rules. |
-| RelatedSoundFile `A004` | Exact-key storage only | Define filename validation and host-owned file association. |
+| ColorSpace `A001` | 0.5.12 bounded profile route | ICC and target-image authority remain host-owned. |
+| RelatedSoundFile `A004` | 0.5.12 bounded profile route | The route validates a filename; file association remains host-owned. |
 | MakerNote `927C` | Opaque vendor data | Keep relocation and rewrite trust in the separate vendor workstream. |
 
 EXIF 3.1 adds seven fields. The **six development/correction fields**
@@ -130,8 +137,9 @@ change or infer ExifVersion. Compatible-file and rendered-image transfer retain
 present native and XMP values; no processing history is inferred from RAW or
 MakerNote data.
 
-LearningOptOutIn `9287` remains the next EXIF 3.1 writeback decision because its
-structured usage and intention data needs a separate bounded contract.
+LearningOptOutIn `9287` is implemented as the seventh EXIF 3.1 writeback field.
+Its usage/intention pairs are validated as one bounded transaction and require
+an explicit host EXIF version policy.
 
 The implementation records a source inconsistency that requires an explicit
 host policy:
@@ -141,17 +149,18 @@ Table 7 describes EXIF 3.1 as `0310` (PDF page 14). Do not silently repair the
 published text or automatically upgrade a caller's version. Record the chosen
 host-supplied version policy and its limits.
 
-LearningOptOutIn `9287` is the seventh addition. Its structured usage/intention
-data needs a separate bounded contract; the library must not invent the user's
-intentions.
+The library does not invent usage or intention values. A selected
+`LearningOptOutIn` source must provide the complete bounded structure.
 
-## Later profile work
+## Profile boundaries after 0.5.12
 
-IFD0 ImageDescription `010E`, Artist `013B` and Copyright `8298` lack dedicated
-reverse routes; the descriptive reverse API currently targets IPTC only.
-Broader EXIF 3 UTF-8 support and Copyright's two-part NUL-separated representation
-need explicit encoding contracts. Artist/owner/photographer and Software/editor
-relationships belong in the same profile review.
+The 0.5.12 profile transaction provides dedicated routes for IFD0
+ImageDescription `010E`, Artist `013B`, scalar Copyright `8298`, ColorSpace
+`A001` and RelatedSoundFile `A004`. It accepts UTF-8 text for the first three
+properties, writes one scalar Copyright part, and treats an existing legacy
+two-part NUL Copyright value as preserved or conflicting according to the
+selected policy. Broader companion relationships and arbitrary two-part
+Copyright authoring remain outside the route.
 
 The other twenty unrouted Table 6 fields describe raster, color or layout
 facts. Their host/encoder authority must be defined before adding copying
@@ -159,9 +168,11 @@ rules. Full profile validation also needs explicit file/container and version
 context for mandatory tags, color/Interop agreement and companion requirements.
 The current dimensions/CFA validation context does not supply that profile.
 
-Downstream OIIO/iRAW application acceptance remains on hold. This audit does not
-change C/Rust implementations or vendor rewrite guarantees. Fuzzy search remains
-the lowest priority.
+Downstream OIIO/iRAW application acceptance remains on hold pending consumer
+runs. Existing JP2 and boxed JPH rewrite support is qualified by focused tests;
+real-file ICC/read-back and downstream corpus acceptance remain external gates.
+This audit does not change C/Rust implementations or vendor rewrite guarantees.
+Fuzzy search remains the lowest priority.
 
 [exif30]: https://www.cipa.jp/std/documents/download_e.html?CIPA_DC-008-2024-E=
 [exif31]: https://www.cipa.jp/std/documents/download_e.html?CIPA_DC-008-2026-E=

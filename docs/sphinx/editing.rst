@@ -173,3 +173,14 @@ correction values used by the C++ and Python translation contract. Selected
 writeback requires host EXIF version 0300 or 0310 and commits atomically.
 Transfer retains present values, including rendered-image transfer; no RAW or
 MakerNote processing history is inferred. See :doc:`translation`.
+
+EXIF 3.1 LearningOptOutIn and Profile Authoring Update (0.5.12)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Typed editing and native validation share the bounded LearningOptOutIn and
+profile translation contracts. LearningOptOutIn requires a complete ``exifEX``
+usage/intention structure and an explicit EXIF 0300/0310 host policy. Profile
+writeback covers ImageDescription, Artist, scalar Copyright, ColorSpace and
+RelatedSoundFile; it does not infer ICC, image or audio authority or impose
+complete-file companions. Failed validation, limits, conflicts and tombstones
+remain transactional. See :doc:`translation`.

@@ -399,6 +399,12 @@ enum class MetadataCaptureTranslationMapping : uint8_t {
     XmpChromaticAberrationCorrection,
     XmpShadingCorrection,
     XmpNoiseReduction,
+    XmpLearningOptOutIn,
+    XmpTiffImageDescription,
+    XmpTiffArtist,
+    XmpTiffCopyright,
+    XmpColorSpace,
+    XmpRelatedSoundFile,
 };
 
 /// Caller-selected bounded reverse capture mappings.
@@ -803,6 +809,92 @@ translate_xmp_development_correction_metadata(
     const MetaStore& source,
     const MetadataDevelopmentCorrectionTranslationOptions& options,
     MetaStore* out_store);
+
+/// Experimental bounded EXIF 3.1 LearningOptOutIn translation contract.
+inline constexpr uint32_t kMetadataLearningOptOutInTranslationContractVersion
+    = 1U;
+inline constexpr uint32_t kMetadataLearningOptOutInTranslationMaxSets = 64U;
+inline constexpr uint32_t kMetadataLearningOptOutInTranslationMaxAddedEntries
+    = 1U;
+
+/**
+ * \brief Translate the EXIF 3.1 LearningOptOutIn XMP structure to tag 0x9287.
+ *
+ * The source namespace is `http://cipa.jp/exif/1.0/` and the exact source
+ * shape is `LearningOptOutIn/NumberOfSets` plus the ordered scalar leaves
+ * `LearningOptOutIn/Values[1]` through `[2*n]`. Values are usage/intention
+ * pairs. The first usage value is zero, usage values are unique, and all
+ * values use the published bounded choices. A dirty tombstone removes the
+ * native tag only under ReplaceExisting. Preparation may allocate; the
+ * commit is one transaction and hosts synchronize conflicting object access.
+ */
+struct MetadataLearningOptOutInTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    bool learning_opt_out_in_to_exif = true;
+    /// Explicit host policy: 0 requires no selected source; use 300 or 310.
+    uint32_t exif_version = 0U;
+    uint32_t max_sets = kMetadataLearningOptOutInTranslationMaxSets;
+    uint32_t max_added_entries
+        = kMetadataLearningOptOutInTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataCaptureTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataCaptureTranslationMaxTotalTextBytes;
+};
+
+MetadataCaptureTranslationResult
+translate_xmp_learning_opt_out_in_metadata(
+    const MetaStore& source,
+    const MetadataLearningOptOutInTranslationOptions& options,
+    MetaStore* out_store);
+
+/// Experimental bounded profile/authoring translation contract.
+inline constexpr uint32_t kMetadataProfileTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataProfileTranslationMaxAddedEntries = 5U;
+inline constexpr uint32_t kMetadataProfileTranslationMaxTextBytesPerProperty
+    = 65536U;
+inline constexpr uint64_t kMetadataProfileTranslationMaxTotalTextBytes
+    = 1048576U;
+
+/**
+ * \brief Translate five exact profile authoring properties into native EXIF.
+ *
+ * `tiff:ImageDescription`, `tiff:Artist`, and `tiff:Copyright` target IFD0
+ * tags 0x010e, 0x013b, and 0x8298. `exif:ColorSpace` accepts only 1 or 65535
+ * and targets ExifIFD 0xa001. `exif:RelatedSoundFile` accepts a printable
+ * ASCII 8.3 filename and targets ExifIFD 0xa004. No ICC, image dimensions,
+ * or audio-file association is inferred. A scalar Copyright source writes a
+ * single native part; an existing legacy two-part NUL value is preserved by
+ * PreserveExisting and conflicts under FailOnConflict. Preparation may
+ * allocate; the commit is one transaction and hosts synchronize shared-object
+ * access.
+ */
+struct MetadataProfileTranslationOptions final {
+    MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly;
+    MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
+    bool image_description_to_exif = true;
+    bool artist_to_exif = true;
+    bool copyright_to_exif = true;
+    bool color_space_to_exif = true;
+    bool related_sound_file_to_exif = true;
+    uint32_t max_added_entries = kMetadataProfileTranslationMaxAddedEntries;
+    uint32_t max_operations = kMetadataCaptureTranslationMaxOperations;
+    uint32_t max_text_bytes_per_property
+        = kMetadataProfileTranslationMaxTextBytesPerProperty;
+    uint64_t max_total_text_bytes
+        = kMetadataProfileTranslationMaxTotalTextBytes;
+};
+
+MetadataCaptureTranslationResult
+translate_xmp_profile_metadata(const MetaStore& source,
+                               const MetadataProfileTranslationOptions& options,
+                               MetaStore* out_store);
 
 inline constexpr uint32_t kMetadataApexTranslationContractVersion   = 1U;
 inline constexpr uint32_t kMetadataApexTranslationMaxAddedEntries   = 5U;

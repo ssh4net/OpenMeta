@@ -3,6 +3,7 @@
 #include "metadata_capture_fields_internal.h"
 #include "metadata_development_fields_internal.h"
 #include "metadata_gps_fields_internal.h"
+#include "metadata_learning_fields_internal.h"
 #include "metadata_text_fields_internal.h"
 
 #include "openmeta/xmp_dump.h"
@@ -1420,6 +1421,7 @@ namespace {
     {
         return tag == 0xa430U || tag == 0xa431U || tag == 0xa432U
                || tag == 0xa433U || tag == 0xa434U || tag == 0xa435U
+               || tag == detail::kLearningOptOutInTag
                || detail::exif3_text_tag(tag)
                || detail::development_correction_tag(tag);
     }
@@ -2057,7 +2059,7 @@ namespace {
                    || name == "ISOSpeedLatitudezzz" || name == "CameraOwnerName"
                    || name == "BodySerialNumber" || name == "LensMake"
                    || name == "LensModel" || name == "LensSerialNumber"
-                   || name == "LensSpecification";
+                   || name == "LensSpecification" || name == "LearningOptOutIn";
         }
 
         if (prefix == "xmp") {
@@ -4375,13 +4377,14 @@ namespace {
     static bool
     portable_capture_scalar_value_valid(const ByteArena& arena,
                                         std::string_view ifd, uint16_t tag,
-                                        const MetaValue& value) noexcept
+                                        const MetaValue& value,
+                                        EntryFlags flags = EntryFlags::None) noexcept
     {
         if (ifd == "gpsifd")
             return detail::gps_field_value_valid(arena, tag, value);
         if (ifd != "exififd")
             return true;
-        if (!detail::standard_capture_value_valid(arena, tag, value))
+        if (!detail::standard_capture_value_valid(arena, tag, value, flags))
             return false;
         if (tag == 0x9000U || tag == 0xa000U) {
             uint32_t version = 0U;
@@ -4682,8 +4685,53 @@ namespace {
             return false;
         }
 
-        if (!portable_capture_scalar_value_valid(arena, ifd, tag, v))
+        if (!portable_capture_scalar_value_valid(arena, ifd, tag, v, flags))
             return true;
+        if (ifd == "exififd" && tag == detail::kLearningOptOutInTag) {
+            const std::span<const std::byte> raw = arena.span(v.data.span);
+            const bool little = !any(flags, EntryFlags::ValueBigEndian);
+            const uint16_t sets
+                = detail::learning_opt_out_in_u16(raw, 0U, little);
+            w->append(kIndent3);
+            w->append("<");
+            w->append(prefix);
+            w->append(":");
+            w->append(name);
+            w->append(" rdf:parseType=\"Resource\">\n");
+            w->append(kIndent4);
+            w->append("<");
+            w->append(prefix);
+            w->append(":NumberOfSets>");
+            append_u64_dec(sets, w);
+            w->append("</");
+            w->append(prefix);
+            w->append(":NumberOfSets>\n");
+            w->append(kIndent4);
+            w->append("<");
+            w->append(prefix);
+            w->append(":Values><rdf:Seq>\n");
+            for (uint32_t i = 0U; i < sets * 2U; ++i) {
+                w->append(kIndent4);
+                w->append(kIndent1);
+                w->append("<rdf:li>");
+                append_u64_dec(detail::learning_opt_out_in_u16(
+                                   raw, static_cast<size_t>(i + 1U) * 2U,
+                                   little),
+                               w);
+                w->append("</rdf:li>\n");
+            }
+            w->append(kIndent4);
+            w->append("</rdf:Seq></");
+            w->append(prefix);
+            w->append(":Values>\n");
+            w->append(kIndent3);
+            w->append("</");
+            w->append(prefix);
+            w->append(":");
+            w->append(name);
+            w->append(">\n");
+            return true;
+        }
         if (ifd == "exififd" && detail::structured_capture_tag(tag)) {
             if (!detail::structured_capture_value_valid(arena, tag, v, flags))
                 return true;
@@ -5360,7 +5408,8 @@ namespace {
             *out_shape = PortablePropertyShape::Structured;
             return true;
         }
-        if (prefix == "exifEX" && name == "DevelopmentType") {
+        if (prefix == "exifEX"
+            && (name == "DevelopmentType" || name == "LearningOptOutIn")) {
             *out_shape = PortablePropertyShape::Structured;
             return true;
         }
@@ -5500,6 +5549,18 @@ namespace {
             && (child == "DevelopmentCharacterstic"
                 || child == "FactoryDefault")) {
             *out_shape = PortableStructuredChildShape::Scalar;
+            return true;
+        }
+        if (prefix == "exifEX" && base == "LearningOptOutIn"
+            && (child_prefix.empty() || child_prefix == prefix)
+            && child == "NumberOfSets") {
+            *out_shape = PortableStructuredChildShape::Scalar;
+            return true;
+        }
+        if (prefix == "exifEX" && base == "LearningOptOutIn"
+            && (child_prefix.empty() || child_prefix == prefix)
+            && child == "Values") {
+            *out_shape = PortableStructuredChildShape::Indexed;
             return true;
         }
 
@@ -10444,7 +10505,7 @@ namespace {
         if (ifd == "exififd" && detail::composite_tag(tag)
             && !detail::composite_group_valid(arena, entries))
             return false;
-        if (!portable_capture_scalar_value_valid(arena, ifd, tag, v))
+        if (!portable_capture_scalar_value_valid(arena, ifd, tag, v, flags))
             return false;
 
         if ((ifd == "gpsifd" || ifd.ends_with("_gpsifd"))
@@ -10486,7 +10547,8 @@ namespace {
                 claims, prefix, emitted_name, PortablePropertyOwner::Exif,
                 (tag == 0xa462U
                  || (ifd == "exififd" && (detail::structured_capture_tag(tag)
-                                           || tag == 0xa40dU)))
+                                           || tag == 0xa40dU
+                                           || tag == detail::kLearningOptOutInTag)))
                     ? PortablePropertyShape::Structured
                 : (tag == 0xa432U || tag == 0x9214U || tag == 0xa214U
                    || tag == 0x9101U || tag == 0xa461U)
@@ -11075,7 +11137,7 @@ namespace {
         std::span<const Entry> entries, const MetaValue& v,
         EntryFlags flags = EntryFlags::None) noexcept
     {
-        if (!portable_capture_scalar_value_valid(arena, ifd, tag, v))
+        if (!portable_capture_scalar_value_valid(arena, ifd, tag, v, flags))
             return false;
         if (ifd == "exififd" && tag == 0x9286U) {
             uint32_t version = 0U;
@@ -11191,7 +11253,8 @@ namespace {
                         : (tag == 0xa462U
                            || (ifd == "exififd"
                                && (detail::structured_capture_tag(tag)
-                                   || tag == 0xa40dU)))
+                                   || tag == 0xa40dU
+                                   || tag == detail::kLearningOptOutInTag)))
                             ? PortablePropertyShape::Structured
                         : (tag == 0xa432U || tag == 0x9214U || tag == 0xa214U
                            || tag == 0x9101U || tag == 0xa461U)

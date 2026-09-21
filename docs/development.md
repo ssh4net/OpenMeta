@@ -1851,3 +1851,16 @@ changes ExifVersion or infers a version. Shared validators cover authoring,
 editing, translation, portable XMP and serialization. Standard fields are
 retained by transfer when present, including rendered-image transfer; no RAW or
 MakerNote processing history is inferred. See [the translation contract](translation.md#exif-31-development-and-correction-data-0511).
+
+## EXIF 3.1 LearningOptOutIn and profile authoring update (0.5.12)
+
+The bounded C++/Python LearningOptOutIn transaction projects the exact
+`exifEX` usage/intention structure into native tag `0x9287`, with complete
+shape, first-usage, duplicate-usage, byte-order and explicit EXIF 0300/0310
+checks. The profile transaction projects ImageDescription, Artist, scalar
+Copyright, ColorSpace and RelatedSoundFile with shared validation and
+transactional conflict/tombstone handling. No ICC, image or audio association
+is inferred, and complete-file profile validation remains outside these APIs.
+Existing JP2 and boxed JPH rewrite tests cover carrier replacement and
+codestream/unknown-box preservation; OIIO/iRAW consumer acceptance remains
+pending. See [the translation contract](translation.md#exif-31-learningoptoutin-data-0512).
