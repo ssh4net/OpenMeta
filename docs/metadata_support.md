@@ -359,8 +359,6 @@ the optional verification scaffold.
 
 ## Main Current Gaps
 
-- independently authored conformance-file validation for the recently
-  standardized BMFF tiled-image layout
 - additional `JXL brob` realtypes beyond `Exif`, `xml `, `jumb`, and `c2pa`
 - full `JUMBF/C2PA` semantics and policy validation
 - deeper RAF model-specific native tables and X3F image-processing sections

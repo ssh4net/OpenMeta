@@ -302,8 +302,8 @@ Coverage matrix
        clean-aperture rationals, JUMBF box labels, and draft C2PA/JUMBF
        structural fields are exposed.
      - High, about 98%.
-     - Independently authored tiled-image conformance files and full C2PA
-       manifest/policy semantics.
+     - Full C2PA manifest/policy semantics. Independent tiled-image
+       conformance was qualified on 2026-09-22.
    * - Photoshop IRB
      - Raw resources are preserved and a bounded interpreted subset is decoded
        for fixed-layout resources, including Photoshop 2 info/color-table
@@ -442,15 +442,18 @@ milestones.
 Interpretation maintenance priorities
 -------------------------------------
 
-1. Validate the complete bounded BMFF tiled-image contract against
-   independently authored conformance files as they become available.
-2. Broaden transfer diagnostic policy coverage now that stable message tokens
+The complete bounded BMFF tiled-image contract was independently qualified on
+2026-09-22 with internal, sequential, external-URL and malformed conditional
+fixtures. The gate checks decoded core, layout and complete validity fields
+through the public Python reader.
+
+1. Broaden transfer diagnostic policy coverage now that stable message tokens
    and localizable argument tokens are available for GUI workflows.
-3. Add pantry payload semantics only where a validated, bounded schema exists;
+2. Add pantry payload semantics only where a validated, bounded schema exists;
    keep arbitrary payloads raw and source-bound.
-4. Expand the remaining unambiguous MakerNote long tail: encrypted/custom
+3. Expand the remaining unambiguous MakerNote long tail: encrypted/custom
    settings, per-model firmware formulas outside currently supported
    formatter contexts, remaining live-vendor scalar/string-coded fields, and
    per-model tables only where context is strong enough to avoid wrong labels.
-5. Keep transfer-safety classification conservative when interpretation is
+4. Keep transfer-safety classification conservative when interpretation is
    incomplete.

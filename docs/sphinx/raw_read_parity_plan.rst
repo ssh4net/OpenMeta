@@ -71,9 +71,8 @@ Family Gap Matrix
        recursive item-offset descriptor resolution, graph-cycle/source
        validation, and complete bounded ``tili`` configuration/reference/
        offset-table interpretation
-     - Independently authored tiled-image conformance samples and CR3-specific
-       private records
-     - Validate finalized tiled-image layouts against independent files, then
+     - CR3-specific private records and deeper scene/property-graph semantics
+     - Keep the independent tiled-image gate in release validation, then
        continue bounded CR3 private-table work
    * - Canon CRW/CIFF
      - Partial native lane: recursive CIFF directories, stable
