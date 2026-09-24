@@ -585,7 +585,8 @@ Host-facing API map
        decisions reflect the supplied stored-RAW, compressed-only,
        primary-plane-only, or rendered storage context.
        ``PrepareTransferRequest::source_raw_data_descriptor`` can apply the
-       same coarse rendered-source RAW filtering during
+       rendered-source RAW filtering and, since 0.5.13, recognized
+       curve/linearity compression and primary-plane restrictions during
        ``prepare_metadata_for_target(...)``; it is still intentionally
        conservative and does not prove vendor curve/LUT activity for a
        specific compression mode or decoder stage.

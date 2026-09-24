@@ -940,6 +940,21 @@ plane, set ``raw_descriptor.requires_primary_raw_plane = true`` and provide
 for the raw buffer being checked. Non-primary planes are then reported as not
 applicable; unknown plane selection remains conditional.
 
+Since 0.5.13, pass the same descriptor to ``PrepareTransferRequest`` and set
+``has_source_raw_data_descriptor = true`` to apply these curve decisions during
+preparation. Recognized RAW curve and linearity entries classified as not
+applicable are omitted from both native and generated/existing XMP payloads.
+Preparation reports ``RawDataDescriptorFiltered`` and counts each removed entry
+once. Unknown encoding or missing required plane context retains conditional
+candidates. Unrestricted descriptors retain curves; black levels and unrelated
+settings remain subject to their own policies. Rendered-image safety retains
+its broader filtering and takes precedence in the policy reason. This applies
+to direct and snapshot preparation, without modifying the source store.
+
+Concept diagnostics are preflight guidance. They do not account for every
+target carrier capability or explicit family policy; inspect the prepared
+bundle's policy decisions for the effective serialized result.
+
 Python uses the same family enum:
 
 .. code-block:: python

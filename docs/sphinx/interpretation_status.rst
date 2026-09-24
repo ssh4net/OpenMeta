@@ -447,8 +447,14 @@ The complete bounded BMFF tiled-image contract was independently qualified on
 fixtures. The gate checks decoded core, layout and complete validity fields
 through the public Python reader.
 
-1. Broaden transfer diagnostic policy coverage now that stable message tokens
-   and localizable argument tokens are available for GUI workflows.
+The 0.5.13 transfer-diagnostic batch aligns recognized RAW curve/linearity
+decisions with direct and snapshot preparation for compression and primary-plane
+restrictions. Grouped tests cover retained/conditional/omitted values, native
+and XMP payloads, unique entry counts and rendered-safety precedence. This is
+a bounded policy correction, not general per-family diagnostic completion.
+
+1. Continue transfer diagnostic policy coverage beyond RAW applicability,
+   using the existing stable message and localizable argument tokens.
 2. Add pantry payload semantics only where a validated, bounded schema exists;
    keep arbitrary payloads raw and source-bound.
 3. Expand the remaining unambiguous MakerNote long tail: encrypted/custom

@@ -113,6 +113,14 @@ primary raw plane, set
 diagnostics then drop that curve for non-primary planes and keep it conditional
 when the active plane is unknown.
 
+As of 0.5.13, preparation applies these compression and plane restrictions to
+recognized curve/linearity entries when `has_source_raw_data_descriptor` is
+true. Direct and snapshot preparation share this filter. Unknown context keeps
+conditional entries, and the prepared policy decision reports the actual
+removed-entry count with `RawDataDescriptorFiltered` (or `SafetyModeFiltered`
+when rendered-image safety takes precedence). This does not infer a decoder
+stage or validate the host's descriptor against a codestream.
+
 | Metadata group | Examples | `CompatibleFile` | `RenderedImage` | Notes |
 | --- | --- | --- | --- | --- |
 | General descriptive metadata | title, description, creator, artist, copyright, rating, label, keywords | Keep | Keep | Safe because it describes the asset or authorship rather than the source pixel encoding. |

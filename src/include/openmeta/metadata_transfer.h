@@ -879,6 +879,9 @@ struct PrepareTransferRequest final {
     /// Optional source pixel-storage context. When this says source pixels are
     /// rendered, prepare drops source RAW-processing metadata even for
     /// compatible-file transfer because it no longer applies to stored pixels.
+    /// Recognized RAW curves and linearity entries are also dropped when the
+    /// descriptor's compression or primary-plane requirements rule them out.
+    /// Unknown or incomplete context retains conditional candidates.
     bool has_source_raw_data_descriptor = false;
     MetadataRawDataDescriptor source_raw_data_descriptor;
     /// Disabled by default. Currently used only for snapshot preparation.

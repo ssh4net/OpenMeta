@@ -24754,6 +24754,314 @@ TEST(MetadataTransferApi,
     EXPECT_EQ(crs_decision->matched_entries, 1U);
 }
 
+TEST(MetadataTransferApi, RawDescriptorCurveDiagnosticsMatchPreparedPayloads)
+{
+    using openmeta::MetadataRawApplicabilityState;
+    using openmeta::MetadataRawDataEncoding;
+    openmeta::MetaStore store;
+    const openmeta::BlockId block = store.add_block(openmeta::BlockInfo {});
+    const std::array<uint32_t, 2> curve_values = { 0U, 65535U };
+    const uint16_t tags[] = { 0x010FU, 0xC618U, 0xC618U, 0xC62EU,
+                              0xC61AU, 0xCFFEU, 0xC618U };
+    for (size_t i = 0U; i < std::size(tags); ++i) {
+        openmeta::Entry entry;
+        entry.key = openmeta::make_exif_tag_key(store.arena(), "ifd0", tags[i]);
+        entry.origin.block          = block;
+        entry.origin.order_in_block = static_cast<uint32_t>(i);
+        if (i == 0U) {
+            entry.value = openmeta::make_text(store.arena(), "Camera",
+                                              openmeta::TextEncoding::Ascii);
+        } else if (tags[i] == 0xC618U) {
+            entry.value = openmeta::make_u32_array(store.arena(), curve_values);
+        } else if (tags[i] == 0xC62EU) {
+            entry.value = openmeta::make_urational(9U, 10U);
+        } else {
+            entry.value = openmeta::make_u32(512U);
+        }
+        if (i + 1U == std::size(tags)) {
+            entry.flags = openmeta::EntryFlags::Deleted;
+        }
+        ASSERT_NE(store.add_entry(entry), openmeta::kInvalidEntryId);
+    }
+    const char* paths[] = { "dng:LinearizationTable", "OpaqueSetting",
+                            "Exposure2012" };
+    for (size_t i = 0U; i < std::size(paths); ++i) {
+        openmeta::Entry entry;
+        entry.key = openmeta::make_xmp_property_key(
+            store.arena(),
+            i == 2U ? "http://ns.adobe.com/camera-raw-settings/1.0/"
+                    : (i == 0U ? "http://ns.adobe.com/dng/1.0/"
+                               : "https://example.test/raw/"),
+            paths[i]);
+        entry.value
+            = i == 0U ? openmeta::make_u32_array(store.arena(), curve_values)
+                      : openmeta::make_text(store.arena(), "1",
+                                            openmeta::TextEncoding::Utf8);
+        entry.origin.block          = block;
+        entry.origin.order_in_block = static_cast<uint32_t>(std::size(tags)
+                                                            + i);
+        ASSERT_NE(store.add_entry(entry), openmeta::kInvalidEntryId);
+    }
+    store.finalize();
+    const openmeta::TransferSourceSnapshot snapshot
+        = openmeta::build_transfer_source_snapshot(store);
+    std::vector<std::byte> before;
+    ASSERT_EQ(
+        openmeta::serialize_transfer_source_snapshot(snapshot, &before).status,
+        openmeta::TransferStatus::Ok);
+
+    struct Case final {
+        MetadataRawDataEncoding encoding;
+        bool compressed_only;
+        bool primary_only;
+        bool has_plane;
+        uint32_t plane;
+        bool use_descriptor;
+        MetadataRawApplicabilityState applicability;
+        bool rendered_safety = false;
+    };
+    const Case cases[] = {
+        { MetadataRawDataEncoding::Uncompressed, true, false, false, 0U, true,
+          MetadataRawApplicabilityState::NotApplicableToStoredRaw },
+        { MetadataRawDataEncoding::Packed, true, false, false, 0U, true,
+          MetadataRawApplicabilityState::NotApplicableToStoredRaw },
+        { MetadataRawDataEncoding::LosslessCompressed, true, false, false, 0U,
+          true, MetadataRawApplicabilityState::AppliesToStoredRaw },
+        { MetadataRawDataEncoding::LossyCompressed, true, false, false, 0U,
+          true, MetadataRawApplicabilityState::AppliesToStoredRaw },
+        { MetadataRawDataEncoding::Unknown, true, false, false, 0U, true,
+          MetadataRawApplicabilityState::ConditionalOnRawEncoding },
+        { MetadataRawDataEncoding::LosslessCompressed, false, true, true, 1U,
+          true, MetadataRawApplicabilityState::NotApplicableToStoredRaw },
+        { MetadataRawDataEncoding::LosslessCompressed, false, true, true, 0U,
+          true, MetadataRawApplicabilityState::AppliesToStoredRaw },
+        { MetadataRawDataEncoding::LosslessCompressed, false, true, false, 0U,
+          true, MetadataRawApplicabilityState::ConditionalOnRawEncoding },
+        { MetadataRawDataEncoding::Uncompressed, false, false, true, 1U, true,
+          MetadataRawApplicabilityState::AppliesToStoredRaw },
+        { MetadataRawDataEncoding::Uncompressed, true, false, false, 0U, false,
+          MetadataRawApplicabilityState::ConditionalOnRawEncoding },
+        { MetadataRawDataEncoding::Rendered, false, false, false, 0U, true,
+          MetadataRawApplicabilityState::NotApplicableToStoredRaw },
+        { MetadataRawDataEncoding::Uncompressed, true, false, false, 0U, true,
+          MetadataRawApplicabilityState::NotApplicableToStoredRaw, true },
+    };
+    for (size_t c = 0U; c < std::size(cases); ++c) {
+        SCOPED_TRACE(c);
+        const Case& item = cases[c];
+        openmeta::PrepareTransferRequest request;
+        request.include_iptc_app13   = false;
+        request.xmp_include_existing = true;
+        request.xmp_existing_namespace_policy
+            = openmeta::XmpExistingNamespacePolicy::PreserveCustom;
+        request.profile.safety
+            = item.rendered_safety
+                  ? openmeta::TransferSafetyMode::RenderedImage
+                  : openmeta::TransferSafetyMode::CompatibleFile;
+        request.has_source_raw_data_descriptor = item.use_descriptor;
+        openmeta::MetadataRawDataDescriptor& descriptor
+            = request.source_raw_data_descriptor;
+        descriptor.encoding                         = item.encoding;
+        descriptor.requires_compressed_raw_encoding = item.compressed_only;
+        descriptor.requires_primary_raw_plane       = item.primary_only;
+        descriptor.has_plane_index                  = item.has_plane;
+        descriptor.plane_index                      = item.plane;
+        const openmeta::TransferConceptDiagnostics diagnostics
+            = item.use_descriptor
+                  ? openmeta::transfer_concept_diagnostics_from_store(
+                        store, request.profile.safety, descriptor)
+                  : openmeta::transfer_concept_diagnostics_from_store(
+                        store, request.profile.safety);
+        const bool drop
+            = item.applicability
+              == MetadataRawApplicabilityState::NotApplicableToStoredRaw;
+        const openmeta::MetadataConceptRole roles[] = {
+            openmeta::MetadataConceptRole::RawValueCurve,
+            openmeta::MetadataConceptRole::RawLinearityLimit,
+            openmeta::MetadataConceptRole::Linearization,
+        };
+        for (const openmeta::MetadataConceptRole role : roles) {
+            const openmeta::TransferConceptDiagnostic* diagnostic
+                = find_transfer_concept_diagnostic(
+                    diagnostics, openmeta::MetadataConceptKind::RawProcessing,
+                    role,
+                    drop ? openmeta::TransferConceptDiagnosticAction::Drop
+                         : openmeta::TransferConceptDiagnosticAction::Keep);
+            ASSERT_NE(diagnostic, nullptr);
+            EXPECT_EQ(diagnostic->raw_applicability, item.applicability);
+            if (drop) {
+                EXPECT_EQ(openmeta::transfer_concept_diagnostic_message_token(
+                              *diagnostic),
+                          "drop.raw_applicability_not_applicable");
+                const std::vector<std::string> arguments
+                    = openmeta::transfer_concept_diagnostic_message_arguments(
+                        *diagnostic);
+                ASSERT_GE(arguments.size(), 4U);
+                EXPECT_EQ(arguments[2], "action=drop");
+                EXPECT_EQ(arguments[3],
+                          "reason=raw_applicability_not_applicable");
+            }
+        }
+        for (uint32_t route = 0U; route < 2U; ++route) {
+            SCOPED_TRACE(route);
+            openmeta::PreparedTransferBundle bundle;
+            const openmeta::PrepareTransferResult result
+                = route == 0U
+                      ? openmeta::prepare_metadata_for_target(store, request,
+                                                              &bundle)
+                      : openmeta::prepare_metadata_for_target_snapshot(snapshot,
+                                                                       request,
+                                                                       &bundle);
+            ASSERT_EQ(result.status, openmeta::TransferStatus::Ok)
+                << result.message;
+            const openmeta::PreparedTransferBlock* exif = nullptr;
+            for (const openmeta::PreparedTransferBlock& prepared :
+                 bundle.blocks) {
+                if (prepared.kind == openmeta::TransferBlockKind::Exif) {
+                    exif = &prepared;
+                    break;
+                }
+            }
+            ASSERT_NE(exif, nullptr);
+            EXPECT_EQ(prepared_exif_block_contains_ifd0_tag(*exif, 0xC618U),
+                      !drop);
+            EXPECT_EQ(prepared_exif_block_contains_ifd0_tag(*exif, 0xC62EU),
+                      !drop);
+            const bool rendered = item.rendered_safety
+                                  || item.encoding
+                                         == MetadataRawDataEncoding::Rendered;
+            EXPECT_EQ(prepared_exif_block_contains_ifd0_tag(*exif, 0xC61AU),
+                      !rendered);
+            EXPECT_TRUE(prepared_exif_block_contains_ifd0_tag(*exif, 0x010FU));
+            EXPECT_TRUE(prepared_exif_block_contains_ifd0_tag(*exif, 0xCFFEU));
+            EXPECT_EQ(bundle_xmp_payload_contains_ascii(bundle, "Linearization"),
+                      !drop);
+            EXPECT_TRUE(
+                bundle_xmp_payload_contains_ascii(bundle, "OpaqueSetting"));
+            EXPECT_EQ(bundle_xmp_payload_contains_ascii(bundle, "Exposure2012"),
+                      !rendered);
+            const openmeta::PreparedTransferPolicyDecision* decision
+                = find_policy_decision(
+                    bundle,
+                    openmeta::TransferPolicySubject::RawColorCalibration);
+            if (drop) {
+                ASSERT_NE(decision, nullptr);
+                EXPECT_EQ(decision->reason,
+                          item.rendered_safety
+                              ? openmeta::TransferPolicyReason::SafetyModeFiltered
+                              : openmeta::TransferPolicyReason::
+                                    RawDataDescriptorFiltered);
+                EXPECT_EQ(decision->matched_entries, rendered ? 5U : 4U);
+            } else {
+                EXPECT_EQ(decision, nullptr);
+            }
+        }
+    }
+    std::vector<std::byte> after;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(
+                  openmeta::build_transfer_source_snapshot(store), &after)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(after, before);
+    after.clear();
+    ASSERT_EQ(
+        openmeta::serialize_transfer_source_snapshot(snapshot, &after).status,
+        openmeta::TransferStatus::Ok);
+    EXPECT_EQ(after, before);
+}
+
+TEST(MetadataTransferApi, RawDescriptorFiltersEveryGroupedCurveSource)
+{
+    openmeta::MetaStore store;
+    const uint16_t tags[] = { 0x0419U, 0x041AU, 0x7010U };
+    std::array<openmeta::EntryId, 3> ids {};
+    for (size_t i = 0U; i < std::size(tags); ++i) {
+        openmeta::Entry entry;
+        entry.key = openmeta::make_exif_tag_key(
+            store.arena(), i < 2U ? "mk_phaseone_sensorcalibration" : "exififd",
+            tags[i]);
+        const std::array<uint32_t, 2> values
+            = { static_cast<uint32_t>((i + 1U) * 111111U + 1122U), 9U };
+        entry.value = openmeta::make_u32_array(store.arena(), values);
+        ids[i]      = store.add_entry(entry);
+        ASSERT_NE(ids[i], openmeta::kInvalidEntryId);
+    }
+    openmeta::Entry make;
+    make.key   = openmeta::make_exif_tag_key(store.arena(), "ifd0", 0x010FU);
+    make.value = openmeta::make_text(store.arena(), "CameraSentinel",
+                                     openmeta::TextEncoding::Ascii);
+    ASSERT_NE(store.add_entry(make), openmeta::kInvalidEntryId);
+    store.finalize();
+    openmeta::PrepareTransferRequest request;
+    request.include_exif_app1              = false;
+    request.include_iptc_app13             = false;
+    request.xmp_portable                   = false;
+    request.has_source_raw_data_descriptor = true;
+    request.source_raw_data_descriptor.encoding
+        = openmeta::MetadataRawDataEncoding::Packed;
+    request.source_raw_data_descriptor.requires_compressed_raw_encoding = true;
+    const openmeta::TransferConceptDiagnostics diagnostics
+        = openmeta::transfer_concept_diagnostics_from_store(
+            store, request.profile.safety, request.source_raw_data_descriptor);
+    const openmeta::TransferConceptDiagnostic* grouped = nullptr;
+    for (const openmeta::TransferConceptDiagnostic& diagnostic :
+         diagnostics.diagnostics) {
+        if (diagnostic.role
+                == openmeta::MetadataConceptRole::RawCalibrationCurve
+            && diagnostic.action
+                   == openmeta::TransferConceptDiagnosticAction::Drop
+            && diagnostic.source_entries.size() >= 2U) {
+            grouped = &diagnostic;
+            break;
+        }
+    }
+    ASSERT_NE(grouped, nullptr);
+    EXPECT_TRUE(contains_entry_id(grouped->source_entries, ids[0]));
+    EXPECT_TRUE(contains_entry_id(grouped->source_entries, ids[1]));
+    ASSERT_NE(find_transfer_concept_diagnostic(
+                  diagnostics, openmeta::MetadataConceptKind::RawProcessing,
+                  openmeta::MetadataConceptRole::RawCurveControlPoints,
+                  openmeta::TransferConceptDiagnosticAction::Drop),
+              nullptr);
+    for (uint32_t enabled = 0U; enabled < 2U; ++enabled) {
+        request.has_source_raw_data_descriptor = enabled != 0U;
+        openmeta::PreparedTransferBundle bundle;
+        const openmeta::PrepareTransferResult result
+            = openmeta::prepare_metadata_for_target(store, request, &bundle);
+        ASSERT_EQ(result.status, openmeta::TransferStatus::Ok)
+            << result.message;
+        openmeta::MetaStore expected;
+        openmeta::Entry expected_make;
+        expected_make.key = openmeta::make_exif_tag_key(expected.arena(),
+                                                        "ifd0", 0x010FU);
+        expected_make.value
+            = openmeta::make_text(expected.arena(), "CameraSentinel",
+                                  openmeta::TextEncoding::Ascii);
+        ASSERT_NE(expected.add_entry(expected_make), openmeta::kInvalidEntryId);
+        expected.finalize();
+        openmeta::XmpSidecarRequest xmp_request;
+        xmp_request.format = openmeta::XmpSidecarFormat::Lossless;
+        std::vector<std::byte> expected_packet;
+        ASSERT_EQ(openmeta::dump_xmp_sidecar(enabled != 0U ? expected : store,
+                                             &expected_packet, xmp_request)
+                      .status,
+                  openmeta::XmpDumpStatus::Ok);
+        ASSERT_FALSE(expected_packet.empty());
+        EXPECT_EQ(bundle.generated_xmp_sidecar, expected_packet);
+        const openmeta::PreparedTransferPolicyDecision* decision
+            = find_policy_decision(
+                bundle, openmeta::TransferPolicySubject::RawColorCalibration);
+        if (enabled != 0U) {
+            ASSERT_NE(decision, nullptr);
+            EXPECT_EQ(decision->reason,
+                      openmeta::TransferPolicyReason::RawDataDescriptorFiltered);
+            EXPECT_EQ(decision->matched_entries, 3U);
+        } else {
+            EXPECT_EQ(decision, nullptr);
+        }
+    }
+}
+
 TEST(MetadataTransferApi, TransferConceptDiagnosticsMatchRenderedSafety)
 {
     openmeta::MetaStore store;

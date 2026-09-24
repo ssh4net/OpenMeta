@@ -1,5 +1,17 @@
 # OpenMeta Changes
 
+## 0.5.13 - 2026-09-24
+
+- Align RAW curve diagnostics with direct and snapshot transfer preparation.
+  Explicit compression and primary-plane restrictions now omit recognized
+  inapplicable curve and linearity entries using the existing concept resolver.
+  Unknown context retains conditional data; unrelated metadata keeps its
+  existing policy. Report unique removed-entry counts and preserve rendered
+  safety precedence.
+- Add grouped descriptor, EXIF/XMP output, duplicate, tombstone and source
+  immutability regressions. Keep API signatures, ABI 3, snapshot v1 and
+  host-owned synchronization unchanged; allocation remains in preparation.
+
 ## 0.5.12 - 2026-09-21
 
 - Add bounded C++ and Python writeback for EXIF 3.1 `LearningOptOutIn`

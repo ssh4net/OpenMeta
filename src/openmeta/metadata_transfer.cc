@@ -9531,7 +9531,7 @@ namespace {
         if (transfer_safety_mode_is_rendered(safety)) {
             return TransferPolicyReason::SafetyModeFiltered;
         }
-        if (raw_data_descriptor_filters_raw_processing(descriptor)) {
+        if (descriptor) {
             return TransferPolicyReason::RawDataDescriptorFiltered;
         }
         return TransferPolicyReason::SafetyModeFiltered;
@@ -9941,31 +9941,71 @@ namespace {
         uint32_t camera_raw_settings   = 0U;
     };
 
+    static std::vector<uint8_t>
+    raw_inapplicable_entry_mask(const MetaStore& store,
+                                const MetadataRawDataDescriptor* descriptor)
+    {
+        std::vector<uint8_t> mask;
+        if (!descriptor
+            || metadata_raw_applicability_for_descriptor(
+                   MetadataConceptRole::RawValueCurve, *descriptor)
+                   != MetadataRawApplicabilityState::NotApplicableToStoredRaw) {
+            return mask;
+        }
+        const MetadataConceptResolution raw = resolve_metadata_concept(
+            store, MetadataConceptKind::RawProcessing, *descriptor);
+        for (const MetadataConceptCandidate& candidate : raw.candidates) {
+            if (candidate.raw_applicability
+                != MetadataRawApplicabilityState::NotApplicableToStoredRaw) {
+                continue;
+            }
+            if (mask.empty()) {
+                mask.resize(store.entries().size(), 0U);
+            }
+            if (candidate.entry_id < mask.size()) {
+                mask[candidate.entry_id] = 1U;
+            }
+            for (EntryId id : candidate.source_entries) {
+                if (id < mask.size()) {
+                    mask[id] = 1U;
+                }
+            }
+        }
+        return mask;
+    }
+
     static void count_transfer_safety_filter_entries(
         const MetaStore& store, TransferSafetyMode safety,
         const MetadataRawDataDescriptor* raw_descriptor,
+        std::span<const uint8_t> raw_inapplicable_entries,
         TransferSafetyFilterCounts* out_counts) noexcept
     {
         if (!out_counts) {
             return;
         }
         *out_counts = TransferSafetyFilterCounts();
-        for (const Entry& entry : store.entries()) {
+        const bool filter_raw
+            = should_filter_raw_processing_for_transfer(safety, raw_descriptor);
+        for (size_t i = 0U; i < store.entries().size(); ++i) {
+            const Entry& entry = store.entries()[i];
+            if (any(entry.flags, EntryFlags::Deleted)) {
+                continue;
+            }
             if (entry_is_image_dependent_for_target_transfer(store, entry)) {
                 out_counts->image_properties += 1U;
                 continue;
             }
-            if (!should_filter_raw_processing_for_transfer(safety,
-                                                           raw_descriptor)) {
-                continue;
-            }
-            if (entry_is_raw_color_calibration_for_rendered_transfer(store,
-                                                                     entry)) {
+            if ((filter_raw
+                 && entry_is_raw_color_calibration_for_rendered_transfer(store,
+                                                                         entry))
+                || (i < raw_inapplicable_entries.size()
+                    && raw_inapplicable_entries[i] != 0U)) {
                 out_counts->raw_color_calibration += 1U;
                 continue;
             }
-            if (entry_is_camera_raw_settings_for_rendered_transfer(store,
-                                                                   entry)) {
+            if (filter_raw
+                && entry_is_camera_raw_settings_for_rendered_transfer(store,
+                                                                      entry)) {
                 out_counts->camera_raw_settings += 1U;
             }
         }
@@ -9973,7 +10013,8 @@ namespace {
 
     static bool build_target_safe_transfer_store(
         const MetaStore& src, TransferSafetyMode safety,
-        const MetadataRawDataDescriptor* raw_descriptor, MetaStore* dst,
+        const MetadataRawDataDescriptor* raw_descriptor,
+        std::span<const uint8_t> raw_inapplicable_entries, MetaStore* dst,
         TransferSafetyFilterCounts* out_counts) noexcept
     {
         if (!dst) {
@@ -9993,7 +10034,10 @@ namespace {
             block_map[i] = id;
         }
 
-        for (const Entry& entry : src.entries()) {
+        const bool filter_raw
+            = should_filter_raw_processing_for_transfer(safety, raw_descriptor);
+        for (size_t i = 0U; i < src.entries().size(); ++i) {
+            const Entry& entry = src.entries()[i];
             if (any(entry.flags, EntryFlags::Deleted)) {
                 continue;
             }
@@ -10003,15 +10047,17 @@ namespace {
                 }
                 continue;
             }
-            if (should_filter_raw_processing_for_transfer(safety, raw_descriptor)
-                && entry_is_raw_color_calibration_for_rendered_transfer(src,
-                                                                        entry)) {
+            if ((filter_raw
+                 && entry_is_raw_color_calibration_for_rendered_transfer(src,
+                                                                         entry))
+                || (i < raw_inapplicable_entries.size()
+                    && raw_inapplicable_entries[i] != 0U)) {
                 if (out_counts) {
                     out_counts->raw_color_calibration += 1U;
                 }
                 continue;
             }
-            if (should_filter_raw_processing_for_transfer(safety, raw_descriptor)
+            if (filter_raw
                 && entry_is_camera_raw_settings_for_rendered_transfer(src,
                                                                       entry)) {
                 if (out_counts) {
@@ -12401,14 +12447,19 @@ prepare_metadata_for_target_impl(const MetaStore& store,
     const bool has_target_image_spec    = transfer_target_image_spec_has_any(
         request.target_image_spec);
     TransferSafetyFilterCounts filter_counts;
+    const std::vector<uint8_t> raw_inapplicable_entries
+        = raw_inapplicable_entry_mask(store, source_raw_descriptor);
     count_transfer_safety_filter_entries(store, effective_profile.safety,
-                                         source_raw_descriptor, &filter_counts);
+                                         source_raw_descriptor,
+                                         raw_inapplicable_entries,
+                                         &filter_counts);
     if (filter_counts.image_properties > 0U
         || filter_counts.raw_color_calibration > 0U
         || filter_counts.camera_raw_settings > 0U || has_target_image_spec) {
         TransferSafetyFilterCounts built_filter_counts;
         if (!build_target_safe_transfer_store(store, effective_profile.safety,
                                               source_raw_descriptor,
+                                              raw_inapplicable_entries,
                                               &target_safe_store,
                                               &built_filter_counts)) {
             r.status    = TransferStatus::LimitExceeded;
@@ -14058,7 +14109,7 @@ transfer_safety_audit_from_store(const MetaStore& store,
     TransferSafetyFilterCounts source_counts;
     count_transfer_safety_filter_entries(store,
                                          TransferSafetyMode::RenderedImage,
-                                         nullptr, &source_counts);
+                                         nullptr, {}, &source_counts);
     out.source_image_properties      = source_counts.image_properties;
     out.source_raw_color_calibration = source_counts.raw_color_calibration;
     out.source_camera_raw_settings   = source_counts.camera_raw_settings;
@@ -14070,7 +14121,7 @@ transfer_safety_audit_from_store(const MetaStore& store,
     out.source_c2pa           = count_c2pa_entries(store);
 
     TransferSafetyFilterCounts filtered_counts;
-    count_transfer_safety_filter_entries(store, safety, nullptr,
+    count_transfer_safety_filter_entries(store, safety, nullptr, {},
                                          &filtered_counts);
     out.filtered_image_properties      = filtered_counts.image_properties;
     out.filtered_raw_color_calibration = filtered_counts.raw_color_calibration;
