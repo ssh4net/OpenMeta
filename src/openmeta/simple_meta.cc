@@ -192,6 +192,43 @@ namespace {
         return comment_emit_entry(store, block_bytes);
     }
 
+    static bool decode_cr3_compressor_version(std::span<const std::byte> bytes,
+                                              MetaStore& store) noexcept
+    {
+        static constexpr std::string_view kPrefix = "CanonCR3_";
+        if (bytes.size() <= kPrefix.size() || bytes.size() > 256U) {
+            return false;
+        }
+        size_t length = bytes.size();
+        while (length > 0U && bytes[length - 1U] == std::byte { 0 }) {
+            --length;
+        }
+        if (length <= kPrefix.size()
+            || std::memcmp(bytes.data(), kPrefix.data(), kPrefix.size()) != 0) {
+            return false;
+        }
+        for (size_t i = 0U; i < length; ++i) {
+            if (u8(bytes[i]) < 0x20U || u8(bytes[i]) > 0x7eU) {
+                return false;
+            }
+        }
+        const BlockId block = store.add_block(BlockInfo {});
+        if (block == kInvalidBlockId) {
+            return false;
+        }
+        const std::string_view text(reinterpret_cast<const char*>(bytes.data()),
+                                    length);
+        Entry entry;
+        entry.key   = make_bmff_field_key(store.arena(),
+                                          "cr3.compressor_version");
+        entry.value = make_text(store.arena(), text, TextEncoding::Ascii);
+        entry.origin.block      = block;
+        entry.origin.wire_type  = WireType { WireFamily::Other, 0U };
+        entry.origin.wire_count = static_cast<uint32_t>(bytes.size());
+        entry.flags             = EntryFlags::Derived;
+        return store.add_entry(entry) != kInvalidEntryId;
+    }
+
     static std::string_view
     make_string_view(std::span<const std::byte> bytes) noexcept
     {
@@ -1488,6 +1525,12 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
                                   options.iptc);
         } else if (block.kind == ContainerBlockKind::MakerNote) {
             if (!options.exif.decode_makernote) {
+                continue;
+            }
+
+            if (block.format == ContainerFormat::Cr3
+                && block.id == fourcc('C', 'N', 'C', 'V')) {
+                (void)decode_cr3_compressor_version(block_bytes, store);
                 continue;
             }
 

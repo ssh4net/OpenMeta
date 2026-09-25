@@ -43,6 +43,36 @@ group names, and intentional-difference notes. Each new lane should add:
 | Apple, DJI, Google, FLIR | Live-vendor source-processing classification exists for rendered-transfer safety | Computational, thermal, radiometric, and shot-log interpretation depth | Add decode only for stable fields that hosts can use safely |
 | Rare and legacy RAW families | Raw-preservation-first | Native container and MakerNote depth | Preserve raw blocks, then add support only when validation inputs and stable structure are available |
 
+## CR3 carrier inventory (0.5.14)
+
+The bounded Canon UUID path currently recognizes these records:
+
+| Record | Current handling | Limit |
+| --- | --- | --- |
+| `CMT1`, `CMT2`, `CMT4` | Discover a classic TIFF stream and use the generic TIFF decoder. | The scanner requires a valid classic-TIFF header; this does not define additional Canon private-field meanings. |
+| `CMT3` | Decode the dedicated TIFF stream with Canon MakerNote tokens and expand known binary subtables. Fall back to generic TIFF decoding with Canon tokens when needed. | `decode_makernote=false` skips this stream. |
+| `CNCV` | With MakerNote decoding enabled, expose bounded `CanonCR3_` compressor-version text as the derived BMFF field `cr3.compressor_version`. The opaque scanner block remains available. | Accept at most 256 bytes of printable ASCII with optional trailing zero padding. Other prefixes, embedded NULs, controls and non-ASCII bytes remain opaque. This does not parse version components or authorize writing codec settings. |
+| `CCTP`, `CNTH`, `CNOP`, `CNDM`, `CTBO`, `CMP1` | Descend into plausible nested boxes; otherwise expose leaf payloads as opaque scanner MakerNote blocks. | The simple metadata reader does not interpret these opaque leaf blocks into entries. |
+
+The Canon UUID walk has separate depth, box-count and pending-range bounds.
+Unknown children are searched only when they begin with a plausible nested
+box. Other unknown payloads are skipped; general raw preservation does not
+imply that every private CR3 record is exposed or safely relocatable. The
+ordinary EXIF MakerNote tag and the separate `PRVW` JPEG preview route retain
+their own contracts.
+
+Grouped synthetic regressions exercise all eleven listed IDs, classic-TIFF
+header rejection, opaque leaf boundaries, and CMT3 Canon CameraSettings
+expansion, disabling and truncation. They qualify these existing routes, not
+broader private semantics or real-file prevalence. The current original-file
+inventory contains 23 CR3 files, each with a 30-byte `CNCV` record and one of
+five compressor-version strings. Both independent record extraction and the
+OpenMeta reader agree with ExifTool for all 23 values. The historical 24-file
+EXIF comparison does not
+list per-file inputs and does not establish the identity of this current
+cohort. Further private-field decoding needs an original witness with recorded
+model/version, offsets, byte order, bounds and expected values.
+
 ## Priority
 
 The bounded tiled-image contract was independently qualified on 2026-09-22

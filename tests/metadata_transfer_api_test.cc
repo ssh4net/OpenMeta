@@ -9,9 +9,12 @@
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_value.h"
 #include "openmeta/metadata_creation.h"
+#include "openmeta/metadata_editing.h"
 #include "openmeta/metadata_transfer.h"
 #include "openmeta/metadata_translation.h"
 #include "openmeta/simple_meta.h"
+#include "openmeta/validate.h"
+#include "openmeta/xmp_dump.h"
 
 #include <gtest/gtest.h>
 
@@ -1473,6 +1476,38 @@ static std::vector<std::byte>
 make_test_bmff_exif_item_payload();
 
 static std::vector<std::byte>
+make_test_bmff_dinf(bool self_contained)
+{
+    std::vector<std::byte> url_payload;
+    append_bmff_fullbox_header(&url_payload, 0U);
+    if (self_contained) {
+        url_payload[3] = std::byte { 0x01 };
+    } else {
+        append_bytes(&url_payload, "metadata.bin");
+        url_payload.push_back(std::byte { 0x00 });
+    }
+    std::vector<std::byte> url_box;
+    append_bmff_box(&url_box, openmeta::fourcc('u', 'r', 'l', ' '),
+                    std::span<const std::byte>(url_payload.data(),
+                                               url_payload.size()));
+
+    std::vector<std::byte> dref_payload;
+    append_bmff_fullbox_header(&dref_payload, 0U);
+    append_u32be(&dref_payload, 1U);
+    dref_payload.insert(dref_payload.end(), url_box.begin(), url_box.end());
+    std::vector<std::byte> dref_box;
+    append_bmff_box(&dref_box, openmeta::fourcc('d', 'r', 'e', 'f'),
+                    std::span<const std::byte>(dref_payload.data(),
+                                               dref_payload.size()));
+
+    std::vector<std::byte> dinf_box;
+    append_bmff_box(&dinf_box, openmeta::fourcc('d', 'i', 'n', 'f'),
+                    std::span<const std::byte>(dref_box.data(),
+                                               dref_box.size()));
+    return dinf_box;
+}
+
+static std::vector<std::byte>
 make_bmff_foreign_meta_iloc_method_target(
     uint16_t construction_method, uint16_t data_reference_index,
     bool include_idat, bool include_dref = false,
@@ -1545,30 +1580,7 @@ make_bmff_foreign_meta_iloc_method_target(
 
     std::vector<std::byte> dinf_box;
     if (include_dref) {
-        std::vector<std::byte> url_payload;
-        append_bmff_fullbox_header(&url_payload, 0U);
-        if (dref_self_contained) {
-            url_payload[3] = std::byte { 0x01 };
-        } else {
-            append_bytes(&url_payload, "metadata.bin");
-            url_payload.push_back(std::byte { 0x00 });
-        }
-        std::vector<std::byte> url_box;
-        append_bmff_box(&url_box, openmeta::fourcc('u', 'r', 'l', ' '),
-                        std::span<const std::byte>(url_payload.data(),
-                                                   url_payload.size()));
-
-        std::vector<std::byte> dref_payload;
-        append_bmff_fullbox_header(&dref_payload, 0U);
-        append_u32be(&dref_payload, 1U);
-        dref_payload.insert(dref_payload.end(), url_box.begin(), url_box.end());
-        std::vector<std::byte> dref_box;
-        append_bmff_box(&dref_box, openmeta::fourcc('d', 'r', 'e', 'f'),
-                        std::span<const std::byte>(dref_payload.data(),
-                                                   dref_payload.size()));
-        append_bmff_box(&dinf_box, openmeta::fourcc('d', 'i', 'n', 'f'),
-                        std::span<const std::byte>(dref_box.data(),
-                                                   dref_box.size()));
+        dinf_box = make_test_bmff_dinf(dref_self_contained);
     }
 
     std::vector<std::byte> meta_payload;
@@ -1714,9 +1726,36 @@ make_bmff_scene_policy_decode_target()
 
 static std::vector<std::byte>
 make_bmff_foreign_meta_iloc_method2_reference_target(
-    bool include_iref, bool referenced_item_is_exif, bool use_extent_indices)
+    bool include_iref, bool referenced_item_is_exif, bool use_extent_indices,
+    uint16_t referenced_item_data_reference_index = 0U,
+    uint16_t second_target_data_reference_index   = 0U,
+    uint16_t first_target_construction_method = 1U, bool include_dref = false,
+    bool dref_self_contained = true,
+    uint32_t major_brand     = openmeta::fourcc('h', 'e', 'i', 'c'),
+    uint64_t* out_first_target_extent_offset = nullptr)
 {
-    std::vector<std::byte> out = make_minimal_bmff_file();
+    const std::array<uint32_t, 2> compatible_brands = {
+        openmeta::fourcc('m', 'i', 'f', '1'),
+        major_brand,
+    };
+    std::vector<std::byte> out = make_minimal_bmff_file(
+        major_brand, std::span<const uint32_t>(compatible_brands.data(),
+                                               compatible_brands.size()));
+
+    uint64_t first_target_extent_offset = 0U;
+    if (first_target_construction_method == 0U) {
+        static constexpr std::array<std::byte, 6> kMethod0Data = {
+            std::byte { 'A' }, std::byte { 'B' }, std::byte { 'C' },
+            std::byte { 'D' }, std::byte { 'E' }, std::byte { 'F' },
+        };
+        first_target_extent_offset = static_cast<uint64_t>(out.size()) + 8U;
+        append_bmff_box(&out, openmeta::fourcc('m', 'd', 'a', 't'),
+                        std::span<const std::byte>(kMethod0Data.data(),
+                                                   kMethod0Data.size()));
+    }
+    if (out_first_target_extent_offset) {
+        *out_first_target_extent_offset = first_target_extent_offset;
+    }
 
     std::vector<std::byte> idat_payload;
     uint32_t first_ref_length  = 0U;
@@ -1773,19 +1812,21 @@ make_bmff_foreign_meta_iloc_method2_reference_target(
     append_u32be(&iloc_payload, item_count);
 
     append_u32be(&iloc_payload, 2U);
-    append_u16be(&iloc_payload, 0x0001U);
-    append_u16be(&iloc_payload, 0U);
+    append_u16be(&iloc_payload, first_target_construction_method);
+    append_u16be(&iloc_payload, referenced_item_data_reference_index);
     append_u16be(&iloc_payload, 1U);
     if (use_extent_indices) {
-        append_u16be(&iloc_payload, 0U);
+        append_u16be(&iloc_payload,
+                     first_target_construction_method == 2U ? 1U : 0U);
     }
-    append_u32be(&iloc_payload, 0U);
+    append_u32be(&iloc_payload,
+                 static_cast<uint32_t>(first_target_extent_offset));
     append_u32be(&iloc_payload, first_ref_length);
 
     if (!referenced_item_is_exif) {
         append_u32be(&iloc_payload, 3U);
         append_u16be(&iloc_payload, 0x0001U);
-        append_u16be(&iloc_payload, 0U);
+        append_u16be(&iloc_payload, second_target_data_reference_index);
         append_u16be(&iloc_payload, 1U);
         if (use_extent_indices) {
             append_u16be(&iloc_payload, 0U);
@@ -1835,6 +1876,21 @@ make_bmff_foreign_meta_iloc_method2_reference_target(
         append_bmff_fullbox_header(&iref_payload, 1U);
         iref_payload.insert(iref_payload.end(), iref_iloc_box.begin(),
                             iref_iloc_box.end());
+        if (!referenced_item_is_exif
+            && first_target_construction_method == 2U) {
+            std::vector<std::byte> nested_iref_iloc_payload;
+            append_u32be(&nested_iref_iloc_payload, 2U);
+            append_u16be(&nested_iref_iloc_payload, 1U);
+            append_u32be(&nested_iref_iloc_payload, 3U);
+            std::vector<std::byte> nested_iref_iloc_box;
+            append_bmff_box(
+                &nested_iref_iloc_box, openmeta::fourcc('i', 'l', 'o', 'c'),
+                std::span<const std::byte>(nested_iref_iloc_payload.data(),
+                                           nested_iref_iloc_payload.size()));
+            iref_payload.insert(iref_payload.end(),
+                                nested_iref_iloc_box.begin(),
+                                nested_iref_iloc_box.end());
+        }
         append_bmff_box(&iref_box, openmeta::fourcc('i', 'r', 'e', 'f'),
                         std::span<const std::byte>(iref_payload.data(),
                                                    iref_payload.size()));
@@ -1845,6 +1901,10 @@ make_bmff_foreign_meta_iloc_method2_reference_target(
                     std::span<const std::byte>(idat_payload.data(),
                                                idat_payload.size()));
 
+    const std::vector<std::byte> dinf_box
+        = include_dref ? make_test_bmff_dinf(dref_self_contained)
+                       : std::vector<std::byte> {};
+
     std::vector<std::byte> meta_payload;
     append_bmff_fullbox_header(&meta_payload, 0U);
     meta_payload.insert(meta_payload.end(), pitm_box.begin(), pitm_box.end());
@@ -1854,6 +1914,7 @@ make_bmff_foreign_meta_iloc_method2_reference_target(
         meta_payload.insert(meta_payload.end(), iref_box.begin(),
                             iref_box.end());
     }
+    meta_payload.insert(meta_payload.end(), dinf_box.begin(), dinf_box.end());
     meta_payload.insert(meta_payload.end(), idat_box.begin(), idat_box.end());
 
     std::vector<std::byte> meta_box;
@@ -3228,12 +3289,16 @@ static bool
 count_test_bmff_iref_relations(std::span<const std::byte> bytes,
                                uint32_t ref_type, bool require_from_id,
                                uint32_t from_item_id, uint32_t to_item_id,
-                               uint32_t* out_count) noexcept
+                               uint32_t* out_count,
+                               std::vector<uint32_t>* out_targets = nullptr)
 {
     if (!out_count) {
         return false;
     }
     *out_count = 0U;
+    if (out_targets) {
+        out_targets->clear();
+    }
 
     size_t iref_off  = 0U;
     size_t iref_size = 0U;
@@ -3292,6 +3357,9 @@ count_test_bmff_iref_relations(std::span<const std::byte> bytes,
                 if (box_type == ref_type && from_matches
                     && static_cast<uint32_t>(raw_to) == to_item_id) {
                     *out_count += 1U;
+                }
+                if (box_type == ref_type && from_matches && out_targets) {
+                    out_targets->push_back(static_cast<uint32_t>(raw_to));
                 }
             }
         }
@@ -3583,6 +3651,17 @@ make_test_bmff_exif_item_payload()
     for (size_t i = 0; i < kRaw.size(); ++i) {
         out.push_back(static_cast<std::byte>(kRaw[i]));
     }
+    return out;
+}
+
+static std::vector<std::byte>
+make_test_bmff_exif_item_payload_with_fields()
+{
+    const std::vector<std::byte> app1 = make_app1_exif_payload();
+    std::vector<std::byte> out;
+    out.reserve(app1.size() + 4U);
+    append_u32be(&out, 6U);
+    out.insert(out.end(), app1.begin(), app1.end());
     return out;
 }
 
@@ -5963,6 +6042,42 @@ store_has_u16_scalar_entry(const openmeta::MetaStore& store,
 }
 
 static bool
+store_read_tiff_u16_scalar(const openmeta::MetaStore& store,
+                           const openmeta::MetaKeyView& key,
+                           uint16_t* out_value) noexcept
+{
+    if (out_value) {
+        *out_value = 0U;
+    }
+    const std::span<const openmeta::EntryId> ids = store.find_all(key);
+    if (ids.size() != 1U) {
+        return false;
+    }
+    const openmeta::Entry& entry = store.entry(ids[0]);
+    if (entry.origin.wire_type.family != openmeta::WireFamily::Tiff
+        || entry.origin.wire_type.code != 3U
+        || entry.value.kind != openmeta::MetaValueKind::Scalar
+        || entry.value.count != 1U) {
+        return false;
+    }
+    uint64_t value = 0U;
+    switch (entry.value.elem_type) {
+    case openmeta::MetaElementType::U8:
+    case openmeta::MetaElementType::U16:
+    case openmeta::MetaElementType::U32:
+    case openmeta::MetaElementType::U64: value = entry.value.data.u64; break;
+    default: return false;
+    }
+    if (value > std::numeric_limits<uint16_t>::max()) {
+        return false;
+    }
+    if (out_value) {
+        *out_value = static_cast<uint16_t>(value);
+    }
+    return true;
+}
+
+static bool
 store_has_u8_scalar_entry(const openmeta::MetaStore& store,
                           const openmeta::MetaKeyView& key,
                           uint8_t expected) noexcept
@@ -7855,6 +7970,619 @@ TEST(MetadataTransferApi, BuildTransferSourceSnapshotCopiesStoreForLaterPrepare)
     ASSERT_EQ(prepared.status, openmeta::TransferStatus::Ok);
     ASSERT_EQ(bundle.blocks.size(), 1U);
     EXPECT_EQ(bundle.blocks[0].route, "tiff:ifd-exif-app1");
+}
+
+TEST(MetadataTransferApi,
+     TypedXmpProfileTranslationRoundTripsJpegTiffAndBigTiff)
+{
+    constexpr std::string_view kTiffNamespace = "http://ns.adobe.com/tiff/1.0/";
+    constexpr std::string_view kExifNamespace = "http://ns.adobe.com/exif/1.0/";
+    constexpr std::string_view kCustomNamespace
+        = "https://example.test/openmeta/profile/";
+
+    openmeta::MetaStore base;
+    const openmeta::BlockId block = base.add_block(openmeta::BlockInfo {});
+    ASSERT_NE(block, openmeta::kInvalidBlockId);
+    openmeta::Entry artist;
+    artist.key   = openmeta::make_xmp_property_key(base.arena(), kTiffNamespace,
+                                                   "Artist");
+    artist.value = openmeta::make_text(base.arena(), "Old Artist",
+                                       openmeta::TextEncoding::Utf8);
+    artist.origin.block          = block;
+    artist.origin.order_in_block = 0U;
+    ASSERT_NE(base.add_entry(artist), openmeta::kInvalidEntryId);
+    openmeta::Entry legacy;
+    legacy.key = openmeta::make_xmp_property_key(base.arena(), kCustomNamespace,
+                                                 "LegacyProperty");
+    legacy.value = openmeta::make_text(base.arena(), "Remove this property",
+                                       openmeta::TextEncoding::Utf8);
+    legacy.origin.block          = block;
+    legacy.origin.order_in_block = 1U;
+    ASSERT_NE(base.add_entry(legacy), openmeta::kInvalidEntryId);
+    base.finalize();
+
+    std::array<openmeta::MetadataTypedEditingOperation, 7> operations {};
+    operations[0].kind = openmeta::MetadataEditingOperationKind::Set;
+    operations[0].entry.key
+        = openmeta::make_xmp_property_key_view(kTiffNamespace, "Artist");
+    operations[0].entry.value
+        = openmeta::make_value_view_text("A. Photographer",
+                                         openmeta::TextEncoding::Utf8);
+    operations[1].kind = openmeta::MetadataEditingOperationKind::Add;
+    operations[1].entry.key
+        = openmeta::make_xmp_property_key_view(kTiffNamespace,
+                                               "ImageDescription");
+    operations[1].entry.value
+        = openmeta::make_value_view_text("A scene",
+                                         openmeta::TextEncoding::Utf8);
+    operations[2].kind = openmeta::MetadataEditingOperationKind::Add;
+    operations[2].entry.key
+        = openmeta::make_xmp_property_key_view(kTiffNamespace, "Copyright");
+    operations[2].entry.value
+        = openmeta::make_value_view_text("Copyright 2026",
+                                         openmeta::TextEncoding::Utf8);
+    operations[3].kind = openmeta::MetadataEditingOperationKind::Add;
+    operations[3].entry.key
+        = openmeta::make_xmp_property_key_view(kExifNamespace, "ColorSpace");
+    operations[3].entry.value
+        = openmeta::make_value_view_text("1", openmeta::TextEncoding::Utf8);
+    operations[4].kind = openmeta::MetadataEditingOperationKind::Add;
+    operations[4].entry.key
+        = openmeta::make_xmp_property_key_view(kExifNamespace,
+                                               "RelatedSoundFile");
+    operations[4].entry.value
+        = openmeta::make_value_view_text("SOUND.WAV",
+                                         openmeta::TextEncoding::Utf8);
+    operations[5].kind = openmeta::MetadataEditingOperationKind::Remove;
+    operations[5].entry.key
+        = openmeta::make_xmp_property_key_view(kCustomNamespace,
+                                               "LegacyProperty");
+    operations[6].kind = openmeta::MetadataEditingOperationKind::Add;
+    operations[6].entry.key
+        = openmeta::make_xmp_property_key_view(kCustomNamespace,
+                                               "RetainedProperty");
+    operations[6].entry.value
+        = openmeta::make_value_view_text("Retain this unmanaged value",
+                                         openmeta::TextEncoding::Utf8);
+
+    openmeta::MetaStore edited;
+    const openmeta::MetadataTypedEditingResult edit
+        = openmeta::edit_metadata_typed(base, operations, &edited);
+    ASSERT_TRUE(edit.ok()) << openmeta::metadata_typed_editing_status_name(
+        edit.status);
+    EXPECT_EQ(edit.entries_added, 5U);
+    EXPECT_EQ(edit.entries_updated, 1U);
+    EXPECT_EQ(edit.entries_removed, 1U);
+    EXPECT_TRUE(store_has_text_entry(base,
+                                     xmp_key_view(kTiffNamespace, "Artist"),
+                                     "Old Artist"));
+    EXPECT_TRUE(store_has_text_entry(edited,
+                                     xmp_key_view(kTiffNamespace, "Artist"),
+                                     "A. Photographer"));
+    EXPECT_TRUE(store_lacks_text_entry(edited, xmp_key_view(kCustomNamespace,
+                                                            "LegacyProperty")));
+    EXPECT_TRUE(
+        store_has_text_entry(edited,
+                             xmp_key_view(kCustomNamespace, "RetainedProperty"),
+                             "Retain this unmanaged value"));
+
+    openmeta::MetadataProfileTranslationOptions profile_options;
+    profile_options.source_mode
+        = openmeta::MetadataCaptureTranslationSourceMode::DirtyOnly;
+    openmeta::MetaStore translated;
+    const openmeta::MetadataCaptureTranslationResult translated_result
+        = openmeta::translate_xmp_profile_metadata(edited, profile_options,
+                                                   &translated);
+    ASSERT_EQ(translated_result.status,
+              openmeta::MetadataCaptureTranslationStatus::Ok);
+    EXPECT_EQ(translated_result.source_properties, 5U);
+    EXPECT_EQ(translated_result.entries_added, 5U);
+    EXPECT_TRUE(openmeta::validate_store(edited).ok());
+    EXPECT_TRUE(openmeta::validate_store(translated).ok());
+    EXPECT_TRUE(store_has_text_entry(translated, exif_key_view("ifd0", 0x010EU),
+                                     "A scene"));
+    EXPECT_TRUE(store_has_text_entry(translated, exif_key_view("ifd0", 0x013BU),
+                                     "A. Photographer"));
+    EXPECT_TRUE(store_has_text_entry(translated, exif_key_view("ifd0", 0x8298U),
+                                     "Copyright 2026"));
+    EXPECT_TRUE(store_has_u16_scalar_entry(translated,
+                                           exif_key_view("exififd", 0xA001U),
+                                           1U));
+    EXPECT_TRUE(store_has_text_entry(translated,
+                                     exif_key_view("exififd", 0xA004U),
+                                     "SOUND.WAV"));
+
+    openmeta::MetaStore untouched_source;
+    openmeta::Entry untouched_artist;
+    untouched_artist.key
+        = openmeta::make_xmp_property_key(untouched_source.arena(),
+                                          kTiffNamespace, "Artist");
+    untouched_artist.value = openmeta::make_text(untouched_source.arena(),
+                                                 "Clean Artist",
+                                                 openmeta::TextEncoding::Utf8);
+    ASSERT_NE(untouched_source.add_entry(untouched_artist),
+              openmeta::kInvalidEntryId);
+    untouched_source.finalize();
+    openmeta::MetaStore dirty_only_untouched;
+    const openmeta::MetadataCaptureTranslationResult ignored_clean
+        = openmeta::translate_xmp_profile_metadata(untouched_source,
+                                                   profile_options,
+                                                   &dirty_only_untouched);
+    ASSERT_EQ(ignored_clean.status,
+              openmeta::MetadataCaptureTranslationStatus::Ok);
+    EXPECT_EQ(ignored_clean.source_properties, 0U);
+    EXPECT_TRUE(store_has_text_entry(dirty_only_untouched,
+                                     xmp_key_view(kTiffNamespace, "Artist"),
+                                     "Clean Artist"));
+    EXPECT_TRUE(store_lacks_text_entry(dirty_only_untouched,
+                                       exif_key_view("ifd0", 0x013BU)));
+    openmeta::MetadataProfileTranslationOptions all_profile_options
+        = profile_options;
+    all_profile_options.source_mode
+        = openmeta::MetadataCaptureTranslationSourceMode::All;
+    openmeta::MetaStore all_untouched;
+    const openmeta::MetadataCaptureTranslationResult included_clean
+        = openmeta::translate_xmp_profile_metadata(untouched_source,
+                                                   all_profile_options,
+                                                   &all_untouched);
+    ASSERT_EQ(included_clean.status,
+              openmeta::MetadataCaptureTranslationStatus::Ok);
+    EXPECT_EQ(included_clean.source_properties, 1U);
+    EXPECT_TRUE(store_has_text_entry(all_untouched,
+                                     exif_key_view("ifd0", 0x013BU),
+                                     "Clean Artist"));
+
+    openmeta::XmpPortableOptions portable_options;
+    portable_options.include_existing_xmp = true;
+    portable_options.existing_namespace_policy
+        = openmeta::XmpExistingNamespacePolicy::PreserveCustom;
+    std::vector<std::byte> portable_bytes(256U * 1024U);
+    const openmeta::XmpDumpResult portable = openmeta::dump_xmp_portable(
+        translated,
+        std::span<std::byte>(portable_bytes.data(), portable_bytes.size()),
+        portable_options);
+    ASSERT_EQ(portable.status, openmeta::XmpDumpStatus::Ok);
+    const std::string portable_packet(reinterpret_cast<const char*>(
+                                          portable_bytes.data()),
+                                      static_cast<size_t>(portable.written));
+    EXPECT_NE(portable_packet.find("<tiff:ImageDescription>A scene"),
+              std::string::npos);
+    EXPECT_NE(portable_packet.find("<tiff:Artist>A. Photographer"),
+              std::string::npos);
+    EXPECT_NE(portable_packet.find("<tiff:Copyright>Copyright 2026"),
+              std::string::npos);
+    EXPECT_NE(portable_packet.find("<exif:ColorSpace>sRGB</exif:ColorSpace>"),
+              std::string::npos);
+    EXPECT_NE(portable_packet.find("SOUND.WAV"), std::string::npos);
+    EXPECT_NE(portable_packet.find("Retain this unmanaged value"),
+              std::string::npos);
+    EXPECT_EQ(portable_packet.find("Remove this property"), std::string::npos);
+
+    const openmeta::TransferSourceSnapshot snapshot
+        = openmeta::build_transfer_source_snapshot(translated);
+    std::vector<std::byte> serialized_snapshot;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(snapshot,
+                                                           &serialized_snapshot)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::TransferSourceSnapshot restored_snapshot;
+    ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(
+                  std::span<const std::byte>(serialized_snapshot.data(),
+                                             serialized_snapshot.size()),
+                  &restored_snapshot)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(openmeta::validate_store(restored_snapshot.store).ok());
+    openmeta::PrepareTransferRequest request;
+    request.target_format      = openmeta::TransferTargetFormat::Jpeg;
+    request.include_icc_app2   = false;
+    request.include_iptc_app13 = false;
+    request.target_image_spec.has_exif_color_space = true;
+    request.target_image_spec.exif_color_space     = 1U;
+    request.xmp_existing_namespace_policy
+        = openmeta::XmpExistingNamespacePolicy::PreserveCustom;
+    openmeta::PreparedTransferBundle bundle;
+    const openmeta::PrepareTransferResult prepared
+        = openmeta::prepare_metadata_for_target_snapshot(restored_snapshot,
+                                                         request, &bundle);
+    ASSERT_EQ(prepared.status, openmeta::TransferStatus::Ok);
+    const openmeta::PreparedTransferBlock* exif_block = nullptr;
+    for (const openmeta::PreparedTransferBlock& candidate : bundle.blocks) {
+        if (candidate.kind == openmeta::TransferBlockKind::Exif) {
+            exif_block = &candidate;
+            break;
+        }
+    }
+    ASSERT_NE(exif_block, nullptr);
+    uint16_t color_space_type  = 0U;
+    uint32_t color_space_count = 0U;
+    uint32_t color_space_value = 0U;
+    ASSERT_TRUE(prepared_exif_block_find_exififd_tag(*exif_block, 0xA001U,
+                                                     &color_space_type,
+                                                     &color_space_count,
+                                                     &color_space_value));
+    EXPECT_EQ(color_space_type, 3U);
+    EXPECT_EQ(color_space_count, 1U);
+    EXPECT_EQ(color_space_value & 0xFFFFU, 1U);
+
+    const std::vector<std::byte> input          = make_jpeg_with_segments({});
+    const std::vector<std::byte> original_input = input;
+    const openmeta::JpegEditPlan plan = openmeta::plan_prepared_bundle_jpeg_edit(
+        std::span<const std::byte>(input.data(), input.size()), bundle);
+    ASSERT_EQ(plan.status, openmeta::TransferStatus::Ok);
+    std::vector<std::byte> expected;
+    const openmeta::EmitTransferResult applied
+        = openmeta::apply_prepared_bundle_jpeg_edit(
+            std::span<const std::byte>(input.data(), input.size()), bundle,
+            plan, &expected);
+    ASSERT_EQ(applied.status, openmeta::TransferStatus::Ok);
+    BufferByteWriter writer;
+    const openmeta::EmitTransferResult written
+        = openmeta::write_prepared_bundle_jpeg_edit(
+            std::span<const std::byte>(input.data(), input.size()), bundle,
+            plan, writer);
+    ASSERT_EQ(written.status, openmeta::TransferStatus::Ok);
+    EXPECT_FALSE(writer.out.empty());
+    EXPECT_FALSE(writer.out == input);
+    EXPECT_GT(writer.writes, 0U);
+    EXPECT_EQ(written.emitted, applied.emitted);
+    EXPECT_EQ(writer.out, expected);
+    EXPECT_EQ(input, original_input);
+
+    openmeta::MetaStore decoded;
+    ASSERT_TRUE(decode_transfer_roundtrip_store(
+        std::span<const std::byte>(writer.out.data(), writer.out.size()),
+        &decoded));
+    EXPECT_TRUE(store_has_text_entry(decoded, exif_key_view("ifd0", 0x010EU),
+                                     "A scene"));
+    EXPECT_TRUE(store_has_text_entry(decoded, exif_key_view("ifd0", 0x013BU),
+                                     "A. Photographer"));
+    EXPECT_TRUE(store_has_text_entry(decoded, exif_key_view("ifd0", 0x8298U),
+                                     "Copyright 2026"));
+    uint16_t color_space_readback = 0U;
+    ASSERT_TRUE(store_read_tiff_u16_scalar(decoded,
+                                           exif_key_view("exififd", 0xA001U),
+                                           &color_space_readback));
+    EXPECT_EQ(color_space_readback, 1U);
+    EXPECT_TRUE(store_has_text_entry(decoded, exif_key_view("exififd", 0xA004U),
+                                     "SOUND.WAV"));
+    EXPECT_TRUE(
+        store_has_text_entry(decoded,
+                             xmp_key_view(kCustomNamespace, "RetainedProperty"),
+                             "Retain this unmanaged value"));
+    EXPECT_TRUE(
+        store_lacks_text_entry(decoded, xmp_key_view(kCustomNamespace,
+                                                     "LegacyProperty")));
+
+    openmeta::PrepareTransferRequest tiff_request = request;
+    tiff_request.target_format = openmeta::TransferTargetFormat::Tiff;
+    openmeta::PreparedTransferBundle tiff_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(restored_snapshot,
+                                                             tiff_request,
+                                                             &tiff_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    std::array<std::vector<std::byte>, 2U> tiff_inputs {
+        make_minimal_tiff_little_endian(),
+        make_minimal_bigtiff_little_endian(),
+    };
+    std::array<std::vector<std::byte>, 2U> first_tiff_outputs;
+    for (size_t i = 0U; i < tiff_inputs.size(); ++i) {
+        SCOPED_TRACE(i == 0U ? "classic TIFF" : "BigTIFF");
+        const std::vector<std::byte> original_tiff = tiff_inputs[i];
+        const openmeta::TiffEditPlan tiff_plan
+            = openmeta::plan_prepared_bundle_tiff_edit(
+                std::span<const std::byte>(tiff_inputs[i].data(),
+                                           tiff_inputs[i].size()),
+                tiff_bundle);
+        ASSERT_EQ(tiff_plan.status, openmeta::TransferStatus::Ok);
+        BufferByteWriter tiff_writer;
+        const openmeta::EmitTransferResult tiff_written
+            = openmeta::write_prepared_bundle_tiff_edit(
+                std::span<const std::byte>(tiff_inputs[i].data(),
+                                           tiff_inputs[i].size()),
+                tiff_bundle, tiff_plan, tiff_writer);
+        ASSERT_EQ(tiff_written.status, openmeta::TransferStatus::Ok);
+        EXPECT_FALSE(tiff_writer.out.empty());
+        EXPECT_FALSE(tiff_writer.out == tiff_inputs[i]);
+        EXPECT_GT(tiff_writer.writes, 0U);
+        EXPECT_EQ(tiff_inputs[i], original_tiff);
+
+        openmeta::MetaStore tiff_decoded;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(
+            std::span<const std::byte>(tiff_writer.out.data(),
+                                       tiff_writer.out.size()),
+            &tiff_decoded));
+        EXPECT_TRUE(store_has_text_entry(tiff_decoded,
+                                         exif_key_view("ifd0", 0x010EU),
+                                         "A scene"));
+        EXPECT_TRUE(store_has_text_entry(tiff_decoded,
+                                         exif_key_view("ifd0", 0x013BU),
+                                         "A. Photographer"));
+        EXPECT_TRUE(store_has_text_entry(tiff_decoded,
+                                         exif_key_view("ifd0", 0x8298U),
+                                         "Copyright 2026"));
+        uint16_t tiff_color_space = 0U;
+        ASSERT_TRUE(
+            store_read_tiff_u16_scalar(tiff_decoded,
+                                       exif_key_view("exififd", 0xA001U),
+                                       &tiff_color_space));
+        EXPECT_EQ(tiff_color_space, 1U);
+        EXPECT_TRUE(store_has_text_entry(tiff_decoded,
+                                         exif_key_view("exififd", 0xA004U),
+                                         "SOUND.WAV"));
+        EXPECT_TRUE(store_has_text_entry(tiff_decoded,
+                                         xmp_key_view(kCustomNamespace,
+                                                      "RetainedProperty"),
+                                         "Retain this unmanaged value"));
+        EXPECT_TRUE(store_lacks_text_entry(tiff_decoded,
+                                           xmp_key_view(kCustomNamespace,
+                                                        "LegacyProperty")));
+        first_tiff_outputs[i] = std::move(tiff_writer.out);
+    }
+
+    EXPECT_TRUE(store_has_text_entry(decoded,
+                                     xmp_key_view(kTiffNamespace, "Artist"),
+                                     "A. Photographer"));
+    std::array<openmeta::MetadataTypedEditingOperation, 2U> second_operations {};
+    second_operations[0].kind = openmeta::MetadataEditingOperationKind::Remove;
+    second_operations[0].entry.key
+        = openmeta::make_xmp_property_key_view(kTiffNamespace, "Artist");
+    second_operations[1].kind = openmeta::MetadataEditingOperationKind::Set;
+    second_operations[1].entry.key
+        = openmeta::make_xmp_property_key_view(kTiffNamespace,
+                                               "ImageDescription");
+    second_operations[1].entry.value
+        = openmeta::make_value_view_text("Second pass scene",
+                                         openmeta::TextEncoding::Utf8);
+    openmeta::MetaStore second_edited;
+    const openmeta::MetadataTypedEditingResult second_edit
+        = openmeta::edit_metadata_typed(decoded, second_operations,
+                                        &second_edited);
+    ASSERT_TRUE(second_edit.ok())
+        << openmeta::metadata_typed_editing_status_name(second_edit.status);
+    EXPECT_EQ(second_edit.entries_removed, 1U);
+    EXPECT_EQ(second_edit.entries_updated, 1U);
+
+    openmeta::MetadataProfileTranslationOptions replace_options
+        = profile_options;
+    replace_options.conflict_policy
+        = openmeta::MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+    openmeta::MetaStore second_translated;
+    const openmeta::MetadataCaptureTranslationResult second_translation
+        = openmeta::translate_xmp_profile_metadata(second_edited,
+                                                   replace_options,
+                                                   &second_translated);
+    ASSERT_EQ(second_translation.status,
+              openmeta::MetadataCaptureTranslationStatus::Ok);
+    EXPECT_EQ(second_translation.source_properties, 2U);
+    EXPECT_TRUE(openmeta::validate_store(second_edited).ok());
+    EXPECT_TRUE(openmeta::validate_store(second_translated).ok());
+    const openmeta::TransferSourceSnapshot second_source_snapshot
+        = openmeta::build_transfer_source_snapshot(second_translated);
+    std::vector<std::byte> second_serialized_snapshot;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(
+                  second_source_snapshot, &second_serialized_snapshot)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::TransferSourceSnapshot second_restored_snapshot;
+    ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(
+                  std::span<const std::byte>(second_serialized_snapshot.data(),
+                                             second_serialized_snapshot.size()),
+                  &second_restored_snapshot)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::PreparedTransferBundle second_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(
+                  second_restored_snapshot, request, &second_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    const std::vector<std::byte> first_jpeg_output = writer.out;
+    const openmeta::JpegEditPlan second_plan
+        = openmeta::plan_prepared_bundle_jpeg_edit(
+            std::span<const std::byte>(first_jpeg_output.data(),
+                                       first_jpeg_output.size()),
+            second_bundle);
+    ASSERT_EQ(second_plan.status, openmeta::TransferStatus::Ok);
+    std::vector<std::byte> second_expected;
+    ASSERT_EQ(openmeta::apply_prepared_bundle_jpeg_edit(
+                  std::span<const std::byte>(first_jpeg_output.data(),
+                                             first_jpeg_output.size()),
+                  second_bundle, second_plan, &second_expected)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    BufferByteWriter second_writer;
+    ASSERT_EQ(openmeta::write_prepared_bundle_jpeg_edit(
+                  std::span<const std::byte>(first_jpeg_output.data(),
+                                             first_jpeg_output.size()),
+                  second_bundle, second_plan, second_writer)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(second_writer.out, second_expected);
+    EXPECT_EQ(writer.out, first_jpeg_output);
+
+    openmeta::MetaStore second_decoded;
+    ASSERT_TRUE(decode_transfer_roundtrip_store(
+        std::span<const std::byte>(second_writer.out.data(),
+                                   second_writer.out.size()),
+        &second_decoded));
+    EXPECT_TRUE(store_has_text_entry(second_decoded,
+                                     exif_key_view("ifd0", 0x010EU),
+                                     "Second pass scene"));
+    EXPECT_TRUE(
+        store_lacks_text_entry(second_decoded, exif_key_view("ifd0", 0x013BU)));
+    EXPECT_TRUE(store_lacks_text_entry(second_decoded,
+                                       xmp_key_view(kTiffNamespace, "Artist")));
+    EXPECT_TRUE(store_has_text_entry(second_decoded,
+                                     exif_key_view("ifd0", 0x8298U),
+                                     "Copyright 2026"));
+    uint16_t second_color_space = 0U;
+    ASSERT_TRUE(store_read_tiff_u16_scalar(second_decoded,
+                                           exif_key_view("exififd", 0xA001U),
+                                           &second_color_space));
+    EXPECT_EQ(second_color_space, 1U);
+    EXPECT_TRUE(store_has_text_entry(second_decoded,
+                                     exif_key_view("exififd", 0xA004U),
+                                     "SOUND.WAV"));
+    EXPECT_TRUE(
+        store_has_text_entry(second_decoded,
+                             xmp_key_view(kCustomNamespace, "RetainedProperty"),
+                             "Retain this unmanaged value"));
+
+    openmeta::PreparedTransferBundle second_tiff_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(
+                  second_restored_snapshot, tiff_request, &second_tiff_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    for (size_t i = 0U; i < first_tiff_outputs.size(); ++i) {
+        SCOPED_TRACE(i == 0U ? "classic TIFF second pass"
+                             : "BigTIFF second pass");
+        const std::vector<std::byte>& first   = first_tiff_outputs[i];
+        const std::vector<std::byte> original = first;
+        const openmeta::TiffEditPlan second_tiff_plan
+            = openmeta::plan_prepared_bundle_tiff_edit(first,
+                                                       second_tiff_bundle);
+        ASSERT_EQ(second_tiff_plan.status, openmeta::TransferStatus::Ok);
+        BufferByteWriter second_tiff_writer;
+        ASSERT_EQ(openmeta::write_prepared_bundle_tiff_edit(first,
+                                                            second_tiff_bundle,
+                                                            second_tiff_plan,
+                                                            second_tiff_writer)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        EXPECT_EQ(first, original);
+        openmeta::MetaStore reread;
+        ASSERT_TRUE(
+            decode_transfer_roundtrip_store(second_tiff_writer.out, &reread));
+        EXPECT_TRUE(store_has_text_entry(reread, exif_key_view("ifd0", 0x010EU),
+                                         "Second pass scene"));
+        // TIFF merges IFD0 updates; an omitted source tag is not a removal.
+        EXPECT_TRUE(store_has_text_entry(reread, exif_key_view("ifd0", 0x013BU),
+                                         "A. Photographer"));
+        EXPECT_TRUE(store_lacks_text_entry(reread, xmp_key_view(kTiffNamespace,
+                                                                "Artist")));
+        EXPECT_TRUE(store_has_text_entry(reread,
+                                         xmp_key_view(kCustomNamespace,
+                                                      "RetainedProperty"),
+                                         "Retain this unmanaged value"));
+    }
+}
+
+TEST(MetadataTransferApi,
+     ProfileTranslationFailurePreservesSourceAndPreviouslyPreparedStore)
+{
+    constexpr std::string_view kTiffNamespace = "http://ns.adobe.com/tiff/1.0/";
+    constexpr std::string_view kExifNamespace = "http://ns.adobe.com/exif/1.0/";
+
+    openmeta::MetaStore valid_source;
+    openmeta::Entry valid_artist;
+    valid_artist.key   = openmeta::make_xmp_property_key(valid_source.arena(),
+                                                         kTiffNamespace,
+                                                         "Artist");
+    valid_artist.value = openmeta::make_text(valid_source.arena(), "Published",
+                                             openmeta::TextEncoding::Utf8);
+    valid_artist.flags = openmeta::EntryFlags::Dirty;
+    ASSERT_NE(valid_source.add_entry(valid_artist), openmeta::kInvalidEntryId);
+    valid_source.finalize();
+    openmeta::MetaStore previously_prepared;
+    openmeta::MetadataProfileTranslationOptions options;
+    options.source_mode
+        = openmeta::MetadataCaptureTranslationSourceMode::DirtyOnly;
+    ASSERT_EQ(openmeta::translate_xmp_profile_metadata(valid_source, options,
+                                                       &previously_prepared)
+                  .status,
+              openmeta::MetadataCaptureTranslationStatus::Ok);
+    const openmeta::TransferSourceSnapshot published_snapshot
+        = openmeta::build_transfer_source_snapshot(previously_prepared);
+    std::vector<std::byte> published_before;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(published_snapshot,
+                                                           &published_before)
+                  .status,
+              openmeta::TransferStatus::Ok);
+
+    openmeta::MetaStore invalid_source;
+    openmeta::Entry invalid_color_space;
+    invalid_color_space.key
+        = openmeta::make_xmp_property_key(invalid_source.arena(),
+                                          kExifNamespace, "ColorSpace");
+    invalid_color_space.value
+        = openmeta::make_text(invalid_source.arena(), "2",
+                              openmeta::TextEncoding::Utf8);
+    invalid_color_space.flags = openmeta::EntryFlags::Dirty;
+    ASSERT_NE(invalid_source.add_entry(invalid_color_space),
+              openmeta::kInvalidEntryId);
+    invalid_source.finalize();
+    const openmeta::TransferSourceSnapshot invalid_snapshot
+        = openmeta::build_transfer_source_snapshot(invalid_source);
+    std::vector<std::byte> invalid_before;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(invalid_snapshot,
+                                                           &invalid_before)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(openmeta::translate_xmp_profile_metadata(invalid_source, options,
+                                                       &previously_prepared)
+                  .status,
+              openmeta::MetadataCaptureTranslationStatus::ValueOutOfRange);
+    std::vector<std::byte> invalid_after;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(
+                  openmeta::build_transfer_source_snapshot(invalid_source),
+                  &invalid_after)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(invalid_after, invalid_before);
+    std::vector<std::byte> published_after;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(
+                  openmeta::build_transfer_source_snapshot(previously_prepared),
+                  &published_after)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(published_after, published_before);
+
+    openmeta::MetaStore conflict_source;
+    openmeta::Entry existing_artist;
+    existing_artist.key   = openmeta::make_exif_tag_key(conflict_source.arena(),
+                                                        "ifd0", 0x013BU);
+    existing_artist.value = openmeta::make_text(conflict_source.arena(),
+                                                "Existing",
+                                                openmeta::TextEncoding::Ascii);
+    ASSERT_NE(conflict_source.add_entry(existing_artist),
+              openmeta::kInvalidEntryId);
+    openmeta::Entry conflicting_artist;
+    conflicting_artist.key
+        = openmeta::make_xmp_property_key(conflict_source.arena(),
+                                          kTiffNamespace, "Artist");
+    conflicting_artist.value
+        = openmeta::make_text(conflict_source.arena(), "Replacement",
+                              openmeta::TextEncoding::Utf8);
+    conflicting_artist.flags = openmeta::EntryFlags::Dirty;
+    ASSERT_NE(conflict_source.add_entry(conflicting_artist),
+              openmeta::kInvalidEntryId);
+    conflict_source.finalize();
+    const openmeta::TransferSourceSnapshot conflict_snapshot
+        = openmeta::build_transfer_source_snapshot(conflict_source);
+    std::vector<std::byte> conflict_before;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(conflict_snapshot,
+                                                           &conflict_before)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(openmeta::translate_xmp_profile_metadata(conflict_source, options,
+                                                       &previously_prepared)
+                  .status,
+              openmeta::MetadataCaptureTranslationStatus::NativeConflict);
+    std::vector<std::byte> conflict_after;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(
+                  openmeta::build_transfer_source_snapshot(conflict_source),
+                  &conflict_after)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(conflict_after, conflict_before);
+    published_after.clear();
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(
+                  openmeta::build_transfer_source_snapshot(previously_prepared),
+                  &published_after)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(published_after, published_before);
 }
 
 TEST(MetadataTransferApi, ReadTransferSourceSnapshotBytesMatchesFileReader)
@@ -26671,6 +27399,20 @@ make_nikon_type1_transfer_makernote()
     return note;
 }
 
+static std::vector<std::byte>
+make_canon_source_dependent_transfer_makernote()
+{
+    std::vector<std::byte> note;
+    append_u16le(&note, 1U);
+    append_u16le(&note, 0x0001U);
+    append_u16le(&note, 3U);
+    append_u32le(&note, 1U);
+    append_u16le(&note, 7U);
+    append_u16le(&note, 0U);
+    append_u32le(&note, 0U);
+    return note;
+}
+
 static bool
 build_makernote_transfer_store(std::span<const std::byte> note,
                                std::string_view camera_make,
@@ -26707,6 +27449,44 @@ build_makernote_transfer_store(std::span<const std::byte> note,
     return true;
 }
 
+static bool
+add_test_makernote_audit_payload(
+    openmeta::MetaStore* store, openmeta::BlockId block, std::string_view ifd,
+    uint16_t tag, std::span<const std::byte> payload, uint32_t order,
+    openmeta::EntryFlags flags = openmeta::EntryFlags::None) noexcept
+{
+    if (!store || block == openmeta::kInvalidBlockId) {
+        return false;
+    }
+    openmeta::Entry entry;
+    entry.key          = openmeta::make_exif_tag_key(store->arena(), ifd, tag);
+    entry.value        = openmeta::make_bytes(store->arena(), payload);
+    entry.flags        = flags;
+    entry.origin.block = block;
+    entry.origin.order_in_block = order;
+    return store->add_entry(entry) != openmeta::kInvalidEntryId;
+}
+
+static bool
+add_test_makernote_audit_make(openmeta::MetaStore* store,
+                              openmeta::BlockId block, std::string_view ifd,
+                              std::string_view camera_make, uint32_t order,
+                              openmeta::EntryFlags flags
+                              = openmeta::EntryFlags::None) noexcept
+{
+    if (!store || block == openmeta::kInvalidBlockId) {
+        return false;
+    }
+    openmeta::Entry entry;
+    entry.key   = openmeta::make_exif_tag_key(store->arena(), ifd, 0x010FU);
+    entry.value = openmeta::make_text(store->arena(), camera_make,
+                                      openmeta::TextEncoding::Ascii);
+    entry.flags = flags;
+    entry.origin.block          = block;
+    entry.origin.order_in_block = order;
+    return store->add_entry(entry) != openmeta::kInvalidEntryId;
+}
+
 TEST(MetadataTransferApi, AuditsNikonMakerNoteOffsetLayoutsConservatively)
 {
     const std::vector<std::byte> type3 = make_nikon_type3_transfer_makernote();
@@ -26737,12 +27517,15 @@ TEST(MetadataTransferApi, AuditsNikonMakerNoteOffsetLayoutsConservatively)
         = openmeta::makernote_transfer_audit_from_store(type3_store);
     EXPECT_EQ(generic_audit.trust,
               openmeta::TransferMakerNoteTrust::OpaquePreservationUnverified);
+    EXPECT_EQ(generic_audit.raw_payload_count, 1U);
+    EXPECT_EQ(generic_audit.decoded_only_entry_count, 0U);
 
     const std::vector<std::byte> type1 = make_nikon_type1_transfer_makernote();
     openmeta::MetaStore type1_store;
     ASSERT_TRUE(build_makernote_transfer_store(type1, "Nikon", &type1_store));
     const openmeta::TransferMakerNoteLayoutAudit type1_audit
         = openmeta::makernote_layout_transfer_audit_from_store(type1_store);
+    EXPECT_EQ(type1_audit.raw_payload_count, 1U);
     EXPECT_EQ(type1_audit.trust,
               openmeta::TransferMakerNoteLayoutTrust::OuterTiffOffsetsUnsafe);
     EXPECT_EQ(type1_audit.vendor, openmeta::TransferMakerNoteVendor::Nikon);
@@ -26752,6 +27535,10 @@ TEST(MetadataTransferApi, AuditsNikonMakerNoteOffsetLayoutsConservatively)
     EXPECT_TRUE(type1_audit.outer_tiff_offset_relocation_required);
     EXPECT_FALSE(type1_audit.embedded_tiff_validation_available);
     EXPECT_FALSE(type1_audit.embedded_tiff_offsets_self_contained);
+    const openmeta::TransferMakerNoteAudit type1_generic
+        = openmeta::makernote_transfer_audit_from_store(type1_store);
+    EXPECT_EQ(type1_generic.raw_payload_count, 1U);
+    EXPECT_EQ(type1_generic.decoded_only_entry_count, 0U);
 
     std::vector<std::byte> truncated_type3 = type3;
     ASSERT_FALSE(truncated_type3.empty());
@@ -26771,16 +27558,201 @@ TEST(MetadataTransferApi, AuditsNikonMakerNoteOffsetLayoutsConservatively)
     EXPECT_FALSE(truncated_audit.embedded_tiff_offsets_self_contained);
 }
 
+TEST(MetadataTransferApi, MakerNoteAuditsRequireExpectedIfdKeys)
+{
+    const std::vector<std::byte> type3 = make_nikon_type3_transfer_makernote();
+    openmeta::MetaStore wrong_makernote_ifd;
+    const openmeta::BlockId wrong_makernote_block
+        = wrong_makernote_ifd.add_block(openmeta::BlockInfo {});
+    ASSERT_NE(wrong_makernote_block, openmeta::kInvalidBlockId);
+    ASSERT_TRUE(add_test_makernote_audit_make(&wrong_makernote_ifd,
+                                              wrong_makernote_block, "ifd0",
+                                              "Nikon", 0U));
+    ASSERT_TRUE(add_test_makernote_audit_payload(
+        &wrong_makernote_ifd, wrong_makernote_block, "ifd0", 0x927CU,
+        std::span<const std::byte>(type3.data(), type3.size()), 1U));
+    wrong_makernote_ifd.finalize();
+
+    const openmeta::TransferMakerNoteAudit absent_generic
+        = openmeta::makernote_transfer_audit_from_store(wrong_makernote_ifd);
+    EXPECT_EQ(absent_generic.trust,
+              openmeta::TransferMakerNoteTrust::NotPresent);
+    EXPECT_EQ(absent_generic.raw_payload_count, 0U);
+    EXPECT_FALSE(absent_generic.opaque_payload_available);
+
+    const openmeta::TransferMakerNoteLayoutAudit absent_layout
+        = openmeta::makernote_layout_transfer_audit_from_store(
+            wrong_makernote_ifd);
+    EXPECT_EQ(absent_layout.trust,
+              openmeta::TransferMakerNoteLayoutTrust::NotPresent);
+    EXPECT_EQ(absent_layout.raw_payload_count, 0U);
+    EXPECT_EQ(absent_layout.vendor, openmeta::TransferMakerNoteVendor::Unknown);
+
+    const std::vector<std::byte> canon_note
+        = make_canon_source_dependent_transfer_makernote();
+
+    openmeta::MetaStore wrong_make_ifd;
+    const openmeta::BlockId wrong_make_block = wrong_make_ifd.add_block(
+        openmeta::BlockInfo {});
+    ASSERT_NE(wrong_make_block, openmeta::kInvalidBlockId);
+    ASSERT_TRUE(add_test_makernote_audit_make(&wrong_make_ifd, wrong_make_block,
+                                              "exififd", "Canon Inc.", 0U));
+    ASSERT_TRUE(add_test_makernote_audit_payload(
+        &wrong_make_ifd, wrong_make_block, "exififd", 0x927CU,
+        std::span<const std::byte>(canon_note.data(), canon_note.size()), 1U));
+    wrong_make_ifd.finalize();
+
+    const openmeta::TransferMakerNoteAudit generic
+        = openmeta::makernote_transfer_audit_from_store(wrong_make_ifd);
+    EXPECT_EQ(generic.trust,
+              openmeta::TransferMakerNoteTrust::OpaquePreservationUnverified);
+    EXPECT_EQ(generic.raw_payload_count, 1U);
+
+    const openmeta::TransferMakerNoteLayoutAudit layout
+        = openmeta::makernote_layout_transfer_audit_from_store(wrong_make_ifd);
+    EXPECT_EQ(layout.trust,
+              openmeta::TransferMakerNoteLayoutTrust::UnrecognizedOrMixed);
+    EXPECT_EQ(layout.raw_payload_count, 1U);
+    EXPECT_EQ(layout.recognized_payload_count, 0U);
+    EXPECT_EQ(layout.vendor, openmeta::TransferMakerNoteVendor::Unknown);
+    EXPECT_FALSE(layout.source_offset_context_required);
+}
+
+TEST(MetadataTransferApi,
+     MakerNoteAuditsIgnoreDeletedEvidenceAndCountSameNumberedDecodedTags)
+{
+    const std::vector<std::byte> type3 = make_nikon_type3_transfer_makernote();
+    const std::vector<std::byte> canon_note
+        = make_canon_source_dependent_transfer_makernote();
+
+    openmeta::MetaStore deleted_makernote_store;
+    const openmeta::BlockId deleted_makernote_block
+        = deleted_makernote_store.add_block(openmeta::BlockInfo {});
+    ASSERT_NE(deleted_makernote_block, openmeta::kInvalidBlockId);
+    ASSERT_TRUE(add_test_makernote_audit_make(&deleted_makernote_store,
+                                              deleted_makernote_block, "ifd0",
+                                              "Nikon", 0U));
+    ASSERT_TRUE(add_test_makernote_audit_payload(
+        &deleted_makernote_store, deleted_makernote_block, "exififd", 0x927CU,
+        std::span<const std::byte>(type3.data(), type3.size()), 1U,
+        openmeta::EntryFlags::Deleted));
+    deleted_makernote_store.finalize();
+
+    const openmeta::TransferMakerNoteAudit deleted_raw
+        = openmeta::makernote_transfer_audit_from_store(
+            deleted_makernote_store);
+    EXPECT_EQ(deleted_raw.trust, openmeta::TransferMakerNoteTrust::NotPresent);
+    EXPECT_EQ(deleted_raw.raw_payload_count, 0U);
+    const openmeta::TransferMakerNoteLayoutAudit deleted_layout
+        = openmeta::makernote_layout_transfer_audit_from_store(
+            deleted_makernote_store);
+    EXPECT_EQ(deleted_layout.trust,
+              openmeta::TransferMakerNoteLayoutTrust::NotPresent);
+    EXPECT_EQ(deleted_layout.raw_payload_count, 0U);
+
+    openmeta::MetaStore deleted_make_store;
+    const openmeta::BlockId deleted_make_block = deleted_make_store.add_block(
+        openmeta::BlockInfo {});
+    ASSERT_NE(deleted_make_block, openmeta::kInvalidBlockId);
+    ASSERT_TRUE(add_test_makernote_audit_make(&deleted_make_store,
+                                              deleted_make_block, "ifd0",
+                                              "Canon Inc.", 0U,
+                                              openmeta::EntryFlags::Deleted));
+    ASSERT_TRUE(add_test_makernote_audit_payload(
+        &deleted_make_store, deleted_make_block, "exififd", 0x927CU,
+        std::span<const std::byte>(canon_note.data(), canon_note.size()), 1U));
+    deleted_make_store.finalize();
+
+    const openmeta::TransferMakerNoteAudit deleted_make_generic
+        = openmeta::makernote_transfer_audit_from_store(deleted_make_store);
+    EXPECT_EQ(deleted_make_generic.trust,
+              openmeta::TransferMakerNoteTrust::OpaquePreservationUnverified);
+    EXPECT_EQ(deleted_make_generic.raw_payload_count, 1U);
+    const openmeta::TransferMakerNoteLayoutAudit deleted_make_layout
+        = openmeta::makernote_layout_transfer_audit_from_store(
+            deleted_make_store);
+    EXPECT_EQ(deleted_make_layout.trust,
+              openmeta::TransferMakerNoteLayoutTrust::UnrecognizedOrMixed);
+    EXPECT_EQ(deleted_make_layout.raw_payload_count, 1U);
+    EXPECT_EQ(deleted_make_layout.recognized_payload_count, 0U);
+    EXPECT_EQ(deleted_make_layout.vendor,
+              openmeta::TransferMakerNoteVendor::Unknown);
+
+    openmeta::MetaStore decoded_only_store;
+    const openmeta::BlockId decoded_only_block = decoded_only_store.add_block(
+        openmeta::BlockInfo {});
+    ASSERT_NE(decoded_only_block, openmeta::kInvalidBlockId);
+    ASSERT_TRUE(add_test_makernote_audit_payload(
+        &decoded_only_store, decoded_only_block, "mk_canon0", 0x927CU,
+        std::span<const std::byte>(canon_note.data(), canon_note.size()), 0U));
+    decoded_only_store.finalize();
+
+    const openmeta::TransferMakerNoteAudit decoded_only
+        = openmeta::makernote_transfer_audit_from_store(decoded_only_store);
+    EXPECT_EQ(decoded_only.trust,
+              openmeta::TransferMakerNoteTrust::DecodedOnlyNotSerializable);
+    EXPECT_EQ(decoded_only.raw_payload_count, 0U);
+    EXPECT_EQ(decoded_only.decoded_only_entry_count, 1U);
+    EXPECT_FALSE(decoded_only.opaque_payload_available);
+    const openmeta::TransferMakerNoteLayoutAudit decoded_only_layout
+        = openmeta::makernote_layout_transfer_audit_from_store(
+            decoded_only_store);
+    EXPECT_EQ(decoded_only_layout.trust,
+              openmeta::TransferMakerNoteLayoutTrust::NotPresent);
+    EXPECT_EQ(decoded_only_layout.raw_payload_count, 0U);
+}
+
+TEST(MetadataTransferApi,
+     MakerNoteAuditsKeepWrongIfdEvidenceSeparateFromGenuineNikonType3)
+{
+    const std::vector<std::byte> type3 = make_nikon_type3_transfer_makernote();
+    const std::vector<std::byte> canon_note
+        = make_canon_source_dependent_transfer_makernote();
+    openmeta::MetaStore store;
+    const openmeta::BlockId block = store.add_block(openmeta::BlockInfo {});
+    ASSERT_NE(block, openmeta::kInvalidBlockId);
+
+    ASSERT_TRUE(
+        add_test_makernote_audit_make(&store, block, "ifd0", "Nikon", 0U));
+    ASSERT_TRUE(add_test_makernote_audit_make(&store, block, "exififd",
+                                              "Canon Inc.", 1U));
+    ASSERT_TRUE(add_test_makernote_audit_payload(
+        &store, block, "exififd", 0x927CU,
+        std::span<const std::byte>(type3.data(), type3.size()), 2U));
+    ASSERT_TRUE(add_test_makernote_audit_payload(
+        &store, block, "ifd0", 0x927CU,
+        std::span<const std::byte>(canon_note.data(), canon_note.size()), 3U));
+    ASSERT_TRUE(add_test_makernote_audit_payload(
+        &store, block, "mk_canon0", 0x927CU,
+        std::span<const std::byte>(canon_note.data(), canon_note.size()), 4U));
+    store.finalize();
+
+    const openmeta::TransferMakerNoteAudit generic
+        = openmeta::makernote_transfer_audit_from_store(store);
+    EXPECT_EQ(generic.trust,
+              openmeta::TransferMakerNoteTrust::OpaquePreservationUnverified);
+    EXPECT_EQ(generic.raw_payload_count, 1U);
+    EXPECT_EQ(generic.decoded_only_entry_count, 1U);
+
+    const openmeta::TransferMakerNoteLayoutAudit layout
+        = openmeta::makernote_layout_transfer_audit_from_store(store);
+    EXPECT_EQ(
+        layout.trust,
+        openmeta::TransferMakerNoteLayoutTrust::EmbeddedTiffStructureVerified);
+    EXPECT_EQ(layout.vendor, openmeta::TransferMakerNoteVendor::Nikon);
+    EXPECT_EQ(layout.layout,
+              openmeta::TransferMakerNoteLayout::NikonType3EmbeddedTiff);
+    EXPECT_EQ(layout.raw_payload_count, 1U);
+    EXPECT_EQ(layout.recognized_payload_count, 1U);
+    EXPECT_EQ(layout.structurally_valid_payload_count, 1U);
+    EXPECT_FALSE(layout.source_offset_context_required);
+    EXPECT_FALSE(layout.vendor_private_offsets_verified);
+}
+
 TEST(MetadataTransferApi, AuditsCanonMakerNoteSourceLayoutConservatively)
 {
-    std::vector<std::byte> note;
-    append_u16le(&note, 1U);
-    append_u16le(&note, 0x0001U);
-    append_u16le(&note, 3U);
-    append_u32le(&note, 1U);
-    append_u16le(&note, 7U);
-    append_u16le(&note, 0U);
-    append_u32le(&note, 0U);
+    const std::vector<std::byte> note
+        = make_canon_source_dependent_transfer_makernote();
 
     openmeta::MetaStore store;
     ASSERT_TRUE(build_makernote_transfer_store(note, "Canon Inc.", &store));
@@ -26803,6 +27775,13 @@ TEST(MetadataTransferApi, AuditsCanonMakerNoteSourceLayoutConservatively)
     EXPECT_FALSE(audit.vendor_private_offsets_verified);
     EXPECT_FALSE(audit.vendor_checksum_validation_available);
     EXPECT_FALSE(audit.semantic_roundtrip_validation_available);
+
+    const openmeta::TransferMakerNoteAudit generic
+        = openmeta::makernote_transfer_audit_from_store(store);
+    EXPECT_EQ(generic.trust,
+              openmeta::TransferMakerNoteTrust::OpaquePreservationUnverified);
+    EXPECT_EQ(generic.raw_payload_count, 1U);
+    EXPECT_EQ(generic.decoded_only_entry_count, 0U);
 
     const std::array<std::byte, 3> malformed
         = { std::byte { 1U }, std::byte { 0U }, std::byte { 0U } };
@@ -47547,6 +48526,7 @@ TEST(MetadataTransferApi,
     const std::vector<std::byte> input
         = make_bmff_foreign_meta_iloc_method2_reference_target(true, true,
                                                                true);
+    const std::vector<std::byte> original_input = input;
 
     openmeta::ExecutePreparedTransferOptions options;
     options.edit_requested = true;
@@ -47563,6 +48543,80 @@ TEST(MetadataTransferApi,
               std::string::npos);
     EXPECT_EQ(result.edit_apply.status, openmeta::TransferStatus::Unsupported);
     EXPECT_TRUE(result.edited_output.empty());
+    EXPECT_EQ(input, original_input);
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditRejectsInvalidMethod2DrefsAtomically)
+{
+    struct Case final {
+        const char* label;
+        std::vector<std::byte> input;
+        const char* expected_message;
+    };
+    std::vector<Case> cases;
+    cases.push_back(
+        { "missing dref",
+          make_bmff_foreign_meta_iloc_method2_reference_target(true, false,
+                                                               true, 1U),
+          "iloc data reference requires dinf/dref" });
+    cases.push_back({ "external dref",
+                      make_bmff_foreign_meta_iloc_method2_reference_target(
+                          true, false, true, 1U, 0U, 1U, true, false),
+                      "iloc data reference is not self-contained" });
+    cases.push_back({ "out-of-range dref index",
+                      make_bmff_foreign_meta_iloc_method2_reference_target(
+                          true, false, true, 2U, 0U, 1U, true, true),
+                      "iloc data reference is not self-contained" });
+
+    std::vector<std::byte> truncated_dref
+        = make_bmff_foreign_meta_iloc_method2_reference_target(true, false,
+                                                               true, 1U, 0U, 1U,
+                                                               true, true);
+    size_t dinf_offset = 0U;
+    size_t dinf_size   = 0U;
+    ASSERT_TRUE(find_top_level_bmff_meta_child_box(
+        std::span<const std::byte>(truncated_dref.data(), truncated_dref.size()),
+        openmeta::fourcc('d', 'i', 'n', 'f'), &dinf_offset, &dinf_size));
+    ASSERT_GE(dinf_size, 28U);
+    ASSERT_TRUE(
+        write_test_u32be(&truncated_dref, dinf_offset + 24U, 0xFFFFFFF0U));
+    cases.push_back({ "truncated dref entry", std::move(truncated_dref),
+                      "failed to parse dref entry" });
+    cases.push_back(
+        { "unsupported nested method 2",
+          make_bmff_foreign_meta_iloc_method2_reference_target(true, false,
+                                                               true, 0U, 0U, 2U),
+          "iloc construction method 2 references unsupported item" });
+
+    for (const Case& one : cases) {
+        SCOPED_TRACE(one.label);
+        openmeta::PreparedTransferBundle bundle;
+        bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+        openmeta::PreparedTransferBlock exif;
+        exif.route   = "bmff:item-exif";
+        exif.payload = make_test_bmff_exif_item_payload();
+        bundle.blocks.push_back(exif);
+
+        const std::vector<std::byte> original_input = one.input;
+        openmeta::ExecutePreparedTransferOptions options;
+        options.edit_requested = true;
+        options.edit_apply     = true;
+        const openmeta::ExecutePreparedTransferResult result
+            = openmeta::execute_prepared_transfer(
+                &bundle,
+                std::span<const std::byte>(one.input.data(), one.input.size()),
+                options);
+
+        EXPECT_NE(result.edit_plan_status, openmeta::TransferStatus::Ok);
+        EXPECT_NE(result.edit_plan_message.find(one.expected_message),
+                  std::string::npos)
+            << result.edit_plan_message;
+        EXPECT_NE(result.edit_apply.status, openmeta::TransferStatus::Ok);
+        EXPECT_TRUE(result.edited_output.empty());
+        EXPECT_EQ(one.input, original_input);
+    }
 }
 
 TEST(MetadataTransferApi,
@@ -48097,6 +49151,150 @@ TEST(MetadataTransferApi,
                   + static_cast<uint64_t>(exif.payload.size()));
     EXPECT_EQ(xmp_record.extent_length,
               static_cast<uint64_t>(xmp.payload.size()));
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditPreservesMethod2DrefTargetsAcrossBrands)
+{
+    struct Case final {
+        openmeta::TransferTargetFormat target_format;
+        uint32_t major_brand;
+        uint16_t first_target_method;
+        bool use_extent_indices;
+    };
+    static constexpr Case kCases[] = {
+        { openmeta::TransferTargetFormat::Heif,
+          openmeta::fourcc('h', 'e', 'i', 'c'), 0U, true },
+        { openmeta::TransferTargetFormat::Avif,
+          openmeta::fourcc('a', 'v', 'i', 'f'), 1U, false },
+        { openmeta::TransferTargetFormat::Cr3,
+          openmeta::fourcc('c', 'r', 'x', ' '), 0U, false },
+    };
+    static constexpr std::array<std::byte, 6> kTileBytes = {
+        std::byte { 'A' }, std::byte { 'B' }, std::byte { 'C' },
+        std::byte { 'D' }, std::byte { 'E' }, std::byte { 'F' },
+    };
+    const std::vector<std::byte> exif_payload
+        = make_test_bmff_exif_item_payload_with_fields();
+    ASSERT_FALSE(exif_payload.empty());
+
+    for (const Case& one : kCases) {
+        SCOPED_TRACE(static_cast<int>(one.target_format));
+        openmeta::PreparedTransferBundle bundle;
+        bundle.target_format = one.target_format;
+
+        openmeta::PreparedTransferBlock exif;
+        exif.route   = "bmff:item-exif";
+        exif.payload = exif_payload;
+        bundle.blocks.push_back(exif);
+
+        uint64_t method0_payload_offset = 0U;
+        const std::vector<std::byte> input
+            = make_bmff_foreign_meta_iloc_method2_reference_target(
+                true, false, one.use_extent_indices, 1U, 1U,
+                one.first_target_method, true, true, one.major_brand,
+                &method0_payload_offset);
+        const std::vector<std::byte> original_input = input;
+
+        openmeta::ExecutePreparedTransferOptions options;
+        options.edit_requested = true;
+        options.edit_apply     = true;
+        const openmeta::ExecutePreparedTransferResult result
+            = openmeta::execute_prepared_transfer(
+                &bundle, std::span<const std::byte>(input.data(), input.size()),
+                options);
+
+        ASSERT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok);
+        ASSERT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+        ASSERT_FALSE(result.edited_output.empty());
+        EXPECT_EQ(input, original_input);
+
+        const std::span<const std::byte> edited(result.edited_output.data(),
+                                                result.edited_output.size());
+        EXPECT_TRUE(payload_contains_ascii(edited, "dref"));
+        EXPECT_TRUE(payload_contains_ascii(edited, "url "));
+
+        TestBmffIlocRecordInfo primary;
+        ASSERT_TRUE(read_test_bmff_iloc_record(edited, 1U, &primary));
+        EXPECT_EQ(primary.construction_method, 2U);
+
+        TestBmffIlocRecordInfo first_target;
+        ASSERT_TRUE(read_test_bmff_iloc_record(edited, 2U, &first_target));
+        EXPECT_EQ(first_target.construction_method, one.first_target_method);
+        EXPECT_EQ(first_target.data_reference_index, 1U);
+        EXPECT_EQ(first_target.base_offset, 0U);
+        EXPECT_EQ(first_target.extent_offset, method0_payload_offset);
+        EXPECT_EQ(first_target.extent_length, 3U);
+
+        TestBmffIlocRecordInfo second_target;
+        ASSERT_TRUE(read_test_bmff_iloc_record(edited, 3U, &second_target));
+        EXPECT_EQ(second_target.construction_method, 1U);
+        EXPECT_EQ(second_target.data_reference_index, 1U);
+        EXPECT_EQ(second_target.base_offset, 0U);
+        EXPECT_EQ(second_target.extent_offset, 3U);
+        EXPECT_EQ(second_target.extent_length, 3U);
+
+        uint8_t iref_version = 0U;
+        ASSERT_TRUE(read_test_bmff_iref_version(edited, &iref_version));
+        EXPECT_EQ(iref_version, 1U);
+        uint32_t relation_count = 0U;
+        std::vector<uint32_t> relation_targets;
+        ASSERT_TRUE(count_test_bmff_iref_relations(
+            edited, openmeta::fourcc('i', 'l', 'o', 'c'), true, 1U, 2U,
+            &relation_count, &relation_targets));
+        EXPECT_EQ(relation_count, 1U);
+        ASSERT_EQ(relation_targets.size(), 2U);
+        EXPECT_EQ(relation_targets[0], 2U);
+        EXPECT_EQ(relation_targets[1], 3U);
+
+        size_t idat_offset = 0U;
+        size_t idat_size   = 0U;
+        ASSERT_TRUE(find_top_level_bmff_meta_child_box(
+            edited, openmeta::fourcc('i', 'd', 'a', 't'), &idat_offset,
+            &idat_size));
+        ASSERT_GE(idat_size, 8U + kTileBytes.size());
+        EXPECT_EQ(std::memcmp(edited.data() + idat_offset + 8U,
+                              kTileBytes.data(), kTileBytes.size()),
+                  0);
+
+        if (one.first_target_method == 0U) {
+            ASSERT_LE(method0_payload_offset + kTileBytes.size(), input.size());
+            ASSERT_LE(method0_payload_offset + kTileBytes.size(),
+                      edited.size());
+            EXPECT_EQ(std::memcmp(input.data() + method0_payload_offset,
+                                  kTileBytes.data(), kTileBytes.size()),
+                      0);
+            EXPECT_EQ(std::memcmp(edited.data() + method0_payload_offset,
+                                  kTileBytes.data(), kTileBytes.size()),
+                      0);
+        }
+
+        TestBmffIlocRecordInfo inserted_exif;
+        ASSERT_TRUE(read_test_bmff_iloc_record(edited, 4U, &inserted_exif));
+        EXPECT_EQ(inserted_exif.construction_method, 0U);
+        EXPECT_EQ(inserted_exif.data_reference_index, 0U);
+        EXPECT_EQ(inserted_exif.extent_length, exif_payload.size());
+        ASSERT_LE(inserted_exif.extent_offset, edited.size());
+        ASSERT_LE(inserted_exif.extent_length,
+                  edited.size() - inserted_exif.extent_offset);
+        EXPECT_EQ(std::memcmp(edited.data() + inserted_exif.extent_offset,
+                              exif_payload.data(), exif_payload.size()),
+                  0);
+
+        std::array<openmeta::ContainerBlockRef, 16> blocks {};
+        const openmeta::ScanResult scan = openmeta::scan_bmff(
+            edited, std::span<openmeta::ContainerBlockRef>(blocks.data(),
+                                                           blocks.size()));
+        ASSERT_EQ(scan.status, openmeta::ScanStatus::Ok);
+        ASSERT_EQ(scan.written, 1U);
+        EXPECT_EQ(blocks[0].kind, openmeta::ContainerBlockKind::Exif);
+
+        openmeta::MetaStore decoded;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(edited, &decoded));
+        EXPECT_TRUE(store_has_text_entry(decoded,
+                                         exif_key_view("ifd0", 0x0132U),
+                                         "2000:01:02 03:04:05"));
+    }
 }
 
 TEST(MetadataTransferApi,

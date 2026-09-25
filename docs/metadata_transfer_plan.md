@@ -370,7 +370,8 @@ Implemented as a bounded BMFF target family:
 - retained construction method 2 item-reference extents are supported when
   `iref` `iloc` references are parseable by explicit extent index or reference
   order and referenced items are also retained with supported local locations;
-  its referenced target records remain limited to data reference index 0;
+  referenced method-0/1 targets may use data reference index 0 or an explicitly
+  self-contained `dinf`/`dref` entry, validated before graph rewriting;
   missing references, removed referenced items, non-self-contained data
   references, and other construction methods fail safely
 - unambiguous one-old-to-one-new managed Exif, XMP, JUMBF, and C2PA item
@@ -637,6 +638,12 @@ source-container context. Bounded Nikon validation can prove that a type 3
 embedded TIFF's standard directory/value offsets remain inside the opaque
 payload; it does not prove vendor-private binary offsets, checksum validity, or
 semantic readability.
+
+Since 0.5.14, both audits count raw payloads only at `exififd:0x927C`, and
+Canon classification uses camera-make evidence only from `ifd0:0x010F`.
+Same-numbered tags in other IFDs do not establish raw-payload availability or
+vendor layout. Deleted entries do not contribute evidence. Decoded vendor
+sub-IFDs retain their separate, non-serializable classification.
 
 Preserving a destination MakerNote while editing unrelated target metadata is a
 different operation from moving a source MakerNote into newly serialized EXIF.

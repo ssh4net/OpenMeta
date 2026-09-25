@@ -1962,6 +1962,15 @@ remove native values only with `ReplaceExisting`. Preparation may allocate and
 the commit is transactional; callers synchronize conflicting access to a
 shared `MetaStore`.
 
+The 0.5.14 grouped lifecycle checks this contract after typed editing and
+through snapshot serialization and JPEG/classic TIFF/BigTIFF readback,
+including removal from an existing JPEG output. TIFF's IFD0 merge retains
+destination tags absent from the prepared source, so source deletion does not
+imply native destination deletion there. Transfer preparation still applies
+its image-property policy: the host must explicitly supply the destination
+ColorSpace when the output requires that field. See
+[profile editing through file writeback](editing.md#profile-editing-through-file-writeback-0514).
+
 ## JP2 and JPH qualification boundary
 
 The existing JP2 writer path also accepts boxed JPH brands. It replaces selected

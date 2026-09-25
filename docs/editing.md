@@ -216,3 +216,27 @@ Profile writeback covers ImageDescription, Artist, scalar Copyright, ColorSpace
 and RelatedSoundFile; it does not infer ICC, image or audio authority or impose
 complete-file companions. Failed validation, limits, conflicts and tombstones
 remain transactional. See [the translation contract](translation.md#exif-31-learningoptoutin-data-0512).
+
+## Profile editing through file writeback (0.5.14)
+
+The grouped profile lifecycle covers exact typed XMP Add/Set/Remove operations,
+`DirtyOnly` profile translation, store validation, portable XMP, serialized
+transfer snapshots and JPEG/classic TIFF/BigTIFF writeback. A second JPEG pass
+edits the first output and removes Artist with explicit `ReplaceExisting`, checking
+that the previous native and XMP values disappear from the existing carrier.
+Custom XMP survives when `PreserveCustom` is selected. Invalid values and native
+conflicts leave the source and the previously translated result unchanged.
+
+TIFF and BigTIFF merge native IFD0 updates into the destination. Omitting Artist
+from a prepared snapshot does not remove an existing destination IFD0 Artist,
+even when the new XMP packet omits it. The second-pass regression records this
+boundary: description replacement and XMP removal succeed, while the old native
+Artist remains. Native IFD0 deletion needs an explicit writer contract; source
+translation's `ReplaceExisting` policy alone does not provide one.
+
+Each API call is a separate transaction. The host publishes the completed
+sequence only after all required calls succeed. The host also supplies the
+destination image ColorSpace during transfer preparation; translating source
+ColorSpace does not bypass the existing image-property filtering policy. These
+checks do not establish ICC agreement, an audio association or complete-file
+profile conformance.

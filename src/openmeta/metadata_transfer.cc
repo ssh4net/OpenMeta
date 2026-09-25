@@ -3412,7 +3412,9 @@ namespace {
                 || e.key.kind != MetaKeyKind::ExifTag) {
                 continue;
             }
-            if (e.key.data.exif_tag.tag == 0x927CU) {
+            if (e.key.data.exif_tag.tag == 0x927CU
+                && arena_string(store.arena(), e.key.data.exif_tag.ifd)
+                       == "exififd") {
                 count += 1U;
             }
         }
@@ -3509,6 +3511,8 @@ namespace {
             if (any(entry.flags, EntryFlags::Deleted)
                 || entry.key.kind != MetaKeyKind::ExifTag
                 || entry.key.data.exif_tag.tag != 0x010FU
+                || arena_string(store.arena(), entry.key.data.exif_tag.ifd)
+                       != "ifd0"
                 || entry.value.kind != MetaValueKind::Text) {
                 continue;
             }
@@ -3599,10 +3603,6 @@ namespace {
                 || e.key.kind != MetaKeyKind::ExifTag) {
                 continue;
             }
-            if (e.key.data.exif_tag.tag == 0x927CU) {
-                continue;
-            }
-
             const std::span<const std::byte> ifd_bytes = store.arena().span(
                 e.key.data.exif_tag.ifd);
             if (ifd_bytes.empty()) {
@@ -14237,7 +14237,9 @@ makernote_layout_transfer_audit_from_store(const MetaStore& store) noexcept
     for (const Entry& entry : store.entries()) {
         if (any(entry.flags, EntryFlags::Deleted)
             || entry.key.kind != MetaKeyKind::ExifTag
-            || entry.key.data.exif_tag.tag != 0x927CU) {
+            || entry.key.data.exif_tag.tag != 0x927CU
+            || arena_string(store.arena(), entry.key.data.exif_tag.ifd)
+                   != "exififd") {
             continue;
         }
 
@@ -27660,8 +27662,9 @@ namespace {
             }
             const BmffForeignIlocRecord* target
                 = bmff_find_foreign_iloc_record(records, target_item_id);
-            if (!target || target->data_reference_index != 0U
-                || (target->construction_method & 0xFFF0U) != 0U) {
+            // All retained records already passed the self-contained dref
+            // check before method-2 references are validated.
+            if (!target || (target->construction_method & 0xFFF0U) != 0U) {
                 return fail_bmff_foreign_meta_merge(
                     out, TransferStatus::Unsupported,
                     EmitTransferCode::InvalidArgument,

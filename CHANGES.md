@@ -1,5 +1,25 @@
 # OpenMeta Changes
 
+## 0.5.14 - 2026-09-25
+
+- Read bounded Canon CR3 `CNCV` compressor-version text as the derived BMFF
+  field `cr3.compressor_version`, with MakerNote decoding enabled. Preserve
+  opaque scanner access; unsupported payloads remain uninterpreted. Qualify
+  the existing CMT1–4 routes and opaque private-record boundaries together.
+- Allow retained BMFF method-2 references to target method-0/1 items using
+  validated self-contained `dinf`/`dref` entries. External, missing, removed
+  and nested method-2 targets retain their rejection contracts.
+- Require exact EXIF IFD keys for raw MakerNote availability and Canon make
+  evidence. Same-numbered tags in other IFDs cannot establish rewrite trust;
+  decoded vendor fields retain their separate classification.
+- Qualify typed profile editing through translation, snapshot persistence and
+  JPEG/classic TIFF/BigTIFF writeback, including existing JPEG carrier removal,
+  custom XMP preservation and failure rollback. Destination image properties
+  remain host-supplied. Document TIFF's retained native IFD0 tags when the
+  prepared source omits them; omission is not an explicit removal instruction.
+- Keep API signatures, ABI 3, snapshot v1 and host-owned synchronization
+  unchanged. No general vendor relocation or private-checksum repair is added.
+
 ## 0.5.13 - 2026-09-24
 
 - Align RAW curve diagnostics with direct and snapshot transfer preparation.
