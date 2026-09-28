@@ -5,6 +5,11 @@ This page defines the adoption status for public OpenMeta APIs.
 Python bindings mirror these labels unless a Python wrapper documents a
 different status.
 
+OpenMeta 0.6.0 uses C++ ABI 4. The prepared bundle now owns explicit native
+TIFF IFD0 removal instructions; consumers must rebuild. The bounded deletion
+surface is experimental. Existing patch/handoff contract versions and source
+snapshot v1 encoding remain unchanged. See :doc:`migration_0_6`.
+
 Stability levels
 ----------------
 

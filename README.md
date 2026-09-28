@@ -113,6 +113,8 @@ stable prepare-once typed codec handoff.
   provenance, conflict, and Python behavior
 - [docs/shared_library.md](docs/shared_library.md): shared-library ABI,
   toolchain, runtime, and installed-consumer contract
+- [docs/migration_0_6.md](docs/migration_0_6.md): ABI-4 rebuild and explicit native
+  TIFF deletion contract
 - [docs/doxygen.md](docs/doxygen.md): API reference
 - [SECURITY.md](https://github.com/ssh4net/OpenMeta/blob/main/SECURITY.md):
   security model and reporting

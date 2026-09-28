@@ -2,7 +2,11 @@ cmake_minimum_required(VERSION 3.20)
 
 project(OpenMetaSharedLibraryConsumer LANGUAGES CXX)
 
-find_package(OpenMeta 0.5 CONFIG REQUIRED)
+find_package(OpenMeta 0.6 CONFIG REQUIRED)
+
+if(NOT OpenMeta_ABI_VERSION STREQUAL "4")
+  message(FATAL_ERROR "OpenMeta 0.6 must publish ABI 4")
+endif()
 
 if(NOT TARGET OpenMeta::openmeta_shared)
   message(FATAL_ERROR "OpenMeta shared target was not installed")

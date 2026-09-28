@@ -221,6 +221,13 @@ apply_prepared_dng_sdk_metadata(const PreparedTransferBundle& bundle,
                                 ::dng_negative* negative,
                                 const DngSdkAdapterOptions& options) noexcept
 {
+    if (!bundle.tiff_ifd0_removals.empty()) {
+        DngSdkAdapterResult result;
+        result.status = DngSdkAdapterStatus::Unsupported;
+        result.message
+            = "DNG SDK adapter cannot represent native TIFF IFD0 removals";
+        return result;
+    }
 #if !defined(OPENMETA_HAS_DNG_SDK) || !OPENMETA_HAS_DNG_SDK
     (void)bundle;
     (void)host;

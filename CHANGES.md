@@ -1,5 +1,19 @@
 # OpenMeta Changes
 
+## 0.6.0 - 2026-09-28
+
+- Carry explicit native IFD0 ImageDescription, Artist and Copyright deletion
+  requests through prepared transfer into TIFF/BigTIFF editing. Collect dirty
+  native tombstones, preserve source-omitted destination tags and keep live
+  entries ahead of historical tombstones. Validate manual removal lists and
+  reject contradictory replacements before output.
+- Reject deletion-bearing bundles in fresh emitters and typed codec handoffs
+  that cannot express destination deletion. Existing edit plans, stream writes
+  and edit packages share the removal path. Snapshot v1 encoding is unchanged.
+- Advance the C++ ABI from 3 to 4 because PreparedTransferBundle gains an owned
+  removal list. Require consumers to rebuild and request the 0.6 CMake package;
+  keep host-owned synchronization and the existing patch contracts unchanged.
+
 ## 0.5.14 - 2026-09-25
 
 - Read bounded Canon CR3 `CNCV` compressor-version text as the derived BMFF

@@ -694,6 +694,15 @@ struct PreparedTransferBundle final {
     PreparedTransferC2paRewriteRequirements c2pa_rewrite;
     std::vector<PreparedTransferPolicyDecision> policy_decisions;
     std::vector<PreparedTransferBlock> blocks;
+    /// Sorted native TIFF IFD0 tags to remove during TIFF/DNG editing.
+    /// Preparation currently emits only ImageDescription (0x010E), Artist
+    /// (0x013B), and Copyright (0x8298), from dirty native tombstones with
+    /// EXIF output enabled. TIFF edit APIs consume this list. Fresh TIFF emit,
+    /// adapter, payload, and codec handoff APIs reject non-empty lists because
+    /// their operation schemas cannot represent deletion. Keep this list empty
+    /// for other consumers. Source snapshots retain the tombstone flags used
+    /// to derive this list during preparation.
+    std::vector<uint16_t> tiff_ifd0_removals;
     std::vector<TimePatchSlot> time_patch_map;
     std::vector<std::byte> generated_xmp_sidecar;
 };
@@ -965,6 +974,8 @@ struct PlanTiffEditOptions final {
 };
 
 /// Planned TIFF edit summary (draft API).
+/// Keep the input and bundle unchanged until application; replan after edits.
+/// This summary does not bind or verify the exact identity of every update.
 struct TiffEditPlan final {
     TransferStatus status   = TransferStatus::Ok;
     uint32_t tag_updates    = 0;

@@ -402,6 +402,62 @@ TEST(PreparedTransferHandoff, FailedPreparationIsTransactional)
     EXPECT_EQ(handoff.operation_count(), original_count);
 }
 
+TEST(PreparedTransferHandoff,
+     TiffDeletionRejectsWithoutReplacingExistingHandoff)
+{
+    const openmeta::TransferSourceSnapshot source  = make_source_snapshot();
+    const openmeta::PrepareTransferRequest request = make_request(
+        openmeta::TransferTargetFormat::Tiff);
+    openmeta::PreparedTransferHandoff handoff;
+    ASSERT_TRUE(
+        openmeta::prepare_transfer_handoff(source, request, {}, &handoff).ok());
+    const uint32_t original_count = handoff.operation_count();
+    openmeta::PreparedTransferHandoffOperationView before;
+    ASSERT_TRUE(
+        openmeta::prepared_transfer_handoff_operation(handoff, 0U, &before)
+            .ok());
+    const std::vector<std::byte> original_payload(before.payload.begin(),
+                                                  before.payload.end());
+    for (uint16_t tag :
+         { uint16_t { 0x010E }, uint16_t { 0x013B }, uint16_t { 0x8298 } }) {
+        SCOPED_TRACE(tag);
+        openmeta::TransferSourceSnapshot deleted;
+        openmeta::Entry entry;
+        entry.key   = openmeta::make_exif_tag_key(deleted.store.arena(), "ifd0",
+                                                  tag);
+        entry.value = openmeta::make_text(deleted.store.arena(), "Old",
+                                          openmeta::TextEncoding::Ascii);
+        entry.flags = openmeta::EntryFlags::Dirty
+                      | openmeta::EntryFlags::Deleted;
+        ASSERT_NE(deleted.store.add_entry(entry), openmeta::kInvalidEntryId);
+        deleted.store.finalize();
+        openmeta::EmitTransferOptions permissive;
+        permissive.stop_on_error = false;
+        const openmeta::PreparedTransferHandoffResult rejected
+            = openmeta::prepare_transfer_handoff(deleted, request, permissive,
+                                                 &handoff);
+        EXPECT_EQ(rejected.status, openmeta::TransferStatus::Unsupported);
+        EXPECT_EQ(
+            rejected.code,
+            openmeta::PreparedTransferHandoffCode::OperationCompilationFailed);
+        EXPECT_TRUE(handoff.valid());
+        EXPECT_EQ(handoff.operation_count(), original_count);
+        openmeta::PreparedTransferHandoffOperationView after;
+        ASSERT_TRUE(
+            openmeta::prepared_transfer_handoff_operation(handoff, 0U, &after)
+                .ok());
+        EXPECT_EQ(std::vector<std::byte>(after.payload.begin(),
+                                         after.payload.end()),
+                  original_payload);
+        ReplayProbe probe;
+        EXPECT_TRUE(openmeta::replay_prepared_transfer_handoff(handoff,
+                                                               replay_probe,
+                                                               &probe)
+                        .ok());
+        EXPECT_EQ(probe.calls, original_count);
+    }
+}
+
 TEST(PreparedTransferHandoff, MoveAndErrorsPreserveOwnership)
 {
     const openmeta::TransferSourceSnapshot snapshot = make_source_snapshot();

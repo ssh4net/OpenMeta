@@ -3222,6 +3222,12 @@ namespace {
         }
         out["blocks"] = std::move(blocks);
 
+        nb::list tiff_ifd0_removals;
+        for (uint16_t tag : prepared.bundle.tiff_ifd0_removals) {
+            tiff_ifd0_removals.append(nb::int_(tag));
+        }
+        out["tiff_ifd0_removals"] = std::move(tiff_ifd0_removals);
+
         nb::list policy_decisions;
         for (size_t i = 0; i < prepared.bundle.policy_decisions.size(); ++i) {
             const PreparedTransferPolicyDecision& decision

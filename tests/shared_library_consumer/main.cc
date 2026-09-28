@@ -3,11 +3,14 @@
 #include <openmeta/build_info.h>
 #include <openmeta/exif_tiff_serialize.h>
 #include <openmeta/host_adoption.h>
+#include <openmeta/meta_key.h>
+#include <openmeta/meta_value.h>
 #include <openmeta/metadata_authoring.h>
 #include <openmeta/metadata_editing.h>
 #include <openmeta/metadata_patch.h>
 #include <openmeta/metadata_translation.h>
 #include <openmeta/prepared_transfer_handoff.h>
+#include <openmeta/simple_meta.h>
 #include <openmeta/xmp_dump.h>
 
 #include <array>
@@ -18,9 +21,73 @@
 #include <string_view>
 #include <vector>
 
+static bool
+tiff_deletion_contract_matches()
+{
+    openmeta::MetaStore source;
+    openmeta::Entry artist;
+    artist.key   = openmeta::make_exif_tag_key(source.arena(), "ifd0", 0x013BU);
+    artist.value = openmeta::make_text(source.arena(), "Old",
+                                       openmeta::TextEncoding::Ascii);
+    artist.flags = openmeta::EntryFlags::Dirty | openmeta::EntryFlags::Deleted;
+    if (source.add_entry(artist) == openmeta::kInvalidEntryId) {
+        return false;
+    }
+    source.finalize();
+    openmeta::PrepareTransferRequest request;
+    request.target_format      = openmeta::TransferTargetFormat::Tiff;
+    request.include_xmp_app1   = false;
+    request.include_icc_app2   = false;
+    request.include_iptc_app13 = false;
+    openmeta::PreparedTransferBundle bundle;
+    if (openmeta::prepare_metadata_for_target(source, request, &bundle).status
+            != openmeta::TransferStatus::Ok
+        || bundle.tiff_ifd0_removals != std::vector<uint16_t> { 0x013BU }) {
+        return false;
+    }
+    const std::array<std::byte, 26> input {
+        std::byte { 'I' }, std::byte { 'I' },  std::byte { 42 },
+        std::byte { 0 },   std::byte { 8 },    std::byte { 0 },
+        std::byte { 0 },   std::byte { 0 },    std::byte { 1 },
+        std::byte { 0 },   std::byte { 0x3b }, std::byte { 1 },
+        std::byte { 2 },   std::byte { 0 },    std::byte { 4 },
+        std::byte { 0 },   std::byte { 0 },    std::byte { 0 },
+        std::byte { 'O' }, std::byte { 'l' },  std::byte { 'd' },
+        std::byte { 0 },   std::byte { 0 },    std::byte { 0 },
+        std::byte { 0 },   std::byte { 0 },
+    };
+    const openmeta::TiffEditPlan plan
+        = openmeta::plan_prepared_bundle_tiff_edit(input, bundle);
+    if (plan.status != openmeta::TransferStatus::Ok) {
+        return false;
+    }
+    std::vector<std::byte> output;
+    if (openmeta::apply_prepared_bundle_tiff_edit(input, bundle, plan, &output)
+            .status
+        != openmeta::TransferStatus::Ok) {
+        return false;
+    }
+    std::array<openmeta::ContainerBlockRef, 8> blocks {};
+    std::array<openmeta::ExifIfdRef, 8> ifds {};
+    std::array<std::byte, 1024> payload {};
+    std::array<uint32_t, 16> scratch {};
+    openmeta::MetaStore decoded;
+    const openmeta::SimpleMetaResult read
+        = openmeta::simple_meta_read(output, decoded, blocks, ifds, payload,
+                                     scratch, openmeta::ExifDecodeOptions {},
+                                     openmeta::PayloadOptions {});
+    decoded.finalize();
+    return read.scan.status == openmeta::ScanStatus::Ok
+           && read.exif.status == openmeta::ExifDecodeStatus::Ok
+           && decoded
+                  .find_all(openmeta::make_exif_tag_key_view("ifd0", 0x013BU))
+                  .empty();
+}
+
 int
 main()
 {
+    const bool tiff_deletion_matches = tiff_deletion_contract_matches();
     std::string line1;
     std::string line2;
     openmeta::format_build_info_lines(&line1, &line2);
@@ -777,7 +844,8 @@ main()
                    || !capture_sync_contract_matches || !typed_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
-                   || !canonical_patch_contract_matches || handoff.valid()
+                   || !canonical_patch_contract_matches
+                   || !tiff_deletion_matches || handoff.valid()
                    || instance.valid()
                    || created.code
                           != openmeta::PreparedTransferHandoffCode::InvalidState

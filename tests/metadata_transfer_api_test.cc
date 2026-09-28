@@ -6822,6 +6822,18 @@ make_minimal_tiff_little_endian()
 }
 
 static std::vector<std::byte>
+make_minimal_tiff_big_endian()
+{
+    std::vector<std::byte> tiff;
+    append_bytes(&tiff, "MM");
+    append_u16be(&tiff, 42U);
+    append_u32be(&tiff, 8U);
+    append_u16be(&tiff, 0U);
+    append_u32be(&tiff, 0U);
+    return tiff;
+}
+
+static std::vector<std::byte>
 make_minimal_dng_with_aux_ifd_pointers_little_endian()
 {
     std::vector<std::byte> tiff;
@@ -7031,6 +7043,20 @@ make_minimal_bigtiff_little_endian()
         std::byte { 0x00 }, std::byte { 0x00 }, std::byte { 0x00 },
         std::byte { 0x00 }, std::byte { 0x00 },
     };
+}
+
+static std::vector<std::byte>
+make_minimal_bigtiff_big_endian()
+{
+    std::vector<std::byte> tiff;
+    append_bytes(&tiff, "MM");
+    append_u16be(&tiff, 43U);
+    append_u16be(&tiff, 8U);
+    append_u16be(&tiff, 0U);
+    append_test_u_nbe(&tiff, 8U, 16U);
+    append_test_u_nbe(&tiff, 8U, 0U);
+    append_test_u_nbe(&tiff, 8U, 0U);
+    return tiff;
 }
 
 static std::vector<std::byte>
@@ -8434,6 +8460,8 @@ TEST(MetadataTransferApi,
                   second_restored_snapshot, tiff_request, &second_tiff_bundle)
                   .status,
               openmeta::TransferStatus::Ok);
+    EXPECT_EQ(second_tiff_bundle.tiff_ifd0_removals,
+              (std::vector<uint16_t> { 0x013BU }));
     for (size_t i = 0U; i < first_tiff_outputs.size(); ++i) {
         SCOPED_TRACE(i == 0U ? "classic TIFF second pass"
                              : "BigTIFF second pass");
@@ -8456,9 +8484,9 @@ TEST(MetadataTransferApi,
             decode_transfer_roundtrip_store(second_tiff_writer.out, &reread));
         EXPECT_TRUE(store_has_text_entry(reread, exif_key_view("ifd0", 0x010EU),
                                          "Second pass scene"));
-        // TIFF merges IFD0 updates; an omitted source tag is not a removal.
-        EXPECT_TRUE(store_has_text_entry(reread, exif_key_view("ifd0", 0x013BU),
-                                         "A. Photographer"));
+        // The explicit native tombstone removes Artist from TIFF IFD0.
+        EXPECT_TRUE(
+            store_lacks_text_entry(reread, exif_key_view("ifd0", 0x013BU)));
         EXPECT_TRUE(store_lacks_text_entry(reread, xmp_key_view(kTiffNamespace,
                                                                 "Artist")));
         EXPECT_TRUE(store_has_text_entry(reread,
@@ -8583,6 +8611,954 @@ TEST(MetadataTransferApi,
                   .status,
               openmeta::TransferStatus::Ok);
     EXPECT_EQ(published_after, published_before);
+}
+
+TEST(MetadataTransferApi,
+     DirtyProfileTombstonesRemoveNativeTiffTagsAcrossTiffVariants)
+{
+    constexpr std::string_view kTiffNamespace = "http://ns.adobe.com/tiff/1.0/";
+    static constexpr std::array<std::string_view, 3U> kPaths = {
+        "ImageDescription",
+        "Artist",
+        "Copyright",
+    };
+    static constexpr std::array<std::string_view, 3U> kValues = {
+        "First Description",
+        "First Artist",
+        "First Copyright",
+    };
+    static constexpr std::array<uint16_t, 3U> kTags = {
+        0x010EU,
+        0x013BU,
+        0x8298U,
+    };
+
+    openmeta::MetaStore source;
+    for (size_t i = 0U; i < kPaths.size(); ++i) {
+        openmeta::Entry property;
+        property.key   = openmeta::make_xmp_property_key(source.arena(),
+                                                         kTiffNamespace,
+                                                         kPaths[i]);
+        property.value = openmeta::make_text(source.arena(), kValues[i],
+                                             openmeta::TextEncoding::Utf8);
+        property.flags = openmeta::EntryFlags::Dirty;
+        ASSERT_NE(source.add_entry(property), openmeta::kInvalidEntryId);
+    }
+    source.finalize();
+
+    openmeta::MetadataProfileTranslationOptions translation_options;
+    translation_options.source_mode
+        = openmeta::MetadataCaptureTranslationSourceMode::DirtyOnly;
+    openmeta::MetaStore first_translated;
+    ASSERT_EQ(openmeta::translate_xmp_profile_metadata(source,
+                                                       translation_options,
+                                                       &first_translated)
+                  .status,
+              openmeta::MetadataCaptureTranslationStatus::Ok);
+    const openmeta::TransferSourceSnapshot first_snapshot
+        = openmeta::build_transfer_source_snapshot(first_translated);
+    std::vector<std::byte> first_snapshot_bytes;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(first_snapshot,
+                                                           &first_snapshot_bytes)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::TransferSourceSnapshot first_restored;
+    ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(
+                  std::span<const std::byte>(first_snapshot_bytes.data(),
+                                             first_snapshot_bytes.size()),
+                  &first_restored)
+                  .status,
+              openmeta::TransferStatus::Ok);
+
+    openmeta::PrepareTransferRequest request;
+    request.target_format      = openmeta::TransferTargetFormat::Tiff;
+    request.include_icc_app2   = false;
+    request.include_iptc_app13 = false;
+    openmeta::PreparedTransferBundle first_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(first_restored,
+                                                             request,
+                                                             &first_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(first_bundle.tiff_ifd0_removals.empty());
+
+    translation_options.conflict_policy
+        = openmeta::MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+
+    openmeta::MetaStore unrelated_source;
+    openmeta::Entry description;
+    description.key   = openmeta::make_exif_tag_key(unrelated_source.arena(),
+                                                    "ifd0", 0x010EU);
+    description.value = openmeta::make_text(unrelated_source.arena(),
+                                            "Unrelated update",
+                                            openmeta::TextEncoding::Ascii);
+    ASSERT_NE(unrelated_source.add_entry(description),
+              openmeta::kInvalidEntryId);
+    unrelated_source.finalize();
+    openmeta::PreparedTransferBundle absence_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(unrelated_source, request,
+                                                    &absence_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(absence_bundle.tiff_ifd0_removals.empty());
+
+    for (uint32_t variant = 0U; variant < 4U; ++variant) {
+        std::vector<std::byte> first_input;
+        switch (variant) {
+        case 0U:
+            first_input = make_minimal_tiff_with_strip_storage_little_endian();
+            break;
+        case 1U: first_input = make_minimal_tiff_big_endian(); break;
+        case 2U: first_input = make_minimal_bigtiff_little_endian(); break;
+        default: first_input = make_minimal_bigtiff_big_endian(); break;
+        }
+        const std::vector<std::byte> original_first_input = first_input;
+        const openmeta::TiffEditPlan first_plan
+            = openmeta::plan_prepared_bundle_tiff_edit(first_input,
+                                                       first_bundle);
+        ASSERT_EQ(first_plan.status, openmeta::TransferStatus::Ok)
+            << "variant=" << variant;
+        BufferByteWriter first_writer;
+        ASSERT_EQ(openmeta::write_prepared_bundle_tiff_edit(
+                      first_input, first_bundle, first_plan, first_writer)
+                      .status,
+                  openmeta::TransferStatus::Ok)
+            << "variant=" << variant;
+        EXPECT_EQ(first_input, original_first_input);
+
+        const std::vector<std::byte> first_output = first_writer.out;
+        openmeta::MetaStore first_decoded;
+        ASSERT_TRUE(
+            decode_transfer_roundtrip_store(first_output, &first_decoded))
+            << "variant=" << variant;
+        for (size_t i = 0U; i < kTags.size(); ++i) {
+            EXPECT_TRUE(store_has_text_entry(first_decoded,
+                                             exif_key_view("ifd0", kTags[i]),
+                                             kValues[i]))
+                << "variant=" << variant << " field=" << i;
+        }
+        if (variant == 0U) {
+            const openmeta::TiffEditPlan absence_plan
+                = openmeta::plan_prepared_bundle_tiff_edit(first_output,
+                                                           absence_bundle);
+            ASSERT_EQ(absence_plan.status, openmeta::TransferStatus::Ok);
+            BufferByteWriter absence_writer;
+            ASSERT_EQ(openmeta::write_prepared_bundle_tiff_edit(first_output,
+                                                                absence_bundle,
+                                                                absence_plan,
+                                                                absence_writer)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::MetaStore absence_decoded;
+            ASSERT_TRUE(decode_transfer_roundtrip_store(absence_writer.out,
+                                                        &absence_decoded));
+            EXPECT_TRUE(store_has_text_entry(absence_decoded,
+                                             exif_key_view("ifd0", 0x013BU),
+                                             "First Artist"));
+        }
+
+        for (size_t removed_index = 0U; removed_index < kTags.size();
+             ++removed_index) {
+            openmeta::MetadataTypedEditingOperation remove_property;
+            remove_property.kind
+                = openmeta::MetadataEditingOperationKind::Remove;
+            remove_property.entry.key
+                = openmeta::make_xmp_property_key_view(kTiffNamespace,
+                                                       kPaths[removed_index]);
+            openmeta::MetaStore property_removed;
+            const openmeta::MetadataTypedEditingResult edited
+                = openmeta::edit_metadata_typed(
+                    first_decoded,
+                    std::span<const openmeta::MetadataTypedEditingOperation>(
+                        &remove_property, 1U),
+                    &property_removed);
+            ASSERT_TRUE(edited.ok())
+                << openmeta::metadata_typed_editing_status_name(edited.status);
+            EXPECT_EQ(edited.entries_removed, 1U);
+
+            openmeta::MetaStore second_translated;
+            ASSERT_EQ(openmeta::translate_xmp_profile_metadata(
+                          property_removed, translation_options,
+                          &second_translated)
+                          .status,
+                      openmeta::MetadataCaptureTranslationStatus::Ok);
+            const openmeta::TransferSourceSnapshot second_snapshot
+                = openmeta::build_transfer_source_snapshot(second_translated);
+            std::vector<std::byte> second_snapshot_bytes;
+            ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(
+                          second_snapshot, &second_snapshot_bytes)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            openmeta::TransferSourceSnapshot second_restored;
+            ASSERT_EQ(
+                openmeta::deserialize_transfer_source_snapshot(
+                    std::span<const std::byte>(second_snapshot_bytes.data(),
+                                               second_snapshot_bytes.size()),
+                    &second_restored)
+                    .status,
+                openmeta::TransferStatus::Ok);
+            openmeta::PreparedTransferBundle second_bundle;
+            ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(
+                          second_restored, request, &second_bundle)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            ASSERT_EQ(second_bundle.tiff_ifd0_removals.size(), 1U)
+                << "variant=" << variant << " field=" << removed_index;
+            EXPECT_EQ(second_bundle.tiff_ifd0_removals[0],
+                      kTags[removed_index]);
+
+            const openmeta::TiffEditPlan second_plan
+                = openmeta::plan_prepared_bundle_tiff_edit(first_output,
+                                                           second_bundle);
+            ASSERT_EQ(second_plan.status, openmeta::TransferStatus::Ok)
+                << "variant=" << variant << " field=" << removed_index;
+            std::vector<std::byte> applied_output;
+            ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(first_output,
+                                                                second_bundle,
+                                                                second_plan,
+                                                                &applied_output)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            BufferByteWriter second_writer;
+            ASSERT_EQ(openmeta::write_prepared_bundle_tiff_edit(first_output,
+                                                                second_bundle,
+                                                                second_plan,
+                                                                second_writer)
+                          .status,
+                      openmeta::TransferStatus::Ok);
+            EXPECT_EQ(second_writer.out, applied_output);
+            EXPECT_EQ(first_writer.out, first_output);
+            EXPECT_EQ(first_input, original_first_input);
+
+            openmeta::MetaStore second_decoded;
+            ASSERT_TRUE(decode_transfer_roundtrip_store(second_writer.out,
+                                                        &second_decoded));
+            for (size_t i = 0U; i < kTags.size(); ++i) {
+                if (i == removed_index) {
+                    EXPECT_TRUE(
+                        store_lacks_text_entry(second_decoded,
+                                               exif_key_view("ifd0", kTags[i])))
+                        << "variant=" << variant << " field=" << i;
+                } else {
+                    EXPECT_TRUE(
+                        store_has_text_entry(second_decoded,
+                                             exif_key_view("ifd0", kTags[i]),
+                                             kValues[i]))
+                        << "variant=" << variant << " field=" << i;
+                }
+            }
+            if (variant == 0U) {
+                EXPECT_EQ(second_writer.out[62U], std::byte { 0x11U });
+                EXPECT_EQ(second_writer.out[63U], std::byte { 0x22U });
+                EXPECT_EQ(second_writer.out[64U], std::byte { 0x33U });
+                EXPECT_EQ(second_writer.out[65U], std::byte { 0x44U });
+            }
+
+            if (variant == 3U && removed_index == 2U) {
+                openmeta::PreparedTransferPackagePlan package;
+                ASSERT_EQ(openmeta::build_prepared_bundle_tiff_package(
+                              first_output, second_bundle, second_plan, &package)
+                              .status,
+                          openmeta::TransferStatus::Ok);
+                openmeta::PreparedTransferPackageBatch batch;
+                ASSERT_EQ(openmeta::build_prepared_transfer_package_batch(
+                              first_output, second_bundle, package, &batch)
+                              .status,
+                          openmeta::TransferStatus::Ok);
+                BufferByteWriter replay_writer;
+                ASSERT_EQ(openmeta::write_prepared_transfer_package_batch(
+                              batch, replay_writer)
+                              .status,
+                          openmeta::TransferStatus::Ok);
+                EXPECT_EQ(replay_writer.out, second_writer.out);
+
+                openmeta::ExecutePreparedTransferOptions edit_only;
+                edit_only.edit_requested = true;
+                edit_only.edit_apply     = true;
+                const openmeta::ExecutePreparedTransferResult executed
+                    = openmeta::execute_prepared_transfer(
+                        &second_bundle,
+                        std::span<const std::byte>(first_output.data(),
+                                                   first_output.size()),
+                        edit_only);
+                EXPECT_EQ(executed.compile.status,
+                          openmeta::TransferStatus::Ok);
+                EXPECT_EQ(executed.compile.code,
+                          openmeta::EmitTransferCode::None);
+                EXPECT_EQ(executed.compile.errors, 0U);
+                EXPECT_NE(executed.compile.message.find("skipped"),
+                          std::string::npos);
+                EXPECT_EQ(executed.emit.status, openmeta::TransferStatus::Ok);
+                EXPECT_EQ(executed.emit.code, openmeta::EmitTransferCode::None);
+                EXPECT_EQ(executed.emit.errors, 0U);
+                EXPECT_EQ(executed.compiled_ops, 0U);
+                EXPECT_EQ(executed.edit_plan_status,
+                          openmeta::TransferStatus::Ok);
+                EXPECT_EQ(executed.edit_apply.status,
+                          openmeta::TransferStatus::Ok);
+                EXPECT_EQ(executed.edited_output, second_writer.out);
+
+                BufferByteWriter fresh_emit_writer;
+                BufferByteWriter edited_output_writer;
+                openmeta::ExecutePreparedTransferOptions both_requested;
+                both_requested.emit_output_writer = &fresh_emit_writer;
+                both_requested.edit_requested     = true;
+                both_requested.edit_apply         = true;
+                both_requested.edit_output_writer = &edited_output_writer;
+                const openmeta::ExecutePreparedTransferResult rejected
+                    = openmeta::execute_prepared_transfer(
+                        &second_bundle,
+                        std::span<const std::byte>(first_output.data(),
+                                                   first_output.size()),
+                        both_requested);
+                EXPECT_EQ(rejected.compile.status,
+                          openmeta::TransferStatus::Unsupported);
+                EXPECT_EQ(rejected.edit_plan_status,
+                          openmeta::TransferStatus::Unsupported);
+                EXPECT_TRUE(fresh_emit_writer.out.empty());
+                EXPECT_TRUE(edited_output_writer.out.empty());
+            }
+        }
+    }
+}
+
+TEST(MetadataTransferApi,
+     DirtyNativeIfd0TombstoneCollectionIsExactAndTargetScoped)
+{
+    const openmeta::EntryFlags dirty_deleted = openmeta::EntryFlags::Dirty
+                                               | openmeta::EntryFlags::Deleted;
+    const std::array<uint16_t, 3U> tags = { 0x010EU, 0x013BU, 0x8298U };
+
+    for (uint32_t scenario = 0U; scenario < 4U; ++scenario) {
+        openmeta::MetaStore source;
+        if (scenario == 0U) {
+            openmeta::Entry clean;
+            clean.key   = openmeta::make_exif_tag_key(source.arena(), "ifd0",
+                                                      tags[0]);
+            clean.flags = openmeta::EntryFlags::Deleted;
+            ASSERT_NE(source.add_entry(clean), openmeta::kInvalidEntryId);
+        } else if (scenario == 1U) {
+            openmeta::Entry misplaced;
+            misplaced.key = openmeta::make_exif_tag_key(source.arena(), "ifd1",
+                                                        tags[0]);
+            misplaced.flags = dirty_deleted;
+            ASSERT_NE(source.add_entry(misplaced), openmeta::kInvalidEntryId);
+        } else if (scenario == 2U) {
+            openmeta::Entry tombstone;
+            tombstone.key = openmeta::make_exif_tag_key(source.arena(), "ifd0",
+                                                        tags[1]);
+            tombstone.flags = dirty_deleted;
+            ASSERT_NE(source.add_entry(tombstone), openmeta::kInvalidEntryId);
+
+            openmeta::Entry live;
+            live.key   = openmeta::make_exif_tag_key(source.arena(), "ifd0",
+                                                     tags[1]);
+            live.value = openmeta::make_text(source.arena(), "Live Artist",
+                                             openmeta::TextEncoding::Ascii);
+            ASSERT_NE(source.add_entry(live), openmeta::kInvalidEntryId);
+        } else {
+            const std::array<uint16_t, 5U> duplicate_tags = {
+                tags[2], tags[1], tags[1], tags[0], tags[2],
+            };
+            for (const uint16_t tag : duplicate_tags) {
+                openmeta::Entry tombstone;
+                tombstone.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                              "ifd0", tag);
+                tombstone.flags = dirty_deleted;
+                ASSERT_NE(source.add_entry(tombstone),
+                          openmeta::kInvalidEntryId);
+            }
+        }
+        source.finalize();
+
+        openmeta::PrepareTransferRequest request;
+        request.target_format      = openmeta::TransferTargetFormat::Tiff;
+        request.include_icc_app2   = false;
+        request.include_iptc_app13 = false;
+        openmeta::PreparedTransferBundle direct_bundle;
+        ASSERT_EQ(openmeta::prepare_metadata_for_target(source, request,
+                                                        &direct_bundle)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        const openmeta::TransferSourceSnapshot snapshot
+            = openmeta::build_transfer_source_snapshot(source);
+        openmeta::PreparedTransferBundle snapshot_bundle;
+        ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(
+                      snapshot, request, &snapshot_bundle)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+
+        std::vector<uint16_t> expected;
+        if (scenario == 3U) {
+            expected = { tags[0], tags[1], tags[2] };
+        }
+        EXPECT_EQ(direct_bundle.tiff_ifd0_removals, expected)
+            << "scenario=" << scenario << " direct";
+        EXPECT_EQ(snapshot_bundle.tiff_ifd0_removals, expected)
+            << "scenario=" << scenario << " snapshot";
+    }
+
+    openmeta::MetaStore duplicate_source;
+    const std::array<uint16_t, 5U> duplicate_tags = {
+        tags[2], tags[1], tags[1], tags[0], tags[2],
+    };
+    const openmeta::EntryFlags dirty_deleted_duplicate
+        = openmeta::EntryFlags::Dirty | openmeta::EntryFlags::Deleted;
+    for (const uint16_t tag : duplicate_tags) {
+        openmeta::Entry tombstone;
+        tombstone.key   = openmeta::make_exif_tag_key(duplicate_source.arena(),
+                                                      "ifd0", tag);
+        tombstone.flags = dirty_deleted_duplicate;
+        ASSERT_NE(duplicate_source.add_entry(tombstone),
+                  openmeta::kInvalidEntryId);
+    }
+    duplicate_source.finalize();
+    const openmeta::TransferSourceSnapshot duplicate_snapshot
+        = openmeta::build_transfer_source_snapshot(duplicate_source);
+
+    const std::array<openmeta::TransferTargetFormat, 3U> targets = {
+        openmeta::TransferTargetFormat::Tiff,
+        openmeta::TransferTargetFormat::Dng,
+        openmeta::TransferTargetFormat::Jpeg,
+    };
+    for (size_t target_index = 0U; target_index < targets.size();
+         ++target_index) {
+        openmeta::PrepareTransferRequest request;
+        request.target_format      = targets[target_index];
+        request.include_icc_app2   = false;
+        request.include_iptc_app13 = false;
+        if (target_index == 0U) {
+            request.include_exif_app1 = false;
+        }
+
+        openmeta::PreparedTransferBundle direct_bundle;
+        ASSERT_EQ(openmeta::prepare_metadata_for_target(duplicate_source,
+                                                        request, &direct_bundle)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        openmeta::PreparedTransferBundle snapshot_bundle;
+        ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(
+                      duplicate_snapshot, request, &snapshot_bundle)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        std::vector<uint16_t> expected;
+        if (target_index == 1U) {
+            expected = { tags[0], tags[1], tags[2] };
+        }
+        EXPECT_EQ(direct_bundle.tiff_ifd0_removals, expected)
+            << "target=" << target_index << " direct";
+        EXPECT_EQ(snapshot_bundle.tiff_ifd0_removals, expected)
+            << "target=" << target_index << " snapshot";
+    }
+}
+
+TEST(MetadataTransferApi,
+     DirtyProfileTombstonesRemoveAllThreeNativeTagsForTiffAndDng)
+{
+    constexpr std::string_view tiff_namespace = "http://ns.adobe.com/tiff/1.0/";
+    static constexpr std::array<std::string_view, 3U> paths = {
+        "ImageDescription",
+        "Artist",
+        "Copyright",
+    };
+    static constexpr std::array<std::string_view, 3U> values = {
+        "First Description",
+        "First Artist",
+        "First Copyright",
+    };
+    static constexpr std::array<uint16_t, 3U> tags = {
+        0x010EU,
+        0x013BU,
+        0x8298U,
+    };
+
+    openmeta::MetaStore source;
+    for (size_t i = 0U; i < paths.size(); ++i) {
+        openmeta::Entry property;
+        property.key   = openmeta::make_xmp_property_key(source.arena(),
+                                                         tiff_namespace,
+                                                         paths[i]);
+        property.value = openmeta::make_text(source.arena(), values[i],
+                                             openmeta::TextEncoding::Utf8);
+        property.flags = openmeta::EntryFlags::Dirty;
+        ASSERT_NE(source.add_entry(property), openmeta::kInvalidEntryId);
+    }
+    source.finalize();
+
+    openmeta::MetadataProfileTranslationOptions translation_options;
+    translation_options.source_mode
+        = openmeta::MetadataCaptureTranslationSourceMode::DirtyOnly;
+    openmeta::MetaStore first_translated;
+    ASSERT_EQ(openmeta::translate_xmp_profile_metadata(source,
+                                                       translation_options,
+                                                       &first_translated)
+                  .status,
+              openmeta::MetadataCaptureTranslationStatus::Ok);
+
+    openmeta::PrepareTransferRequest first_request;
+    first_request.target_format      = openmeta::TransferTargetFormat::Tiff;
+    first_request.include_icc_app2   = false;
+    first_request.include_iptc_app13 = false;
+    openmeta::PreparedTransferBundle first_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(first_translated,
+                                                    first_request,
+                                                    &first_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    const std::vector<std::byte> first_input
+        = make_minimal_tiff_with_strip_storage_little_endian();
+    const openmeta::TiffEditPlan first_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(first_input, first_bundle);
+    ASSERT_EQ(first_plan.status, openmeta::TransferStatus::Ok);
+    std::vector<std::byte> first_output;
+    ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(
+                  first_input, first_bundle, first_plan, &first_output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+
+    openmeta::MetaStore first_decoded;
+    ASSERT_TRUE(decode_transfer_roundtrip_store(first_output, &first_decoded));
+    std::array<openmeta::MetadataTypedEditingOperation, 3U> removals {};
+    for (size_t i = 0U; i < removals.size(); ++i) {
+        removals[i].kind = openmeta::MetadataEditingOperationKind::Remove;
+        removals[i].entry.key
+            = openmeta::make_xmp_property_key_view(tiff_namespace, paths[i]);
+    }
+    openmeta::MetaStore property_removed;
+    const openmeta::MetadataTypedEditingResult edited
+        = openmeta::edit_metadata_typed(
+            first_decoded,
+            std::span<const openmeta::MetadataTypedEditingOperation>(
+                removals.data(), removals.size()),
+            &property_removed);
+    ASSERT_TRUE(edited.ok())
+        << openmeta::metadata_typed_editing_status_name(edited.status);
+    EXPECT_EQ(edited.entries_removed, 3U);
+
+    translation_options.conflict_policy
+        = openmeta::MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+    openmeta::MetaStore second_translated;
+    ASSERT_EQ(openmeta::translate_xmp_profile_metadata(property_removed,
+                                                       translation_options,
+                                                       &second_translated)
+                  .status,
+              openmeta::MetadataCaptureTranslationStatus::Ok);
+    const openmeta::TransferSourceSnapshot snapshot
+        = openmeta::build_transfer_source_snapshot(second_translated);
+
+    openmeta::PrepareTransferRequest tiff_request;
+    tiff_request.target_format      = openmeta::TransferTargetFormat::Tiff;
+    tiff_request.include_icc_app2   = false;
+    tiff_request.include_iptc_app13 = false;
+    openmeta::PreparedTransferBundle tiff_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(snapshot,
+                                                             tiff_request,
+                                                             &tiff_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    ASSERT_EQ(tiff_bundle.tiff_ifd0_removals.size(), tags.size());
+    EXPECT_EQ(tiff_bundle.tiff_ifd0_removals,
+              (std::vector<uint16_t> { tags[0], tags[1], tags[2] }));
+
+    openmeta::PrepareTransferRequest dng_request = tiff_request;
+    dng_request.target_format = openmeta::TransferTargetFormat::Dng;
+    openmeta::PreparedTransferBundle dng_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(snapshot,
+                                                             dng_request,
+                                                             &dng_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    ASSERT_EQ(dng_bundle.tiff_ifd0_removals, tiff_bundle.tiff_ifd0_removals);
+
+    const std::array<const openmeta::PreparedTransferBundle*, 2U> bundles = {
+        &tiff_bundle,
+        &dng_bundle,
+    };
+    std::vector<std::byte> tiff_output;
+    for (size_t i = 0U; i < bundles.size(); ++i) {
+        const openmeta::TiffEditPlan plan
+            = openmeta::plan_prepared_bundle_tiff_edit(first_output,
+                                                       *bundles[i]);
+        ASSERT_EQ(plan.status, openmeta::TransferStatus::Ok) << "target=" << i;
+        std::vector<std::byte> output;
+        ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(first_output,
+                                                            *bundles[i], plan,
+                                                            &output)
+                      .status,
+                  openmeta::TransferStatus::Ok)
+            << "target=" << i;
+        if (i == 0U) {
+            tiff_output = output;
+        }
+        openmeta::MetaStore decoded;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(output, &decoded));
+        for (const uint16_t tag : tags) {
+            EXPECT_TRUE(
+                store_lacks_text_entry(decoded, exif_key_view("ifd0", tag)))
+                << "target=" << i << " tag=" << tag;
+        }
+    }
+
+    openmeta::ExecutePreparedTransferBundleOptions high_level_options;
+    high_level_options.execute.edit_requested = true;
+    high_level_options.execute.edit_apply     = true;
+    const openmeta::ExecutePreparedTransferFileResult high_level
+        = openmeta::execute_prepared_transfer_bundle(
+            dng_bundle,
+            std::span<const std::byte>(first_output.data(), first_output.size()),
+            high_level_options);
+    EXPECT_EQ(high_level.execute.compile.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(high_level.execute.compile.errors, 0U);
+    EXPECT_EQ(high_level.execute.emit.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(high_level.execute.emit.errors, 0U);
+    ASSERT_EQ(high_level.execute.edit_plan_status,
+              openmeta::TransferStatus::Ok);
+    ASSERT_EQ(high_level.execute.edit_apply.status,
+              openmeta::TransferStatus::Ok);
+    openmeta::MetaStore high_level_decoded;
+    ASSERT_TRUE(decode_transfer_roundtrip_store(
+        std::span<const std::byte>(high_level.execute.edited_output.data(),
+                                   high_level.execute.edited_output.size()),
+        &high_level_decoded));
+    for (const uint16_t tag : tags) {
+        EXPECT_TRUE(store_lacks_text_entry(high_level_decoded,
+                                           exif_key_view("ifd0", tag)))
+            << "high-level tag=" << tag;
+    }
+
+    openmeta::PreparedTransferPackagePlan all_inline_plan;
+    all_inline_plan.target_format = openmeta::TransferTargetFormat::Tiff;
+    all_inline_plan.input_size    = 0U;
+    all_inline_plan.output_size   = static_cast<uint64_t>(tiff_output.size());
+    openmeta::PreparedTransferPackageChunk all_inline_chunk;
+    all_inline_chunk.kind = openmeta::TransferPackageChunkKind::InlineBytes;
+    all_inline_chunk.output_offset = 0U;
+    all_inline_chunk.size          = static_cast<uint64_t>(tiff_output.size());
+    all_inline_chunk.inline_bytes  = tiff_output;
+    all_inline_plan.chunks.push_back(all_inline_chunk);
+    openmeta::PreparedTransferPackageBatch all_inline_batch;
+    const openmeta::EmitTransferResult batched
+        = openmeta::build_prepared_transfer_package_batch(
+            std::span<const std::byte>(), tiff_bundle, all_inline_plan,
+            &all_inline_batch);
+    ASSERT_EQ(batched.status, openmeta::TransferStatus::Ok) << batched.message;
+    BufferByteWriter all_inline_writer;
+    ASSERT_EQ(openmeta::write_prepared_transfer_package_batch(all_inline_batch,
+                                                              all_inline_writer)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(all_inline_writer.out, tiff_output);
+}
+
+TEST(MetadataTransferApi,
+     TiffRemovalListsRejectInvalidConflictsAndUnsupportedConsumers)
+{
+    const std::vector<std::byte> input = make_minimal_tiff_little_endian();
+    const std::vector<std::byte> sentinel_bytes = { std::byte { 0xA5U } };
+
+    openmeta::PreparedTransferBundle removal_bundle;
+    removal_bundle.target_format      = openmeta::TransferTargetFormat::Tiff;
+    removal_bundle.tiff_ifd0_removals = { 0x013BU };
+    openmeta::PreparedTransferBlock xmp;
+    xmp.route   = "tiff:tag-700-xmp";
+    xmp.payload = { std::byte { '<' }, std::byte { 'x' }, std::byte { '>' } };
+    removal_bundle.blocks.push_back(xmp);
+
+    openmeta::PreparedTransferBundle emit_bundle = removal_bundle;
+    emit_bundle.tiff_ifd0_removals.clear();
+    openmeta::PreparedTiffEmitPlan emit_plan;
+    ASSERT_EQ(
+        openmeta::compile_prepared_bundle_tiff(emit_bundle, &emit_plan).status,
+        openmeta::TransferStatus::Ok);
+    openmeta::PreparedTransferExecutionPlan execution_plan;
+    ASSERT_EQ(openmeta::compile_prepared_transfer_execution(emit_bundle, {},
+                                                            &execution_plan)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::PreparedTransferAdapterView adapter_view;
+    ASSERT_EQ(openmeta::build_prepared_transfer_adapter_view(emit_bundle,
+                                                             &adapter_view)
+                  .status,
+              openmeta::TransferStatus::Ok);
+
+    openmeta::EmitTransferOptions permissive;
+    permissive.stop_on_error = false;
+    FakeTiffEmitter fresh_emitter;
+    const openmeta::EmitTransferResult fresh_emit
+        = openmeta::emit_prepared_bundle_tiff(removal_bundle, fresh_emitter,
+                                              permissive);
+    EXPECT_EQ(fresh_emit.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(fresh_emitter.u32_calls.empty());
+    EXPECT_TRUE(fresh_emitter.bytes_calls.empty());
+    EXPECT_EQ(fresh_emitter.commit_calls, 0U);
+
+    openmeta::PreparedTiffEmitPlan untouched_tiff_plan;
+    untouched_tiff_plan.contract_version = 77U;
+    untouched_tiff_plan.ops.push_back(openmeta::PreparedTiffEmitOp { 9U, 99U });
+    const openmeta::EmitTransferResult compiled_tiff
+        = openmeta::compile_prepared_bundle_tiff(removal_bundle,
+                                                 &untouched_tiff_plan,
+                                                 permissive);
+    EXPECT_EQ(compiled_tiff.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(untouched_tiff_plan.contract_version, 77U);
+    ASSERT_EQ(untouched_tiff_plan.ops.size(), 1U);
+    EXPECT_EQ(untouched_tiff_plan.ops[0].block_index, 9U);
+    EXPECT_EQ(untouched_tiff_plan.ops[0].tiff_tag, 99U);
+
+    FakeTiffEmitter compiled_emitter;
+    const openmeta::EmitTransferResult compiled_emit
+        = openmeta::emit_prepared_bundle_tiff_compiled(removal_bundle,
+                                                       emit_plan,
+                                                       compiled_emitter,
+                                                       permissive);
+    EXPECT_EQ(compiled_emit.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(compiled_emitter.u32_calls.empty());
+    EXPECT_TRUE(compiled_emitter.bytes_calls.empty());
+    EXPECT_EQ(compiled_emitter.commit_calls, 0U);
+
+    openmeta::PreparedTransferExecutionPlan untouched_execution_plan;
+    untouched_execution_plan.contract_version = 78U;
+    untouched_execution_plan.target_format
+        = openmeta::TransferTargetFormat::Jpeg;
+    untouched_execution_plan.jpeg_emit.ops.push_back(
+        openmeta::PreparedJpegEmitOp { 5U, 0xE1U });
+    const openmeta::EmitTransferResult compiled_execution
+        = openmeta::compile_prepared_transfer_execution(
+            removal_bundle, permissive, &untouched_execution_plan);
+    EXPECT_EQ(compiled_execution.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(untouched_execution_plan.contract_version, 78U);
+    EXPECT_EQ(untouched_execution_plan.target_format,
+              openmeta::TransferTargetFormat::Jpeg);
+    ASSERT_EQ(untouched_execution_plan.jpeg_emit.ops.size(), 1U);
+    EXPECT_EQ(untouched_execution_plan.jpeg_emit.ops[0].block_index, 5U);
+
+    BufferByteWriter compiled_writer;
+    compiled_writer.out = sentinel_bytes;
+    openmeta::ExecutePreparedTransferOptions execute_options;
+    execute_options.emit_output_writer = &compiled_writer;
+    const openmeta::ExecutePreparedTransferResult compiled_execute
+        = openmeta::execute_prepared_transfer_compiled(&removal_bundle,
+                                                       execution_plan, {},
+                                                       execute_options);
+    EXPECT_EQ(compiled_execute.compile.status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(compiled_writer.out, sentinel_bytes);
+
+    FakeTiffEmitter execution_emitter;
+    const openmeta::ExecutePreparedTransferResult compiled_backend
+        = openmeta::emit_prepared_transfer_compiled(&removal_bundle,
+                                                    execution_plan,
+                                                    execution_emitter);
+    EXPECT_EQ(compiled_backend.compile.status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(execution_emitter.u32_calls.empty());
+    EXPECT_TRUE(execution_emitter.bytes_calls.empty());
+    EXPECT_EQ(execution_emitter.commit_calls, 0U);
+
+    openmeta::PreparedTransferAdapterView untouched_adapter_view;
+    untouched_adapter_view.contract_version = 79U;
+    untouched_adapter_view.target_format = openmeta::TransferTargetFormat::Jpeg;
+    openmeta::PreparedTransferAdapterOp sentinel_op;
+    sentinel_op.block_index = 17U;
+    untouched_adapter_view.ops.push_back(sentinel_op);
+    const openmeta::EmitTransferResult adapter_build
+        = openmeta::build_prepared_transfer_adapter_view(
+            removal_bundle, &untouched_adapter_view, permissive);
+    EXPECT_EQ(adapter_build.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(untouched_adapter_view.contract_version, 79U);
+    EXPECT_EQ(untouched_adapter_view.target_format,
+              openmeta::TransferTargetFormat::Jpeg);
+    ASSERT_EQ(untouched_adapter_view.ops.size(), 1U);
+    EXPECT_EQ(untouched_adapter_view.ops[0].block_index, 17U);
+
+    EXPECT_EQ(openmeta::validate_prepared_transfer_adapter_view(removal_bundle,
+                                                                adapter_view)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+    FakeTransferAdapterSink adapter_sink;
+    EXPECT_EQ(openmeta::emit_prepared_transfer_adapter_view(removal_bundle,
+                                                            adapter_view,
+                                                            adapter_sink)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(adapter_sink.calls.empty());
+
+    openmeta::PreparedTransferPayloadView old_payload_view;
+    old_payload_view.route = "sentinel-route";
+    std::vector<openmeta::PreparedTransferPayloadView> payload_views;
+    payload_views.push_back(old_payload_view);
+    const openmeta::EmitTransferResult payload_view_result
+        = openmeta::collect_prepared_transfer_payload_views(removal_bundle,
+                                                            &payload_views,
+                                                            permissive);
+    EXPECT_EQ(payload_view_result.status,
+              openmeta::TransferStatus::Unsupported);
+    ASSERT_EQ(payload_views.size(), 1U);
+    EXPECT_EQ(payload_views[0].route, "sentinel-route");
+
+    openmeta::PreparedTransferPayloadBatch untouched_payload_batch;
+    untouched_payload_batch.target_format = openmeta::TransferTargetFormat::Jpeg;
+    openmeta::PreparedTransferPayload sentinel_payload;
+    sentinel_payload.route = "sentinel-route";
+    untouched_payload_batch.payloads.push_back(sentinel_payload);
+    const openmeta::EmitTransferResult payload_batch_result
+        = openmeta::build_prepared_transfer_payload_batch(
+            removal_bundle, &untouched_payload_batch, permissive);
+    EXPECT_EQ(payload_batch_result.status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(untouched_payload_batch.target_format,
+              openmeta::TransferTargetFormat::Jpeg);
+    ASSERT_EQ(untouched_payload_batch.payloads.size(), 1U);
+    EXPECT_EQ(untouched_payload_batch.payloads[0].route, "sentinel-route");
+
+    openmeta::PreparedTransferPackagePlan untouched_package;
+    untouched_package.target_format = openmeta::TransferTargetFormat::Jpeg;
+    untouched_package.input_size    = 4U;
+    untouched_package.output_size   = 1U;
+    openmeta::PreparedTransferPackageChunk sentinel_chunk;
+    sentinel_chunk.kind = openmeta::TransferPackageChunkKind::InlineBytes;
+    sentinel_chunk.size = 1U;
+    sentinel_chunk.inline_bytes = sentinel_bytes;
+    untouched_package.chunks.push_back(sentinel_chunk);
+    const openmeta::EmitTransferResult package_result
+        = openmeta::build_prepared_transfer_emit_package(removal_bundle,
+                                                         &untouched_package,
+                                                         permissive);
+    EXPECT_EQ(package_result.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(untouched_package.target_format,
+              openmeta::TransferTargetFormat::Jpeg);
+    EXPECT_EQ(untouched_package.input_size, 4U);
+    EXPECT_EQ(untouched_package.output_size, 1U);
+    ASSERT_EQ(untouched_package.chunks.size(), 1U);
+    EXPECT_EQ(untouched_package.chunks[0].inline_bytes, sentinel_bytes);
+
+    const openmeta::TiffEditPlan valid_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(input, removal_bundle);
+    ASSERT_EQ(valid_plan.status, openmeta::TransferStatus::Ok);
+    const std::array<std::vector<uint16_t>, 4U> invalid_removal_lists = {
+        std::vector<uint16_t> { 0x010FU },
+        std::vector<uint16_t> { 0x013BU, 0x013BU },
+        std::vector<uint16_t> { 0x013BU, 0x010EU },
+        std::vector<uint16_t> { 0x010EU, 0x013BU, 0x8298U, 0x8298U },
+    };
+    for (size_t i = 0U; i < invalid_removal_lists.size(); ++i) {
+        openmeta::PreparedTransferBundle invalid_bundle = removal_bundle;
+        invalid_bundle.tiff_ifd0_removals = invalid_removal_lists[i];
+        const openmeta::TiffEditPlan invalid_plan
+            = openmeta::plan_prepared_bundle_tiff_edit(input, invalid_bundle);
+        EXPECT_EQ(invalid_plan.status, openmeta::TransferStatus::InvalidArgument)
+            << "invalid-list=" << i;
+
+        std::vector<std::byte> output = sentinel_bytes;
+        const openmeta::EmitTransferResult apply_result
+            = openmeta::apply_prepared_bundle_tiff_edit(input, invalid_bundle,
+                                                        valid_plan, &output);
+        EXPECT_NE(apply_result.status, openmeta::TransferStatus::Ok)
+            << "invalid-list=" << i;
+        EXPECT_EQ(output, sentinel_bytes) << "invalid-list=" << i;
+
+        BufferByteWriter writer;
+        writer.out = sentinel_bytes;
+        const openmeta::EmitTransferResult write_result
+            = openmeta::write_prepared_bundle_tiff_edit(input, invalid_bundle,
+                                                        valid_plan, writer);
+        EXPECT_NE(write_result.status, openmeta::TransferStatus::Ok)
+            << "invalid-list=" << i;
+        EXPECT_EQ(writer.out, sentinel_bytes) << "invalid-list=" << i;
+    }
+
+    openmeta::MetaStore artist_source;
+    openmeta::Entry artist_property;
+    artist_property.key = openmeta::make_xmp_property_key(
+        artist_source.arena(), "http://ns.adobe.com/tiff/1.0/", "Artist");
+    artist_property.value = openmeta::make_text(artist_source.arena(),
+                                                "Conflicting Artist",
+                                                openmeta::TextEncoding::Utf8);
+    artist_property.flags = openmeta::EntryFlags::Dirty;
+    ASSERT_NE(artist_source.add_entry(artist_property),
+              openmeta::kInvalidEntryId);
+    artist_source.finalize();
+    openmeta::MetadataProfileTranslationOptions translation_options;
+    translation_options.source_mode
+        = openmeta::MetadataCaptureTranslationSourceMode::DirtyOnly;
+    openmeta::MetaStore translated_artist;
+    ASSERT_EQ(openmeta::translate_xmp_profile_metadata(artist_source,
+                                                       translation_options,
+                                                       &translated_artist)
+                  .status,
+              openmeta::MetadataCaptureTranslationStatus::Ok);
+    openmeta::PrepareTransferRequest artist_request;
+    artist_request.target_format      = openmeta::TransferTargetFormat::Tiff;
+    artist_request.include_icc_app2   = false;
+    artist_request.include_iptc_app13 = false;
+    openmeta::PreparedTransferBundle artist_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(translated_artist,
+                                                    artist_request,
+                                                    &artist_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    const openmeta::PreparedTransferBlock* serialized_artist = nullptr;
+    for (const openmeta::PreparedTransferBlock& block : artist_bundle.blocks) {
+        if (block.route == "tiff:ifd-exif-app1") {
+            serialized_artist = &block;
+            break;
+        }
+    }
+    ASSERT_NE(serialized_artist, nullptr);
+    ASSERT_TRUE(
+        prepared_exif_block_contains_ifd0_tag(*serialized_artist, 0x013BU));
+
+    openmeta::PreparedTransferBundle conflict_bundle;
+    conflict_bundle.target_format      = openmeta::TransferTargetFormat::Tiff;
+    conflict_bundle.tiff_ifd0_removals = { 0x013BU };
+    openmeta::PreparedTransferBlock non_conflicting_exif;
+    non_conflicting_exif.route   = "tiff:ifd-exif-app1";
+    non_conflicting_exif.payload = make_app1_exif_payload();
+    conflict_bundle.blocks.push_back(non_conflicting_exif);
+    const openmeta::TiffEditPlan non_conflicting_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(input, conflict_bundle);
+    ASSERT_EQ(non_conflicting_plan.status, openmeta::TransferStatus::Ok);
+    conflict_bundle.blocks.push_back(*serialized_artist);
+    EXPECT_FALSE(
+        prepared_exif_block_contains_ifd0_tag(conflict_bundle.blocks[0],
+                                              0x013BU));
+
+    const openmeta::TiffEditPlan conflict_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(input, conflict_bundle);
+    EXPECT_EQ(conflict_plan.status, openmeta::TransferStatus::InvalidArgument);
+    std::vector<std::byte> conflict_output = sentinel_bytes;
+    EXPECT_NE(openmeta::apply_prepared_bundle_tiff_edit(input, conflict_bundle,
+                                                        non_conflicting_plan,
+                                                        &conflict_output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(conflict_output, sentinel_bytes);
+    BufferByteWriter conflict_writer;
+    conflict_writer.out = sentinel_bytes;
+    EXPECT_NE(openmeta::write_prepared_bundle_tiff_edit(input, conflict_bundle,
+                                                        non_conflicting_plan,
+                                                        conflict_writer)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(conflict_writer.out, sentinel_bytes);
+
+    openmeta::PreparedTransferPackagePlan conflict_package;
+    conflict_package.target_format = openmeta::TransferTargetFormat::Jpeg;
+    conflict_package.input_size    = 6U;
+    conflict_package.output_size   = 1U;
+    conflict_package.chunks.push_back(sentinel_chunk);
+    EXPECT_EQ(openmeta::build_prepared_bundle_tiff_package(input,
+                                                           conflict_bundle,
+                                                           non_conflicting_plan,
+                                                           &conflict_package)
+                  .status,
+              openmeta::TransferStatus::InvalidArgument);
+    EXPECT_EQ(conflict_package.target_format,
+              openmeta::TransferTargetFormat::Jpeg);
+    EXPECT_EQ(conflict_package.input_size, 6U);
+    EXPECT_EQ(conflict_package.output_size, 1U);
+    ASSERT_EQ(conflict_package.chunks.size(), 1U);
+    EXPECT_EQ(conflict_package.chunks[0].inline_bytes, sentinel_bytes);
 }
 
 TEST(MetadataTransferApi, ReadTransferSourceSnapshotBytesMatchesFileReader)

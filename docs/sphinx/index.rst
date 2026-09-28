@@ -58,6 +58,7 @@ and must not be used as an asset-authenticity or trust gate.
    raw_read_parity_plan
    build
    shared_library
+   migration_0_6
    development
    interop_api
    exr_metadata_contract

@@ -1962,14 +1962,20 @@ remove native values only with `ReplaceExisting`. Preparation may allocate and
 the commit is transactional; callers synchronize conflicting access to a
 shared `MetaStore`.
 
-The 0.5.14 grouped lifecycle checks this contract after typed editing and
+The 0.5.14 grouped lifecycle checked this contract after typed editing and
 through snapshot serialization and JPEG/classic TIFF/BigTIFF readback,
 including removal from an existing JPEG output. TIFF's IFD0 merge retains
-destination tags absent from the prepared source, so source deletion does not
-imply native destination deletion there. Transfer preparation still applies
+destination tags absent from the prepared source. Before 0.6.0, source
+tombstones did not request native destination deletion there. Transfer preparation still applies
 its image-property policy: the host must explicitly supply the destination
 ColorSpace when the output requires that field. See
 [profile editing through file writeback](editing.md#profile-editing-through-file-writeback-0514).
+
+Since 0.6.0, explicit dirty native tombstones for IFD0 ImageDescription, Artist
+and Copyright survive preparation as typed TIFF removal instructions. This
+closes the deletion gap for those three fields when editing an existing
+TIFF/BigTIFF. Omission remains distinct from deletion. See
+[the 0.6 migration contract](migration_0_6.md).
 
 ## JP2 and JPH qualification boundary
 

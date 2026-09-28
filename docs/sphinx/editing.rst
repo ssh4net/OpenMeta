@@ -9,6 +9,12 @@ paths or entry IDs.
 The API is experimental and versioned by
 ``kMetadataEditingContractVersion == 1``.
 
+In 0.6.0, dirty native tombstones for IFD0 ImageDescription, Artist and Copyright
+can reach TIFF/BigTIFF edit writers through the prepared bundle's explicit
+removal list. Source omission still preserves destination entries. Fresh
+emitters and codec handoffs reject deletion-bearing bundles. This changes the
+bundle layout to ABI 4; see :doc:`migration_0_6` for the bounded contract.
+
 C++ example
 -----------
 

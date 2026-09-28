@@ -229,10 +229,14 @@ conflicts leave the source and the previously translated result unchanged.
 
 TIFF and BigTIFF merge native IFD0 updates into the destination. Omitting Artist
 from a prepared snapshot does not remove an existing destination IFD0 Artist,
-even when the new XMP packet omits it. The second-pass regression records this
-boundary: description replacement and XMP removal succeed, while the old native
-Artist remains. Native IFD0 deletion needs an explicit writer contract; source
-translation's `ReplaceExisting` policy alone does not provide one.
+even when the new XMP packet omits it. In 0.5.14 the second-pass regression
+recorded this boundary: description replacement and XMP removal succeeded,
+while the old native Artist remained. In 0.6.0 the same lifecycle carries the
+explicit native tombstone and removes Artist; a separate omission-only control
+continues to verify destination preservation.
+
+Since 0.6.0, supported native tombstones can request that deletion explicitly;
+see the contract below. The omission-only behavior remains unchanged.
 
 Each API call is a separate transaction. The host publishes the completed
 sequence only after all required calls succeed. The host also supplies the
@@ -240,3 +244,17 @@ destination image ColorSpace during transfer preparation; translating source
 ColorSpace does not bypass the existing image-property filtering policy. These
 checks do not establish ICC agreement, an audio association or complete-file
 profile conformance.
+
+## Explicit native TIFF IFD0 deletion (0.6.0)
+
+Preparation carries dirty native tombstones for IFD0 ImageDescription, Artist
+and Copyright in `PreparedTransferBundle::tiff_ifd0_removals`. Both `Dirty` and
+`Deleted` are required, the IFD key must be exactly `ifd0`, and EXIF transfer
+must be enabled. A live same-key entry wins over historical tombstones. Source
+absence alone preserves destination tags.
+
+TIFF/BigTIFF edit plan/apply, stream and edit-package paths consume the explicit
+list. A manual list must be sorted, unique and limited to those three tags;
+contradictory replacements fail before output. Fresh emitters and codec
+handoffs that cannot delete destination entries reject the bundle. This is an
+ABI-4 change: rebuild against 0.6.0. See [migration details](migration_0_6.md).
