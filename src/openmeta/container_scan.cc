@@ -5388,7 +5388,9 @@ namespace {
                     }
                 } else if (bmff_is_cr3_vendor_metadata_box(child.type)
                            && child_payload_size > 0) {
-                    if (payload_looks_boxes && r.depth + 1 <= kMaxDepth
+                    // CTBO begins with a row count and ID, not a box header.
+                    if (child.type != fourcc('C', 'T', 'B', 'O')
+                        && payload_looks_boxes && r.depth + 1 <= kMaxDepth
                         && sp < stack.size()) {
                         // Some CR3 vendor boxes act as wrappers around nested
                         // `CMT*` boxes. Recurse instead of emitting the wrapper.

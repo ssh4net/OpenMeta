@@ -43,7 +43,7 @@ group names, and intentional-difference notes. Each new lane should add:
 | Apple, DJI, Google, FLIR | Live-vendor source-processing classification exists for rendered-transfer safety | Computational, thermal, radiometric, and shot-log interpretation depth | Add decode only for stable fields that hosts can use safely |
 | Rare and legacy RAW families | Raw-preservation-first | Native container and MakerNote depth | Preserve raw blocks, then add support only when validation inputs and stable structure are available |
 
-## CR3 carrier inventory (0.5.14)
+## CR3 carrier inventory (0.6.1)
 
 The bounded Canon UUID path currently recognizes these records:
 
@@ -52,7 +52,8 @@ The bounded Canon UUID path currently recognizes these records:
 | `CMT1`, `CMT2`, `CMT4` | Discover a classic TIFF stream and use the generic TIFF decoder. | The scanner requires a valid classic-TIFF header; this does not define additional Canon private-field meanings. |
 | `CMT3` | Decode the dedicated TIFF stream with Canon MakerNote tokens and expand known binary subtables. Fall back to generic TIFF decoding with Canon tokens when needed. | `decode_makernote=false` skips this stream. |
 | `CNCV` | With MakerNote decoding enabled, expose bounded `CanonCR3_` compressor-version text as the derived BMFF field `cr3.compressor_version`. The opaque scanner block remains available. | Accept at most 256 bytes of printable ASCII with optional trailing zero padding. Other prefixes, embedded NULs, controls and non-ASCII bytes remain opaque. This does not parse version components or authorize writing codec settings. |
-| `CCTP`, `CNTH`, `CNOP`, `CNDM`, `CTBO`, `CMP1` | Descend into plausible nested boxes; otherwise expose leaf payloads as opaque scanner MakerNote blocks. | The simple metadata reader does not interpret these opaque leaf blocks into entries. |
+| `CTBO` | With MakerNote decoding enabled, expose validated absolute box offsets and sizes for XMP (ID 1), preview (ID 2), and media data (ID 3). | Derived `cr3.ctbo.xmp.offset` / `.size`, `cr3.ctbo.preview.offset` / `.size`, and `cr3.ctbo.media.offset` / `.size` are source-bound, not writable metadata. Validate the complete table and known target boxes before emitting fields. Unknown IDs retain opaque treatment. |
+| `CCTP`, `CNTH`, `CNOP`, `CNDM`, `CMP1` | Descend into plausible nested boxes; otherwise expose leaf payloads as opaque scanner MakerNote blocks. | The simple metadata reader does not interpret these opaque leaf blocks into entries. |
 
 The Canon UUID walk has separate depth, box-count and pending-range bounds.
 Unknown children are searched only when they begin with a plausible nested
@@ -72,6 +73,25 @@ EXIF comparison does not
 list per-file inputs and does not establish the identity of this current
 cohort. Further private-field decoding needs an original witness with recorded
 model/version, offsets, byte order, bounds and expected values.
+
+CTBO uses a big-endian count followed by 20-byte ID/offset/size rows. The known
+IDs refer to complete boxes, including headers: XMP and preview require their
+documented UUIDs, and media requires `mdat`. These fields describe the original
+carrier locations; they do not identify the active metadata item after an edit,
+decode image data, authorize relocation, or project into portable XMP. ExifTool
+documents this layout in its Canon reader and QuickTime writer but does not
+expose CTBO values while reading. CTBO comparisons therefore use independent
+wire extraction, separately from ExifTool's compressor-version comparison.
+The reader accepts 1–64 rows with an exact payload length; 64 is an
+implementation bound, not a Canon format limit. Duplicate known IDs, invalid
+known target ranges, mismatched box headers and size-zero-to-EOF target headers
+remain opaque. Normal and extended-size headers are supported. Zero-size table
+rows emit no location fields, and unknown IDs are not followed.
+
+CR3 editing preserves every retained top-level source box at its original
+offset. An edit that would move one rejects before output; CTBO and track
+offsets are not repaired. Appending metadata and replacing EOF metadata remain
+supported. General CR3 scene/property rewriting remains outside this contract.
 
 ## Priority
 

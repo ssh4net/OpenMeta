@@ -1404,6 +1404,38 @@ append_bmff_fullbox_header(std::vector<std::byte>* out, uint8_t version)
     out->push_back(std::byte { 0x00 });
 }
 
+static void
+append_test_cr3_private_media(std::vector<std::byte>* out)
+{
+    static constexpr std::array<std::byte, 16> kCanonUuid = {
+        std::byte { 0x85 }, std::byte { 0xc0 }, std::byte { 0xb6 },
+        std::byte { 0x87 }, std::byte { 0x82 }, std::byte { 0x0f },
+        std::byte { 0x11 }, std::byte { 0xe0 }, std::byte { 0x81 },
+        std::byte { 0x11 }, std::byte { 0xf4 }, std::byte { 0xce },
+        std::byte { 0x46 }, std::byte { 0x2b }, std::byte { 0x6a },
+        std::byte { 0x48 },
+    };
+    static constexpr std::array<std::byte, 4> kMedia = {
+        std::byte { 0xa1 },
+        std::byte { 0xb2 },
+        std::byte { 0xc3 },
+        std::byte { 0xd4 },
+    };
+    // CTBO's absolute offset and size cover the complete following mdat box.
+    const uint64_t media_offset = out->size() + 64U;
+    std::vector<std::byte> ctbo;
+    append_u32be(&ctbo, 1U);
+    append_u32be(&ctbo, 3U);
+    append_test_u_nbe(&ctbo, 8U, media_offset);
+    append_test_u_nbe(&ctbo, 8U, 8U + kMedia.size());
+    std::vector<std::byte> uuid(kCanonUuid.begin(), kCanonUuid.end());
+    append_bmff_box(&uuid, openmeta::fourcc('C', 'T', 'B', 'O'), ctbo);
+    std::vector<std::byte> moov;
+    append_bmff_box(&moov, openmeta::fourcc('u', 'u', 'i', 'd'), uuid);
+    append_bmff_box(out, openmeta::fourcc('m', 'o', 'o', 'v'), moov);
+    append_bmff_box(out, openmeta::fourcc('m', 'd', 'a', 't'), kMedia);
+}
+
 static std::vector<std::byte>
 make_minimal_bmff_file(uint32_t major_brand,
                        std::span<const uint32_t> compatible_brands)
@@ -49776,7 +49808,10 @@ TEST(MetadataTransferApi,
     EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::LimitExceeded);
     EXPECT_NE(result.edit_plan_message.find("ipma box count is too large"),
               std::string::npos);
-    EXPECT_EQ(result.edit_apply.status, openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(result.edit_apply.status,
+              openmeta::TransferStatus::LimitExceeded);
+    EXPECT_EQ(result.edit_apply.message, result.edit_plan_message);
+    EXPECT_EQ(result.edit_apply.errors, 1U);
     EXPECT_TRUE(result.edited_output.empty());
 }
 
@@ -53716,5 +53751,126 @@ TEST(MetadataTransferApi,
                 EXPECT_TRUE(store_has_urational_scalar_entry(
                     decoded, exif_key_view("exififd", 0x829aU), 1U, 125U));
         }
+    }
+}
+
+TEST(MetadataTransferApi,
+     Cr3EditPreservesPrivateAndMediaOffsetsAcrossRepeatedWrites)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Cr3;
+    openmeta::PreparedTransferBlock exif;
+    exif.route   = "bmff:item-exif";
+    exif.payload = make_test_bmff_exif_item_payload_with_fields();
+    bundle.blocks.push_back(exif);
+    std::vector<std::byte> input = make_minimal_cr3_file();
+    append_test_cr3_private_media(&input);
+    const std::vector<std::byte> original = input;
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested = true;
+    options.edit_apply     = true;
+    for (unsigned pass = 0; pass < 2U; ++pass) {
+        SCOPED_TRACE(pass);
+        const openmeta::ExecutePreparedTransferResult result
+            = openmeta::execute_prepared_transfer(&bundle, input, options);
+        ASSERT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok)
+            << result.edit_plan_message;
+        ASSERT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+        ASSERT_GT(result.edited_output.size(), original.size());
+        EXPECT_EQ(std::memcmp(result.edited_output.data(), original.data(),
+                              original.size()),
+                  0);
+        input = result.edited_output;
+    }
+}
+
+TEST(MetadataTransferApi, Cr3EditRejectsMovingPrivateAndMediaBoxesAtomically)
+{
+    struct Case final {
+        uint32_t major;
+        uint32_t compatible;
+        openmeta::TransferTargetFormat target;
+    };
+    const Case cases[] = {
+        { openmeta::fourcc('c', 'r', 'x', ' '),
+          openmeta::fourcc('i', 's', 'o', 'm'),
+          openmeta::TransferTargetFormat::Cr3 },
+        { openmeta::fourcc('i', 's', 'o', 'm'),
+          openmeta::fourcc('C', 'R', '3', ' '),
+          openmeta::TransferTargetFormat::Heif },
+        { openmeta::fourcc('c', 'r', 'x', ' '),
+          openmeta::fourcc('i', 's', 'o', 'm'),
+          openmeta::TransferTargetFormat::Avif },
+        { openmeta::fourcc('i', 's', 'o', 'm'),
+          openmeta::fourcc('i', 's', 'o', 'm'),
+          openmeta::TransferTargetFormat::Cr3 },
+        { openmeta::fourcc('C', 'R', '3', ' '),
+          openmeta::fourcc('i', 's', 'o', 'm'),
+          openmeta::TransferTargetFormat::Heif },
+        { openmeta::fourcc('i', 's', 'o', 'm'),
+          openmeta::fourcc('c', 'r', 'x', ' '),
+          openmeta::TransferTargetFormat::Avif },
+    };
+    for (const Case& one : cases) {
+        SCOPED_TRACE(static_cast<int>(one.target));
+        openmeta::PreparedTransferBundle bundle;
+        bundle.target_format = one.target;
+        openmeta::PreparedTransferBlock exif;
+        exif.route   = "bmff:item-exif";
+        exif.payload = make_test_bmff_exif_item_payload_with_fields();
+        bundle.blocks.push_back(exif);
+        const std::array<uint32_t, 2> compatible
+            = { openmeta::fourcc('i', 's', 'o', 'm'), one.compatible };
+        const std::vector<std::byte> initial
+            = make_minimal_bmff_file(one.major, compatible);
+        openmeta::ExecutePreparedTransferOptions options;
+        options.edit_requested = true;
+        options.edit_apply     = true;
+        const openmeta::ExecutePreparedTransferResult first
+            = openmeta::execute_prepared_transfer(&bundle, initial, options);
+        ASSERT_EQ(first.edit_plan_status, openmeta::TransferStatus::Ok);
+        ASSERT_EQ(first.edit_apply.status, openmeta::TransferStatus::Ok);
+        std::vector<std::byte> input = first.edited_output;
+        append_test_cr3_private_media(&input);
+        const std::vector<std::byte> original = input;
+        const openmeta::ExecutePreparedTransferResult result
+            = openmeta::execute_prepared_transfer(&bundle, input, options);
+        EXPECT_EQ(result.edit_plan_status,
+                  openmeta::TransferStatus::Unsupported);
+        EXPECT_EQ(result.edit_apply.status,
+                  openmeta::TransferStatus::Unsupported);
+        EXPECT_EQ(result.edit_apply.message, result.edit_plan_message);
+        EXPECT_EQ(result.edit_apply.errors, 1U);
+        EXPECT_TRUE(result.edited_output.empty());
+        EXPECT_EQ(input, original);
+
+        BufferByteWriter writer;
+        writer.out                 = { std::byte { 0xa5 } };
+        options.edit_output_writer = &writer;
+        const openmeta::ExecutePreparedTransferResult streamed
+            = openmeta::execute_prepared_transfer(&bundle, input, options);
+        EXPECT_EQ(streamed.edit_plan_status,
+                  openmeta::TransferStatus::Unsupported);
+        EXPECT_EQ(streamed.edit_apply.status,
+                  openmeta::TransferStatus::Unsupported);
+        EXPECT_EQ(writer.writes, 0U);
+        EXPECT_EQ(writer.out, (std::vector<std::byte> { std::byte { 0xa5 } }));
+        options.edit_output_writer = nullptr;
+
+        uint64_t payload_offset = 0U;
+        std::vector<std::byte> foreign
+            = make_bmff_foreign_meta_iloc_method2_reference_target(
+                true, false, false, 1U, 1U, 0U, true, true,
+                openmeta::fourcc('c', 'r', 'x', ' '), &payload_offset);
+        append_test_cr3_private_media(&foreign);
+        const std::vector<std::byte> original_foreign = foreign;
+        const openmeta::ExecutePreparedTransferResult merged
+            = openmeta::execute_prepared_transfer(&bundle, foreign, options);
+        EXPECT_EQ(merged.edit_plan_status,
+                  openmeta::TransferStatus::Unsupported);
+        EXPECT_EQ(merged.edit_plan_message,
+                  "cr3 edit cannot relocate retained source boxes");
+        EXPECT_TRUE(merged.edited_output.empty());
+        EXPECT_EQ(foreign, original_foreign);
     }
 }

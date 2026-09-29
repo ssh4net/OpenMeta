@@ -30491,6 +30491,9 @@ namespace {
             }
         }
 
+        bool preserve_source_offsets = bundle.target_format
+                                       == TransferTargetFormat::Cr3;
+        bool moved_source_box        = false;
         bool found_ftyp              = false;
         bool found_foreign_top_meta  = false;
         bool merged_foreign_top_meta = false;
@@ -30527,6 +30530,22 @@ namespace {
 
             if (box.type == fourcc('f', 't', 'y', 'p')) {
                 found_ftyp = true;
+                const uint64_t payload_offset = box.offset + box.header_size;
+                const uint64_t payload_size   = box.size - box.header_size;
+                if (payload_size >= 8U) {
+                    for (uint64_t i = 0U; i <= payload_size - 4U; i += 4U) {
+                        if (i == 4U) {
+                            continue;
+                        }
+                        uint32_t brand = 0U;
+                        if (read_u32be(input_bmff, payload_offset + i, &brand)
+                            && (brand == fourcc('c', 'r', 'x', ' ')
+                                || brand == fourcc('C', 'R', '3', ' '))) {
+                            preserve_source_offsets = true;
+                            break;
+                        }
+                    }
+                }
             }
             if (box.type == fourcc('m', 'e', 't', 'a')) {
                 if (bmff_meta_has_openmeta_transfer_marker(input_bmff, box)) {
@@ -30554,6 +30573,9 @@ namespace {
                     }
                 }
             } else {
+                if (package_plan_next_output_offset(plan) != box.offset) {
+                    moved_source_box = true;
+                }
                 append_package_source_chunk(&plan, box.offset, box.size);
             }
             if (box.size == 0U) {
@@ -30567,6 +30589,14 @@ namespace {
             out.code    = EmitTransferCode::InvalidArgument;
             out.errors  = 1U;
             out.message = "input is not a supported bmff file";
+            return out;
+        }
+        // Opaque CR3 records and track tables can retain absolute file offsets.
+        if (preserve_source_offsets && moved_source_box) {
+            out.status  = TransferStatus::Unsupported;
+            out.code    = EmitTransferCode::InvalidArgument;
+            out.errors  = 1U;
+            out.message = "cr3 edit cannot relocate retained source boxes";
             return out;
         }
         if (merged_foreign_top_meta) {
@@ -32543,6 +32573,11 @@ namespace {
             out.edit_output_size  = plan_result.status == TransferStatus::Ok
                                         ? package.output_size
                                         : 0U;
+
+            if (options.edit_apply
+                && plan_result.status != TransferStatus::Ok) {
+                out.edit_apply = plan_result;
+            }
 
             if (plan_result.status == TransferStatus::Ok
                 && out.edit_plan_message.empty()) {

@@ -351,6 +351,11 @@ Implemented as a bounded BMFF target family:
 - bounded `bmff:item-c2pa`
 - bounded `bmff:property-colr-icc`
 - bounded OpenMeta-managed metadata-only `meta` rewrite path
+- CR3 edits preserve the original offsets of every retained top-level source
+  box. Appending metadata and replacing an EOF metadata box remain supported;
+  removing or resizing an earlier metadata box is rejected when it would move
+  retained boxes. The guard also recognizes CR3 major/compatible brands when
+  a host selects another BMFF target. CTBO and track offsets are not rewritten.
 - constrained foreign top-level `meta` item merge for parseable `iinf`,
   `iloc` version 0/1/2, `pitm`, optional single `idat`, and primary-item `cdsc`
   references

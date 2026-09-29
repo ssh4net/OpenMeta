@@ -32,6 +32,41 @@ namespace {
         out->push_back(std::byte { static_cast<uint8_t>((v >> 0) & 0xFFU) });
     }
 
+    static void append_u64be(std::vector<std::byte>* out, uint64_t v)
+    {
+        ASSERT_NE(out, nullptr);
+        for (uint32_t shift = 56U;; shift -= 8U) {
+            out->push_back(std::byte { static_cast<uint8_t>(v >> shift) });
+            if (shift == 0U) {
+                break;
+            }
+        }
+    }
+
+    static void write_u32be(std::vector<std::byte>* out, size_t offset,
+                            uint32_t v)
+    {
+        ASSERT_NE(out, nullptr);
+        ASSERT_LE(offset, out->size());
+        ASSERT_GE(out->size() - offset, 4U);
+        (*out)[offset + 0U] = std::byte { static_cast<uint8_t>(v >> 24U) };
+        (*out)[offset + 1U] = std::byte { static_cast<uint8_t>(v >> 16U) };
+        (*out)[offset + 2U] = std::byte { static_cast<uint8_t>(v >> 8U) };
+        (*out)[offset + 3U] = std::byte { static_cast<uint8_t>(v) };
+    }
+
+    static void write_u64be(std::vector<std::byte>* out, size_t offset,
+                            uint64_t v)
+    {
+        ASSERT_NE(out, nullptr);
+        ASSERT_LE(offset, out->size());
+        ASSERT_GE(out->size() - offset, 8U);
+        for (size_t i = 0U; i < 8U; ++i) {
+            const uint32_t shift = static_cast<uint32_t>((7U - i) * 8U);
+            (*out)[offset + i] = std::byte { static_cast<uint8_t>(v >> shift) };
+        }
+    }
+
     static void append_u16le(std::vector<std::byte>* out, uint16_t v)
     {
         ASSERT_NE(out, nullptr);
@@ -79,6 +114,25 @@ namespace {
         append_u32be(out, static_cast<uint32_t>(8U + payload.size()));
         append_fourcc(out, type);
         out->insert(out->end(), payload.begin(), payload.end());
+    }
+
+    static uint64_t
+    append_bmff_box_size_form(std::vector<std::byte>* out, uint32_t type,
+                              std::span<const std::byte> payload,
+                              bool extended_size)
+    {
+        const uint64_t start = static_cast<uint64_t>(out->size());
+        if (extended_size) {
+            append_u32be(out, 1U);
+            append_fourcc(out, type);
+            append_u64be(out, 16U + static_cast<uint64_t>(payload.size()));
+        } else {
+            append_bmff_box(out, type, payload);
+        }
+        if (extended_size) {
+            out->insert(out->end(), payload.begin(), payload.end());
+        }
+        return static_cast<uint64_t>(out->size()) - start;
     }
 
     static MetaKeyView exif_key(std::string_view ifd, uint16_t tag)
@@ -145,6 +199,171 @@ namespace {
         append_bmff_box(&moov, fourcc('u', 'u', 'i', 'd'), uuid_payload);
         append_bmff_box(&file, fourcc('m', 'o', 'o', 'v'), moov);
         return file;
+    }
+
+    static void append_cr3_canon_record(std::vector<std::byte>* file,
+                                        uint32_t id,
+                                        std::span<const std::byte> payload)
+    {
+        ASSERT_NE(file, nullptr);
+        const std::array<std::byte, 16> canon_uuid = {
+            std::byte { 0x85 }, std::byte { 0xc0 }, std::byte { 0xb6 },
+            std::byte { 0x87 }, std::byte { 0x82 }, std::byte { 0x0f },
+            std::byte { 0x11 }, std::byte { 0xe0 }, std::byte { 0x81 },
+            std::byte { 0x11 }, std::byte { 0xf4 }, std::byte { 0xce },
+            std::byte { 0x46 }, std::byte { 0x2b }, std::byte { 0x6a },
+            std::byte { 0x48 },
+        };
+        std::vector<std::byte> uuid_payload(canon_uuid.begin(),
+                                            canon_uuid.end());
+        append_bmff_box(&uuid_payload, id, payload);
+        std::vector<std::byte> moov;
+        append_bmff_box(&moov, fourcc('u', 'u', 'i', 'd'), uuid_payload);
+        append_bmff_box(file, fourcc('m', 'o', 'o', 'v'), moov);
+    }
+
+    struct Cr3CtboFixture final {
+        std::vector<std::byte> file;
+        std::array<uint64_t, 3U> offsets {};
+        std::array<uint64_t, 3U> sizes {};
+        uint64_t ctbo_payload_offset = 0U;
+    };
+
+    static Cr3CtboFixture
+    make_cr3_ctbo_fixture(uint32_t row_count           = 3U,
+                          bool printable_unknown_first = false,
+                          bool extended_targets        = false,
+                          uint32_t major_brand = fourcc('c', 'r', 'x', ' '))
+    {
+        static constexpr std::array<std::byte, 16U> xmp_uuid = {
+            std::byte { 0xBE }, std::byte { 0x7A }, std::byte { 0xCF },
+            std::byte { 0xCB }, std::byte { 0x97 }, std::byte { 0xA9 },
+            std::byte { 0x42 }, std::byte { 0xE8 }, std::byte { 0x9C },
+            std::byte { 0x71 }, std::byte { 0x99 }, std::byte { 0x94 },
+            std::byte { 0x91 }, std::byte { 0xE3 }, std::byte { 0xAF },
+            std::byte { 0xAC },
+        };
+        static constexpr std::array<std::byte, 16U> preview_uuid = {
+            std::byte { 0xEA }, std::byte { 0xF4 }, std::byte { 0x2B },
+            std::byte { 0x5E }, std::byte { 0x1C }, std::byte { 0x98 },
+            std::byte { 0x4B }, std::byte { 0x88 }, std::byte { 0xB9 },
+            std::byte { 0xFB }, std::byte { 0xB7 }, std::byte { 0xDC },
+            std::byte { 0x40 }, std::byte { 0x6E }, std::byte { 0x4D },
+            std::byte { 0x16 },
+        };
+
+        Cr3CtboFixture fixture;
+        std::vector<std::byte> ftyp;
+        append_fourcc(&ftyp, major_brand);
+        append_u32be(&ftyp, 0U);
+        append_fourcc(&ftyp, fourcc('i', 's', 'o', 'm'));
+        append_bmff_box(&fixture.file, fourcc('f', 't', 'y', 'p'), ftyp);
+
+        const std::array<std::byte, 1U> xmp_payload = { std::byte { 'x' } };
+        std::vector<std::byte> xmp_box_payload(xmp_uuid.begin(),
+                                               xmp_uuid.end());
+        xmp_box_payload.insert(xmp_box_payload.end(), xmp_payload.begin(),
+                               xmp_payload.end());
+        fixture.offsets[0] = static_cast<uint64_t>(fixture.file.size());
+        fixture.sizes[0]   = append_bmff_box_size_form(&fixture.file,
+                                                       fourcc('u', 'u', 'i', 'd'),
+                                                       xmp_box_payload,
+                                                       extended_targets);
+
+        const std::array<std::byte, 2U> preview_payload = {
+            std::byte { 0xFF },
+            std::byte { 0xD8 },
+        };
+        std::vector<std::byte> preview_box_payload(preview_uuid.begin(),
+                                                   preview_uuid.end());
+        preview_box_payload.insert(preview_box_payload.end(),
+                                   preview_payload.begin(),
+                                   preview_payload.end());
+        fixture.offsets[1] = static_cast<uint64_t>(fixture.file.size());
+        fixture.sizes[1]   = append_bmff_box_size_form(&fixture.file,
+                                                       fourcc('u', 'u', 'i', 'd'),
+                                                       preview_box_payload,
+                                                       extended_targets);
+
+        const std::array<std::byte, 4U> media_payload = {
+            std::byte { 0x10 },
+            std::byte { 0x20 },
+            std::byte { 0x30 },
+            std::byte { 0x40 },
+        };
+        fixture.offsets[2] = static_cast<uint64_t>(fixture.file.size());
+        fixture.sizes[2]   = append_bmff_box_size_form(&fixture.file,
+                                                       fourcc('m', 'd', 'a', 't'),
+                                                       media_payload,
+                                                       extended_targets);
+
+        std::vector<std::byte> ctbo;
+        append_u32be(&ctbo, row_count);
+        for (uint32_t i = 0U; i < row_count; ++i) {
+            uint32_t id = 0U;
+            if (printable_unknown_first && i == 0U) {
+                id = fourcc('f', 'r', 'e', 'e');
+            } else if (printable_unknown_first && i <= 3U) {
+                id = i;
+            } else if (!printable_unknown_first && i < 3U) {
+                id = i + 1U;
+            } else {
+                id = 4U + i;
+            }
+            append_u32be(&ctbo, id);
+            const bool known_id   = id >= 1U && id <= 3U;
+            const uint64_t offset = known_id ? fixture.offsets[id - 1U] : 0U;
+            const uint64_t size   = known_id ? fixture.sizes[id - 1U] : 0U;
+            append_u64be(&ctbo, offset);
+            append_u64be(&ctbo, size);
+        }
+        fixture.ctbo_payload_offset = static_cast<uint64_t>(fixture.file.size())
+                                      + 40U;
+        append_cr3_canon_record(&fixture.file, fourcc('C', 'T', 'B', 'O'),
+                                ctbo);
+        return fixture;
+    }
+
+    static SimpleMetaResult
+    read_cr3_ctbo_fixture(std::span<const std::byte> file, MetaStore& store,
+                          bool decode_makernote = true)
+    {
+        std::array<ContainerBlockRef, 32U> blocks {};
+        std::array<ExifIfdRef, 32U> ifds {};
+        std::array<std::byte, 1024U> scratch_payload {};
+        std::array<uint32_t, 64U> scratch_indices {};
+        ExifDecodeOptions options;
+        options.decode_makernote = decode_makernote;
+        const SimpleMetaResult result
+            = simple_meta_read(file, store, blocks, ifds, scratch_payload,
+                               scratch_indices, options, PayloadOptions {});
+        store.finalize();
+        return result;
+    }
+
+    static uint32_t
+    cr3_ctbo_disabled_block_count(std::span<const std::byte> file)
+    {
+        MetaStore store;
+        (void)read_cr3_ctbo_fixture(file, store, false);
+        return store.block_count();
+    }
+
+    static size_t cr3_ctbo_entry_count(const MetaStore& store)
+    {
+        static constexpr std::array<std::string_view, 6U> fields = {
+            "cr3.ctbo.xmp.offset",     "cr3.ctbo.xmp.size",
+            "cr3.ctbo.preview.offset", "cr3.ctbo.preview.size",
+            "cr3.ctbo.media.offset",   "cr3.ctbo.media.size",
+        };
+        size_t count = 0U;
+        for (std::string_view field : fields) {
+            MetaKeyView key;
+            key.kind                  = MetaKeyKind::BmffField;
+            key.data.bmff_field.field = field;
+            count += store.find_all(key).size();
+        }
+        return count;
     }
 
 }  // namespace
@@ -269,6 +488,319 @@ TEST(SimpleMetaRead, Cr3Cmt3CanonSettingsRespectDecodeOptionAndBounds)
                 EXPECT_EQ(result.exif.status, ExifDecodeStatus::Malformed);
             }
         }
+    }
+}
+
+TEST(SimpleMetaRead, Cr3CtboDerivesKnownOffsetsFromValidatedBoxes)
+{
+    const Cr3CtboFixture fixture          = make_cr3_ctbo_fixture();
+    const std::vector<std::byte> original = fixture.file;
+    std::array<ContainerBlockRef, 16U> blocks {};
+    std::array<ExifIfdRef, 16U> ifds {};
+    std::array<std::byte, 1024U> scratch_payload {};
+    std::array<uint32_t, 32U> scratch_indices {};
+    MetaStore store;
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    const SimpleMetaResult result
+        = simple_meta_read(fixture.file, store, blocks, ifds, scratch_payload,
+                           scratch_indices, options, PayloadOptions {});
+    store.finalize();
+    ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+
+    bool found_ctbo = false;
+    for (uint32_t i = 0U; i < result.scan.written; ++i) {
+        found_ctbo = found_ctbo
+                     || (blocks[i].format == ContainerFormat::Cr3
+                         && blocks[i].kind == ContainerBlockKind::MakerNote
+                         && blocks[i].id == fourcc('C', 'T', 'B', 'O'));
+    }
+    EXPECT_TRUE(found_ctbo);
+
+    const std::array<std::string_view, 6U> fields = {
+        "cr3.ctbo.xmp.offset",     "cr3.ctbo.xmp.size",
+        "cr3.ctbo.preview.offset", "cr3.ctbo.preview.size",
+        "cr3.ctbo.media.offset",   "cr3.ctbo.media.size",
+    };
+    const std::array<uint64_t, 6U> expected = {
+        fixture.offsets[0], fixture.sizes[0],   fixture.offsets[1],
+        fixture.sizes[1],   fixture.offsets[2], fixture.sizes[2],
+    };
+    for (size_t i = 0U; i < fields.size(); ++i) {
+        MetaKeyView key;
+        key.kind                           = MetaKeyKind::BmffField;
+        key.data.bmff_field.field          = fields[i];
+        const std::span<const EntryId> ids = store.find_all(key);
+        ASSERT_EQ(ids.size(), 1U) << "field=" << fields[i];
+        const Entry& entry = store.entry(ids[0]);
+        EXPECT_EQ(entry.value.kind, MetaValueKind::Scalar);
+        EXPECT_EQ(entry.value.elem_type, MetaElementType::U64);
+        EXPECT_EQ(entry.value.count, 1U);
+        EXPECT_EQ(entry.value.data.u64, expected[i]);
+        EXPECT_TRUE(any(entry.flags, EntryFlags::Derived));
+    }
+
+    EXPECT_EQ(fixture.file, original);
+    std::vector<std::byte> portable_xmp(4096U);
+    const XmpDumpResult dumped = dump_xmp_portable(store, portable_xmp, {});
+    ASSERT_EQ(dumped.status, XmpDumpStatus::Ok);
+    const std::string_view xmp_text(reinterpret_cast<const char*>(
+                                        portable_xmp.data()),
+                                    static_cast<size_t>(dumped.written));
+    EXPECT_EQ(xmp_text.find("cr3.ctbo"), std::string_view::npos);
+}
+
+TEST(SimpleMetaRead, Cr3CtboKeepsUnknownRowsOpaqueAndHonorsRowLimit)
+{
+    const Cr3CtboFixture unknown_first = make_cr3_ctbo_fixture(8U, true);
+    MetaStore unknown_store;
+    const SimpleMetaResult unknown_result
+        = read_cr3_ctbo_fixture(unknown_first.file, unknown_store);
+    ASSERT_EQ(unknown_result.scan.status, ScanStatus::Ok);
+    EXPECT_EQ(cr3_ctbo_entry_count(unknown_store), 6U);
+
+    const Cr3CtboFixture maximum = make_cr3_ctbo_fixture(64U);
+    MetaStore maximum_store;
+    const SimpleMetaResult maximum_result
+        = read_cr3_ctbo_fixture(maximum.file, maximum_store);
+    ASSERT_EQ(maximum_result.scan.status, ScanStatus::Ok);
+    EXPECT_EQ(cr3_ctbo_entry_count(maximum_store), 6U);
+
+    const Cr3CtboFixture over_limit = make_cr3_ctbo_fixture(65U);
+    MetaStore over_limit_store;
+    const SimpleMetaResult over_limit_result
+        = read_cr3_ctbo_fixture(over_limit.file, over_limit_store);
+    ASSERT_EQ(over_limit_result.scan.status, ScanStatus::Ok);
+    EXPECT_EQ(cr3_ctbo_entry_count(over_limit_store), 0U);
+    EXPECT_EQ(over_limit_store.block_count(),
+              cr3_ctbo_disabled_block_count(over_limit.file));
+}
+
+TEST(SimpleMetaRead, Cr3CtboValidatesExtendedTargetBoxes)
+{
+    const Cr3CtboFixture fixture = make_cr3_ctbo_fixture(3U, false, true);
+    MetaStore store;
+    const SimpleMetaResult result = read_cr3_ctbo_fixture(fixture.file, store);
+    ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+    ASSERT_EQ(cr3_ctbo_entry_count(store), 6U);
+
+    static constexpr std::array<std::string_view, 6U> fields = {
+        "cr3.ctbo.xmp.offset",     "cr3.ctbo.xmp.size",
+        "cr3.ctbo.preview.offset", "cr3.ctbo.preview.size",
+        "cr3.ctbo.media.offset",   "cr3.ctbo.media.size",
+    };
+    const std::array<uint64_t, 6U> expected = {
+        fixture.offsets[0], fixture.sizes[0],   fixture.offsets[1],
+        fixture.sizes[1],   fixture.offsets[2], fixture.sizes[2],
+    };
+    for (size_t i = 0U; i < fields.size(); ++i) {
+        MetaKeyView key;
+        key.kind                           = MetaKeyKind::BmffField;
+        key.data.bmff_field.field          = fields[i];
+        const std::span<const EntryId> ids = store.find_all(key);
+        ASSERT_EQ(ids.size(), 1U);
+        EXPECT_EQ(store.entry(ids[0]).value.data.u64, expected[i]);
+    }
+}
+
+TEST(SimpleMetaRead, Cr3CtboRejectsMalformedTablesWithoutPartialEntries)
+{
+    const Cr3CtboFixture source = make_cr3_ctbo_fixture();
+    const size_t payload_offset = static_cast<size_t>(
+        source.ctbo_payload_offset);
+    const size_t row0 = payload_offset + 4U;
+    const size_t row1 = row0 + 20U;
+
+    {
+        std::vector<std::byte> file = source.file;
+        write_u32be(&file, payload_offset, 0U);
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+        EXPECT_EQ(store.block_count(), cr3_ctbo_disabled_block_count(file));
+    }
+    {
+        std::vector<std::byte> file = source.file;
+        write_u32be(&file, payload_offset, 2U);
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+    }
+    {
+        std::vector<std::byte> file = source.file;
+        write_u32be(&file, row1, 1U);
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+        EXPECT_EQ(store.block_count(), cr3_ctbo_disabled_block_count(file));
+    }
+    {
+        std::vector<std::byte> file = source.file;
+        write_u64be(&file, row0 + 4U, UINT64_MAX);
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+    }
+    {
+        std::vector<std::byte> file = source.file;
+        write_u64be(&file, row0 + 12U, UINT64_MAX);
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+    }
+    {
+        std::vector<std::byte> file = source.file;
+        write_u32be(&file, static_cast<size_t>(source.offsets[2] + 4U),
+                    fourcc('f', 'r', 'e', 'e'));
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+        EXPECT_EQ(store.block_count(), cr3_ctbo_disabled_block_count(file));
+    }
+    {
+        std::vector<std::byte> file = source.file;
+        file[static_cast<size_t>(source.offsets[0] + 8U)] ^= std::byte { 1U };
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+    }
+    {
+        std::vector<std::byte> file = source.file;
+        write_u64be(&file, row0 + 12U, source.sizes[0] + 1U);
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+    }
+    {
+        static constexpr std::array<std::byte, 16U> xmp_uuid = {
+            std::byte { 0xBE }, std::byte { 0x7A }, std::byte { 0xCF },
+            std::byte { 0xCB }, std::byte { 0x97 }, std::byte { 0xA9 },
+            std::byte { 0x42 }, std::byte { 0xE8 }, std::byte { 0x9C },
+            std::byte { 0x71 }, std::byte { 0x99 }, std::byte { 0x94 },
+            std::byte { 0x91 }, std::byte { 0xE3 }, std::byte { 0xAF },
+            std::byte { 0xAC },
+        };
+        std::vector<std::byte> target_payload;
+        append_u32be(&target_payload, 0U);
+        append_fourcc(&target_payload, fourcc('u', 'u', 'i', 'd'));
+        target_payload.insert(target_payload.end(), xmp_uuid.begin(),
+                              xmp_uuid.end());
+        std::vector<std::byte> file  = source.file;
+        const uint64_t target_offset = static_cast<uint64_t>(file.size()) + 8U;
+        append_bmff_box(&file, fourcc('f', 'r', 'e', 'e'), target_payload);
+        write_u64be(&file, row0 + 4U, target_offset);
+        write_u64be(&file, row0 + 12U, 24U);
+
+        std::array<ContainerBlockRef, 8U> scanned_blocks {};
+        const ScanResult scan = scan_bmff(file, scanned_blocks);
+        ASSERT_EQ(scan.status, ScanStatus::Ok);
+        bool found_ctbo = false;
+        for (uint32_t i = 0U; i < scan.written; ++i) {
+            found_ctbo
+                = found_ctbo
+                  || (scanned_blocks[i].format == ContainerFormat::Cr3
+                      && scanned_blocks[i].kind == ContainerBlockKind::MakerNote
+                      && scanned_blocks[i].id == fourcc('C', 'T', 'B', 'O'));
+        }
+        ASSERT_TRUE(found_ctbo);
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+    }
+    {
+        std::vector<std::byte> truncated_header;
+        append_u32be(&truncated_header, 1U);
+        append_fourcc(&truncated_header, fourcc('u', 'u', 'i', 'd'));
+        std::vector<std::byte> file  = source.file;
+        const uint64_t target_offset = static_cast<uint64_t>(file.size()) + 8U;
+        append_bmff_box(&file, fourcc('f', 'r', 'e', 'e'), truncated_header);
+        write_u64be(&file, row0 + 4U, target_offset);
+        write_u64be(&file, row0 + 12U, 8U);
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+    }
+}
+
+TEST(SimpleMetaRead, Cr3CtboShortPayloadsRemainOpaque)
+{
+    for (size_t payload_size = 1U; payload_size <= 3U; ++payload_size) {
+        SCOPED_TRACE(payload_size);
+        std::vector<std::byte> payload(payload_size, std::byte { 0xA5 });
+        const std::vector<std::byte> file
+            = make_cr3_canon_record(fourcc('C', 'T', 'B', 'O'), payload);
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+        EXPECT_EQ(store.block_count(), cr3_ctbo_disabled_block_count(file));
+    }
+}
+
+TEST(SimpleMetaRead, Cr3CtboAbsentUnknownDisabledAndWrongCarriersStayOpaque)
+{
+    const Cr3CtboFixture source = make_cr3_ctbo_fixture();
+    const size_t payload_offset = static_cast<size_t>(
+        source.ctbo_payload_offset);
+    const size_t row0 = payload_offset + 4U;
+
+    {
+        std::vector<std::byte> file = source.file;
+        for (size_t i = 0U; i < 3U; ++i) {
+            write_u64be(&file, row0 + i * 20U + 12U, 0U);
+        }
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+        EXPECT_EQ(store.block_count(), cr3_ctbo_disabled_block_count(file));
+    }
+    {
+        std::vector<std::byte> file = make_cr3_ctbo_fixture(8U, true).file;
+        for (size_t i = 1U; i < 4U; ++i) {
+            write_u32be(&file, payload_offset + 4U + i * 20U,
+                        static_cast<uint32_t>(100U + i));
+        }
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+        EXPECT_EQ(store.block_count(), cr3_ctbo_disabled_block_count(file));
+    }
+    {
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(source.file,
+                                                              store, false);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+    }
+    {
+        std::vector<std::byte> file = source.file;
+        write_u32be(&file, payload_offset - 4U, fourcc('C', 'T', 'B', 'X'));
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(file, store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
+    }
+    {
+        const Cr3CtboFixture wrong_format
+            = make_cr3_ctbo_fixture(3U, false, false,
+                                    fourcc('h', 'e', 'i', 'c'));
+        MetaStore store;
+        const SimpleMetaResult result = read_cr3_ctbo_fixture(wrong_format.file,
+                                                              store);
+        ASSERT_EQ(result.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(cr3_ctbo_entry_count(store), 0U);
     }
 }
 

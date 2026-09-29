@@ -83,6 +83,22 @@ namespace {
         return true;
     }
 
+    static bool read_u64be(std::span<const std::byte> bytes, uint64_t offset,
+                           uint64_t* out) noexcept
+    {
+        if (!out || offset > static_cast<uint64_t>(bytes.size())
+            || static_cast<uint64_t>(bytes.size()) - offset < 8U) {
+            return false;
+        }
+        const size_t pos = static_cast<size_t>(offset);
+        uint64_t value   = 0U;
+        for (size_t i = 0U; i < 8U; ++i) {
+            value = (value << 8U) | static_cast<uint64_t>(u8(bytes[pos + i]));
+        }
+        *out = value;
+        return true;
+    }
+
     static bool has_nul(std::span<const std::byte> bytes) noexcept
     {
         for (size_t i = 0; i < bytes.size(); ++i) {
@@ -227,6 +243,179 @@ namespace {
         entry.origin.wire_count = static_cast<uint32_t>(bytes.size());
         entry.flags             = EntryFlags::Derived;
         return store.add_entry(entry) != kInvalidEntryId;
+    }
+
+    struct Cr3CtboRow final {
+        uint32_t id       = 0U;
+        uint64_t offset   = 0U;
+        uint64_t box_size = 0U;
+    };
+
+    static bool cr3_ctbo_target_matches(std::span<const std::byte> file_bytes,
+                                        const Cr3CtboRow& row) noexcept
+    {
+        const uint64_t file_size = static_cast<uint64_t>(file_bytes.size());
+        if (row.offset > file_size || row.box_size > file_size - row.offset
+            || row.box_size < 8U) {
+            return false;
+        }
+
+        uint32_t declared_size32 = 0U;
+        uint32_t box_type        = 0U;
+        if (!read_u32be(file_bytes, row.offset, &declared_size32)
+            || !read_u32be(file_bytes, row.offset + 4U, &box_type)) {
+            return false;
+        }
+
+        uint64_t declared_size = 0U;
+        uint64_t header_size   = 8U;
+        if (declared_size32 == 0U) {
+            return false;
+        } else if (declared_size32 == 1U) {
+            header_size = 16U;
+            if (row.box_size < header_size
+                || !read_u64be(file_bytes, row.offset + 8U, &declared_size)) {
+                return false;
+            }
+        } else {
+            declared_size = declared_size32;
+        }
+        if (declared_size != row.box_size || declared_size < header_size) {
+            return false;
+        }
+
+        if (row.id == 3U) {
+            return box_type == fourcc('m', 'd', 'a', 't');
+        }
+        if (box_type != fourcc('u', 'u', 'i', 'd')
+            || declared_size - header_size < 16U) {
+            return false;
+        }
+
+        static constexpr std::array<std::byte, 16U> kXmpUuid = {
+            std::byte { 0xBE }, std::byte { 0x7A }, std::byte { 0xCF },
+            std::byte { 0xCB }, std::byte { 0x97 }, std::byte { 0xA9 },
+            std::byte { 0x42 }, std::byte { 0xE8 }, std::byte { 0x9C },
+            std::byte { 0x71 }, std::byte { 0x99 }, std::byte { 0x94 },
+            std::byte { 0x91 }, std::byte { 0xE3 }, std::byte { 0xAF },
+            std::byte { 0xAC },
+        };
+        static constexpr std::array<std::byte, 16U> kPreviewUuid = {
+            std::byte { 0xEA }, std::byte { 0xF4 }, std::byte { 0x2B },
+            std::byte { 0x5E }, std::byte { 0x1C }, std::byte { 0x98 },
+            std::byte { 0x4B }, std::byte { 0x88 }, std::byte { 0xB9 },
+            std::byte { 0xFB }, std::byte { 0xB7 }, std::byte { 0xDC },
+            std::byte { 0x40 }, std::byte { 0x6E }, std::byte { 0x4D },
+            std::byte { 0x16 },
+        };
+        const std::array<std::byte, 16U>* expected_uuid = row.id == 1U
+                                                              ? &kXmpUuid
+                                                              : &kPreviewUuid;
+        const size_t uuid_offset = static_cast<size_t>(row.offset
+                                                       + header_size);
+        for (size_t i = 0U; i < expected_uuid->size(); ++i) {
+            if (file_bytes[uuid_offset + i] != (*expected_uuid)[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool add_cr3_ctbo_value(MetaStore& store, BlockId block,
+                                   uint32_t order, std::string_view field,
+                                   uint64_t value) noexcept
+    {
+        Entry entry;
+        entry.key                   = make_bmff_field_key(store.arena(), field);
+        entry.value                 = make_u64(value);
+        entry.origin.block          = block;
+        entry.origin.order_in_block = order;
+        entry.origin.wire_type      = WireType { WireFamily::Other, 0U };
+        entry.origin.wire_count     = 8U;
+        entry.flags                 = EntryFlags::Derived;
+        return store.add_entry(entry) != kInvalidEntryId;
+    }
+
+    static bool decode_cr3_ctbo(std::span<const std::byte> file_bytes,
+                                std::span<const std::byte> payload,
+                                MetaStore& store) noexcept
+    {
+        static constexpr uint32_t kMaxRows = 64U;
+        if (payload.size() < 4U) {
+            return false;
+        }
+        uint32_t row_count = 0U;
+        if (!read_u32be(payload, 0U, &row_count) || row_count == 0U
+            || row_count > kMaxRows
+            || static_cast<uint64_t>(payload.size() - 4U)
+                   != static_cast<uint64_t>(row_count) * 20U) {
+            return false;
+        }
+
+        std::array<Cr3CtboRow, kMaxRows> rows {};
+        std::array<bool, 3U> seen_known_ids {};
+        bool has_semantic_rows = false;
+        for (uint32_t i = 0U; i < row_count; ++i) {
+            const uint64_t row_offset = 4U + static_cast<uint64_t>(i) * 20U;
+            Cr3CtboRow& row           = rows[i];
+            if (!read_u32be(payload, row_offset, &row.id)
+                || !read_u64be(payload, row_offset + 4U, &row.offset)
+                || !read_u64be(payload, row_offset + 12U, &row.box_size)) {
+                return false;
+            }
+            if (row.id >= 1U && row.id <= 3U) {
+                const size_t known_slot = static_cast<size_t>(row.id - 1U);
+                if (seen_known_ids[known_slot]) {
+                    return false;
+                }
+                seen_known_ids[known_slot] = true;
+                if (row.box_size != 0U) {
+                    if (!cr3_ctbo_target_matches(file_bytes, row)) {
+                        return false;
+                    }
+                    has_semantic_rows = true;
+                }
+            }
+        }
+
+        if (!has_semantic_rows) {
+            return true;
+        }
+
+        const BlockId output_block = store.add_block(BlockInfo {});
+        if (output_block == kInvalidBlockId) {
+            return false;
+        }
+        for (uint32_t i = 0U; i < row_count; ++i) {
+            const Cr3CtboRow& row = rows[i];
+            if (row.box_size == 0U) {
+                continue;
+            }
+            const char* offset_field = nullptr;
+            const char* size_field   = nullptr;
+            switch (row.id) {
+            case 1U:
+                offset_field = "cr3.ctbo.xmp.offset";
+                size_field   = "cr3.ctbo.xmp.size";
+                break;
+            case 2U:
+                offset_field = "cr3.ctbo.preview.offset";
+                size_field   = "cr3.ctbo.preview.size";
+                break;
+            case 3U:
+                offset_field = "cr3.ctbo.media.offset";
+                size_field   = "cr3.ctbo.media.size";
+                break;
+            default: continue;
+            }
+            if (!add_cr3_ctbo_value(store, output_block, i * 2U, offset_field,
+                                    row.offset)
+                || !add_cr3_ctbo_value(store, output_block, i * 2U + 1U,
+                                       size_field, row.box_size)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     static std::string_view
@@ -1531,6 +1720,12 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
             if (block.format == ContainerFormat::Cr3
                 && block.id == fourcc('C', 'N', 'C', 'V')) {
                 (void)decode_cr3_compressor_version(block_bytes, store);
+                continue;
+            }
+
+            if (block.format == ContainerFormat::Cr3
+                && block.id == fourcc('C', 'T', 'B', 'O')) {
+                (void)decode_cr3_ctbo(file_bytes, block_bytes, store);
                 continue;
             }
 

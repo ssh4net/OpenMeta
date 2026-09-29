@@ -113,6 +113,32 @@ Family Gap Matrix
      - Preserve raw blocks, then add support only when validation inputs and
        stable structure are available
 
+CR3 private records in 0.6.1
+----------------------------
+
+MakerNote-enabled reads expose bounded ``CNCV`` compressor text as
+``cr3.compressor_version``. CTBO location tables expose validated absolute
+box offsets and sizes through ``cr3.ctbo.xmp.offset`` / ``.size``,
+``cr3.ctbo.preview.offset`` / ``.size``, and
+``cr3.ctbo.media.offset`` / ``.size``. These correspond to IDs 1, 2 and 3;
+unknown IDs remain opaque. The complete table and known target box types,
+sizes and UUIDs are checked before semantic fields are added.
+The implementation bounds tables to 1--64 rows with an exact payload length.
+Known targets require normal or extended-size headers; size-zero-to-EOF
+headers are unsupported. Zero-size rows emit no fields, and unknown IDs are
+not followed. The row bound is not a claimed Canon format limit.
+
+These derived fields describe source carrier locations. They are not writable
+metadata, do not select the active metadata after editing, and do not project
+into portable XMP. ExifTool documents the CTBO layout but does not expose its
+values during reading; independent wire extraction is the CTBO comparison
+oracle. Compressor-version values can be compared directly with ExifTool.
+
+CR3 edits retain all preserved top-level boxes at their original offsets.
+Appending metadata and replacing EOF metadata remain supported. Edits that
+would move retained boxes reject before output: CTBO and track tables are not
+relocated or repaired. This does not establish general CR3 rewrite support.
+
 Priority
 --------
 
