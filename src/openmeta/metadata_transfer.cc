@@ -8525,6 +8525,9 @@ namespace {
         uint16_t tag   = 0U;
         uint16_t type  = 0U;
         uint64_t count = 0U;
+        // Retained target MakerNotes refer to the immutable source prefix.
+        // New transferred entries own payload bytes and leave this zero.
+        uint64_t retained_value_offset = 0U;
         std::vector<std::byte> payload;
     };
 
@@ -9383,6 +9386,16 @@ namespace {
                         *err = "target TIFF IFD value offset out of range";
                     }
                     return false;
+                }
+                if (tag == 0x927CU) {
+                    if (value_off_u64 < (layout.bigtiff ? 16U : 8U)) {
+                        if (err) {
+                            *err
+                                = "target MakerNote payload overlaps TIFF header";
+                        }
+                        return false;
+                    }
+                    e.retained_value_offset = value_off_u64;
                 }
                 e.payload.resize(payload_n, std::byte { 0x00 });
                 if (payload_n > 0U) {
@@ -10969,8 +10982,10 @@ namespace {
         0x010EU, 0x010FU, 0x0110U, 0x0131U, 0x0132U, 0x013BU, 0x8298U,
     };
 
-    static constexpr std::array<uint16_t, 8U> kTiffExifRemovalTags = {
-        0x9003U, 0x9004U, 0x9010U, 0x9011U, 0x9012U, 0x9290U, 0x9291U, 0x9292U,
+    static constexpr std::array<uint16_t, 22U> kTiffExifRemovalTags = {
+        0x829AU, 0x829DU, 0x8827U, 0x8830U, 0x8831U, 0x8832U, 0x8833U, 0x8834U,
+        0x8835U, 0x9003U, 0x9004U, 0x9010U, 0x9011U, 0x9012U, 0x9209U, 0x920AU,
+        0x9290U, 0x9291U, 0x9292U, 0xA433U, 0xA434U, 0xA435U,
     };
 
     static uint32_t tiff_ifd0_profile_removal_slot(uint16_t tag) noexcept
@@ -11395,6 +11410,19 @@ namespace {
                 }
                 continue;
             }
+            if (e.retained_value_offset != 0U) {
+                if (e.retained_value_offset > base_offset
+                    || static_cast<uint64_t>(e.payload.size())
+                           > base_offset - e.retained_value_offset) {
+                    if (err) {
+                        *err
+                            = "retained MakerNote payload exceeds source prefix";
+                    }
+                    return false;
+                }
+                placements[i].value_offset = e.retained_value_offset;
+                continue;
+            }
             const uint64_t mask = layout.alignment - 1U;
             if ((cursor & mask) != 0U) {
                 cursor += layout.alignment - (cursor & mask);
@@ -11464,7 +11492,8 @@ namespace {
 
         for (size_t i = 0; i < ifd.entries.size(); ++i) {
             const ParsedTiffIfdEntry& e = ifd.entries[i];
-            if (placements[i].inline_value || e.payload.empty()) {
+            if (placements[i].inline_value || e.retained_value_offset != 0U
+                || e.payload.empty()) {
                 continue;
             }
             const size_t off = static_cast<size_t>(placements[i].value_offset
@@ -12687,7 +12716,7 @@ collect_tiff_exif_profile_removals(const MetaStore& store, bool enabled,
 }
 
 static bool
-has_dirty_tiff_timestamp_intent(const MetaStore& store) noexcept
+has_dirty_tiff_native_edit(const MetaStore& store) noexcept
 {
     for (const Entry& entry : store.entries()) {
         if (entry.key.kind != MetaKeyKind::ExifTag
@@ -12771,7 +12800,7 @@ prepare_metadata_for_target_impl(const MetaStore& store,
     collect_tiff_exif_profile_removals(store, native_tiff_exif_enabled,
                                        &bundle.tiff_exif_removals);
     bundle.tiff_merge_existing_exif = native_tiff_exif_enabled
-                                      && has_dirty_tiff_timestamp_intent(store);
+                                      && has_dirty_tiff_native_edit(store);
 
     MetaStore target_safe_store;
     const MetaStore* prepared_store_ptr = &store;

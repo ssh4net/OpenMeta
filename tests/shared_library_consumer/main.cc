@@ -443,7 +443,7 @@ main()
         = sensitivity_authored.ok()
           && sensitivity_result.status
                  == openmeta::MetadataCaptureTranslationStatus::Ok
-          && sensitivity_result.entries_added == 3U
+          && sensitivity_result.entries_added == 7U
           && sensitivity_result.groups_translated == 1U;
     const std::array<openmeta::MetadataAuthoringEntry, 6> camera_text_entries
         = { {

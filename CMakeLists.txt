@@ -27,9 +27,9 @@ project(OpenMeta VERSION "${OPENMETA_VERSION}" LANGUAGES CXX)
 
 option(OPENMETA_BUILD_STATIC "Build libopenmeta.a" ON)
 option(OPENMETA_BUILD_SHARED "Build libopenmeta.so/.dylib/.dll" ON)
-# The ABI belongs to the release, not to a consumer cache override.
+# The unfrozen development ABI label is project policy, not a consumer override.
 unset(OPENMETA_ABI_VERSION CACHE)
-set(OPENMETA_ABI_VERSION "5")
+set(OPENMETA_ABI_VERSION "4")
 option(OPENMETA_BUILD_TOOLS "Build OpenMeta CLI tools" ON)
 option(OPENMETA_BUILD_TESTS "Build OpenMeta unit tests" OFF)
 option(OPENMETA_BUILD_BENCHMARKS "Build OpenMeta benchmark executables" OFF)

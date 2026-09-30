@@ -1,5 +1,10 @@
 # Migrating to OpenMeta 0.6.0
 
+This guide describes the 0.6 release boundary. Current 0.7 builds also use
+the unfrozen development ABI label 4; matching numbers do not establish
+binary compatibility. Rebuild against matching release headers/libraries.
+See [the 0.7 guide](migration_0_7.md).
+
 OpenMeta 0.6.0 adds explicit native TIFF IFD0 deletion instructions to
 `PreparedTransferBundle`. Its C++ layout changes, so applications and plugins
 must rebuild against the new headers and library. C++ ABI 4 replaces ABI 3;

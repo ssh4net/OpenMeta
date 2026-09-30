@@ -1,12 +1,17 @@
-Migrating to OpenMeta 0.7.0
-===========================
+Migrating to OpenMeta 0.7
+=========================
 
-OpenMeta 0.7.0 uses C++ ABI 5. ``PreparedTransferBundle`` adds
-``tiff_exif_removals`` and ``tiff_merge_existing_exif``; rebuild applications
-and plugins. The Windows runtime is ``openmeta-5.dll``; ELF/macOS use ABI
-major 5. Request ``find_package(OpenMeta 0.7 CONFIG REQUIRED)``. The package's
-``SameMinorVersion`` check rejects 0.6 requests. Keep older SDKs for consumers
-that have not rebuilt; do not mix old headers or objects with ABI 5.
+OpenMeta 0.7.1 retains the **unfrozen development ABI label 4**. Public C++
+layouts and APIs may change while the label stays 4. Rebuild applications and
+plugins against matching release headers and library when they change; the
+label alone does not establish compatibility with older ABI-4 binaries.
+The initial local 0.7.0 build used label 5; 0.7.1 returns to 4 under this policy.
+The current Windows runtime is ``openmeta-4.dll``; ELF/macOS use ABI major 4.
+
+``PreparedTransferBundle`` carries ``tiff_exif_removals`` and
+``tiff_merge_existing_exif``. Request ``find_package(OpenMeta 0.7 CONFIG REQUIRED)``.
+``SameMinorVersion`` still rejects 0.6 requests. This discovery rule does not
+freeze C++ layouts. Keep headers, objects and libraries from matching snapshots.
 
 Timestamp authority
 -------------------
@@ -27,6 +32,29 @@ Each translator is transactional. Hosts stage date and technical calls before
 publishing a combined result. Fractional dates still require disabling lossy
 IPTC mappings.
 
+Capture and lens lifecycle (0.7.1)
+----------------------------------
+
+Capture, Flash, sensitivity and camera-text contracts are version 2. Accepted
+ExposureTime, FNumber, base ISO, Flash, FocalLength and lens make/model/serial
+owners create native Dirty+Deleted intent even when native keys are missing.
+Accepted clean exact values receive same-value Dirty updates that preserve
+bytes and wire provenance. Omission and conflict policies remain; intent and
+update costs are checked before transactional publication and repeat calls reuse
+intents. Hosts stage the separate calls before publishing an aggregate result.
+
+Full sensitivity owns ``8827`` and ``8830``--``8835`` as one validated group;
+optional absence becomes removal intent after complete validation. Basic ISO
+owns only ``8827`` and preserves companions; disable it when full sensitivity
+owns the source. Lens fields are independent. ExposureBiasValue,
+LensSpecification, camera-owner/body-serial and other capture paths are unchanged.
+
+TIFF preparation merges unspecified destination ExifIFD records for these dirty
+edits. Bounded removal also accepts ``829A``, ``829D``, ``8827``, ``8830``--``8835``,
+``9209``, ``920A`` and ``A433``--``A435``. MakerNote bytes and standard pointers
+are preserved as opaque records; private relocation or checksum repair is not
+provided. See :doc:`migration_0_7` for the unfrozen development ABI-4 policy.
+
 TIFF edit requests
 ------------------
 
@@ -37,7 +65,7 @@ Preparation requires exact native IFD keys, Dirty+Deleted flags and enabled
 EXIF output; live entries win over old tombstones. Snapshot v1 is unchanged.
 
 Preparation enables ``tiff_merge_existing_exif`` for exact dirty native
-timestamp members. This mode and per-tag ExifIFD removal preserve unspecified
+timestamp and selected capture/lens members. This mode and per-tag ExifIFD removal preserve unspecified
 destination entries, including unselected timestamp families, capture fields,
 standard pointers and opaque MakerNote bytes. Private offset/checksum repair
 is outside this contract. Existing replacement behavior remains when

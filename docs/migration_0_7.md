@@ -1,12 +1,17 @@
-# Migrating to OpenMeta 0.7.0
+# Migrating to OpenMeta 0.7
 
-OpenMeta 0.7.0 uses C++ ABI 5. `PreparedTransferBundle` adds
-`tiff_exif_removals` and `tiff_merge_existing_exif`; rebuild applications and
-plugins against the new headers and library. The Windows runtime is
-`openmeta-5.dll`; ELF/macOS use ABI major 5. The installed package uses
-`SameMinorVersion`: request `find_package(OpenMeta 0.7 CONFIG REQUIRED)`.
-A 0.6 request does not accept this package. Keep older SDKs for consumers
-that have not rebuilt, and do not mix their objects or headers with ABI 5.
+OpenMeta 0.7.1 retains the **unfrozen development ABI label 4**. Public C++
+layouts and APIs may change while that label stays 4. Rebuild applications and
+plugins against matching release headers and library whenever they change;
+the label alone does not establish compatibility with older ABI-4 binaries.
+The initial local 0.7.0 build used label 5; 0.7.1 returns to 4 under this policy.
+The current Windows runtime is `openmeta-4.dll`; ELF/macOS use ABI major 4.
+
+`PreparedTransferBundle` carries `tiff_exif_removals` and
+`tiff_merge_existing_exif`. The installed package still uses `SameMinorVersion`:
+request `find_package(OpenMeta 0.7 CONFIG REQUIRED)`. A 0.6 request does not
+accept the 0.7 package. This package discovery rule does not freeze C++ layouts.
+Do not mix headers, objects or libraries from different development snapshots.
 
 ## Timestamp authority
 
@@ -33,11 +38,37 @@ Each translator is transactional. Creation-date and technical translation are
 separate calls; hosts stage their results and publish only after every required
 call succeeds. Fractional dates still require disabling lossy IPTC mappings.
 
+## Capture and lens authority
+
+Capture, Flash, sensitivity and camera-text translation contracts are version 2.
+Accepted ExposureTime, FNumber, base ISO, Flash, FocalLength and lens make/model/
+serial owners carry native deletion intent even when their source native keys
+are missing. Accepted clean exact native values gain Dirty with a same-value
+update that retains their bytes and wire provenance. Omission and existing
+conflict policies remain. Added intents and authority updates count against
+entry/operation limits before publication; repeated calls reuse them.
+
+Full sensitivity owns PhotographicSensitivity and tags `8830`–`8835` as one
+validated group. Optional absent members carry deletion intent only after the
+complete source passes validation. Basic ISO owns only `8827` and preserves
+sensitivity companions; disable its mapping when the full group owns that source.
+Lens make/model/serial are independent singletons. ExposureBiasValue,
+LensSpecification, camera-owner/body-serial and other capture translators retain
+their existing behavior. Hosts stage the separate translator calls before
+publishing an aggregate result.
+
+TIFF preparation enables preservation of unspecified destination ExifIFD fields
+for these dirty native edits. In addition to timestamp tags, bounded ExifIFD
+removal accepts ExposureTime `829A`, FNumber `829D`, PhotographicSensitivity
+`8827`, SensitivityType and extended sensitivity `8830`–`8835`, Flash `9209`,
+FocalLength `920A`, LensMake `A433`, LensModel `A434` and LensSerialNumber `A435`.
+Snapshot v1 remains unchanged.
+
 ## TIFF edit requests
 
 The sorted unique `tiff_ifd0_removals` list adds DateTime `0x0132` to the six
 previously supported root tags. The new sorted unique `tiff_exif_removals`
-list accepts only these primary ExifIFD tags:
+list accepts the capture/lens tags above and these primary ExifIFD timestamps:
 
 | Family | Base timestamp | Offset | Subsecond |
 | --- | --- | --- | --- |
@@ -50,7 +81,7 @@ output enabled. Live same-key entries win over old tombstones. Snapshot v1
 already retains these flags, so its encoding is unchanged.
 
 Preparation enables `tiff_merge_existing_exif` for exact dirty native timestamp
-members. That explicit mode, and any ExifIFD per-tag removal, retains unspecified
+and selected capture/lens members. That explicit mode, and any ExifIFD per-tag removal, retains unspecified
 destination ExifIFD entries while applying replacements and removals. Unselected
 timestamp families, capture fields, standard pointers and opaque MakerNote
 bytes survive. Private offset/checksum repair is outside this contract.

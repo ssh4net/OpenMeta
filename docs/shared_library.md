@@ -29,14 +29,16 @@ explicit shared target for packaging and runtime-linkage tests.
 
 ## ABI And Toolchain
 
-The installed package publishes `OpenMeta_ABI_VERSION`, currently `5`. The ABI
-major changes only for an incompatible public C++ ABI change. On ELF platforms,
-the installed shared object has the corresponding SONAME major. Package version
-and ABI major are different: a patch or minor release may retain ABI `5`.
+The installed package publishes `OpenMeta_ABI_VERSION`, currently `4`.
+This is an unfrozen development label: public C++ layouts and APIs may change
+while it stays 4. Rebuild consumers against matching headers and libraries when
+they change; the label does not guarantee binary compatibility across snapshots.
+On ELF/macOS the shared library uses ABI major 4; Windows uses `openmeta-4.dll`.
+The initial local 0.7.0 build used label 5; 0.7.1 returns to 4 by project policy.
 
-OpenMeta 0.7.0 changes the prepared-bundle layout and requires a consumer
-rebuild. The package rejects 0.6 version requests. See
-[the 0.7 migration guide](migration_0_7.md).
+The package retains `SameMinorVersion` discovery and rejects 0.6 requests for a
+0.7 SDK. Version discovery is separate from a binary compatibility guarantee.
+See [the 0.7 migration guide](migration_0_7.md).
 
 When OpenMeta is built with `OPENMETA_USE_LIBCXX=ON`, the package requires a
 Clang consumer and propagates `-stdlib=libc++` for compile and link steps. This
@@ -70,7 +72,7 @@ shared build because it could otherwise become a public dylib symbol; provide a
 dynamic dependency package or disable that optional feature.
 
 On Windows, the static archive is `openmeta_static.lib`, the DLL import archive
-is `openmeta_shared.lib`, and the runtime DLL is `openmeta-5.dll`. Deploy the DLL
+is `openmeta_shared.lib`, and the runtime DLL is `openmeta-4.dll`. Deploy the DLL
 next to the application or make its directory discoverable through the normal
 Windows DLL search policy. The installed-consumer test places the package `bin`
 directory on `PATH` before it runs its executable.

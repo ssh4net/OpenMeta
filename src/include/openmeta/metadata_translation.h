@@ -269,7 +269,7 @@ metadata_technical_translation_mapping_name(
     MetadataTechnicalTranslationMapping mapping) noexcept;
 
 /// Experimental camera/lens/spectral ASCII writeback contract.
-inline constexpr uint32_t kMetadataCameraTextTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataCameraTextTranslationContractVersion = 2U;
 inline constexpr uint32_t kMetadataCameraTextTranslationMaxAddedEntries = 6U;
 inline constexpr uint64_t kMetadataCameraTextTranslationMaxTotalTextBytes
     = 24576U;
@@ -305,6 +305,10 @@ struct MetadataCameraTextTranslationOptions final {
  * fail. Missing or disabled sources retain native fields; dirty tombstones
  * remove selected fields under ReplaceExisting. Native equivalence requires
  * ASCII/UTF-8 Text with matching bytes, ignoring native terminal NUL bytes.
+ * For LensMake, LensModel, and LensSerialNumber, an accepted owner deletion
+ * records Dirty|Deleted intent when the native key is absent. Accepted exact
+ * clean native values are marked Dirty with their original text and wire
+ * provenance. These updates and added intents count against the call budgets.
  *
  * Each field has its own conflict decision and result group; the entire call
  * commits once, including aliased source/output. Preparation may allocate.
@@ -315,7 +319,7 @@ translate_xmp_camera_text_metadata(
     const MetadataCameraTextTranslationOptions& options, MetaStore* out_store);
 
 /// Experimental reverse capture-EXIF translation contract version.
-inline constexpr uint32_t kMetadataCaptureTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataCaptureTranslationContractVersion = 2U;
 
 inline constexpr uint32_t kMetadataCaptureTranslationMaxAddedEntries = 5U;
 inline constexpr uint32_t kMetadataCaptureTranslationMaxOperations   = 1024U;
@@ -1060,7 +1064,12 @@ translate_xmp_identity_metadata(
  * `ISOSpeedRatings` and `ExposureBiasValue` paths target the same singleton;
  * multiple eligible aliases are ambiguous. Each mapping reconciles
  * independently and the output is replaced only after every selected mapping
- * and resource limit succeeds.
+ * and resource limit succeeds. For ExposureTime, FNumber, base ISO, and
+ * FocalLength, an accepted owner deletion records Dirty|Deleted intent even
+ * when the native key is absent. Accepted exact clean native scalars are marked
+ * Dirty without changing their value or wire provenance. These updates and
+ * intents count against the call budgets. ExposureCompensation retains its
+ * existing lifecycle behavior.
  */
 MetadataCaptureTranslationResult
 translate_xmp_capture_metadata(const MetaStore& source,
@@ -1190,7 +1199,7 @@ translate_xmp_capture_rational_metadata(
     MetaStore* out_store);
 
 /// Experimental complete Flash-bitfield writeback contract.
-inline constexpr uint32_t kMetadataFlashTranslationContractVersion     = 1U;
+inline constexpr uint32_t kMetadataFlashTranslationContractVersion     = 2U;
 inline constexpr uint32_t kMetadataFlashTranslationMaxAddedEntries     = 1U;
 inline constexpr uint32_t kMetadataFlashTranslationMaxSourceProperties = 16U;
 inline constexpr uint64_t kMetadataFlashTranslationMaxTotalTextBytes   = 640U;
@@ -1218,8 +1227,11 @@ struct MetadataFlashTranslationOptions final {
  * in DirtyOnly mode. A dirty scalar tombstone or five dirty child tombstones
  * removes the native tag; partial groups/deletion and competing shapes fail.
  * Reserved high bits and Return code 1 fail. No physical-state consistency or
- * exposure/FlashEnergy inference is performed. All conflicts and resource checks
- * precede one atomic transaction. Preparation may allocate.
+ * exposure/FlashEnergy inference is performed. An accepted owner deletion
+ * records Dirty|Deleted intent when the native key is absent. An accepted exact
+ * clean native value is marked Dirty without changing its scalar or wire
+ * provenance; these changes count against the resource limits. All conflicts
+ * and resource checks precede one atomic transaction. Preparation may allocate.
  */
 MetadataCaptureTranslationResult
 translate_xmp_flash_metadata(const MetaStore& source,
@@ -1262,7 +1274,7 @@ translate_xmp_light_source_metadata(
     const MetadataLightSourceTranslationOptions& options, MetaStore* out_store);
 
 /// Experimental complete sensitivity-group writeback contract.
-inline constexpr uint32_t kMetadataSensitivityTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataSensitivityTranslationContractVersion = 2U;
 inline constexpr uint32_t kMetadataSensitivityTranslationMaxAddedEntries = 7U;
 inline constexpr uint64_t kMetadataSensitivityTranslationMaxTotalTextBytes
     = 896U;
@@ -1296,12 +1308,15 @@ struct MetadataSensitivityTranslationOptions final {
  * Active groups require PhotographicSensitivity and SensitivityType. Supplied
  * parameters selected by the type must agree, with values >=65535 represented
  * by 65535 in the SHORT. Latitude values require both latitude tags and ISOSpeed.
- * Missing optional sources mean absent target members. A base-property dirty
- * tombstone with no active members removes the whole group under ReplaceExisting.
- * PreserveExisting preserves any existing group; FailOnConflict requires the
- * complete group to be absent or exactly equivalent. No type, high-range value,
- * exposure setting or EXIF version is inferred. All seven tags share one result
- * group and one transaction; cold preparation may allocate.
+ * Missing optional sources mean absent target members. A validated sparse group
+ * records Dirty|Deleted intent for each absent native member; a base-property
+ * dirty tombstone selects all seven tags for deletion. PreserveExisting
+ * preserves any active group; FailOnConflict accepts an absent or exact group
+ * and rejects active mismatches. Accepted exact clean native scalars are marked
+ * Dirty without changing their values or wire provenance. Intents and updates
+ * count against the shared operation and entry limits. No type, high-range
+ * value, exposure setting or EXIF version is inferred. All seven tags share one
+ * result group and one transaction; cold preparation may allocate.
  */
 MetadataCaptureTranslationResult
 translate_xmp_sensitivity_metadata(

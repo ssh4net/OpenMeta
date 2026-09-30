@@ -633,5 +633,16 @@ removal lists. An explicit ExifIFD merge mode preserves unspecified destination
 records during dirty timestamp edits. Accepted date owners control companion
 absence even when native source keys were missing. Invalid manual lists and
 replacement/removal conflicts reject before output. Fresh emit/codec consumers
-reject removal-bearing bundles. ABI 5 requires a rebuild; snapshot v1 remains
-unchanged. See :doc:`migration_0_7` for authority and scope.
+reject removal-bearing bundles. Development ABI label 4 remains unfrozen;
+matching consumers rebuild. Snapshot v1 remains unchanged. See :doc:`migration_0_7` for authority and scope.
+
+Capture and lens editing in 0.7.1
+---------------------------------
+
+The same bounded ExifIFD removal and merge mode also covers ExposureTime,
+FNumber, ISO/sensitivity, Flash, FocalLength and lens make/model/serial. Dirty
+selected native values and deletion intents preserve unspecified destination
+fields. Basic ISO owns only its base tag; full sensitivity owns the validated
+seven-tag group. Omission preserves values. Retained external MakerNotes keep
+their original bytes and offsets. No MakerNote interpretation or private offset
+repair is added. See :doc:`migration_0_7`.

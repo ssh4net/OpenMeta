@@ -6495,6 +6495,48 @@ store_has_srational_scalar_entry(const openmeta::MetaStore& store,
 }
 
 static bool
+store_has_urational_array_entry(
+    const openmeta::MetaStore& store, const openmeta::MetaKeyView& key,
+    std::span<const openmeta::URational> expected) noexcept
+{
+    const std::span<const openmeta::EntryId> ids = store.find_all(key);
+    if (ids.size() != 1U) {
+        return false;
+    }
+    const openmeta::Entry& entry = store.entry(ids[0]);
+    if (entry.value.kind != openmeta::MetaValueKind::Array
+        || entry.value.elem_type != openmeta::MetaElementType::URational
+        || entry.value.count != expected.size()) {
+        return false;
+    }
+    const std::span<const std::byte> raw = store.arena().span(
+        entry.value.data.span);
+    if (raw.size() != expected.size() * sizeof(openmeta::URational)) {
+        return false;
+    }
+    for (size_t i = 0U; i < expected.size(); ++i) {
+        openmeta::URational actual;
+        std::memcpy(&actual, raw.data() + i * sizeof(actual), sizeof(actual));
+        if (actual.numer != expected[i].numer
+            || actual.denom != expected[i].denom) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool
+add_dirty_exififd_entry(openmeta::MetaStore& store, uint16_t tag,
+                        openmeta::MetaValue value) noexcept
+{
+    openmeta::Entry entry;
+    entry.key   = openmeta::make_exif_tag_key(store.arena(), "exififd", tag);
+    entry.value = value;
+    entry.flags = openmeta::EntryFlags::Dirty;
+    return store.add_entry(entry) != openmeta::kInvalidEntryId;
+}
+
+static bool
 store_has_u8_array_entry(const openmeta::MetaStore& store,
                          const openmeta::MetaKeyView& key,
                          std::span<const uint8_t> expected) noexcept
@@ -7436,7 +7478,7 @@ make_timestamp_exif_target(bool big_tiff, bool big_endian)
     const uint64_t ifd0_offset = big_tiff ? 16U : 8U;
     const uint64_t ifd0_size   = count_width + 4U * entry_width + next_width;
     const uint64_t exif_ifd_offset = ifd0_offset + ifd0_size;
-    const uint64_t exif_ifd_size = count_width + 12U * entry_width + next_width;
+    const uint64_t exif_ifd_size = count_width + 27U * entry_width + next_width;
     const uint64_t interop_ifd_offset = exif_ifd_offset + exif_ifd_size;
     const uint64_t interop_ifd_size   = count_width + 2U * entry_width
                                       + next_width;
@@ -7448,7 +7490,16 @@ make_timestamp_exif_target(bool big_tiff, bool big_endian)
     const uint64_t offset_original_time_offset  = offset_time_offset + 7U;
     const uint64_t offset_digitized_time_offset = offset_original_time_offset
                                                   + 7U;
-    const uint64_t maker_note_offset = offset_digitized_time_offset + 7U;
+    const uint64_t maker_note_offset    = offset_digitized_time_offset + 7U;
+    const uint64_t maker_note_end       = maker_note_offset + maker_note.size();
+    const uint64_t exposure_bias_offset = (maker_note_end + 1U) & ~1ULL;
+    const uint64_t lens_specification_offset = exposure_bias_offset + 8U;
+    const uint64_t exposure_time_offset      = lens_specification_offset + 32U;
+    const uint64_t f_number_offset           = exposure_time_offset + 8U;
+    const uint64_t focal_length_offset       = f_number_offset + 8U;
+    const uint64_t lens_make_offset          = focal_length_offset + 8U;
+    const uint64_t lens_model_offset         = lens_make_offset + 15U;
+    const uint64_t lens_serial_offset        = lens_model_offset + 15U;
 
     std::vector<std::byte> tiff;
     append_bytes(&tiff, big_endian ? "MM" : "II");
@@ -7515,10 +7566,74 @@ make_timestamp_exif_target(bool big_tiff, bool big_endian)
     };
     const std::vector<std::byte> exposure = make_tiff_test_unsigned(2U, 7U,
                                                                     big_endian);
+    std::vector<std::byte> exposure_bias;
+    append_tiff_test_unsigned(&exposure_bias, 4U, UINT32_MAX, big_endian);
+    append_tiff_test_unsigned(&exposure_bias, 4U, 3U, big_endian);
+    std::vector<std::byte> exposure_time;
+    append_tiff_test_unsigned(&exposure_time, 4U, 1U, big_endian);
+    append_tiff_test_unsigned(&exposure_time, 4U, 125U, big_endian);
+    std::vector<std::byte> f_number;
+    append_tiff_test_unsigned(&f_number, 4U, 28U, big_endian);
+    append_tiff_test_unsigned(&f_number, 4U, 10U, big_endian);
+    std::vector<std::byte> focal_length;
+    append_tiff_test_unsigned(&focal_length, 4U, 50U, big_endian);
+    append_tiff_test_unsigned(&focal_length, 4U, 1U, big_endian);
+    constexpr std::array<uint32_t, 8U> lens_specification_words = {
+        50U, 3U, 200U, 3U, 14U, 5U, 0U, 0U,
+    };
+    std::vector<std::byte> lens_specification;
+    for (uint32_t word : lens_specification_words) {
+        append_tiff_test_unsigned(&lens_specification, 4U, word, big_endian);
+    }
+    std::vector<std::byte> lens_make;
+    append_bytes(&lens_make, "Old Lens Maker");
+    lens_make.push_back(std::byte { 0U });
+    std::vector<std::byte> lens_model;
+    append_bytes(&lens_model, "Old Lens Model");
+    lens_model.push_back(std::byte { 0U });
+    std::vector<std::byte> lens_serial;
+    append_bytes(&lens_serial, "SN-OLD-0001");
+    lens_serial.push_back(std::byte { 0U });
     const std::vector<std::byte> interop_pointer
         = make_tiff_test_unsigned(4U, interop_ifd_offset, big_endian);
-    append_tiff_test_unsigned(&tiff, count_width, 12U, big_endian);
+    const std::vector<std::byte> sensitivity
+        = make_tiff_test_unsigned(2U, 100U, big_endian);
+    const std::vector<std::byte> sensitivity_type
+        = make_tiff_test_unsigned(2U, 3U, big_endian);
+    const std::vector<std::byte> standard_output_sensitivity
+        = make_tiff_test_unsigned(4U, 100U, big_endian);
+    const std::vector<std::byte> recommended_exposure_index
+        = make_tiff_test_unsigned(4U, 200U, big_endian);
+    const std::vector<std::byte> iso_speed
+        = make_tiff_test_unsigned(4U, 400U, big_endian);
+    const std::vector<std::byte> iso_latitude_yyy
+        = make_tiff_test_unsigned(4U, 1U, big_endian);
+    const std::vector<std::byte> iso_latitude_zzz
+        = make_tiff_test_unsigned(4U, 1U, big_endian);
+    append_tiff_test_unsigned(&tiff, count_width, 27U, big_endian);
     append_tiff_test_entry(&tiff, 700U, 7U, exif_xmp.size(), 0U, exif_xmp,
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x829AU, 5U, 1U, exposure_time_offset,
+                           big_tiff ? std::span<const std::byte>(exposure_time)
+                                    : std::span<const std::byte> {},
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x829DU, 5U, 1U, f_number_offset,
+                           big_tiff ? std::span<const std::byte>(f_number)
+                                    : std::span<const std::byte> {},
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x8827U, 3U, 1U, 0U, sensitivity, big_tiff,
+                           big_endian);
+    append_tiff_test_entry(&tiff, 0x8830U, 3U, 1U, 0U, sensitivity_type,
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x8831U, 4U, 1U, 0U,
+                           standard_output_sensitivity, big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x8832U, 4U, 1U, 0U,
+                           recommended_exposure_index, big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x8833U, 4U, 1U, 0U, iso_speed, big_tiff,
+                           big_endian);
+    append_tiff_test_entry(&tiff, 0x8834U, 4U, 1U, 0U, iso_latitude_yyy,
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x8835U, 4U, 1U, 0U, iso_latitude_zzz,
                            big_tiff, big_endian);
     append_tiff_test_entry(&tiff, 0x9003U, 2U, 20U, original_time_offset, {},
                            big_tiff, big_endian);
@@ -7539,8 +7654,16 @@ make_timestamp_exif_target(bool big_tiff, bool big_endian)
                                           std::span<const char>("+02:00", 7U))
                                     : std::span<const std::byte> {},
                            big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x9204U, 10U, 1U, exposure_bias_offset,
+                           big_tiff ? std::span<const std::byte>(exposure_bias)
+                                    : std::span<const std::byte> {},
+                           big_tiff, big_endian);
     append_tiff_test_entry(&tiff, 0x9209U, 3U, 1U, 0U, exposure, big_tiff,
                            big_endian);
+    append_tiff_test_entry(&tiff, 0x920AU, 5U, 1U, focal_length_offset,
+                           big_tiff ? std::span<const std::byte>(focal_length)
+                                    : std::span<const std::byte> {},
+                           big_tiff, big_endian);
     append_tiff_test_entry(&tiff, 0x927CU, 7U, maker_note.size(),
                            maker_note_offset, {}, big_tiff, big_endian);
     append_tiff_test_entry(&tiff, 0x9290U, 2U, subsec.size(), 0U, subsec,
@@ -7551,6 +7674,14 @@ make_timestamp_exif_target(bool big_tiff, bool big_endian)
                            subsec_digitized, big_tiff, big_endian);
     append_tiff_test_entry(&tiff, 0xA005U, 4U, 1U, 0U, interop_pointer,
                            big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0xA432U, 5U, 4U, lens_specification_offset,
+                           {}, big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0xA433U, 2U, lens_make.size(),
+                           lens_make_offset, {}, big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0xA434U, 2U, lens_model.size(),
+                           lens_model_offset, {}, big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0xA435U, 2U, lens_serial.size(),
+                           lens_serial_offset, {}, big_tiff, big_endian);
     append_tiff_test_unsigned(&tiff, next_width, 0U, big_endian);
 
     append_tiff_test_unsigned(&tiff, count_width, 2U, big_endian);
@@ -7579,6 +7710,18 @@ make_timestamp_exif_target(bool big_tiff, bool big_endian)
     for (size_t i = 0U; i < maker_note.size(); ++i) {
         tiff.push_back(static_cast<std::byte>(maker_note[i]));
     }
+    if (tiff.size() < exposure_bias_offset) {
+        tiff.push_back(std::byte { 0U });
+    }
+    tiff.insert(tiff.end(), exposure_bias.begin(), exposure_bias.end());
+    tiff.insert(tiff.end(), lens_specification.begin(),
+                lens_specification.end());
+    tiff.insert(tiff.end(), exposure_time.begin(), exposure_time.end());
+    tiff.insert(tiff.end(), f_number.begin(), f_number.end());
+    tiff.insert(tiff.end(), focal_length.begin(), focal_length.end());
+    tiff.insert(tiff.end(), lens_make.begin(), lens_make.end());
+    tiff.insert(tiff.end(), lens_model.begin(), lens_model.end());
+    tiff.insert(tiff.end(), lens_serial.begin(), lens_serial.end());
     return tiff;
 }
 
@@ -10193,6 +10336,27 @@ TEST(MetadataTransferApi,
         ASSERT_NE(tombstones.add_entry(tombstone), openmeta::kInvalidEntryId);
     }
 
+    const std::array<uint16_t, 14U> capture_lens_tags = {
+        0x829AU, 0x829DU, 0x8827U, 0x8830U, 0x8831U, 0x8832U, 0x8833U,
+        0x8834U, 0x8835U, 0x9209U, 0x920AU, 0xA433U, 0xA434U, 0xA435U,
+    };
+    for (uint16_t tag : capture_lens_tags) {
+        openmeta::Entry tombstone;
+        tombstone.key   = openmeta::make_exif_tag_key(tombstones.arena(),
+                                                      "exififd", tag);
+        tombstone.flags = openmeta::EntryFlags::Dirty
+                          | openmeta::EntryFlags::Deleted;
+        ASSERT_NE(tombstones.add_entry(tombstone), openmeta::kInvalidEntryId);
+    }
+
+    openmeta::Entry live_lens_model;
+    live_lens_model.key   = openmeta::make_exif_tag_key(tombstones.arena(),
+                                                        "exififd", 0xA434U);
+    live_lens_model.value = openmeta::make_text(tombstones.arena(), "Lens X",
+                                                openmeta::TextEncoding::Ascii);
+    live_lens_model.flags = openmeta::EntryFlags::Dirty;
+    ASSERT_NE(tombstones.add_entry(live_lens_model), openmeta::kInvalidEntryId);
+
     openmeta::Entry live_offset;
     live_offset.key = openmeta::make_exif_tag_key(tombstones.arena(), "exififd",
                                                   0x9010U);
@@ -10230,8 +10394,11 @@ TEST(MetadataTransferApi,
     EXPECT_EQ(tombstone_bundle.tiff_ifd0_removals,
               (std::vector<uint16_t> { 0x0132U }));
     EXPECT_EQ(tombstone_bundle.tiff_exif_removals,
-              (std::vector<uint16_t> { 0x9003U, 0x9004U, 0x9012U, 0x9290U,
-                                       0x9291U, 0x9292U }));
+              (std::vector<uint16_t> {
+                  0x829AU, 0x829DU, 0x8827U, 0x8830U, 0x8831U, 0x8832U, 0x8833U,
+                  0x8834U, 0x8835U, 0x9003U, 0x9004U, 0x9012U, 0x9209U, 0x920AU,
+                  0x9290U, 0x9291U, 0x9292U, 0xA433U, 0xA435U,
+              }));
     EXPECT_TRUE(tombstone_bundle.tiff_merge_existing_exif);
 
     openmeta::PrepareTransferRequest exif_opt_out = tombstone_request;
@@ -10244,6 +10411,96 @@ TEST(MetadataTransferApi,
     EXPECT_TRUE(opt_out_bundle.tiff_ifd0_removals.empty());
     EXPECT_TRUE(opt_out_bundle.tiff_exif_removals.empty());
     EXPECT_FALSE(opt_out_bundle.tiff_merge_existing_exif);
+
+    openmeta::MetaStore capture_source;
+    openmeta::Entry lens_make_update;
+    lens_make_update.key   = openmeta::make_exif_tag_key(capture_source.arena(),
+                                                         "exififd", 0xA433U);
+    lens_make_update.value = openmeta::make_text(capture_source.arena(),
+                                                 "Lens Maker",
+                                                 openmeta::TextEncoding::Ascii);
+    lens_make_update.flags = openmeta::EntryFlags::Dirty;
+    ASSERT_NE(capture_source.add_entry(lens_make_update),
+              openmeta::kInvalidEntryId);
+    capture_source.finalize();
+    openmeta::PreparedTransferBundle capture_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(capture_source,
+                                                    tombstone_request,
+                                                    &capture_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(capture_bundle.tiff_exif_removals.empty());
+    EXPECT_TRUE(capture_bundle.tiff_merge_existing_exif);
+
+    openmeta::MetaStore empty_source;
+    empty_source.finalize();
+    openmeta::PreparedTransferBundle empty_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(empty_source,
+                                                    tombstone_request,
+                                                    &empty_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(empty_bundle.tiff_exif_removals.empty());
+    EXPECT_FALSE(empty_bundle.tiff_merge_existing_exif);
+
+    openmeta::MetaStore clean_capture_source;
+    openmeta::Entry clean_lens_make;
+    clean_lens_make.key
+        = openmeta::make_exif_tag_key(clean_capture_source.arena(), "exififd",
+                                      0xA433U);
+    clean_lens_make.value = openmeta::make_text(clean_capture_source.arena(),
+                                                "Lens Maker",
+                                                openmeta::TextEncoding::Ascii);
+    ASSERT_NE(clean_capture_source.add_entry(clean_lens_make),
+              openmeta::kInvalidEntryId);
+    clean_capture_source.finalize();
+    openmeta::PreparedTransferBundle clean_capture_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(clean_capture_source,
+                                                    tombstone_request,
+                                                    &clean_capture_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_FALSE(clean_capture_bundle.tiff_merge_existing_exif);
+
+    openmeta::MetaStore wrong_ifd_source;
+    openmeta::Entry wrong_ifd_lens_make;
+    wrong_ifd_lens_make.key
+        = openmeta::make_exif_tag_key(wrong_ifd_source.arena(), "ifd0",
+                                      0xA433U);
+    wrong_ifd_lens_make.value
+        = openmeta::make_text(wrong_ifd_source.arena(), "Lens Maker",
+                              openmeta::TextEncoding::Ascii);
+    wrong_ifd_lens_make.flags = openmeta::EntryFlags::Dirty;
+    ASSERT_NE(wrong_ifd_source.add_entry(wrong_ifd_lens_make),
+              openmeta::kInvalidEntryId);
+    wrong_ifd_source.finalize();
+    openmeta::PreparedTransferBundle wrong_ifd_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(wrong_ifd_source,
+                                                    tombstone_request,
+                                                    &wrong_ifd_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_FALSE(wrong_ifd_bundle.tiff_merge_existing_exif);
+    EXPECT_TRUE(wrong_ifd_bundle.tiff_exif_removals.empty());
+
+    openmeta::MetaStore wrong_ifd_tombstone_source;
+    openmeta::Entry wrong_ifd_lens_tombstone;
+    wrong_ifd_lens_tombstone.key
+        = openmeta::make_exif_tag_key(wrong_ifd_tombstone_source.arena(),
+                                      "ifd1", 0xA433U);
+    wrong_ifd_lens_tombstone.flags = openmeta::EntryFlags::Dirty
+                                     | openmeta::EntryFlags::Deleted;
+    ASSERT_NE(wrong_ifd_tombstone_source.add_entry(wrong_ifd_lens_tombstone),
+              openmeta::kInvalidEntryId);
+    wrong_ifd_tombstone_source.finalize();
+    openmeta::PreparedTransferBundle wrong_ifd_tombstone_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(wrong_ifd_tombstone_source,
+                                                    tombstone_request,
+                                                    &wrong_ifd_tombstone_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(wrong_ifd_tombstone_bundle.tiff_exif_removals.empty());
+    EXPECT_FALSE(wrong_ifd_tombstone_bundle.tiff_merge_existing_exif);
 
     openmeta::PreparedTransferBundle removal_bundle;
     removal_bundle.target_format      = openmeta::TransferTargetFormat::Tiff;
@@ -10542,7 +10799,7 @@ TEST(MetadataTransferApi,
 
     openmeta::PreparedTransferBundle exif_removal_bundle = removal_bundle;
     const std::array<std::vector<uint16_t>, 3U> invalid_exif_removals = {
-        std::vector<uint16_t> { 0x9005U },
+        std::vector<uint16_t> { 0xA432U },  // LensSpecification stays excluded.
         std::vector<uint16_t> { 0x9011U, 0x9010U },
         std::vector<uint16_t> { 0x9003U, 0x9003U },
     };
@@ -10588,7 +10845,7 @@ TEST(MetadataTransferApi,
 }
 
 TEST(MetadataTransferApi,
-     NativeTimestampRemovalSnapshotPackageAndRepeatAcrossTiffVariants)
+     NativeCaptureLensRemovalAndTypedMergeAcrossTiffVariants)
 {
     openmeta::MetaStore source;
     openmeta::Entry ifd0_tombstone;
@@ -10601,7 +10858,24 @@ TEST(MetadataTransferApi,
     const std::array<uint16_t, 8U> timestamp_tags = {
         0x9003U, 0x9004U, 0x9010U, 0x9011U, 0x9012U, 0x9290U, 0x9291U, 0x9292U,
     };
+    const std::array<uint16_t, 14U> capture_lens_tags = {
+        0x829AU, 0x829DU, 0x8827U, 0x8830U, 0x8831U, 0x8832U, 0x8833U,
+        0x8834U, 0x8835U, 0x9209U, 0x920AU, 0xA433U, 0xA434U, 0xA435U,
+    };
+    const std::array<uint16_t, 22U> removal_tags = {
+        0x829AU, 0x829DU, 0x8827U, 0x8830U, 0x8831U, 0x8832U, 0x8833U, 0x8834U,
+        0x8835U, 0x9003U, 0x9004U, 0x9010U, 0x9011U, 0x9012U, 0x9209U, 0x920AU,
+        0x9290U, 0x9291U, 0x9292U, 0xA433U, 0xA434U, 0xA435U,
+    };
     for (uint16_t tag : timestamp_tags) {
+        openmeta::Entry tombstone;
+        tombstone.key   = openmeta::make_exif_tag_key(source.arena(), "exififd",
+                                                      tag);
+        tombstone.flags = openmeta::EntryFlags::Dirty
+                          | openmeta::EntryFlags::Deleted;
+        ASSERT_NE(source.add_entry(tombstone), openmeta::kInvalidEntryId);
+    }
+    for (uint16_t tag : capture_lens_tags) {
         openmeta::Entry tombstone;
         tombstone.key   = openmeta::make_exif_tag_key(source.arena(), "exififd",
                                                       tag);
@@ -10631,6 +10905,11 @@ TEST(MetadataTransferApi,
     request.include_xmp_app1   = false;
     request.include_icc_app2   = false;
     request.include_iptc_app13 = false;
+    openmeta::PreparedTransferBundle direct_prepared;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(source, request,
+                                                    &direct_prepared)
+                  .status,
+              openmeta::TransferStatus::Ok);
     openmeta::PreparedTransferBundle prepared;
     ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(restored_snapshot,
                                                              request, &prepared)
@@ -10639,9 +10918,98 @@ TEST(MetadataTransferApi,
     EXPECT_TRUE(prepared.blocks.empty());
     EXPECT_EQ(prepared.tiff_ifd0_removals, (std::vector<uint16_t> { 0x0132U }));
     EXPECT_EQ(prepared.tiff_exif_removals,
-              (std::vector<uint16_t> { 0x9003U, 0x9004U, 0x9010U, 0x9011U,
-                                       0x9012U, 0x9290U, 0x9291U, 0x9292U }));
+              (std::vector<uint16_t> {
+                  0x829AU, 0x829DU, 0x8827U, 0x8830U, 0x8831U, 0x8832U,
+                  0x8833U, 0x8834U, 0x8835U, 0x9003U, 0x9004U, 0x9010U,
+                  0x9011U, 0x9012U, 0x9209U, 0x920AU, 0x9290U, 0x9291U,
+                  0x9292U, 0xA433U, 0xA434U, 0xA435U,
+              }));
     EXPECT_TRUE(prepared.tiff_merge_existing_exif);
+    EXPECT_EQ(direct_prepared.tiff_ifd0_removals, prepared.tiff_ifd0_removals);
+    EXPECT_EQ(direct_prepared.tiff_exif_removals, prepared.tiff_exif_removals);
+    EXPECT_EQ(direct_prepared.tiff_merge_existing_exif,
+              prepared.tiff_merge_existing_exif);
+    EXPECT_EQ(direct_prepared.blocks.size(), prepared.blocks.size());
+
+    openmeta::MetaStore capture_updates;
+    ASSERT_TRUE(add_dirty_exififd_entry(capture_updates, 0x829AU,
+                                        openmeta::make_urational(1U, 250U)));
+    ASSERT_TRUE(add_dirty_exififd_entry(capture_updates, 0x829DU,
+                                        openmeta::make_urational(28U, 10U)));
+    ASSERT_TRUE(add_dirty_exififd_entry(capture_updates, 0x8827U,
+                                        openmeta::make_u16(800U)));
+    ASSERT_TRUE(add_dirty_exififd_entry(capture_updates, 0x8830U,
+                                        openmeta::make_u16(3U)));
+    ASSERT_TRUE(add_dirty_exififd_entry(capture_updates, 0x8831U,
+                                        openmeta::make_u32(1000U)));
+    ASSERT_TRUE(add_dirty_exififd_entry(capture_updates, 0x8832U,
+                                        openmeta::make_u32(640U)));
+    ASSERT_TRUE(add_dirty_exififd_entry(capture_updates, 0x8833U,
+                                        openmeta::make_u32(800U)));
+    ASSERT_TRUE(add_dirty_exififd_entry(capture_updates, 0x8834U,
+                                        openmeta::make_u32(16U)));
+    ASSERT_TRUE(add_dirty_exififd_entry(capture_updates, 0x8835U,
+                                        openmeta::make_u32(23U)));
+    ASSERT_TRUE(add_dirty_exififd_entry(capture_updates, 0x9209U,
+                                        openmeta::make_u16(9U)));
+    ASSERT_TRUE(add_dirty_exififd_entry(capture_updates, 0x920AU,
+                                        openmeta::make_urational(35U, 1U)));
+    ASSERT_TRUE(add_dirty_exififd_entry(
+        capture_updates, 0xA433U,
+        openmeta::make_text(capture_updates.arena(), "New Lens Maker",
+                            openmeta::TextEncoding::Ascii)));
+    ASSERT_TRUE(add_dirty_exififd_entry(
+        capture_updates, 0xA434U,
+        openmeta::make_text(capture_updates.arena(), "New Lens Model",
+                            openmeta::TextEncoding::Ascii)));
+    ASSERT_TRUE(add_dirty_exififd_entry(
+        capture_updates, 0xA435U,
+        openmeta::make_text(capture_updates.arena(), "SN-2026-0042",
+                            openmeta::TextEncoding::Ascii)));
+    capture_updates.finalize();
+
+    openmeta::PreparedTransferBundle capture_direct_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(capture_updates, request,
+                                                    &capture_direct_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    const openmeta::TransferSourceSnapshot capture_snapshot
+        = openmeta::build_transfer_source_snapshot(capture_updates);
+    std::vector<std::byte> capture_snapshot_bytes;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(
+                  capture_snapshot, &capture_snapshot_bytes)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::TransferSourceSnapshot restored_capture_snapshot;
+    ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(
+                  capture_snapshot_bytes, &restored_capture_snapshot)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::PreparedTransferBundle capture_snapshot_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(
+                  restored_capture_snapshot, request, &capture_snapshot_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(capture_direct_bundle.tiff_exif_removals.empty());
+    EXPECT_TRUE(capture_direct_bundle.tiff_merge_existing_exif);
+    EXPECT_EQ(capture_direct_bundle.tiff_exif_removals,
+              capture_snapshot_bundle.tiff_exif_removals);
+    EXPECT_EQ(capture_direct_bundle.tiff_merge_existing_exif,
+              capture_snapshot_bundle.tiff_merge_existing_exif);
+    ASSERT_EQ(capture_direct_bundle.blocks.size(),
+              capture_snapshot_bundle.blocks.size());
+    for (size_t i = 0U; i < capture_direct_bundle.blocks.size(); ++i) {
+        EXPECT_EQ(capture_direct_bundle.blocks[i].kind,
+                  capture_snapshot_bundle.blocks[i].kind);
+        EXPECT_EQ(capture_direct_bundle.blocks[i].order,
+                  capture_snapshot_bundle.blocks[i].order);
+        EXPECT_EQ(capture_direct_bundle.blocks[i].route,
+                  capture_snapshot_bundle.blocks[i].route);
+        EXPECT_EQ(capture_direct_bundle.blocks[i].box_type,
+                  capture_snapshot_bundle.blocks[i].box_type);
+        EXPECT_EQ(capture_direct_bundle.blocks[i].payload,
+                  capture_snapshot_bundle.blocks[i].payload);
+    }
 
     openmeta::PrepareTransferRequest opt_out = request;
     opt_out.include_exif_app1                = false;
@@ -10693,14 +11061,34 @@ TEST(MetadataTransferApi,
             = openmeta::plan_prepared_bundle_tiff_edit(input, bundle);
         ASSERT_EQ(plan.status, openmeta::TransferStatus::Ok)
             << "variant=" << variant_index << ": " << plan.message;
-        EXPECT_EQ(plan.tag_updates, 9U);
+        EXPECT_EQ(plan.tag_updates, 23U);
         EXPECT_TRUE(plan.has_exif_ifd);
+
+        openmeta::PreparedTransferBundle direct_bundle = direct_prepared;
+        direct_bundle.target_format                    = variant.target;
+        const openmeta::TiffEditPlan direct_plan
+            = openmeta::plan_prepared_bundle_tiff_edit(input, direct_bundle);
+        ASSERT_EQ(direct_plan.status, openmeta::TransferStatus::Ok)
+            << "direct variant=" << variant_index << ": "
+            << direct_plan.message;
 
         std::vector<std::byte> output;
         ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(input, bundle, plan,
                                                             &output)
                       .status,
                   openmeta::TransferStatus::Ok);
+        std::vector<std::byte> direct_output;
+        ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(
+                      input, direct_bundle, direct_plan, &direct_output)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        EXPECT_EQ(direct_output, output);
+        BufferByteWriter removal_stream_writer;
+        ASSERT_EQ(openmeta::write_prepared_bundle_tiff_edit(
+                      input, direct_bundle, direct_plan, removal_stream_writer)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        EXPECT_EQ(removal_stream_writer.out, direct_output);
         const std::span<const std::byte> output_bytes(output.data(),
                                                       output.size());
         const uint64_t output_ifd0_offset
@@ -10716,17 +11104,17 @@ TEST(MetadataTransferApi,
                                          0x8769U, variant.big_tiff,
                                          variant.big_endian, nullptr, nullptr,
                                          &output_exif_ifd_offset));
-        for (uint16_t tag : timestamp_tags) {
+        for (uint16_t tag : removal_tags) {
             EXPECT_FALSE(
                 find_tiff_test_entry(output_bytes, output_exif_ifd_offset, tag,
                                      variant.big_tiff, variant.big_endian,
                                      nullptr, nullptr, nullptr))
                 << "variant=" << variant_index << ", tag=" << tag;
         }
-        EXPECT_TRUE(find_tiff_test_entry(output_bytes, output_exif_ifd_offset,
-                                         0x9209U, variant.big_tiff,
-                                         variant.big_endian, nullptr, nullptr,
-                                         nullptr));
+        EXPECT_FALSE(find_tiff_test_entry(output_bytes, output_exif_ifd_offset,
+                                          0x9209U, variant.big_tiff,
+                                          variant.big_endian, nullptr, nullptr,
+                                          nullptr));
         EXPECT_TRUE(find_tiff_test_entry(output_bytes, output_exif_ifd_offset,
                                          700U, variant.big_tiff,
                                          variant.big_endian, nullptr, nullptr,
@@ -10746,6 +11134,22 @@ TEST(MetadataTransferApi,
                               kTestMakerNoteBytes.size()),
                   0);
 
+        openmeta::MetaStore removed_decoded;
+        ASSERT_TRUE(
+            decode_transfer_roundtrip_store(output_bytes, &removed_decoded));
+        EXPECT_TRUE(store_has_srational_scalar_entry(
+            removed_decoded, exif_key_view("exififd", 0x9204U), -1, 3));
+        constexpr std::array<openmeta::URational, 4U> lens_specification = {
+            openmeta::URational { 50U, 3U },
+            { 200U, 3U },
+            { 14U, 5U },
+            { 0U, 0U },
+        };
+        EXPECT_TRUE(
+            store_has_urational_array_entry(removed_decoded,
+                                            exif_key_view("exififd", 0xA432U),
+                                            lens_specification));
+
         uint64_t interop_ifd_offset = 0U;
         ASSERT_TRUE(find_tiff_test_entry(output_bytes, output_exif_ifd_offset,
                                          0xA005U, variant.big_tiff,
@@ -10758,6 +11162,232 @@ TEST(MetadataTransferApi,
         EXPECT_TRUE(find_tiff_test_entry(output_bytes, interop_ifd_offset, 700U,
                                          variant.big_tiff, variant.big_endian,
                                          nullptr, nullptr, nullptr));
+
+        openmeta::PreparedTransferBundle capture_bundle = capture_direct_bundle;
+        capture_bundle.target_format                    = variant.target;
+        const openmeta::TiffEditPlan capture_plan
+            = openmeta::plan_prepared_bundle_tiff_edit(input, capture_bundle);
+        ASSERT_EQ(capture_plan.status, openmeta::TransferStatus::Ok)
+            << "capture variant=" << variant_index << ": "
+            << capture_plan.message;
+        EXPECT_TRUE(capture_plan.has_exif_ifd);
+        std::vector<std::byte> capture_output;
+        ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(
+                      input, capture_bundle, capture_plan, &capture_output)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        BufferByteWriter capture_edit_writer;
+        ASSERT_EQ(openmeta::write_prepared_bundle_tiff_edit(
+                      input, capture_bundle, capture_plan, capture_edit_writer)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        EXPECT_EQ(capture_edit_writer.out, capture_output);
+
+        openmeta::PreparedTransferBundle capture_snapshot_variant_bundle
+            = capture_snapshot_bundle;
+        capture_snapshot_variant_bundle.target_format = variant.target;
+        const openmeta::TiffEditPlan capture_snapshot_plan
+            = openmeta::plan_prepared_bundle_tiff_edit(
+                input, capture_snapshot_variant_bundle);
+        ASSERT_EQ(capture_snapshot_plan.status, openmeta::TransferStatus::Ok)
+            << "snapshot capture variant=" << variant_index << ": "
+            << capture_snapshot_plan.message;
+        std::vector<std::byte> capture_snapshot_output;
+        ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(
+                      input, capture_snapshot_variant_bundle,
+                      capture_snapshot_plan, &capture_snapshot_output)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        EXPECT_EQ(capture_snapshot_output, capture_output);
+
+        openmeta::PreparedTransferPackagePlan capture_package;
+        ASSERT_EQ(openmeta::build_prepared_bundle_tiff_package(
+                      input, capture_bundle, capture_plan, &capture_package)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        BufferByteWriter capture_writer;
+        ASSERT_EQ(openmeta::write_prepared_transfer_package(
+                      input, capture_bundle, capture_package, capture_writer)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        EXPECT_EQ(capture_writer.out, capture_output);
+
+        const std::span<const std::byte> capture_bytes(capture_output.data(),
+                                                       capture_output.size());
+        const uint64_t capture_ifd0_offset
+            = read_tiff_test_unsigned(capture_bytes, header_ifd0_offset,
+                                      variant.big_tiff ? 8U : 4U,
+                                      variant.big_endian);
+        uint64_t capture_exif_ifd_offset = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(capture_bytes, capture_ifd0_offset,
+                                         0x8769U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         &capture_exif_ifd_offset));
+        struct ExpectedCaptureWire final {
+            uint16_t tag;
+            uint16_t type;
+            uint64_t count;
+        };
+        constexpr std::array<ExpectedCaptureWire, 14U> expected_capture_wire = {
+            ExpectedCaptureWire { 0x829AU, 5U, 1U },
+            ExpectedCaptureWire { 0x829DU, 5U, 1U },
+            ExpectedCaptureWire { 0x8827U, 3U, 1U },
+            ExpectedCaptureWire { 0x8830U, 3U, 1U },
+            ExpectedCaptureWire { 0x8831U, 4U, 1U },
+            ExpectedCaptureWire { 0x8832U, 4U, 1U },
+            ExpectedCaptureWire { 0x8833U, 4U, 1U },
+            ExpectedCaptureWire { 0x8834U, 4U, 1U },
+            ExpectedCaptureWire { 0x8835U, 4U, 1U },
+            ExpectedCaptureWire { 0x9209U, 3U, 1U },
+            ExpectedCaptureWire { 0x920AU, 5U, 1U },
+            ExpectedCaptureWire { 0xA433U, 2U, 15U },
+            ExpectedCaptureWire { 0xA434U, 2U, 15U },
+            ExpectedCaptureWire { 0xA435U, 2U, 13U },
+        };
+        for (const ExpectedCaptureWire& expected : expected_capture_wire) {
+            uint16_t actual_type  = 0U;
+            uint64_t actual_count = 0U;
+            ASSERT_TRUE(find_tiff_test_entry(capture_bytes,
+                                             capture_exif_ifd_offset,
+                                             expected.tag, variant.big_tiff,
+                                             variant.big_endian, &actual_type,
+                                             &actual_count, nullptr))
+                << "capture variant=" << variant_index
+                << ", tag=" << expected.tag;
+            EXPECT_EQ(actual_type, expected.type)
+                << "capture variant=" << variant_index
+                << ", tag=" << expected.tag;
+            EXPECT_EQ(actual_count, expected.count)
+                << "capture variant=" << variant_index
+                << ", tag=" << expected.tag;
+        }
+        for (uint16_t tag : timestamp_tags) {
+            EXPECT_TRUE(
+                find_tiff_test_entry(capture_bytes, capture_exif_ifd_offset,
+                                     tag, variant.big_tiff, variant.big_endian,
+                                     nullptr, nullptr, nullptr))
+                << "retained timestamp variant=" << variant_index
+                << ", tag=" << tag;
+        }
+        EXPECT_TRUE(find_tiff_test_entry(capture_bytes, capture_ifd0_offset,
+                                         0x0132U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         nullptr));
+        openmeta::MetaStore capture_decoded;
+        ASSERT_TRUE(
+            decode_transfer_roundtrip_store(capture_bytes, &capture_decoded));
+        EXPECT_TRUE(store_has_urational_scalar_entry(
+            capture_decoded, exif_key_view("exififd", 0x829AU), 1U, 250U));
+        EXPECT_TRUE(store_has_urational_scalar_entry(
+            capture_decoded, exif_key_view("exififd", 0x829DU), 28U, 10U));
+        EXPECT_TRUE(store_has_u16_scalar_entry(
+            capture_decoded, exif_key_view("exififd", 0x8827U), 800U));
+        EXPECT_TRUE(
+            store_has_u16_scalar_entry(capture_decoded,
+                                       exif_key_view("exififd", 0x8830U), 3U));
+        EXPECT_TRUE(store_has_u32_scalar_entry(
+            capture_decoded, exif_key_view("exififd", 0x8831U), 1000U));
+        EXPECT_TRUE(store_has_u32_scalar_entry(
+            capture_decoded, exif_key_view("exififd", 0x8832U), 640U));
+        EXPECT_TRUE(store_has_u32_scalar_entry(
+            capture_decoded, exif_key_view("exififd", 0x8833U), 800U));
+        EXPECT_TRUE(
+            store_has_u32_scalar_entry(capture_decoded,
+                                       exif_key_view("exififd", 0x8834U), 16U));
+        EXPECT_TRUE(
+            store_has_u32_scalar_entry(capture_decoded,
+                                       exif_key_view("exififd", 0x8835U), 23U));
+        EXPECT_TRUE(
+            store_has_u16_scalar_entry(capture_decoded,
+                                       exif_key_view("exififd", 0x9209U), 9U));
+        EXPECT_TRUE(store_has_urational_scalar_entry(
+            capture_decoded, exif_key_view("exififd", 0x920AU), 35U, 1U));
+        EXPECT_TRUE(store_has_text_entry(capture_decoded,
+                                         exif_key_view("exififd", 0xA433U),
+                                         "New Lens Maker"));
+        EXPECT_TRUE(store_has_text_entry(capture_decoded,
+                                         exif_key_view("exififd", 0xA434U),
+                                         "New Lens Model"));
+        EXPECT_TRUE(store_has_text_entry(capture_decoded,
+                                         exif_key_view("exififd", 0xA435U),
+                                         "SN-2026-0042"));
+        EXPECT_TRUE(store_has_srational_scalar_entry(
+            capture_decoded, exif_key_view("exififd", 0x9204U), -1, 3));
+        EXPECT_TRUE(
+            store_has_urational_array_entry(capture_decoded,
+                                            exif_key_view("exififd", 0xA432U),
+                                            lens_specification));
+
+        uint64_t capture_maker_note_offset = 0U;
+        uint64_t capture_maker_note_count  = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(capture_bytes, capture_exif_ifd_offset,
+                                         0x927CU, variant.big_tiff,
+                                         variant.big_endian, nullptr,
+                                         &capture_maker_note_count,
+                                         &capture_maker_note_offset));
+        EXPECT_EQ(capture_maker_note_count, kTestMakerNoteBytes.size());
+        const std::span<const std::byte> input_bytes(input.data(),
+                                                     input.size());
+        const uint64_t original_ifd0_offset
+            = read_tiff_test_unsigned(input_bytes, header_ifd0_offset,
+                                      variant.big_tiff ? 8U : 4U,
+                                      variant.big_endian);
+        uint64_t original_exif_ifd_offset = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(input_bytes, original_ifd0_offset,
+                                         0x8769U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         &original_exif_ifd_offset));
+        uint64_t original_maker_note_offset = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(input_bytes, original_exif_ifd_offset,
+                                         0x927CU, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         &original_maker_note_offset));
+        EXPECT_EQ(capture_maker_note_offset, original_maker_note_offset);
+        EXPECT_EQ(maker_note_offset, original_maker_note_offset);
+        ASSERT_LE(capture_maker_note_offset + kTestMakerNoteBytes.size(),
+                  capture_bytes.size());
+        EXPECT_EQ(std::memcmp(capture_bytes.data() + capture_maker_note_offset,
+                              kTestMakerNoteBytes.data(),
+                              kTestMakerNoteBytes.size()),
+                  0);
+        uint64_t capture_interop_ifd_offset = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(capture_bytes, capture_exif_ifd_offset,
+                                         0xA005U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         &capture_interop_ifd_offset));
+        EXPECT_TRUE(find_tiff_test_entry(capture_bytes,
+                                         capture_interop_ifd_offset, 0x0001U,
+                                         variant.big_tiff, variant.big_endian,
+                                         nullptr, nullptr, nullptr));
+        EXPECT_TRUE(find_tiff_test_entry(capture_bytes, capture_exif_ifd_offset,
+                                         700U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         nullptr));
+        EXPECT_TRUE(find_tiff_test_entry(capture_bytes,
+                                         capture_interop_ifd_offset, 700U,
+                                         variant.big_tiff, variant.big_endian,
+                                         nullptr, nullptr, nullptr));
+        uint64_t capture_strip_offset     = 0U;
+        uint64_t capture_strip_byte_count = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(capture_bytes, capture_ifd0_offset,
+                                         0x0111U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         &capture_strip_offset));
+        ASSERT_TRUE(find_tiff_test_entry(capture_bytes, capture_ifd0_offset,
+                                         0x0117U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         &capture_strip_byte_count));
+        EXPECT_EQ(capture_strip_byte_count, 4U);
+        ASSERT_LE(capture_strip_offset + capture_strip_byte_count,
+                  capture_bytes.size());
+        EXPECT_EQ(capture_bytes[capture_strip_offset + 0U],
+                  std::byte { 0x11U });
+        EXPECT_EQ(capture_bytes[capture_strip_offset + 1U],
+                  std::byte { 0x22U });
+        EXPECT_EQ(capture_bytes[capture_strip_offset + 2U],
+                  std::byte { 0x33U });
+        EXPECT_EQ(capture_bytes[capture_strip_offset + 3U],
+                  std::byte { 0x44U });
 
         uint64_t strip_offset     = 0U;
         uint64_t strip_byte_count = 0U;
@@ -10809,7 +11439,7 @@ TEST(MetadataTransferApi,
                                          0x8769U, variant.big_tiff,
                                          variant.big_endian, nullptr, nullptr,
                                          &repeated_exif_ifd_offset));
-        for (uint16_t tag : timestamp_tags) {
+        for (uint16_t tag : removal_tags) {
             EXPECT_FALSE(
                 find_tiff_test_entry(repeated_bytes, repeated_exif_ifd_offset,
                                      tag, variant.big_tiff, variant.big_endian,
@@ -55123,7 +55753,12 @@ TEST(MetadataTransferApi, CameraTextSnapshotsPreserveSixAsciiFieldsAndRemoval)
                                                  exif_key_view("ifd0", 0x010fU),
                                                  "Retained camera"));
             for (size_t i = 0U; i < tags.size(); ++i) {
-                if (mode >= 2U)
+                if (mode >= 2U && container != 0U && i < 3U) {
+                    // TIFF lens removals preserve destination fields outside
+                    // the bounded native removal contract.
+                    EXPECT_TRUE(store_has_any_text_entry(
+                        decoded, exif_key_view("exififd", tags[i]), "old"));
+                } else if (mode >= 2U)
                     EXPECT_TRUE(
                         decoded.find_all(exif_key_view("exififd", tags[i]))
                             .empty());

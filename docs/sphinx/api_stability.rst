@@ -5,10 +5,11 @@ This page defines the adoption status for public OpenMeta APIs.
 Python bindings mirror these labels unless a Python wrapper documents a
 different status.
 
-OpenMeta 0.7.0 uses C++ ABI 5. The prepared bundle adds primary ExifIFD
-removals and explicit destination merging for timestamp edits; consumers must
-rebuild. Date and technical translation contracts are version 2. Existing
-patch/handoff contracts and snapshot v1 encoding remain unchanged. See :doc:`migration_0_7`.
+OpenMeta 0.7.1 retains the unfrozen development ABI label 4. C++ layouts and
+APIs may change without advancing this label; consumers rebuild against matching
+release headers and libraries. Package discovery still separates 0.6 and 0.7.
+Existing patch/handoff and snapshot v1 contracts retain their versioned guarantees.
+See :doc:`migration_0_7`.
 
 Stability levels
 ----------------
@@ -181,7 +182,7 @@ Host-facing API map
        ``translate_xmp_creation_dates(...)``
      - ``openmeta/metadata_translation.h``
      - Experimental
-     - Transactional v1 projection of eligible edited XMP creation dates into
+     - Transactional v2 projection of eligible edited XMP creation dates into
        exact native EXIF/IPTC date groups. The caller selects mappings, source
        mode, conflict behavior, and lowered resource limits; lossy precision,
        malformed dates, duplicate sources, and unresolved conflicts fail
@@ -191,7 +192,7 @@ Host-facing API map
        ``translate_xmp_technical_metadata(...)``
      - ``openmeta/metadata_translation.h``
      - Experimental
-     - Transactional v1 projection of exact ``xmp:ModifyDate``, ``tiff:Make``,
+     - Transactional v2 projection of exact ``xmp:ModifyDate``, ``tiff:Make``,
        ``tiff:Model``, and ``xmp:CreatorTool`` properties into native EXIF
        groups. Full ModifyDate precision uses OffsetTime/SubSecTime companions;
        singleton conflicts, dirty tombstones, ASCII validity, duplicates, and
@@ -201,7 +202,7 @@ Host-facing API map
        ``translate_xmp_capture_metadata(...)``
      - ``openmeta/metadata_translation.h``
      - Experimental
-     - Transactional v1 projection of exposure time, F-number, ISO, focal
+     - Transactional v2 projection of exposure time, F-number, ISO, focal
        length, and exposure compensation XMP properties into tag-specific
        native ``RATIONAL``, ``SHORT``, and ``SRATIONAL`` scalars. Exact integer
        conversion, portable/standard alias ambiguity, dirty tombstones,
@@ -316,16 +317,16 @@ Host-facing API map
    * - Sensitivity translation: ``translate_xmp_sensitivity_metadata(...)``
      - ``openmeta/metadata_translation.h``
      - Experimental
-     - Seven-tag sensitivity group with explicit companions, LONG limits, whole-group conflicts and atomic removal. See :doc:`translation`.
+     - Version 2 seven-tag sensitivity group with explicit companions, LONG limits, whole-group conflicts and atomic removal. See :doc:`translation`.
    * - Camera/lens/spectral text translation: ``translate_xmp_camera_text_metadata(...)``
      - ``openmeta/metadata_translation.h``
      - Experimental
-     - Six independent printable-ASCII fields in one transaction, with exact namespaces, explicit aliases, typed conflicts, bounds and removal. See :doc:`translation`.
+     - Version 2 six-field printable-ASCII transaction with bounded lens lifecycle, with exact namespaces, explicit aliases, typed conflicts, bounds and removal. See :doc:`translation`.
 
    * - Flash translation: ``translate_xmp_flash_metadata(...)``
      - ``openmeta/metadata_translation.h``
      - Experimental
-     - Complete scalar or five-child Flash writeback with explicit bitfield, conflict, and removal rules. See :doc:`translation`.
+     - Version 2 scalar or five-child Flash writeback with explicit bitfield, conflict, and removal rules. See :doc:`translation`.
    * - Capture rational translation: ``translate_xmp_capture_rational_metadata(...)``
      - ``openmeta/metadata_translation.h``
      - Experimental

@@ -543,9 +543,9 @@ namespace {
         return true;
     }
 
-    static MetaValue copy_exact_timestamp_value(ByteArena& arena,
-                                                const MetaStore& source,
-                                                const Entry& entry) noexcept
+    static MetaValue copy_exact_native_value(ByteArena& arena,
+                                             const MetaStore& source,
+                                             const Entry& entry) noexcept
     {
         MetaValue value = entry.value;
         value.data.span = arena.append(
@@ -793,9 +793,8 @@ namespace {
                     ++result->entries_updated;
                 } else if (is_exif_timestamp_field(field.field)
                            && !any(entry.flags, EntryFlags::Dirty)) {
-                    edit->set_value(id,
-                                    copy_exact_timestamp_value(edit->arena(),
-                                                               source, entry));
+                    edit->set_value(id, copy_exact_native_value(edit->arena(),
+                                                                source, entry));
                     ++result->entries_updated;
                 }
             }
@@ -1098,6 +1097,30 @@ namespace {
     }
 
     static bool
+    is_technical_lens_field(const TechnicalPlannedGroup& group,
+                            const TechnicalPlannedField& field) noexcept
+    {
+        return (group.mapping
+                    == MetadataTechnicalTranslationMapping::XmpLensMake
+                && field.field == NativeTechnicalField::ExifLensMake)
+               || (group.mapping
+                       == MetadataTechnicalTranslationMapping::XmpLensModel
+                   && field.field == NativeTechnicalField::ExifLensModel)
+               || (group.mapping
+                       == MetadataTechnicalTranslationMapping::XmpLensSerialNumber
+                   && field.field
+                          == NativeTechnicalField::ExifLensSerialNumber);
+    }
+
+    static bool requires_technical_delete_intent(
+        const TechnicalPlannedGroup& group,
+        const TechnicalPlannedField& field) noexcept
+    {
+        return is_technical_modify_date_timestamp_field(group, field)
+               || is_technical_lens_field(group, field);
+    }
+
+    static bool
     technical_has_delete_intent(const MetaStore& store,
                                 const TechnicalPlannedField& field) noexcept
     {
@@ -1204,7 +1227,7 @@ namespace {
             if (field.present && active_count == 0U) {
                 ++count;
             } else if (!field.present && active_count == 0U
-                       && is_technical_modify_date_timestamp_field(group, field)
+                       && requires_technical_delete_intent(group, field)
                        && !technical_has_delete_intent(store, field)
                        && find_technical_clean_delete_intent(store, field)
                               == kInvalidEntryId) {
@@ -1240,7 +1263,7 @@ namespace {
             if (!field.present) {
                 count += active_count;
                 if (active_count == 0U
-                    && is_technical_modify_date_timestamp_field(group, field)
+                    && requires_technical_delete_intent(group, field)
                     && !technical_has_delete_intent(store, field)) {
                     ++count;
                 }
@@ -1250,7 +1273,7 @@ namespace {
                 count += active_count - 1U;
                 if (!first_matches) {
                     ++count;
-                } else if (is_technical_modify_date_timestamp_field(group, field)
+                } else if (requires_technical_delete_intent(group, field)
                            && !first_dirty) {
                     ++count;
                 }
@@ -1385,16 +1408,15 @@ namespace {
                                                   technical_field_value(field),
                                                   TextEncoding::Ascii));
                     ++result->entries_updated;
-                } else if (is_technical_modify_date_timestamp_field(group, field)
+                } else if (requires_technical_delete_intent(group, field)
                            && !any(entry.flags, EntryFlags::Dirty)) {
-                    edit->set_value(id,
-                                    copy_exact_timestamp_value(edit->arena(),
-                                                               source, entry));
+                    edit->set_value(id, copy_exact_native_value(edit->arena(),
+                                                                source, entry));
                     ++result->entries_updated;
                 }
             }
             if (!field.present && !had_active
-                && is_technical_modify_date_timestamp_field(group, field)
+                && requires_technical_delete_intent(group, field)
                 && !technical_has_delete_intent(source, field)) {
                 const EntryId clean_delete
                     = find_technical_clean_delete_intent(source, field);
@@ -1522,6 +1544,9 @@ namespace {
             case MetadataTechnicalTranslationConflictPolicy::PreserveExisting:
                 if (group.existing_any) {
                     ++result.groups_preserved;
+                } else if (is_technical_lens_field(group, group.fields[0])
+                           && unchanged) {
+                    ++result.groups_unchanged;
                 } else {
                     group.apply = true;
                 }

@@ -704,18 +704,22 @@ struct PreparedTransferBundle final {
     /// for other consumers. Source snapshots retain the tombstone flags used
     /// to derive this list during preparation.
     std::vector<uint16_t> tiff_ifd0_removals;
-    /// Sorted native EXIF IFD tags to remove during TIFF/DNG editing:
-    /// DateTimeOriginal (0x9003), DateTimeDigitized (0x9004), the matching
-    /// OffsetTime tags (0x9010-0x9012), and SubSecTime tags (0x9290-0x9292).
+    /// Sorted allowlisted native EXIF IFD tags to remove during TIFF/DNG
+    /// editing: ExposureTime (0x829A), FNumber (0x829D), PhotographicSensitivity
+    /// (0x8827), ISO speed companions (0x8830-0x8835), DateTimeOriginal
+    /// (0x9003), DateTimeDigitized (0x9004), OffsetTime tags (0x9010-0x9012),
+    /// Flash (0x9209), FocalLength (0x920A), SubSecTime tags (0x9290-0x9292),
+    /// and LensMake/LensModel/LensSerialNumber (0xA433-0xA435).
     /// Explicit per-tag removals preserve unspecified destination ExifIFD
     /// entries. Fresh emit, adapter, payload, and codec handoff APIs reject
     /// non-empty removal lists because their operation schemas cannot express
     /// deletion. Source snapshots retain the tombstone flags used to derive
     /// this list during preparation.
     std::vector<uint16_t> tiff_exif_removals;
-    /// Preserve missing destination ExifIFD entries when applying mixed
-    /// native timestamp updates to TIFF/DNG. This mode is opt-in and defaults
-    /// to the existing whole-ExifIFD replacement behavior.
+    /// Preserve unspecified destination ExifIFD entries when applying dirty
+    /// allowlisted native timestamp, capture, or lens edits to TIFF/DNG. This
+    /// mode is opt-in and defaults to the existing whole-ExifIFD replacement
+    /// behavior.
     bool tiff_merge_existing_exif = false;
     std::vector<TimePatchSlot> time_patch_map;
     std::vector<std::byte> generated_xmp_sidecar;

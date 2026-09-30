@@ -1,5 +1,22 @@
 # OpenMeta Changes
 
+## 0.7.1 - 2026-09-30
+
+- Keep the unfrozen development ABI label at 4. Public layouts may change under
+  that label; rebuild matching headers, libraries and plugins. Keep the 0.7
+  package-minor boundary and historical 0.7.0/ABI-5 records.
+- Extend explicit native deletion and same-value Dirty authority to ExposureTime,
+  FNumber, ISO/sensitivity, Flash, FocalLength and lens make/model/serial.
+  Validate full sensitivity as one group before expressing optional absence;
+  basic ISO owns its base tag only. Preserve omission/conflict rules and count
+  all intent/authority costs before transactional publication.
+- Extend bounded TIFF/BigTIFF ExifIFD removal and merge authority to those fields,
+  preserving unspecified native records, opaque MakerNote bytes and original
+  external offsets, standard pointers and media.
+  Reuse snapshot v1 and existing edit/stream/package paths and rejection guards.
+  Capture, Flash, sensitivity and camera-text contracts become version 2;
+  other translators and host-owned synchronization remain unchanged.
+
 ## 0.7.0 - 2026-09-30
 
 - Synchronize all three native EXIF timestamp families from their accepted XMP

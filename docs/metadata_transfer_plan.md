@@ -1276,5 +1276,17 @@ with an explicit ExifIFD merge mode for dirty timestamp edits. Accepted XMP
 owners control companion absence as well as values, even when native source
 keys were missing. Edit/stream/package paths preserve unselected target native
 records in that mode. Fresh emit/codec consumers reject removal-bearing bundles.
-The public bundle change requires ABI 5; source snapshot v1 stays unchanged.
+Public bundle layouts remain unfrozen under development ABI label 4; rebuild
+consumers against matching headers and libraries. Source snapshot v1 is unchanged.
 See [migration](migration_0_7.md) for tags, conflict policies and exclusions.
+
+## Capture and lens destination editing (0.7.1)
+
+The bounded ExifIFD removal and merge mode also covers ExposureTime, FNumber,
+ISO/sensitivity, Flash, FocalLength and lens make/model/serial. Exact dirty native
+values and deletion intents select preservation of unspecified destination
+entries. Snapshot v1, edit/stream/package consumption, manual-conflict checks,
+EXIF opt-out and unsupported-consumer rejection stay unchanged. Full sensitivity
+owns seven members; basic ISO owns its base tag only. See
+[migration](migration_0_7.md) for the 22-tag allowlist, contract versions, unfrozen
+ABI-4 policy and exclusions.

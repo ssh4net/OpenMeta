@@ -105,7 +105,33 @@ TIFF preparation enables explicit ExifIFD merging for dirty timestamp members,
 retains both native removal lists through snapshots, and preserves unselected
 destination records during edits. Each translator is a separate transaction;
 hosts stage multiple calls before publishing the result. See the
-[0.7 migration guide](migration_0_7.md) for supported tags, ABI 5 and exclusions.
+[0.7 migration guide](migration_0_7.md) for supported tags, unfrozen ABI-4 policy and exclusions.
+
+## Grouped capture and lens lifecycle (0.7.1)
+
+Capture, Flash, sensitivity and camera-text translation contracts are version 2.
+Accepted ExposureTime, FNumber, base ISO, Flash, FocalLength and lens make/model/
+serial owners carry native deletion intent even when their source native keys
+are missing. Accepted clean exact native values gain Dirty with a same-value
+update that retains their bytes and wire provenance. Omission and existing
+conflict policies remain. Added intents and authority updates count against
+entry/operation limits before publication; repeated calls reuse them.
+
+Full sensitivity owns PhotographicSensitivity and tags `8830`–`8835` as one
+validated group. Optional absent members carry deletion intent only after the
+complete source passes validation. Basic ISO owns only `8827` and preserves
+sensitivity companions; disable its mapping when the full group owns that source.
+Lens make/model/serial are independent singletons. ExposureBiasValue,
+LensSpecification, camera-owner/body-serial and other capture translators retain
+their existing behavior. Hosts stage the separate translator calls before
+publishing an aggregate result.
+
+TIFF preparation enables preservation of unspecified destination ExifIFD fields
+for these dirty native edits. In addition to timestamp tags, bounded ExifIFD
+removal accepts ExposureTime `829A`, FNumber `829D`, PhotographicSensitivity
+`8827`, SensitivityType and extended sensitivity `8830`–`8835`, Flash `9209`,
+FocalLength `920A`, LensMake `A433`, LensModel `A434` and LensSerialNumber `A435`.
+See [migration and exclusions](migration_0_7.md).
 
 ## Capture EXIF Mappings
 

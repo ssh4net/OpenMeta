@@ -120,6 +120,7 @@ namespace {
         uint32_t subject_count = 0U;
         std::string_view identity;
         std::span<const std::byte> bytes;
+        bool synthesize_delete_intent = false;
         bool existing_any = false;
         bool exact_match  = false;
         bool apply        = false;
@@ -1067,6 +1068,95 @@ namespace {
         return entry.key.data.exif_tag.tag == tag;
     }
 
+    static bool
+    capture_lifecycle_mapping(const CapturePlannedGroup& group) noexcept
+    {
+        switch (group.mapping) {
+        case MetadataCaptureTranslationMapping::XmpExposureTime:
+            return group.field == NativeCaptureField::ExposureTime;
+        case MetadataCaptureTranslationMapping::XmpFNumber:
+            return group.field == NativeCaptureField::FNumber;
+        case MetadataCaptureTranslationMapping::XmpIso:
+            return group.field == NativeCaptureField::Iso;
+        case MetadataCaptureTranslationMapping::XmpFocalLength:
+            return group.field == NativeCaptureField::FocalLength;
+        case MetadataCaptureTranslationMapping::XmpFlash:
+            return group.field == NativeCaptureField::Flash;
+        case MetadataCaptureTranslationMapping::XmpSensitivity:
+            return group.field == NativeCaptureField::Iso
+                   || group.field == NativeCaptureField::SensitivityType
+                   || group.field
+                          == NativeCaptureField::StandardOutputSensitivity
+                   || group.field
+                          == NativeCaptureField::RecommendedExposureIndex
+                   || group.field == NativeCaptureField::ISOSpeed
+                   || group.field == NativeCaptureField::ISOSpeedLatitudeyyy
+                   || group.field == NativeCaptureField::ISOSpeedLatitudezzz;
+        default: return false;
+        }
+    }
+
+    static uint32_t capture_active_entry_count(const MetaStore& store,
+                                               NativeCaptureField field) noexcept
+    {
+        uint32_t count = 0U;
+        for (const Entry& entry : store.entries()) {
+            if (!any(entry.flags, EntryFlags::Deleted)
+                && native_field_matches(store, entry, field)) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    static bool
+    capture_has_dirty_delete_intent(const MetaStore& store,
+                                    NativeCaptureField field) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (any(entry.flags, EntryFlags::Deleted)
+                && any(entry.flags, EntryFlags::Dirty)
+                && native_field_matches(store, entry, field)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static EntryId capture_clean_delete_intent(const MetaStore& store,
+                                               NativeCaptureField field) noexcept
+    {
+        const std::span<const Entry> entries = store.entries();
+        for (EntryId id = 0U; id < entries.size(); ++id) {
+            const Entry& entry = entries[id];
+            if (any(entry.flags, EntryFlags::Deleted)
+                && !any(entry.flags, EntryFlags::Dirty)
+                && native_field_matches(store, entry, field)) {
+                return id;
+            }
+        }
+        return kInvalidEntryId;
+    }
+
+    static MetaValue
+    capture_delete_placeholder(NativeCaptureField field) noexcept
+    {
+        switch (field) {
+        case NativeCaptureField::ExposureTime:
+        case NativeCaptureField::FNumber:
+        case NativeCaptureField::FocalLength: return make_urational(0U, 1U);
+        case NativeCaptureField::Iso:
+        case NativeCaptureField::Flash:
+        case NativeCaptureField::SensitivityType: return make_u16(0U);
+        case NativeCaptureField::StandardOutputSensitivity:
+        case NativeCaptureField::RecommendedExposureIndex:
+        case NativeCaptureField::ISOSpeed:
+        case NativeCaptureField::ISOSpeedLatitudeyyy:
+        case NativeCaptureField::ISOSpeedLatitudezzz: return make_u32(0U);
+        default: return {};
+        }
+    }
+
     static bool capture_value_matches(NativeCaptureField field,
                                       const MetaValue& actual,
                                       const MetaValue& expected) noexcept
@@ -1269,16 +1359,23 @@ namespace {
     static uint32_t missing_entries(const MetaStore& store,
                                     const CapturePlannedGroup& group) noexcept
     {
-        if (!group.present) {
-            return 0U;
-        }
-        for (const Entry& entry : store.entries()) {
-            if (!any(entry.flags, EntryFlags::Deleted)
-                && native_field_matches(store, entry, group.field)) {
-                return 0U;
+        if (group.present) {
+            for (const Entry& entry : store.entries()) {
+                if (!any(entry.flags, EntryFlags::Deleted)
+                    && native_field_matches(store, entry, group.field)) {
+                    return 0U;
+                }
             }
+            return 1U;
         }
-        return 1U;
+        if (group.synthesize_delete_intent
+            && capture_active_entry_count(store, group.field) == 0U
+            && !capture_has_dirty_delete_intent(store, group.field)
+            && capture_clean_delete_intent(store, group.field)
+                   == kInvalidEntryId) {
+            return 1U;
+        }
+        return 0U;
     }
 
     static uint32_t
@@ -1299,12 +1396,31 @@ namespace {
             }
         }
         if (!group.present) {
-            return active_count;
+            if (!group.synthesize_delete_intent) {
+                return active_count;
+            }
+            if (active_count > 0U) {
+                return active_count;
+            }
+            return capture_has_dirty_delete_intent(store, group.field) ? 0U
+                                                                       : 1U;
         }
         if (active_count == 0U) {
             return 1U;
         }
-        return active_count - 1U + (first_matches ? 0U : 1U);
+        uint32_t operations = active_count - 1U + (first_matches ? 0U : 1U);
+        if (first_matches && capture_lifecycle_mapping(group)) {
+            for (const Entry& entry : store.entries()) {
+                if (!any(entry.flags, EntryFlags::Deleted)
+                    && native_field_matches(store, entry, group.field)) {
+                    if (!any(entry.flags, EntryFlags::Dirty)) {
+                        ++operations;
+                    }
+                    break;
+                }
+            }
+        }
+        return operations;
     }
 
     static MetaKey make_native_key(ByteArena& arena,
@@ -1407,6 +1523,33 @@ namespace {
         return true;
     }
 
+    static bool
+    append_native_delete_intent(MetaEdit* edit, const MetaStore& source,
+                                const CapturePlannedGroup& group) noexcept
+    {
+        if (!edit || group.source_entry >= source.entries().size()) {
+            return false;
+        }
+        Entry entry;
+        entry.key    = make_native_key(edit->arena(), group.field);
+        entry.value  = capture_delete_placeholder(group.field);
+        entry.origin = source.entry(group.source_entry).origin;
+        if (entry.origin.wire_type_name.size > 0U) {
+            entry.origin.wire_type_name = edit->arena().append(
+                source.arena().span(entry.origin.wire_type_name));
+        }
+        if (entry.origin.order_in_block
+            < std::numeric_limits<uint32_t>::max()) {
+            ++entry.origin.order_in_block;
+        }
+        entry.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+        if (edit->arena().limit_exceeded()) {
+            return false;
+        }
+        edit->add_entry(entry);
+        return true;
+    }
+
     static void apply_group(const MetaStore& source,
                             const CapturePlannedGroup& group, MetaEdit* edit,
                             MetadataCaptureTranslationResult* result)
@@ -1415,13 +1558,17 @@ namespace {
             return;
         }
         EntryId first_active                 = kInvalidEntryId;
+        uint32_t active_entry_count          = 0U;
         const std::span<const Entry> entries = source.entries();
         for (EntryId id = 0U; id < entries.size(); ++id) {
             const Entry& entry = entries[id];
-            if (any(entry.flags, EntryFlags::Deleted)
-                || !native_field_matches(source, entry, group.field)) {
+            if (!native_field_matches(source, entry, group.field)) {
                 continue;
             }
+            if (any(entry.flags, EntryFlags::Deleted)) {
+                continue;
+            }
+            ++active_entry_count;
             if (!group.present || first_active != kInvalidEntryId) {
                 edit->tombstone(id);
                 ++result->entries_removed;
@@ -1434,6 +1581,21 @@ namespace {
                                 materialize_group_value(edit->arena(), group),
                                 WireType {}, 0U);
                 ++result->entries_updated;
+            } else if (capture_lifecycle_mapping(group)
+                       && !any(entry.flags, EntryFlags::Dirty)) {
+                edit->set_value(id, entry.value);
+                ++result->entries_updated;
+            }
+        }
+        if (group.synthesize_delete_intent && active_entry_count == 0U
+            && !capture_has_dirty_delete_intent(source, group.field)) {
+            const EntryId clean_intent
+                = capture_clean_delete_intent(source, group.field);
+            if (clean_intent != kInvalidEntryId) {
+                edit->tombstone(clean_intent);
+                ++result->entries_updated;
+            } else if (append_native_delete_intent(edit, source, group)) {
+                ++result->entries_added;
             }
         }
         if (group.present && first_active == kInvalidEntryId
@@ -1494,6 +1656,8 @@ namespace {
         group.mapping      = mapping;
         group.field        = field;
         group.source_entry = property.entry_id;
+        group.synthesize_delete_intent = property.deleted
+                                         && capture_lifecycle_mapping(group);
         if (!property.deleted) {
             if (!property.value) {
                 return MetadataCaptureTranslationStatus::InternalError;
@@ -1560,10 +1724,15 @@ namespace {
         for (size_t i = 0U; i < groups.size(); ++i) {
             CapturePlannedGroup& group = groups[i];
             analyze_group(source, &group);
+            const uint32_t group_operations = required_operations(source,
+                                                                  group);
+            const bool unchanged = group.exact_match && group_operations == 0U;
             switch (conflict_policy) {
             case MetadataCaptureTranslationConflictPolicy::PreserveExisting:
                 if (group.existing_any) {
                     ++result.groups_preserved;
+                } else if (capture_lifecycle_mapping(group) && unchanged) {
+                    ++result.groups_unchanged;
                 } else {
                     group.apply = true;
                 }
@@ -1576,14 +1745,16 @@ namespace {
                     result.failed_source_entry = group.source_entry;
                     return result;
                 }
-                if (group.exact_match) {
+                if (capture_lifecycle_mapping(group) ? unchanged
+                                                     : group.exact_match) {
                     ++result.groups_unchanged;
                 } else {
                     group.apply = true;
                 }
                 break;
             case MetadataCaptureTranslationConflictPolicy::ReplaceExisting:
-                if (group.exact_match) {
+                if (capture_lifecycle_mapping(group) ? unchanged
+                                                     : group.exact_match) {
                     ++result.groups_unchanged;
                 } else {
                     group.apply = true;
@@ -1592,7 +1763,7 @@ namespace {
             }
             if (group.apply) {
                 added_entries += missing_entries(source, group);
-                operation_count += required_operations(source, group);
+                operation_count += group_operations;
             }
         }
         if (added_entries > max_added_entries
@@ -4318,6 +4489,7 @@ translate_xmp_flash_metadata(const MetaStore& source,
     group.mapping      = MetadataCaptureTranslationMapping::XmpFlash;
     group.source_entry = scalar ? sources[5U].entry_id : sources[0U].entry_id;
     group.present      = scalar ? !sources[5U].deleted : deleted_children == 0U;
+    group.synthesize_delete_intent = !group.present;
     std::array<uint64_t, 6> values {};
     uint64_t text_bytes = 0U;
     if (group.present) {
@@ -4670,13 +4842,24 @@ translate_xmp_sensitivity_metadata(
         return result;
     }
 
+    const EntryId owner_entry = properties[0].entry_id;
+    for (CapturePlannedGroup& group : groups) {
+        if (group.source_entry == kInvalidEntryId) {
+            group.source_entry = owner_entry;
+        }
+        group.synthesize_delete_intent = !group.present;
+    }
+
     bool existing = false;
     bool exact    = true;
+    uint32_t group_operations = 0U;
     for (auto& group : groups) {
         analyze_group(source, &group);
         existing = existing || group.existing_any;
         exact    = exact && group.exact_match;
+        group_operations += required_operations(source, group);
     }
+    const bool unchanged = exact && group_operations == 0U;
     if (existing && options.conflict_policy == Policy::FailOnConflict
         && !exact) {
         result.status = Status::NativeConflict;
@@ -4684,12 +4867,14 @@ translate_xmp_sensitivity_metadata(
     }
     result.failed_mapping      = MetadataCaptureTranslationMapping::None;
     result.failed_source_entry = kInvalidEntryId;
-    if ((existing && options.conflict_policy == Policy::PreserveExisting)
-        || exact) {
-        if (existing && options.conflict_policy == Policy::PreserveExisting)
-            result.groups_preserved = 1U;
-        else
-            result.groups_unchanged = 1U;
+    if (existing && options.conflict_policy == Policy::PreserveExisting) {
+        result.groups_preserved = 1U;
+        return apply_capture_groups(source, {}, Policy::ReplaceExisting,
+                                    options.max_added_entries,
+                                    options.max_operations, result, out_store);
+    }
+    if (unchanged) {
+        result.groups_unchanged = 1U;
         return apply_capture_groups(source, {}, Policy::ReplaceExisting,
                                     options.max_added_entries,
                                     options.max_operations, result, out_store);

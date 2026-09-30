@@ -1786,9 +1786,20 @@ namespace {
             = MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
         options.max_operations = 1U;
         result = translate_xmp_capture_metadata(source, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataCaptureTranslationStatus::OperationLimitExceeded);
+        EXPECT_EQ(active_exif_count(output, 0x829dU), 2U);
+        options.max_operations = 2U;
+        result = translate_xmp_capture_metadata(source, options, &output);
         ASSERT_EQ(result.status, MetadataCaptureTranslationStatus::Ok);
         EXPECT_EQ(result.entries_removed, 1U);
+        EXPECT_EQ(result.entries_updated, 1U);
         EXPECT_EQ(active_exif_count(output, 0x829dU), 1U);
+        const Entry* exact_f_number = active_exif_entry(output, "exififd",
+                                                        0x829dU);
+        ASSERT_NE(exact_f_number, nullptr);
+        EXPECT_EQ(exact_f_number->value.data.ur.numer, 28U);
+        EXPECT_EQ(exact_f_number->value.data.ur.denom, 10U);
 
         MetaStore removal;
         const BlockId removal_block = removal.add_block(BlockInfo {});
@@ -4010,12 +4021,46 @@ namespace {
         store.add_entry(entry);
     }
 
-    static void settings_native(MetaStore& store, uint16_t tag, MetaValue value)
+    static EntryId settings_native_entry(MetaStore& store, uint16_t tag,
+                                         MetaValue value,
+                                         EntryFlags flags   = EntryFlags::None,
+                                         uint16_t wire_code = 0U,
+                                         std::string_view wire_name = {})
     {
         Entry entry;
         entry.key   = make_exif_tag_key(store.arena(), "exififd", tag);
         entry.value = value;
-        store.add_entry(entry);
+        entry.flags             = flags;
+        entry.origin.wire_type  = { WireFamily::Tiff, wire_code };
+        entry.origin.wire_count = value.count;
+        entry.origin.order_in_block = 17U;
+        if (!wire_name.empty())
+            entry.origin.wire_type_name = store.arena().append_string(
+                wire_name);
+        return store.add_entry(entry);
+    }
+
+    static void settings_native(MetaStore& store, uint16_t tag, MetaValue value)
+    {
+        settings_native_entry(store, tag, value);
+    }
+
+    static std::vector<EntryId>
+    settings_native_history_ids(const MetaStore& store, uint16_t tag)
+    {
+        std::vector<EntryId> ids;
+        for (EntryId id = 0U; id < store.entries().size(); ++id) {
+            const Entry& entry = store.entry(id);
+            if (entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != tag)
+                continue;
+            const auto ifd = store.arena().span(entry.key.data.exif_tag.ifd);
+            if (std::string_view(reinterpret_cast<const char*>(ifd.data()),
+                                 ifd.size())
+                == "exififd")
+                ids.push_back(id);
+        }
+        return ids;
     }
 
     static const Entry* settings_find(const MetaStore& store, uint16_t tag)
@@ -4105,6 +4150,291 @@ namespace {
                                                                   &output);
         EXPECT_EQ(same.status, SettingsStatus::Ok);
         EXPECT_EQ(same.groups_unchanged, 12U);
+    }
+
+    TEST(MetadataCaptureLifecycle,
+         SelectedScalarOwnersCreateDeleteIntentsAndPreserveExactValues)
+    {
+        struct Case final {
+            std::string_view path;
+            uint16_t tag;
+            MetaValue value;
+            bool MetadataCaptureTranslationOptions::* enabled;
+            uint16_t wire_code;
+        };
+        const std::array<Case, 4U> cases {
+            Case { "ExposureTime", 0x829aU, make_urational(1U, 125U),
+                   &MetadataCaptureTranslationOptions::exposure_time_to_exif,
+                   5U },
+            Case { "FNumber", 0x829dU, make_urational(14U, 5U),
+                   &MetadataCaptureTranslationOptions::f_number_to_exif, 5U },
+            Case { "ISO", 0x8827U, make_u16(400U),
+                   &MetadataCaptureTranslationOptions::iso_to_exif, 3U },
+            Case { "FocalLength", 0x920aU, make_urational(66U, 1U),
+                   &MetadataCaptureTranslationOptions::focal_length_to_exif,
+                   5U },
+        };
+        for (const Case& item : cases) {
+            MetadataCaptureTranslationOptions options;
+            options.exposure_time_to_exif = false;
+            options.f_number_to_exif      = false;
+            options.iso_to_exif           = false;
+            options.focal_length_to_exif  = false;
+            options.*item.enabled         = true;
+
+            MetaStore deletion;
+            settings_xmp(deletion, item.path, item.value,
+                         EntryFlags::Dirty | EntryFlags::Deleted);
+            deletion.finalize();
+            const auto removed
+                = translate_xmp_capture_metadata(deletion, options, &deletion);
+            ASSERT_EQ(removed.status, MetadataCaptureTranslationStatus::Ok)
+                << item.path;
+            EXPECT_EQ(removed.entries_added, 1U) << item.path;
+            EXPECT_EQ(removed.entries_updated, 0U) << item.path;
+            EXPECT_EQ(removed.entries_removed, 0U) << item.path;
+            const auto deletion_ids = settings_native_history_ids(deletion,
+                                                                  item.tag);
+            ASSERT_EQ(deletion_ids.size(), 1U) << item.path;
+            const Entry& intent = deletion.entry(deletion_ids.front());
+            EXPECT_TRUE(any(intent.flags, EntryFlags::Dirty)) << item.path;
+            EXPECT_TRUE(any(intent.flags, EntryFlags::Deleted)) << item.path;
+            const auto repeated
+                = translate_xmp_capture_metadata(deletion, options, &deletion);
+            EXPECT_EQ(repeated.groups_unchanged, 1U) << item.path;
+            EXPECT_EQ(repeated.entries_added, 0U) << item.path;
+            EXPECT_EQ(repeated.entries_updated, 0U) << item.path;
+
+            MetaStore exact;
+            settings_xmp(exact, item.path, item.value);
+            settings_native_entry(exact, item.tag, item.value, EntryFlags::None,
+                                  item.wire_code, "native-capture-wire");
+            exact.finalize();
+            const auto authority
+                = translate_xmp_capture_metadata(exact, options, &exact);
+            ASSERT_EQ(authority.status, MetadataCaptureTranslationStatus::Ok)
+                << item.path;
+            EXPECT_EQ(authority.entries_added, 0U) << item.path;
+            EXPECT_EQ(authority.entries_updated, 1U) << item.path;
+            const Entry* native = settings_find(exact, item.tag);
+            ASSERT_NE(native, nullptr) << item.path;
+            EXPECT_TRUE(any(native->flags, EntryFlags::Dirty)) << item.path;
+            EXPECT_FALSE(any(native->flags, EntryFlags::Deleted)) << item.path;
+            EXPECT_EQ(native->value.elem_type, item.value.elem_type)
+                << item.path;
+            if (item.value.elem_type == MetaElementType::URational) {
+                EXPECT_EQ(native->value.data.ur.numer, item.value.data.ur.numer)
+                    << item.path;
+                EXPECT_EQ(native->value.data.ur.denom, item.value.data.ur.denom)
+                    << item.path;
+            } else {
+                EXPECT_EQ(native->value.data.u64, item.value.data.u64)
+                    << item.path;
+            }
+            EXPECT_EQ(native->origin.wire_type.family, WireFamily::Tiff)
+                << item.path;
+            EXPECT_EQ(native->origin.wire_type.code, item.wire_code)
+                << item.path;
+            EXPECT_EQ(native->origin.wire_count, item.value.count) << item.path;
+            EXPECT_EQ(native->origin.order_in_block, 17U) << item.path;
+            const auto wire = exact.arena().span(native->origin.wire_type_name);
+            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                           wire.data()),
+                                       wire.size()),
+                      "native-capture-wire")
+                << item.path;
+            const auto same = translate_xmp_capture_metadata(exact, options,
+                                                             &exact);
+            EXPECT_EQ(same.groups_unchanged, 1U) << item.path;
+
+            MetaStore omitted;
+            settings_native(omitted, item.tag, item.value);
+            omitted.finalize();
+            const auto retained
+                = translate_xmp_capture_metadata(omitted, options, &omitted);
+            EXPECT_EQ(retained.entries_removed, 0U) << item.path;
+            EXPECT_NE(settings_find(omitted, item.tag), nullptr) << item.path;
+
+            MetaStore conflict;
+            settings_xmp(conflict, item.path, item.value,
+                         EntryFlags::Dirty | EntryFlags::Deleted);
+            settings_native(conflict, item.tag, item.value);
+            conflict.finalize();
+            EXPECT_EQ(translate_xmp_capture_metadata(conflict, options,
+                                                     &conflict)
+                          .status,
+                      MetadataCaptureTranslationStatus::NativeConflict)
+                << item.path;
+            options.conflict_policy
+                = MetadataCaptureTranslationConflictPolicy::PreserveExisting;
+            const auto preserved
+                = translate_xmp_capture_metadata(conflict, options, &conflict);
+            EXPECT_EQ(preserved.groups_preserved, 1U) << item.path;
+            EXPECT_EQ(settings_active_count(conflict, item.tag), 1U)
+                << item.path;
+            options.conflict_policy
+                = MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+            options.max_operations = 1U;
+            const auto replaced
+                = translate_xmp_capture_metadata(conflict, options, &conflict);
+            ASSERT_EQ(replaced.status, MetadataCaptureTranslationStatus::Ok)
+                << item.path;
+            EXPECT_EQ(replaced.entries_removed, 1U) << item.path;
+            EXPECT_EQ(replaced.entries_added, 0U) << item.path;
+            EXPECT_EQ(settings_active_count(conflict, item.tag), 0U)
+                << item.path;
+        }
+
+        MetaStore duplicate_clean;
+        settings_xmp(duplicate_clean, "ExposureTime", make_urational(1U, 125U));
+        settings_native_entry(duplicate_clean, 0x829aU,
+                              make_urational(1U, 125U), EntryFlags::None, 5U,
+                              "clean-first");
+        settings_native_entry(duplicate_clean, 0x829aU,
+                              make_urational(1U, 125U), EntryFlags::None, 5U,
+                              "clean-duplicate");
+        duplicate_clean.finalize();
+        MetadataCaptureTranslationOptions bounded;
+        bounded.f_number_to_exif              = false;
+        bounded.iso_to_exif                   = false;
+        bounded.focal_length_to_exif          = false;
+        bounded.exposure_compensation_to_exif = false;
+        bounded.conflict_policy
+            = MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+        bounded.max_operations = 1U;
+        MetaStore output;
+        settings_native(output, 0x9209U, make_u16(95U));
+        output.finalize();
+        const size_t before = duplicate_clean.entries().size();
+        EXPECT_EQ(translate_xmp_capture_metadata(duplicate_clean, bounded,
+                                                 &output)
+                      .status,
+                  MetadataCaptureTranslationStatus::OperationLimitExceeded);
+        ASSERT_EQ(output.entries().size(), 1U);
+        EXPECT_EQ(settings_find(output, 0x9209U)->value.data.u64, 95U);
+        EXPECT_EQ(translate_xmp_capture_metadata(duplicate_clean, bounded,
+                                                 &duplicate_clean)
+                      .status,
+                  MetadataCaptureTranslationStatus::OperationLimitExceeded);
+        EXPECT_EQ(duplicate_clean.entries().size(), before);
+        for (const EntryId id :
+             settings_native_history_ids(duplicate_clean, 0x829aU))
+            EXPECT_FALSE(
+                any(duplicate_clean.entry(id).flags, EntryFlags::Dirty));
+        bounded.max_operations = 2U;
+        const auto repaired    = translate_xmp_capture_metadata(duplicate_clean,
+                                                                bounded,
+                                                                &duplicate_clean);
+        ASSERT_EQ(repaired.status, MetadataCaptureTranslationStatus::Ok);
+        EXPECT_EQ(repaired.entries_updated, 1U);
+        EXPECT_EQ(repaired.entries_removed, 1U);
+    }
+
+    static MetadataCaptureTranslationOptions exposure_lifecycle_options()
+    {
+        MetadataCaptureTranslationOptions options;
+        options.f_number_to_exif              = false;
+        options.iso_to_exif                   = false;
+        options.focal_length_to_exif          = false;
+        options.exposure_compensation_to_exif = false;
+        return options;
+    }
+
+    TEST(MetadataCaptureLifecycle,
+         DeletionReusesOneCleanMarkerAndLeavesOtherHistoryUntouched)
+    {
+        const MetaValue value = make_urational(1U, 125U);
+
+        MetaStore already_intended;
+        settings_xmp(already_intended, "ExposureTime", value,
+                     EntryFlags::Dirty | EntryFlags::Deleted);
+        settings_native_entry(already_intended, 0x829aU, value,
+                              EntryFlags::Deleted, 5U, "clean-one");
+        settings_native_entry(already_intended, 0x829aU, value,
+                              EntryFlags::Deleted, 5U, "clean-two");
+        settings_native_entry(already_intended, 0x829aU, value,
+                              EntryFlags::Dirty | EntryFlags::Deleted, 5U,
+                              "dirty-intent");
+        already_intended.finalize();
+        auto options           = exposure_lifecycle_options();
+        options.max_operations = 1U;
+        const auto reused = translate_xmp_capture_metadata(already_intended,
+                                                           options,
+                                                           &already_intended);
+        ASSERT_EQ(reused.status, MetadataCaptureTranslationStatus::Ok);
+        EXPECT_EQ(reused.groups_unchanged, 1U);
+        EXPECT_EQ(reused.entries_updated, 0U);
+        EXPECT_EQ(reused.entries_added, 0U);
+        auto ids = settings_native_history_ids(already_intended, 0x829aU);
+        ASSERT_EQ(ids.size(), 3U);
+        EXPECT_FALSE(
+            any(already_intended.entry(ids[0]).flags, EntryFlags::Dirty));
+        EXPECT_FALSE(
+            any(already_intended.entry(ids[1]).flags, EntryFlags::Dirty));
+        EXPECT_TRUE(
+            any(already_intended.entry(ids[2]).flags, EntryFlags::Dirty));
+
+        MetaStore clean_history;
+        settings_xmp(clean_history, "ExposureTime", value,
+                     EntryFlags::Dirty | EntryFlags::Deleted);
+        settings_native_entry(clean_history, 0x829aU, value,
+                              EntryFlags::Deleted, 5U, "clean-one");
+        settings_native_entry(clean_history, 0x829aU, value,
+                              EntryFlags::Deleted, 5U, "clean-two");
+        clean_history.finalize();
+        const auto upgraded = translate_xmp_capture_metadata(clean_history,
+                                                             options,
+                                                             &clean_history);
+        ASSERT_EQ(upgraded.status, MetadataCaptureTranslationStatus::Ok);
+        EXPECT_EQ(upgraded.entries_updated, 1U);
+        EXPECT_EQ(upgraded.entries_added, 0U);
+        EXPECT_EQ(upgraded.groups_translated, 1U);
+        ids = settings_native_history_ids(clean_history, 0x829aU);
+        ASSERT_EQ(ids.size(), 2U);
+        EXPECT_TRUE(any(clean_history.entry(ids[0]).flags, EntryFlags::Dirty));
+        EXPECT_FALSE(any(clean_history.entry(ids[1]).flags, EntryFlags::Dirty));
+        const auto repeated = translate_xmp_capture_metadata(clean_history,
+                                                             options,
+                                                             &clean_history);
+        EXPECT_EQ(repeated.groups_unchanged, 1U);
+        EXPECT_EQ(repeated.entries_updated, 0U);
+        EXPECT_EQ(repeated.entries_added, 0U);
+
+        MetaStore active_and_history;
+        settings_xmp(active_and_history, "ExposureTime", value,
+                     EntryFlags::Dirty | EntryFlags::Deleted);
+        settings_native_entry(active_and_history, 0x829aU, value,
+                              EntryFlags::Deleted, 5U, "clean-one");
+        settings_native_entry(active_and_history, 0x829aU, value,
+                              EntryFlags::Deleted, 5U, "clean-two");
+        settings_native_entry(active_and_history, 0x829aU, value,
+                              EntryFlags::Dirty | EntryFlags::Deleted, 5U,
+                              "dirty-intent");
+        settings_native_entry(active_and_history, 0x829aU, value,
+                              EntryFlags::None, 5U, "active-value");
+        active_and_history.finalize();
+        options.conflict_policy
+            = MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+        const auto removed
+            = translate_xmp_capture_metadata(active_and_history, options,
+                                             &active_and_history);
+        ASSERT_EQ(removed.status, MetadataCaptureTranslationStatus::Ok);
+        EXPECT_EQ(removed.entries_removed, 1U);
+        EXPECT_EQ(removed.entries_updated, 0U);
+        EXPECT_EQ(removed.entries_added, 0U);
+        ids = settings_native_history_ids(active_and_history, 0x829aU);
+        ASSERT_EQ(ids.size(), 4U);
+        EXPECT_FALSE(
+            any(active_and_history.entry(ids[0]).flags, EntryFlags::Dirty));
+        EXPECT_FALSE(
+            any(active_and_history.entry(ids[1]).flags, EntryFlags::Dirty));
+        EXPECT_TRUE(
+            any(active_and_history.entry(ids[2]).flags, EntryFlags::Dirty));
+        EXPECT_TRUE(
+            any(active_and_history.entry(ids[3]).flags, EntryFlags::Dirty));
+        for (const EntryId id : ids)
+            EXPECT_TRUE(
+                any(active_and_history.entry(id).flags, EntryFlags::Deleted));
     }
 
     TEST(MetadataCaptureSettings,
@@ -4887,6 +5217,96 @@ namespace {
         source = commit(source, std::span(&edit, 1U));
         flash_failure(source, SettingsStatus::IncompleteSource, options);
     }
+    TEST(MetadataFlash,
+         ScalarOwnerLifecycleAddsIntentsAndKeepsExactWireProvenance)
+    {
+        MetaStore deleted;
+        settings_xmp(deleted, "Flash", make_u16(25U),
+                     EntryFlags::Dirty | EntryFlags::Deleted);
+        deleted.finalize();
+        auto intent = translate_xmp_flash_metadata(deleted, {}, &deleted);
+        ASSERT_EQ(intent.status, SettingsStatus::Ok);
+        EXPECT_EQ(intent.entries_added, 1U);
+        EXPECT_EQ(intent.entries_updated, 0U);
+        const auto ids = settings_native_history_ids(deleted, 0x9209U);
+        ASSERT_EQ(ids.size(), 1U);
+        EXPECT_TRUE(any(deleted.entry(ids.front()).flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(deleted.entry(ids.front()).flags, EntryFlags::Deleted));
+        const auto repeated = translate_xmp_flash_metadata(deleted, {},
+                                                           &deleted);
+        EXPECT_EQ(repeated.groups_unchanged, 1U);
+        EXPECT_EQ(repeated.entries_added, 0U);
+
+        MetaStore structured
+            = flash_source(25U, false, EntryFlags::Dirty | EntryFlags::Deleted);
+        structured.finalize();
+        const auto structured_intent
+            = translate_xmp_flash_metadata(structured, {}, &structured);
+        ASSERT_EQ(structured_intent.status, SettingsStatus::Ok);
+        EXPECT_EQ(structured_intent.entries_added, 1U);
+        const auto structured_ids = settings_native_history_ids(structured,
+                                                                0x9209U);
+        ASSERT_EQ(structured_ids.size(), 1U);
+        EXPECT_TRUE(any(structured.entry(structured_ids.front()).flags,
+                        EntryFlags::Dirty));
+        EXPECT_TRUE(any(structured.entry(structured_ids.front()).flags,
+                        EntryFlags::Deleted));
+
+        MetaStore exact;
+        settings_xmp(exact, "Flash", make_u16(25U));
+        settings_native_entry(exact, 0x9209U, make_u16(25U), EntryFlags::None,
+                              3U, "native-flash-wire");
+        exact.finalize();
+        FlashOptions options;
+        options.max_operations = 1U;
+        const auto accepted    = translate_xmp_flash_metadata(exact, options,
+                                                              &exact);
+        ASSERT_EQ(accepted.status, SettingsStatus::Ok);
+        EXPECT_EQ(accepted.entries_updated, 1U);
+        const Entry* native = settings_find(exact, 0x9209U);
+        ASSERT_NE(native, nullptr);
+        EXPECT_EQ(native->value.data.u64, 25U);
+        EXPECT_TRUE(any(native->flags, EntryFlags::Dirty));
+        EXPECT_EQ(native->origin.wire_type.family, WireFamily::Tiff);
+        EXPECT_EQ(native->origin.wire_type.code, 3U);
+        EXPECT_EQ(native->origin.order_in_block, 17U);
+        const auto wire = exact.arena().span(native->origin.wire_type_name);
+        EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(wire.data()),
+                                   wire.size()),
+                  "native-flash-wire");
+        EXPECT_EQ(
+            translate_xmp_flash_metadata(exact, {}, &exact).groups_unchanged,
+            1U);
+
+        MetaStore omitted;
+        settings_native(omitted, 0x9209U, make_u16(1U));
+        omitted.finalize();
+        EXPECT_EQ(
+            translate_xmp_flash_metadata(omitted, {}, &omitted).entries_removed,
+            0U);
+        EXPECT_EQ(settings_find(omitted, 0x9209U)->value.data.u64, 1U);
+
+        MetaStore conflict;
+        settings_xmp(conflict, "Flash", make_u16(25U),
+                     EntryFlags::Dirty | EntryFlags::Deleted);
+        settings_native(conflict, 0x9209U, make_u16(25U));
+        conflict.finalize();
+        EXPECT_EQ(translate_xmp_flash_metadata(conflict, {}, &conflict).status,
+                  SettingsStatus::NativeConflict);
+        options                 = {};
+        options.conflict_policy = SettingsPolicy::PreserveExisting;
+        EXPECT_EQ(translate_xmp_flash_metadata(conflict, options, &conflict)
+                      .groups_preserved,
+                  1U);
+        options.conflict_policy = SettingsPolicy::ReplaceExisting;
+        options.max_operations  = 1U;
+        const auto replaced = translate_xmp_flash_metadata(conflict, options,
+                                                           &conflict);
+        ASSERT_EQ(replaced.status, SettingsStatus::Ok);
+        EXPECT_EQ(replaced.entries_removed, 1U);
+        EXPECT_EQ(replaced.entries_added, 0U);
+        EXPECT_EQ(settings_active_count(conflict, 0x9209U), 0U);
+    }
     TEST(MetadataFlash, LimitsAndFailureDiagnosticsPreserveOutput)
     {
         MetaStore source = flash_source(25U, true);
@@ -5335,8 +5755,11 @@ namespace {
             translate_xmp_sensitivity_metadata(source, options, &source).status,
             status);
         EXPECT_EQ(source.entries().size(), size);
-        for (uint16_t tag : kSensitivityTags)
+        for (uint16_t tag : kSensitivityTags) {
             EXPECT_EQ(settings_find(source, tag), nullptr);
+            EXPECT_TRUE(settings_native_history_ids(source, tag).empty())
+                << tag;
+        }
     }
     TEST(MetadataSensitivity, AllTypesAndLimitsRetainExactTypedValues)
     {
@@ -5534,7 +5957,8 @@ namespace {
         const auto result = translate_xmp_sensitivity_metadata(source, options,
                                                                &source);
         EXPECT_EQ(result.status, SettingsStatus::Ok);
-        EXPECT_EQ(result.entries_added, 1U);
+        EXPECT_EQ(result.entries_added, 5U);
+        EXPECT_EQ(result.entries_updated, 1U);
         EXPECT_EQ(result.entries_removed, 2U);
         EXPECT_EQ(result.groups_translated, 1U);
         EXPECT_EQ(settings_find(source, 0x8833U), nullptr);
@@ -5570,6 +5994,211 @@ namespace {
         settings_xmp(orphan, kSensitivityNames[4], make_u32(400U),
                      EntryFlags::Dirty | EntryFlags::Deleted, kSensitivityNs);
         sensitivity_failure(orphan, SettingsStatus::IncompleteSource, options);
+    }
+    TEST(MetadataSensitivity,
+         BaseTombstoneCreatesAllSevenMissingNativeDeleteIntents)
+    {
+        MetaStore source;
+        settings_xmp(source, kSensitivityNames[0], make_u16(400U),
+                     EntryFlags::Dirty | EntryFlags::Deleted, kSensitivityNs);
+        source.finalize();
+
+        const auto first = translate_xmp_sensitivity_metadata(source, {},
+                                                              &source);
+        ASSERT_EQ(first.status, SettingsStatus::Ok);
+        EXPECT_EQ(first.groups_translated, 1U);
+        EXPECT_EQ(first.entries_added, 7U);
+        EXPECT_EQ(first.entries_updated, 0U);
+        EXPECT_EQ(first.entries_removed, 0U);
+        for (uint16_t tag : kSensitivityTags) {
+            const auto ids = settings_native_history_ids(source, tag);
+            ASSERT_EQ(ids.size(), 1U) << tag;
+            const Entry& entry = source.entry(ids.front());
+            EXPECT_TRUE(any(entry.flags, EntryFlags::Dirty)) << tag;
+            EXPECT_TRUE(any(entry.flags, EntryFlags::Deleted)) << tag;
+        }
+
+        const auto repeated = translate_xmp_sensitivity_metadata(source, {},
+                                                                 &source);
+        ASSERT_EQ(repeated.status, SettingsStatus::Ok);
+        EXPECT_EQ(repeated.groups_unchanged, 1U);
+        EXPECT_EQ(repeated.groups_translated, 0U);
+        EXPECT_EQ(repeated.entries_added, 0U);
+        EXPECT_EQ(repeated.entries_updated, 0U);
+        EXPECT_EQ(repeated.entries_removed, 0U);
+    }
+    static MetaStore sparse_sensitivity_source()
+    {
+        MetaStore source;
+        settings_xmp(source, kSensitivityNames[0], make_u16(400U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        settings_xmp(source, kSensitivityNames[1], make_u16(0U),
+                     EntryFlags::Dirty, kSensitivityNs);
+        return source;
+    }
+
+    TEST(MetadataSensitivity,
+         SparseValidatedGroupDeletesMissingMembersAsOneTransaction)
+    {
+        MetaStore source = sparse_sensitivity_source();
+        source.finalize();
+        const auto translated = translate_xmp_sensitivity_metadata(source, {},
+                                                                   &source);
+        ASSERT_EQ(translated.status, SettingsStatus::Ok);
+        EXPECT_EQ(translated.groups_translated, 1U);
+        EXPECT_EQ(translated.source_properties, 2U);
+        EXPECT_EQ(translated.entries_added, 7U);
+        EXPECT_EQ(translated.entries_updated, 0U);
+        EXPECT_EQ(translated.entries_removed, 0U);
+        for (size_t i = 0U; i < kSensitivityTags.size(); ++i) {
+            const auto ids = settings_native_history_ids(source,
+                                                         kSensitivityTags[i]);
+            ASSERT_EQ(ids.size(), 1U) << i;
+            const Entry& entry = source.entry(ids.front());
+            EXPECT_TRUE(any(entry.flags, EntryFlags::Dirty)) << i;
+            EXPECT_EQ(any(entry.flags, EntryFlags::Deleted), i >= 2U) << i;
+            if (i < 2U)
+                EXPECT_EQ(entry.value.data.u64, i == 0U ? 400U : 0U) << i;
+        }
+        const auto repeated = translate_xmp_sensitivity_metadata(source, {},
+                                                                 &source);
+        EXPECT_EQ(repeated.groups_unchanged, 1U);
+        EXPECT_EQ(repeated.groups_translated, 0U);
+        EXPECT_EQ(repeated.entries_added, 0U);
+        EXPECT_EQ(repeated.entries_updated, 0U);
+
+        SensitivityOptions options;
+        options.max_added_entries = 6U;
+        MetaStore entry_limited   = sparse_sensitivity_source();
+        sensitivity_failure(entry_limited, SettingsStatus::EntryLimitExceeded,
+                            options);
+        options                     = {};
+        options.max_operations      = 6U;
+        MetaStore operation_limited = sparse_sensitivity_source();
+        sensitivity_failure(operation_limited,
+                            SettingsStatus::OperationLimitExceeded, options);
+
+        MetaStore preserved_source = sparse_sensitivity_source();
+        settings_native(preserved_source, kSensitivityTags[0], make_u16(400U));
+        preserved_source.finalize();
+        MetaStore preserved;
+        options                 = {};
+        options.conflict_policy = SettingsPolicy::PreserveExisting;
+        const auto kept = translate_xmp_sensitivity_metadata(preserved_source,
+                                                             options,
+                                                             &preserved);
+        ASSERT_EQ(kept.status, SettingsStatus::Ok);
+        EXPECT_EQ(kept.groups_preserved, 1U);
+        EXPECT_EQ(kept.entries_added, 0U);
+        EXPECT_EQ(settings_active_count(preserved, kSensitivityTags[0]), 1U);
+        for (size_t i = 1U; i < kSensitivityTags.size(); ++i)
+            EXPECT_EQ(preserved
+                          .find_all(make_exif_tag_key_view("exififd",
+                                                           kSensitivityTags[i]))
+                          .size(),
+                      0U)
+                << i;
+    }
+    static MetaStore exact_sensitivity_source()
+    {
+        MetaStore source;
+        sensitivity_source(source, 400U, 7U, 400U);
+        for (size_t i = 0U; i < kSensitivityTags.size(); ++i) {
+            const MetaValue value = i < 2U ? make_u16(i == 0U ? 400U : 7U)
+                                           : make_u32(400U);
+            settings_native_entry(source, kSensitivityTags[i], value,
+                                  EntryFlags::None, i < 2U ? 3U : 4U,
+                                  "clean-sensitivity-wire");
+        }
+        return source;
+    }
+
+    TEST(MetadataSensitivity,
+         ExactCleanGroupUpdatesPreserveAllSevenNativeWireRecords)
+    {
+        SensitivityOptions options;
+        options.max_operations = 6U;
+        MetaStore limited      = exact_sensitivity_source();
+        limited.finalize();
+        MetaStore output;
+        settings_native(output, 0x9209U, make_u16(95U));
+        output.finalize();
+        const size_t limited_size = limited.entries().size();
+        EXPECT_EQ(translate_xmp_sensitivity_metadata(limited, options, &output)
+                      .status,
+                  SettingsStatus::OperationLimitExceeded);
+        ASSERT_EQ(output.entries().size(), 1U);
+        EXPECT_EQ(settings_find(output, 0x9209U)->value.data.u64, 95U);
+        EXPECT_EQ(translate_xmp_sensitivity_metadata(limited, options, &limited)
+                      .status,
+                  SettingsStatus::OperationLimitExceeded);
+        EXPECT_EQ(limited.entries().size(), limited_size);
+        for (size_t i = 0U; i < kSensitivityTags.size(); ++i)
+            EXPECT_FALSE(any(settings_find(limited, kSensitivityTags[i])->flags,
+                             EntryFlags::Dirty))
+                << i;
+
+        options.max_operations = 7U;
+        MetaStore exact        = exact_sensitivity_source();
+        exact.finalize();
+        const auto authority
+            = translate_xmp_sensitivity_metadata(exact, options, &exact);
+        ASSERT_EQ(authority.status, SettingsStatus::Ok);
+        EXPECT_EQ(authority.entries_updated, 7U);
+        EXPECT_EQ(authority.entries_added, 0U);
+        for (size_t i = 0U; i < kSensitivityTags.size(); ++i) {
+            const Entry* entry = settings_find(exact, kSensitivityTags[i]);
+            ASSERT_NE(entry, nullptr) << i;
+            EXPECT_TRUE(any(entry->flags, EntryFlags::Dirty)) << i;
+            EXPECT_EQ(entry->value.data.u64,
+                      i == 0U ? 400U : (i == 1U ? 7U : 400U))
+                << i;
+            EXPECT_EQ(entry->origin.order_in_block, 17U) << i;
+            EXPECT_EQ(entry->origin.wire_type.code, i < 2U ? 3U : 4U) << i;
+            const auto wire = exact.arena().span(entry->origin.wire_type_name);
+            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                           wire.data()),
+                                       wire.size()),
+                      "clean-sensitivity-wire")
+                << i;
+        }
+        const auto repeated = translate_xmp_sensitivity_metadata(exact, {},
+                                                                 &exact);
+        EXPECT_EQ(repeated.groups_unchanged, 1U);
+        EXPECT_EQ(repeated.entries_updated, 0U);
+    }
+    TEST(MetadataSensitivity, CaptureBasicIsoAndFullGroupCanRunInEitherOrder)
+    {
+        for (const bool sensitivity_first : { false, true }) {
+            MetaStore source;
+            settings_xmp(source, "ISO", make_u16(400U));
+            for (size_t i = 1U; i < kSensitivityNames.size(); ++i)
+                settings_xmp(source, kSensitivityNames[i],
+                             make_u32(i == 1U ? 7U : 400U), EntryFlags::Dirty,
+                             kSensitivityNs);
+            source.finalize();
+            MetadataCaptureTranslationOptions basic_iso;
+            basic_iso.iso_to_exif = false;
+            if (sensitivity_first) {
+                ASSERT_EQ(translate_xmp_sensitivity_metadata(source, {}, &source)
+                              .status,
+                          SettingsStatus::Ok);
+                EXPECT_EQ(translate_xmp_capture_metadata(source, basic_iso,
+                                                         &source)
+                              .status,
+                          SettingsStatus::Ok);
+            } else {
+                EXPECT_EQ(translate_xmp_capture_metadata(source, basic_iso,
+                                                         &source)
+                              .status,
+                          SettingsStatus::Ok);
+                ASSERT_EQ(translate_xmp_sensitivity_metadata(source, {}, &source)
+                              .status,
+                          SettingsStatus::Ok);
+            }
+            for (const uint16_t tag : kSensitivityTags)
+                EXPECT_EQ(settings_active_count(source, tag), 1U) << tag;
+        }
     }
     TEST(MetadataSensitivity,
          ResourceFailuresAndInvalidOptionsLeaveOutputUntouched)
@@ -5959,9 +6588,10 @@ namespace {
                                       std::string_view("exact\0\0", 7U),
                                       TextEncoding::Ascii));
             source.finalize();
-            EXPECT_EQ(translate_xmp_camera_text_metadata(source, {}, &source)
-                          .groups_unchanged,
-                      1U);
+            const auto accepted = translate_xmp_camera_text_metadata(source, {},
+                                                                     &source);
+            EXPECT_EQ(accepted.groups_unchanged, field < 3U ? 1U : 0U);
+            EXPECT_EQ(accepted.entries_updated, field < 3U ? 0U : 1U);
             MetaEdit edit;
             edit.set_value(1U, make_u32(42U));
             source = commit(source, std::span<const MetaEdit>(&edit, 1U));
@@ -6015,6 +6645,158 @@ namespace {
                   0U);
         for (auto tag : kCameraTextTags)
             EXPECT_EQ(camera_text_value(clean, tag), "old");
+    }
+    TEST(MetadataCameraText, LensOwnerLifecyclePreservesTextAndWireProvenance)
+    {
+        for (size_t field = 3U; field < kCameraTextNames.size(); ++field) {
+            CameraTextOptions options;
+            options.spectral_sensitivity_to_exif = false;
+            options.camera_owner_name_to_exif    = false;
+            options.body_serial_number_to_exif   = false;
+            options.lens_make_to_exif            = false;
+            options.lens_model_to_exif           = false;
+            options.lens_serial_number_to_exif   = false;
+            options.*kCameraTextFlags[field]     = true;
+
+            MetaStore deleted;
+            settings_xmp(deleted, kCameraTextNames[field],
+                         make_text(deleted.arena(), "ignored",
+                                   TextEncoding::Utf8),
+                         EntryFlags::Dirty | EntryFlags::Deleted,
+                         kSensitivityNs);
+            deleted.finalize();
+            const auto removed = translate_xmp_camera_text_metadata(deleted,
+                                                                    options,
+                                                                    &deleted);
+            ASSERT_EQ(removed.status, CameraTextStatus::Ok)
+                << kCameraTextNames[field];
+            EXPECT_EQ(removed.entries_added, 1U) << kCameraTextNames[field];
+            EXPECT_EQ(removed.entries_updated, 0U) << kCameraTextNames[field];
+            const auto ids
+                = settings_native_history_ids(deleted, kCameraTextTags[field]);
+            ASSERT_EQ(ids.size(), 1U) << kCameraTextNames[field];
+            EXPECT_TRUE(any(deleted.entry(ids.front()).flags, EntryFlags::Dirty))
+                << kCameraTextNames[field];
+            EXPECT_TRUE(
+                any(deleted.entry(ids.front()).flags, EntryFlags::Deleted))
+                << kCameraTextNames[field];
+            const auto repeated = translate_xmp_camera_text_metadata(deleted,
+                                                                     options,
+                                                                     &deleted);
+            EXPECT_EQ(repeated.groups_unchanged, 1U) << kCameraTextNames[field];
+            EXPECT_EQ(repeated.entries_added, 0U) << kCameraTextNames[field];
+
+            MetaStore exact;
+            settings_xmp(exact, kCameraTextNames[field],
+                         make_text(exact.arena(), "Lens Value",
+                                   TextEncoding::Utf8),
+                         EntryFlags::Dirty, kSensitivityNs);
+            settings_native_entry(exact, kCameraTextTags[field],
+                                  make_text(exact.arena(),
+                                            std::string_view("Lens Value\0\0",
+                                                             12U),
+                                            TextEncoding::Ascii),
+                                  EntryFlags::None, 2U, "native-lens-wire");
+            exact.finalize();
+            const auto authority
+                = translate_xmp_camera_text_metadata(exact, options, &exact);
+            ASSERT_EQ(authority.status, CameraTextStatus::Ok)
+                << kCameraTextNames[field];
+            EXPECT_EQ(authority.entries_updated, 1U) << kCameraTextNames[field];
+            const Entry* native = settings_find(exact, kCameraTextTags[field]);
+            ASSERT_NE(native, nullptr) << kCameraTextNames[field];
+            EXPECT_TRUE(any(native->flags, EntryFlags::Dirty))
+                << kCameraTextNames[field];
+            EXPECT_EQ(native->value.text_encoding, TextEncoding::Ascii)
+                << kCameraTextNames[field];
+            EXPECT_EQ(camera_text_value(exact, kCameraTextTags[field]),
+                      std::string_view("Lens Value\0\0", 12U))
+                << kCameraTextNames[field];
+            EXPECT_EQ(native->origin.wire_type.code, 2U)
+                << kCameraTextNames[field];
+            EXPECT_EQ(native->origin.order_in_block, 17U)
+                << kCameraTextNames[field];
+            const auto wire = exact.arena().span(native->origin.wire_type_name);
+            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                           wire.data()),
+                                       wire.size()),
+                      "native-lens-wire")
+                << kCameraTextNames[field];
+            EXPECT_EQ(translate_xmp_camera_text_metadata(exact, options, &exact)
+                          .groups_unchanged,
+                      1U)
+                << kCameraTextNames[field];
+
+            MetaStore omitted;
+            settings_native(omitted, kCameraTextTags[field],
+                            make_text(omitted.arena(), "retained",
+                                      TextEncoding::Ascii));
+            omitted.finalize();
+            EXPECT_EQ(translate_xmp_camera_text_metadata(omitted, options,
+                                                         &omitted)
+                          .entries_removed,
+                      0U)
+                << kCameraTextNames[field];
+            EXPECT_EQ(camera_text_value(omitted, kCameraTextTags[field]),
+                      "retained")
+                << kCameraTextNames[field];
+
+            MetaStore conflict;
+            settings_xmp(conflict, kCameraTextNames[field],
+                         make_text(conflict.arena(), "ignored",
+                                   TextEncoding::Utf8),
+                         EntryFlags::Dirty | EntryFlags::Deleted,
+                         kSensitivityNs);
+            settings_native(conflict, kCameraTextTags[field],
+                            make_text(conflict.arena(), "old",
+                                      TextEncoding::Ascii));
+            conflict.finalize();
+            EXPECT_EQ(translate_xmp_camera_text_metadata(conflict, options,
+                                                         &conflict)
+                          .status,
+                      CameraTextStatus::NativeConflict)
+                << kCameraTextNames[field];
+            options.conflict_policy = CameraTextPolicy::PreserveExisting;
+            EXPECT_EQ(translate_xmp_camera_text_metadata(conflict, options,
+                                                         &conflict)
+                          .groups_preserved,
+                      1U)
+                << kCameraTextNames[field];
+            options.conflict_policy = CameraTextPolicy::ReplaceExisting;
+            options.max_operations  = 1U;
+            const auto replaced = translate_xmp_camera_text_metadata(conflict,
+                                                                     options,
+                                                                     &conflict);
+            ASSERT_EQ(replaced.status, CameraTextStatus::Ok)
+                << kCameraTextNames[field];
+            EXPECT_EQ(replaced.entries_removed, 1U) << kCameraTextNames[field];
+            EXPECT_EQ(replaced.entries_added, 0U) << kCameraTextNames[field];
+            EXPECT_EQ(settings_active_count(conflict, kCameraTextTags[field]),
+                      0U)
+                << kCameraTextNames[field];
+        }
+
+        MetaStore deletions;
+        for (size_t field = 3U; field < kCameraTextNames.size(); ++field)
+            settings_xmp(deletions, kCameraTextNames[field],
+                         make_text(deletions.arena(), "ignored",
+                                   TextEncoding::Utf8),
+                         EntryFlags::Dirty | EntryFlags::Deleted,
+                         kSensitivityNs);
+        CameraTextOptions options;
+        options.spectral_sensitivity_to_exif = false;
+        options.camera_owner_name_to_exif    = false;
+        options.body_serial_number_to_exif   = false;
+        options.max_added_entries            = 2U;
+        camera_text_failure(deletions, CameraTextStatus::EntryLimitExceeded,
+                            options);
+        options                              = {};
+        options.spectral_sensitivity_to_exif = false;
+        options.camera_owner_name_to_exif    = false;
+        options.body_serial_number_to_exif   = false;
+        options.max_operations               = 2U;
+        camera_text_failure(deletions, CameraTextStatus::OperationLimitExceeded,
+                            options);
     }
     TEST(MetadataCameraText,
          BatchBudgetsAndApiPreconditionsFailWithoutPartialWrites)

@@ -24,7 +24,7 @@ win over old tombstones; conflicting manual replacements fail before output.
 ABI 4 and snapshot v1 stayed unchanged in 0.6.2. Version 0.7.0 adds grouped
 timestamp deletion and synchronization across primary IFD0 and ExifIFD, with
 explicit missing-companion intents and merging that preserves unselected
-native destination entries. This changes the bundle to ABI 5; see
+native destination entries. The development ABI label stays 4 with unfrozen layouts; see
 :doc:`migration_0_7`. Structural fields, other pages and private-record deletion
 remain outside the bounded contract.
 
@@ -203,3 +203,26 @@ writeback covers ImageDescription, Artist, scalar Copyright, ColorSpace and
 RelatedSoundFile; it does not infer ICC, image or audio authority or impose
 complete-file companions. Failed validation, limits, conflicts and tombstones
 remain transactional. See :doc:`translation`.
+
+Capture and lens lifecycle (0.7.1)
+----------------------------------
+
+Capture, Flash, sensitivity and camera-text contracts are version 2. Accepted
+ExposureTime, FNumber, base ISO, Flash, FocalLength and lens make/model/serial
+owners create native Dirty+Deleted intent even when native keys are missing.
+Accepted clean exact values receive same-value Dirty updates that preserve
+bytes and wire provenance. Omission and conflict policies remain; intent and
+update costs are checked before transactional publication and repeat calls reuse
+intents. Hosts stage the separate calls before publishing an aggregate result.
+
+Full sensitivity owns ``8827`` and ``8830``--``8835`` as one validated group;
+optional absence becomes removal intent after complete validation. Basic ISO
+owns only ``8827`` and preserves companions; disable it when full sensitivity
+owns the source. Lens fields are independent. ExposureBiasValue,
+LensSpecification, camera-owner/body-serial and other capture paths are unchanged.
+
+TIFF preparation merges unspecified destination ExifIFD records for these dirty
+edits. Bounded removal also accepts ``829A``, ``829D``, ``8827``, ``8830``--``8835``,
+``9209``, ``920A`` and ``A433``--``A435``. Retained external MakerNotes keep
+their original bytes and offsets. Standard pointers and media remain intact;
+private relocation or checksum repair is not provided. See :doc:`migration_0_7` for the unfrozen development ABI-4 policy.

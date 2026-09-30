@@ -288,5 +288,23 @@ owners produce missing-companion removal intents even when the native source
 keys are absent. Preparation enables ExifIFD merging for dirty timestamp edits;
 unselected timestamp families and unrelated native destination entries survive.
 Source omission still preserves values. Manual lists are validated before output
-and do not implicitly synchronize XMP. The bundle layout requires ABI 5.
+and do not implicitly synchronize XMP. The bundle layout requires matching consumer builds; the current development
+ABI label remains 4 and is unfrozen.
 See [migration and authority rules](migration_0_7.md).
+
+## Capture and lens editing (0.7.1)
+
+Use logical or exact-key XMP edits, then stage capture, Flash, sensitivity and
+camera-text translation before snapshot preparation and TIFF/BigTIFF editing.
+Accepted deletions carry native intent even when the source native key was
+missing. Clean exact native values gain Dirty authority without changing their
+bytes or wire hints. Omission preserves destination values; budgets and conflict
+policies are checked before each transaction is published.
+
+Full sensitivity owns its validated seven-tag group, including optional absence;
+basic ISO owns only the base tag. Lens make/model/serial are independent fields.
+TIFF edits preserve unspecified native records, opaque MakerNote bytes and
+original external offsets, standard pointers and media. The selected fields, contract versions and exclusions are defined in
+[translation](translation.md#grouped-capture-and-lens-lifecycle-071) and
+[migration](migration_0_7.md). The development ABI label stays 4 and remains
+unfrozen; build matching headers and libraries.

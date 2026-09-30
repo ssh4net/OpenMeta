@@ -193,7 +193,7 @@ capture = openmeta.create_metadata([
     openmeta.metadata_creation_urational(K.FocalLength, 50, 1),
 ])
 translated_capture = capture.translate_capture_metadata()
-assert openmeta.METADATA_CAPTURE_TRANSLATION_CONTRACT_VERSION == 1
+assert openmeta.METADATA_CAPTURE_TRANSLATION_CONTRACT_VERSION == 2
 assert translated_capture.entry_count == capture.entry_count + 4
 assert capture.entry_count == 4
 
@@ -710,7 +710,7 @@ with tempfile.TemporaryDirectory() as temporary:
         path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
         document = openmeta.read(str(path))
         count = document.entry_count
-        assert openmeta.METADATA_FLASH_TRANSLATION_CONTRACT_VERSION == 1
+        assert openmeta.METADATA_FLASH_TRANSLATION_CONTRACT_VERSION == 2
         assert document.translate_flash_metadata().entry_count == count
         translated = document.translate_flash_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
         assert translated.entry_count == count + 1
@@ -762,7 +762,7 @@ with tempfile.TemporaryDirectory() as temporary:
         path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
         document = openmeta.read(str(path))
         count = document.entry_count
-        assert openmeta.METADATA_SENSITIVITY_TRANSLATION_CONTRACT_VERSION == 1
+        assert openmeta.METADATA_SENSITIVITY_TRANSLATION_CONTRACT_VERSION == 2
         assert document.translate_sensitivity_metadata().entry_count == count
         if not valid:
             try:
@@ -794,7 +794,7 @@ with tempfile.TemporaryDirectory() as temporary:
         path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
         document = openmeta.read(str(path))
         count = document.entry_count
-        assert openmeta.METADATA_CAMERA_TEXT_TRANSLATION_CONTRACT_VERSION == 1
+        assert openmeta.METADATA_CAMERA_TEXT_TRANSLATION_CONTRACT_VERSION == 2
         assert openmeta.METADATA_CAMERA_TEXT_TRANSLATION_MAX_ADDED_ENTRIES == 6
         assert openmeta.METADATA_CAMERA_TEXT_TRANSLATION_MAX_TOTAL_TEXT_BYTES == 24576
         assert document.translate_camera_text_metadata().entry_count == count

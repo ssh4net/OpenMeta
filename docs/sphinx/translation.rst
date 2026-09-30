@@ -112,7 +112,7 @@ members; omission preserves values. Synthesized intents count against added
 entry and operation limits and are reused on repeat calls. TIFF edits merge
 unspecified destination entries for dirty timestamps, preserving other groups
 and native records. Date and technical calls remain separate transactions.
-See :doc:`migration_0_7` for contract version 2 and ABI 5.
+See :doc:`migration_0_7` for contract version 2 and the unfrozen ABI-4 policy.
 
 .. list-table::
    :header-rows: 1
@@ -2195,3 +2195,26 @@ cover ordinary and extended boxes, terminal zero-length boxes, positional
 scans that skip codestream bytes, and both ``jp2`` and ``jph`` brands.
 Real-file ICC/read-back and OIIO/iRAW consumer acceptance remain external
 qualification gates.
+
+Capture and lens lifecycle (0.7.1)
+----------------------------------
+
+Capture, Flash, sensitivity and camera-text contracts are version 2. Accepted
+ExposureTime, FNumber, base ISO, Flash, FocalLength and lens make/model/serial
+owners create native Dirty+Deleted intent even when native keys are missing.
+Accepted clean exact values receive same-value Dirty updates that preserve
+bytes and wire provenance. Omission and conflict policies remain; intent and
+update costs are checked before transactional publication and repeat calls reuse
+intents. Hosts stage the separate calls before publishing an aggregate result.
+
+Full sensitivity owns ``8827`` and ``8830``--``8835`` as one validated group;
+optional absence becomes removal intent after complete validation. Basic ISO
+owns only ``8827`` and preserves companions; disable it when full sensitivity
+owns the source. Lens fields are independent. ExposureBiasValue,
+LensSpecification, camera-owner/body-serial and other capture paths are unchanged.
+
+TIFF preparation merges unspecified destination ExifIFD records for these dirty
+edits. Bounded removal also accepts ``829A``, ``829D``, ``8827``, ``8830``--``8835``,
+``9209``, ``920A`` and ``A433``--``A435``. MakerNote bytes and standard pointers
+are preserved as opaque records; private relocation or checksum repair is not
+provided. See :doc:`migration_0_7` for the unfrozen development ABI-4 policy.
