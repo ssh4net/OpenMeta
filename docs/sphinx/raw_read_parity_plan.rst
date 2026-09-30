@@ -113,7 +113,7 @@ Family Gap Matrix
      - Preserve raw blocks, then add support only when validation inputs and
        stable structure are available
 
-CR3 private records in 0.6.1
+CR3 private records in 0.6.2
 ----------------------------
 
 MakerNote-enabled reads expose bounded ``CNCV`` compressor text as
@@ -138,6 +138,22 @@ CR3 edits retain all preserved top-level boxes at their original offsets.
 Appending metadata and replacing EOF metadata remain supported. Edits that
 would move retained boxes reject before output: CTBO and track tables are not
 relocated or repaired. This does not establish general CR3 rewrite support.
+
+Since 0.6.2, bounded ``stbl/stsd`` scanning also discovers ``CMP1`` in normal
+``CRAW`` sample entries with version/flags zero, the recognized
+``0x00010001`` extension at byte 86, and a complete child list from byte 90.
+Unknown entry layouts are skipped. Entries and children consume the existing
+box-count budget; positional callbacks do not read ``mdat`` payloads.
+
+MakerNote-enabled reads decode normal 60-byte ``CMP1`` boxes with a 52-byte
+payload and prefix ``ff00003001000000``. Nonzero big-endian dimensions at
+payload offsets 16 and 20 become ``cr3.cmp1.width`` and ``cr3.cmp1.height``;
+``cr3.cmp1.offset`` records the absolute box offset. Each record has a separate
+source block. These derived values are not writable or portable XMP and do
+not select main/raw/preview track roles or rendered-image dimensions.
+Sample-entry dimensions can differ. Other layouts and the separate Canon
+UUID ``CMP1`` route remain uninterpreted. Independent wire extraction and
+ExifTool agree on all 46 records in the current 23-file original cohort.
 
 Priority
 --------

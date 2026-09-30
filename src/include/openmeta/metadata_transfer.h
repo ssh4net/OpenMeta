@@ -695,8 +695,9 @@ struct PreparedTransferBundle final {
     std::vector<PreparedTransferPolicyDecision> policy_decisions;
     std::vector<PreparedTransferBlock> blocks;
     /// Sorted native TIFF IFD0 tags to remove during TIFF/DNG editing.
-    /// Preparation currently emits only ImageDescription (0x010E), Artist
-    /// (0x013B), and Copyright (0x8298), from dirty native tombstones with
+    /// Preparation emits only ImageDescription (0x010E), Make (0x010F),
+    /// Model (0x0110), Software (0x0131), Artist (0x013B), and Copyright
+    /// (0x8298), from dirty native tombstones with
     /// EXIF output enabled. TIFF edit APIs consume this list. Fresh TIFF emit,
     /// adapter, payload, and codec handoff APIs reject non-empty lists because
     /// their operation schemas cannot represent deletion. Keep this list empty

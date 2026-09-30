@@ -516,6 +516,12 @@ Current v1 behavior is:
       reference order and referenced items are also retained with supported
       local locations; missing references, removed referenced items, external
       data references, and other construction methods fail safely.
+      Since 0.6.2, one further method-2 level is supported, ending at local
+      method 0/1 extents. The new nested form validates nonzero lengths,
+      logical slices, physical terminal ranges and a shared 2^20-visit
+      validation work limit (`LimitExceeded` before output on exhaustion);
+      cycles and deeper chains reject before output. Method-0 offsets with
+      validated self-contained data references rebase when `meta` changes size.
       Bounded ICC transfer removes prior ICC `colr/prof` and `colr/rICC`
       properties from `iprp/ipco`, compacts/remaps existing `ipma`
       associations, appends the transferred `colr/prof` property, and

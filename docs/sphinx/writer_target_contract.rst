@@ -543,9 +543,20 @@ self-contained version-0 ``dinf``/``dref`` ``url `` or ``urn `` entry.
 Construction method 2 is supported only when the retained item has parseable
 ``iref`` ``iloc`` references, using explicit extent indexes or reference
 order, and every referenced item is also retained with a supported local
-location and data reference index 0. Non-self-contained data references,
+location and a validated self-contained data reference. Non-self-contained data references,
 missing method-2 references, removed referenced items, and other construction
 methods fail as unsupported instead of being rewritten by guesswork.
+
+Since 0.6.2, a method-2 reference can pass through one further method-2 item
+before ending at method 0 or 1. This nested form requires nonzero explicit
+lengths, bounded logical slices and physical terminal ranges. Cycles, a third
+method-2 level, missing/removed targets and unsupported references reject
+before output. Nested validation shares a limit of 2^20 lookup and extent
+visits; exhaustion returns ``LimitExceeded`` before output. It does not
+materialize item bodies. Validated self-contained method-0 file offsets also
+rebase when replacing ``meta`` moves their source bytes.
+Ordered ``iloc`` references preserve repeated target IDs so extent indices
+continue to select the same source slices.
 
 When exactly one removed managed item and one inserted item belong to the same
 Exif, XMP, JUMBF, or C2PA family, OpenMeta remaps that item ID in retained

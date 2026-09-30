@@ -43,7 +43,7 @@ group names, and intentional-difference notes. Each new lane should add:
 | Apple, DJI, Google, FLIR | Live-vendor source-processing classification exists for rendered-transfer safety | Computational, thermal, radiometric, and shot-log interpretation depth | Add decode only for stable fields that hosts can use safely |
 | Rare and legacy RAW families | Raw-preservation-first | Native container and MakerNote depth | Preserve raw blocks, then add support only when validation inputs and stable structure are available |
 
-## CR3 carrier inventory (0.6.1)
+## CR3 carrier inventory (0.6.2)
 
 The bounded Canon UUID path currently recognizes these records:
 
@@ -92,6 +92,25 @@ CR3 editing preserves every retained top-level source box at its original
 offset. An edit that would move one rejects before output; CTBO and track
 offsets are not repaired. Appending metadata and replacing EOF metadata remain
 supported. General CR3 scene/property rewriting remains outside this contract.
+
+Since 0.6.2, the scanner also discovers `CMP1` inside bounded `CRAW` sample
+entries in `stbl/stsd`. This route requires version/flags zero, a normal
+sample-entry header, the recognized `0x00010001` extension at byte 86, and a
+complete child-box list beginning at byte 90. Unknown entry layouts are skipped.
+The scanner charges entries and child boxes to its existing box-count budget
+and keeps memory and positional-callback scanning equivalent without reading
+`mdat` payloads.
+
+With MakerNote decoding enabled, a normal 60-byte `CMP1` box with a 52-byte
+payload and the prefix `ff00003001000000` exposes nonzero big-endian dimensions
+at payload offsets 16 and 20 as `cr3.cmp1.width` and `cr3.cmp1.height`. Each
+record has its own source block and an absolute `cr3.cmp1.offset`, so repeated
+records remain distinguishable. These are derived source values, not writable
+metadata or portable XMP. They do not assign main/raw/preview track roles or
+rendered-image dimensions; sample-entry dimensions can differ. Other signatures,
+sizes, and the separate Canon UUID `CMP1` route remain uninterpreted. Independent
+wire extraction and ExifTool agree on the dimensions of all 46 records in the
+current 23-file original cohort.
 
 ## Priority
 

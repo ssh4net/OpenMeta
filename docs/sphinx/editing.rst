@@ -15,6 +15,15 @@ removal list. Source omission still preserves destination entries. Fresh
 emitters and codec handoffs reject deletion-bearing bundles. This changes the
 bundle layout to ABI 4; see :doc:`migration_0_6` for the bounded contract.
 
+Version 0.6.2 extends that list to Make, Model and Software. The existing
+technical translator projects dirty ``tiff:Make``, ``tiff:Model`` and
+``xmp:CreatorTool`` tombstones under ``ReplaceExisting``. Classic TIFF and
+BigTIFF in both byte orders retain requests through snapshots, edit/stream and
+package replay. Omission preserves existing native tags. Live native values
+win over old tombstones; conflicting manual replacements fail before output.
+ABI 4 and snapshot v1 stay unchanged. DateTime and its ExifIFD companions,
+structural fields, other IFDs and private records remain separate contracts.
+
 C++ example
 -----------
 

@@ -379,6 +379,17 @@ Implemented as a bounded BMFF target family:
   self-contained `dinf`/`dref` entry, validated before graph rewriting;
   missing references, removed referenced items, non-self-contained data
   references, and other construction methods fail safely
+- since 0.6.2, a retained method-2 item may reference one further method-2
+  item, ending at method 0 or 1. The new nested form requires explicit nonzero
+  lengths and checked logical slices within the referenced item, plus bounded
+  terminal file/idat ranges. Cycles, a third method-2 level, missing/removed
+  targets and unsupported references reject before output. Nested validation
+  has a shared limit of 2^20 lookup and extent visits; exhaustion returns
+  `LimitExceeded` before output. No complete item is materialized.
+  Ordered `iloc` references retain repeated target IDs so explicit and implicit
+  extent indices continue to select the same source slices.
+  Resizing `meta` also rebases method-0 file offsets with a validated
+  self-contained nonzero data-reference index.
 - unambiguous one-old-to-one-new managed Exif, XMP, JUMBF, and C2PA item
   replacement remaps retained `iref` endpoints, version-0 `grpl` item-group
   members, and `ipma` item associations; strip and ambiguous replacement paths

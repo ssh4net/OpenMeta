@@ -101,6 +101,13 @@ keeping exact EXIF projection.
 Technical EXIF mappings
 -----------------------
 
+In 0.6.2, dirty tombstones for ``tiff:Make``, ``tiff:Model`` and
+``xmp:CreatorTool`` translated with ``ReplaceExisting`` can remove the existing
+native IFD0 tags through TIFF/BigTIFF edit writers. Preparation preserves the
+explicit removal requests through snapshots. Source omission preserves the
+destination. DateTime and its ExifIFD companions remain a separate deletion
+contract; see :doc:`editing`.
+
 .. list-table::
    :header-rows: 1
    :widths: 24 38 38

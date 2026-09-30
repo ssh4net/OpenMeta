@@ -336,6 +336,80 @@ namespace {
         return store.add_entry(entry) != kInvalidEntryId;
     }
 
+    static bool decode_cr3_cmp1(std::span<const std::byte> payload,
+                                const ContainerBlockRef& source_block,
+                                MetaStore& store) noexcept
+    {
+        static constexpr std::array<std::byte, 8U> kPayloadPrefix = {
+            std::byte { 0xff }, std::byte { 0x00 }, std::byte { 0x00 },
+            std::byte { 0x30 }, std::byte { 0x01 }, std::byte { 0x00 },
+            std::byte { 0x00 }, std::byte { 0x00 },
+        };
+        if (payload.size() != 52U || source_block.outer_size != 60U
+            || source_block.data_size != 52U
+            || source_block.aux_u32 != 0x00010001U) {
+            return false;
+        }
+        for (size_t i = 0U; i < kPayloadPrefix.size(); ++i) {
+            if (payload[i] != kPayloadPrefix[i]) {
+                return false;
+            }
+        }
+
+        uint32_t width  = 0U;
+        uint32_t height = 0U;
+        if (!read_u32be(payload, 16U, &width)
+            || !read_u32be(payload, 20U, &height) || width == 0U
+            || height == 0U) {
+            return false;
+        }
+
+        BlockInfo info;
+        info.format         = static_cast<uint32_t>(source_block.format);
+        info.container      = static_cast<uint32_t>(source_block.kind);
+        info.id             = source_block.id;
+        const BlockId block = store.add_block(info);
+        if (block == kInvalidBlockId) {
+            return false;
+        }
+
+        Entry width_entry;
+        width_entry.key = make_bmff_field_key(store.arena(), "cr3.cmp1.width");
+        width_entry.value                 = make_u32(width);
+        width_entry.origin.block          = block;
+        width_entry.origin.order_in_block = 0U;
+        width_entry.origin.wire_type      = WireType { WireFamily::Other, 0U };
+        width_entry.origin.wire_count     = 4U;
+        width_entry.flags                 = EntryFlags::Derived;
+        if (store.add_entry(width_entry) == kInvalidEntryId) {
+            return false;
+        }
+
+        Entry height_entry;
+        height_entry.key                   = make_bmff_field_key(store.arena(),
+                                                                 "cr3.cmp1.height");
+        height_entry.value                 = make_u32(height);
+        height_entry.origin.block          = block;
+        height_entry.origin.order_in_block = 1U;
+        height_entry.origin.wire_type      = WireType { WireFamily::Other, 0U };
+        height_entry.origin.wire_count     = 4U;
+        height_entry.flags                 = EntryFlags::Derived;
+        if (store.add_entry(height_entry) == kInvalidEntryId) {
+            return false;
+        }
+
+        Entry offset_entry;
+        offset_entry.key          = make_bmff_field_key(store.arena(),
+                                                        "cr3.cmp1.offset");
+        offset_entry.value        = make_u64(source_block.outer_offset);
+        offset_entry.origin.block = block;
+        offset_entry.origin.order_in_block = 2U;
+        offset_entry.origin.wire_type      = WireType { WireFamily::Other, 0U };
+        offset_entry.origin.wire_count     = 8U;
+        offset_entry.flags                 = EntryFlags::Derived;
+        return store.add_entry(offset_entry) != kInvalidEntryId;
+    }
+
     static bool decode_cr3_ctbo(std::span<const std::byte> file_bytes,
                                 std::span<const std::byte> payload,
                                 MetaStore& store) noexcept
@@ -1726,6 +1800,13 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
             if (block.format == ContainerFormat::Cr3
                 && block.id == fourcc('C', 'T', 'B', 'O')) {
                 (void)decode_cr3_ctbo(file_bytes, block_bytes, store);
+                continue;
+            }
+
+            if (block.format == ContainerFormat::Cr3
+                && block.id == fourcc('C', 'M', 'P', '1')
+                && block.aux_u32 == 0x00010001U) {
+                (void)decode_cr3_cmp1(block_bytes, block, store);
                 continue;
             }
 

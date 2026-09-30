@@ -17,6 +17,11 @@ existing TIFF/BigTIFF IFD0. This first contract covers `ImageDescription`
 (`0x010E`), `Artist` (`0x013B`) and `Copyright` (`0x8298`). Other IFDs, page
 directories, structural/storage tags and MakerNotes are outside this contract.
 
+Version 0.6.2 adds Make (`0x010F`), Model (`0x0110`) and Software (`0x0131`) to
+the same list without changing ABI 4 or snapshot v1. Request 0.6.2 or newer
+when using these additions; older 0.6 libraries reject their manual removal
+instructions. Other companion fields remain host-owned.
+
 Preparation collects exact native `ifd0` entries marked both `Dirty` and
 `Deleted` when EXIF transfer is enabled. A live entry of the same key takes
 precedence over historical tombstones. Duplicate tombstones yield one sorted

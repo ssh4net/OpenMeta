@@ -81,6 +81,13 @@ processing data. Each singleton and the complete `ModifyDate` companion group
 reconcile independently, so a conflict in `Make` does not silently change
 `Model`.
 
+Since 0.6.2, `ReplaceExisting` translation of dirty tombstones for `tiff:Make`,
+`tiff:Model` and `xmp:CreatorTool` can remove their existing native IFD0 tags in
+TIFF/BigTIFF files. Preparation carries the explicit native removal list;
+source omission still preserves the destination. DateTime/OffsetTime/SubSecTime
+deletion needs a separate multi-IFD contract. See
+[technical identity deletion](editing.md#technical-identity-deletion-062).
+
 ## Capture EXIF Mappings
 
 | XMP source | Native EXIF destination | Required native type |

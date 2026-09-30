@@ -910,6 +910,20 @@ write_test_u32be(std::vector<std::byte>* out, size_t off, uint32_t v) noexcept
     return true;
 }
 
+static bool
+write_test_u_nbe(std::vector<std::byte>* out, size_t off, size_t width,
+                 uint64_t value) noexcept
+{
+    if (!out || width > 8U || off > out->size() || width > out->size() - off) {
+        return false;
+    }
+    for (size_t i = 0U; i < width; ++i) {
+        const size_t shift = (width - 1U - i) * 8U;
+        (*out)[off + i]    = static_cast<std::byte>((value >> shift) & 0xFFULL);
+    }
+    return true;
+}
+
 static void
 append_u16le(std::vector<std::byte>* out, uint16_t v)
 {
@@ -1954,6 +1968,324 @@ make_bmff_foreign_meta_iloc_method2_reference_target(
                     std::span<const std::byte>(meta_payload.data(),
                                                meta_payload.size()));
     out.insert(out.end(), meta_box.begin(), meta_box.end());
+    return out;
+}
+
+struct TestBmffNestedMethod2FixtureOptions final {
+    bool use_extent_indices                = true;
+    bool mdat_after_meta                   = false;
+    bool include_dref                      = false;
+    bool dref_self_contained               = true;
+    bool terminal_is_exif                  = false;
+    bool primary_direct_terminal_reference = false;
+    bool omit_nested_reference             = false;
+    bool third_level_chain                 = false;
+    uint16_t nested_method                 = 2U;
+    uint16_t terminal_method               = 1U;
+    uint16_t outer_method                  = 2U;
+    uint16_t repeated_nested_targets       = 1U;
+    uint16_t nested_extent_count           = 1U;
+    uint16_t outer_data_reference_index    = 0U;
+    uint16_t nested_data_reference_index   = 0U;
+    uint16_t terminal_data_reference_index = 0U;
+    uint32_t nested_reference_target       = 3U;
+    uint8_t offset_width                   = 4U;
+    uint8_t length_width                   = 4U;
+    uint8_t base_width                     = 0U;
+    uint64_t outer_base_offset             = 0U;
+    uint64_t outer_extent_offset           = 0U;
+    uint64_t outer_extent_length           = 3U;
+    uint64_t nested_base_offset            = 0U;
+    uint64_t nested_extent_offset          = 0U;
+    uint64_t nested_extent_length          = 3U;
+    uint64_t terminal_base_offset          = 0U;
+    uint64_t terminal_extent_offset        = 0U;
+    uint64_t terminal_extent_length        = 3U;
+    uint64_t direct_terminal_extent_offset = 0U;
+    uint64_t direct_terminal_extent_length = 2U;
+};
+
+static std::vector<std::byte>
+make_bmff_foreign_meta_nested_method2_target(
+    const TestBmffNestedMethod2FixtureOptions& options)
+{
+    if (options.offset_width > 8U || options.length_width > 8U
+        || options.base_width > 8U || options.nested_extent_count == 0U
+        || options.repeated_nested_targets == 0U
+        || (options.primary_direct_terminal_reference
+            && options.repeated_nested_targets
+                   == std::numeric_limits<uint16_t>::max())) {
+        return {};
+    }
+
+    const uint16_t outer_extent_count = static_cast<uint16_t>(
+        options.repeated_nested_targets
+        + (options.primary_direct_terminal_reference ? 1U : 0U));
+    const bool has_mdat = options.nested_method == 0U
+                          || options.terminal_method == 0U;
+    std::vector<std::byte> out   = make_minimal_bmff_file();
+    uint64_t mdat_payload_offset = 0U;
+    static constexpr std::array<std::byte, 6U> kMdatBytes = {
+        std::byte { 'A' }, std::byte { 'B' }, std::byte { 'C' },
+        std::byte { 'D' }, std::byte { 'E' }, std::byte { 'F' },
+    };
+    std::vector<std::byte> mdat_box;
+    if (has_mdat) {
+        append_bmff_box(&mdat_box, openmeta::fourcc('m', 'd', 'a', 't'),
+                        std::span<const std::byte>(kMdatBytes.data(),
+                                                   kMdatBytes.size()));
+        if (!options.mdat_after_meta) {
+            mdat_payload_offset = static_cast<uint64_t>(out.size()) + 8U;
+            out.insert(out.end(), mdat_box.begin(), mdat_box.end());
+        }
+    }
+
+    std::vector<std::byte> idat_payload;
+    uint64_t terminal_extent_length = options.terminal_extent_length;
+    if (options.terminal_is_exif) {
+        idat_payload = make_test_bmff_exif_item_payload();
+        if (terminal_extent_length == 0U) {
+            terminal_extent_length = static_cast<uint64_t>(idat_payload.size());
+        }
+    } else {
+        idat_payload.assign(kMdatBytes.begin(), kMdatBytes.end());
+    }
+
+    std::vector<std::byte> pitm_payload;
+    append_bmff_fullbox_header(&pitm_payload, 0U);
+    append_u16be(&pitm_payload, 1U);
+    std::vector<std::byte> pitm_box;
+    append_bmff_box(&pitm_box, openmeta::fourcc('p', 'i', 't', 'm'),
+                    std::span<const std::byte>(pitm_payload.data(),
+                                               pitm_payload.size()));
+
+    std::vector<std::byte> iinf_payload;
+    append_bmff_fullbox_header(&iinf_payload, 0U);
+    append_u16be(&iinf_payload, options.third_level_chain ? 4U : 3U);
+    append_test_bmff_infe_v2(&iinf_payload, 1U,
+                             openmeta::fourcc('h', 'v', 'c', '1'), "Primary");
+    append_test_bmff_infe_v2(&iinf_payload, 2U,
+                             openmeta::fourcc('h', 'v', 'c', '1'), "Nested");
+    if (options.third_level_chain) {
+        append_test_bmff_infe_v2(&iinf_payload, 3U,
+                                 openmeta::fourcc('h', 'v', 'c', '1'),
+                                 "Intermediate");
+        append_test_bmff_infe_v2(&iinf_payload, 4U,
+                                 options.terminal_is_exif
+                                     ? openmeta::fourcc('E', 'x', 'i', 'f')
+                                     : openmeta::fourcc('h', 'v', 'c', '1'),
+                                 options.terminal_is_exif ? "Exif"
+                                                          : "Terminal");
+    } else {
+        append_test_bmff_infe_v2(&iinf_payload, 3U,
+                                 options.terminal_is_exif
+                                     ? openmeta::fourcc('E', 'x', 'i', 'f')
+                                     : openmeta::fourcc('h', 'v', 'c', '1'),
+                                 options.terminal_is_exif ? "Exif"
+                                                          : "Terminal");
+    }
+    std::vector<std::byte> iinf_box;
+    append_bmff_box(&iinf_box, openmeta::fourcc('i', 'i', 'n', 'f'),
+                    std::span<const std::byte>(iinf_payload.data(),
+                                               iinf_payload.size()));
+
+    const size_t index_width = options.use_extent_indices ? 2U : 0U;
+    const uint64_t nested_input_extent_offset
+        = options.nested_method == 0U && has_mdat && !options.mdat_after_meta
+              ? mdat_payload_offset + options.nested_extent_offset
+              : options.nested_extent_offset;
+    const uint64_t terminal_input_extent_offset
+        = options.terminal_method == 0U && has_mdat && !options.mdat_after_meta
+              ? mdat_payload_offset + options.terminal_extent_offset
+              : options.terminal_extent_offset;
+    std::vector<std::byte> iloc_payload;
+    append_bmff_fullbox_header(&iloc_payload, 2U);
+    iloc_payload.push_back(static_cast<std::byte>((options.offset_width << 4U)
+                                                  | options.length_width));
+    iloc_payload.push_back(
+        static_cast<std::byte>((options.base_width << 4U) | index_width));
+    append_u32be(&iloc_payload, options.third_level_chain ? 4U : 3U);
+
+    append_u32be(&iloc_payload, 2U);
+    append_u16be(&iloc_payload, options.nested_method);
+    append_u16be(&iloc_payload, options.nested_data_reference_index);
+    append_test_u_nbe(&iloc_payload, options.base_width,
+                      options.nested_base_offset);
+    append_u16be(&iloc_payload, options.nested_extent_count);
+    size_t nested_extent_offset_field = 0U;
+    for (uint32_t i = 0U; i < options.nested_extent_count; ++i) {
+        if (options.use_extent_indices) {
+            append_u16be(&iloc_payload, static_cast<uint16_t>(i + 1U));
+        }
+        if (i == 0U) {
+            nested_extent_offset_field = iloc_payload.size();
+        }
+        append_test_u_nbe(&iloc_payload, options.offset_width,
+                          nested_input_extent_offset);
+        append_test_u_nbe(&iloc_payload, options.length_width,
+                          options.nested_extent_length);
+    }
+
+    if (options.third_level_chain) {
+        append_u32be(&iloc_payload, 3U);
+        append_u16be(&iloc_payload, 2U);
+        append_u16be(&iloc_payload, options.nested_data_reference_index);
+        append_test_u_nbe(&iloc_payload, options.base_width, 0U);
+        append_u16be(&iloc_payload, 1U);
+        if (options.use_extent_indices) {
+            append_u16be(&iloc_payload, 1U);
+        }
+        append_test_u_nbe(&iloc_payload, options.offset_width, 0U);
+        append_test_u_nbe(&iloc_payload, options.length_width,
+                          terminal_extent_length);
+    }
+
+    const uint32_t terminal_item_id = options.third_level_chain ? 4U : 3U;
+    append_u32be(&iloc_payload, terminal_item_id);
+    append_u16be(&iloc_payload, options.terminal_method);
+    append_u16be(&iloc_payload, options.terminal_data_reference_index);
+    append_test_u_nbe(&iloc_payload, options.base_width,
+                      options.terminal_base_offset);
+    append_u16be(&iloc_payload, 1U);
+    if (options.use_extent_indices) {
+        append_u16be(&iloc_payload, 0U);
+    }
+    const size_t terminal_extent_offset_field = iloc_payload.size();
+    append_test_u_nbe(&iloc_payload, options.offset_width,
+                      terminal_input_extent_offset);
+    append_test_u_nbe(&iloc_payload, options.length_width,
+                      terminal_extent_length);
+
+    append_u32be(&iloc_payload, 1U);
+    append_u16be(&iloc_payload, options.outer_method);
+    append_u16be(&iloc_payload, options.outer_data_reference_index);
+    append_test_u_nbe(&iloc_payload, options.base_width,
+                      options.outer_base_offset);
+    append_u16be(&iloc_payload, outer_extent_count);
+    for (uint32_t i = 0U; i < options.repeated_nested_targets; ++i) {
+        if (options.use_extent_indices) {
+            append_u16be(&iloc_payload, options.outer_method == 2U
+                                            ? static_cast<uint16_t>(i + 1U)
+                                            : 0U);
+        }
+        append_test_u_nbe(&iloc_payload, options.offset_width,
+                          options.outer_extent_offset);
+        append_test_u_nbe(&iloc_payload, options.length_width,
+                          options.outer_extent_length);
+    }
+    if (options.primary_direct_terminal_reference) {
+        if (options.use_extent_indices) {
+            append_u16be(&iloc_payload,
+                         options.outer_method == 2U
+                             ? static_cast<uint16_t>(
+                                   options.repeated_nested_targets + 1U)
+                             : 0U);
+        }
+        append_test_u_nbe(&iloc_payload, options.offset_width,
+                          options.direct_terminal_extent_offset);
+        append_test_u_nbe(&iloc_payload, options.length_width,
+                          options.direct_terminal_extent_length);
+    }
+    std::vector<std::byte> iloc_box;
+    append_bmff_box(&iloc_box, openmeta::fourcc('i', 'l', 'o', 'c'),
+                    std::span<const std::byte>(iloc_payload.data(),
+                                               iloc_payload.size()));
+
+    std::vector<std::byte> iref_payload;
+    append_bmff_fullbox_header(&iref_payload, 1U);
+    std::vector<std::byte> outer_refs_payload;
+    append_u32be(&outer_refs_payload, 1U);
+    append_u16be(&outer_refs_payload, outer_extent_count);
+    for (uint32_t i = 0U; i < options.repeated_nested_targets; ++i) {
+        append_u32be(&outer_refs_payload, 2U);
+    }
+    if (options.primary_direct_terminal_reference) {
+        append_u32be(&outer_refs_payload, terminal_item_id);
+    }
+    std::vector<std::byte> outer_refs_box;
+    append_bmff_box(&outer_refs_box, openmeta::fourcc('i', 'l', 'o', 'c'),
+                    std::span<const std::byte>(outer_refs_payload.data(),
+                                               outer_refs_payload.size()));
+    iref_payload.insert(iref_payload.end(), outer_refs_box.begin(),
+                        outer_refs_box.end());
+
+    std::vector<std::byte> nested_refs_payload;
+    append_u32be(&nested_refs_payload, 2U);
+    append_u16be(&nested_refs_payload, options.nested_extent_count);
+    for (uint32_t i = 0U; i < options.nested_extent_count; ++i) {
+        append_u32be(&nested_refs_payload, options.nested_reference_target);
+    }
+    std::vector<std::byte> nested_refs_box;
+    append_bmff_box(&nested_refs_box, openmeta::fourcc('i', 'l', 'o', 'c'),
+                    std::span<const std::byte>(nested_refs_payload.data(),
+                                               nested_refs_payload.size()));
+    if (!options.omit_nested_reference) {
+        iref_payload.insert(iref_payload.end(), nested_refs_box.begin(),
+                            nested_refs_box.end());
+    }
+    if (options.third_level_chain) {
+        std::vector<std::byte> intermediate_refs_payload;
+        append_u32be(&intermediate_refs_payload, 3U);
+        append_u16be(&intermediate_refs_payload, 1U);
+        append_u32be(&intermediate_refs_payload, 4U);
+        std::vector<std::byte> intermediate_refs_box;
+        append_bmff_box(
+            &intermediate_refs_box, openmeta::fourcc('i', 'l', 'o', 'c'),
+            std::span<const std::byte>(intermediate_refs_payload.data(),
+                                       intermediate_refs_payload.size()));
+        iref_payload.insert(iref_payload.end(), intermediate_refs_box.begin(),
+                            intermediate_refs_box.end());
+    }
+    std::vector<std::byte> iref_box;
+    append_bmff_box(&iref_box, openmeta::fourcc('i', 'r', 'e', 'f'),
+                    std::span<const std::byte>(iref_payload.data(),
+                                               iref_payload.size()));
+
+    std::vector<std::byte> idat_box;
+    append_bmff_box(&idat_box, openmeta::fourcc('i', 'd', 'a', 't'),
+                    std::span<const std::byte>(idat_payload.data(),
+                                               idat_payload.size()));
+    const std::vector<std::byte> dinf_box
+        = options.include_dref
+              ? make_test_bmff_dinf(options.dref_self_contained)
+              : std::vector<std::byte> {};
+
+    std::vector<std::byte> meta_payload;
+    append_bmff_fullbox_header(&meta_payload, 0U);
+    meta_payload.insert(meta_payload.end(), pitm_box.begin(), pitm_box.end());
+    meta_payload.insert(meta_payload.end(), iinf_box.begin(), iinf_box.end());
+    const size_t iloc_child_offset = meta_payload.size();
+    meta_payload.insert(meta_payload.end(), iloc_box.begin(), iloc_box.end());
+    meta_payload.insert(meta_payload.end(), iref_box.begin(), iref_box.end());
+    meta_payload.insert(meta_payload.end(), dinf_box.begin(), dinf_box.end());
+    meta_payload.insert(meta_payload.end(), idat_box.begin(), idat_box.end());
+    std::vector<std::byte> meta_box;
+    append_bmff_box(&meta_box, openmeta::fourcc('m', 'e', 't', 'a'),
+                    std::span<const std::byte>(meta_payload.data(),
+                                               meta_payload.size()));
+
+    const size_t meta_offset = out.size();
+    out.insert(out.end(), meta_box.begin(), meta_box.end());
+    if (has_mdat && options.mdat_after_meta) {
+        mdat_payload_offset = static_cast<uint64_t>(out.size()) + 8U;
+        out.insert(out.end(), mdat_box.begin(), mdat_box.end());
+        const size_t iloc_payload_offset = meta_offset + 8U + iloc_child_offset
+                                           + 8U;
+        if (options.nested_method == 0U
+            && !write_test_u_nbe(
+                &out, iloc_payload_offset + nested_extent_offset_field,
+                options.offset_width,
+                mdat_payload_offset + options.nested_extent_offset)) {
+            return {};
+        }
+        if (options.terminal_method == 0U
+            && !write_test_u_nbe(
+                &out, iloc_payload_offset + terminal_extent_offset_field,
+                options.offset_width,
+                mdat_payload_offset + options.terminal_extent_offset)) {
+            return {};
+        }
+    }
     return out;
 }
 
@@ -8954,12 +9286,199 @@ TEST(MetadataTransferApi,
     }
 }
 
+TEST(MetadataTransferApi, TechnicalIdentityDeletionPersistsAcrossTiffVariants)
+{
+    constexpr std::string_view tiff_ns = "http://ns.adobe.com/tiff/1.0/";
+    constexpr std::string_view xmp_ns  = "http://ns.adobe.com/xap/1.0/";
+    const std::array<std::string_view, 3U> paths = { "Make", "Model",
+                                                     "CreatorTool" };
+    const std::array<std::string_view, 3U> values
+        = { "Camera Maker", "Camera Model", "Host Software" };
+    const std::array<uint16_t, 3U> tags = { 0x010FU, 0x0110U, 0x0131U };
+    openmeta::MetaStore source;
+    for (size_t i = 0U; i < paths.size(); ++i) {
+        openmeta::Entry property;
+        property.key   = openmeta::make_xmp_property_key(source.arena(),
+                                                       i == 2U ? xmp_ns
+                                                                 : tiff_ns,
+                                                         paths[i]);
+        property.value = openmeta::make_text(source.arena(), values[i],
+                                             openmeta::TextEncoding::Utf8);
+        property.flags = openmeta::EntryFlags::Dirty;
+        ASSERT_NE(source.add_entry(property), openmeta::kInvalidEntryId);
+    }
+    openmeta::Entry artist;
+    artist.key   = openmeta::make_exif_tag_key(source.arena(), "ifd0", 0x013BU);
+    artist.value = openmeta::make_text(source.arena(), "Retained Artist",
+                                       openmeta::TextEncoding::Ascii);
+    ASSERT_NE(source.add_entry(artist), openmeta::kInvalidEntryId);
+    source.finalize();
+    openmeta::MetadataTechnicalTranslationOptions translation;
+    openmeta::MetaStore native;
+    ASSERT_EQ(openmeta::translate_xmp_technical_metadata(source, translation,
+                                                         &native)
+                  .status,
+              openmeta::MetadataTechnicalTranslationStatus::Ok);
+    openmeta::PrepareTransferRequest request;
+    request.target_format      = openmeta::TransferTargetFormat::Tiff;
+    request.include_icc_app2   = false;
+    request.include_iptc_app13 = false;
+    openmeta::PreparedTransferBundle initial_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(native, request,
+                                                    &initial_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+
+    std::array<openmeta::MetadataTypedEditingOperation, 3U> operations {};
+    for (size_t i = 0U; i < operations.size(); ++i) {
+        operations[i].kind = openmeta::MetadataEditingOperationKind::Remove;
+        operations[i].entry.key
+            = openmeta::make_xmp_property_key_view(i == 2U ? xmp_ns : tiff_ns,
+                                                   paths[i]);
+    }
+    openmeta::MetaStore edited;
+    ASSERT_TRUE(
+        openmeta::edit_metadata_typed(native, operations, &edited).ok());
+    translation.conflict_policy
+        = openmeta::MetadataTechnicalTranslationConflictPolicy::ReplaceExisting;
+    openmeta::MetaStore removed;
+    ASSERT_EQ(openmeta::translate_xmp_technical_metadata(edited, translation,
+                                                         &removed)
+                  .status,
+              openmeta::MetadataTechnicalTranslationStatus::Ok);
+    std::vector<std::byte> snapshot_bytes;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(
+                  openmeta::build_transfer_source_snapshot(removed),
+                  &snapshot_bytes)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::TransferSourceSnapshot restored;
+    ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(snapshot_bytes,
+                                                             &restored)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::PreparedTransferBundle deletion_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(restored, request,
+                                                             &deletion_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(deletion_bundle.tiff_ifd0_removals,
+              (std::vector<uint16_t> { tags[0], tags[1], tags[2] }));
+    openmeta::MetaStore empty;
+    empty.finalize();
+    openmeta::PreparedTransferBundle omission_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(empty, request,
+                                                    &omission_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    const std::array<std::vector<std::byte>, 4U> targets = {
+        make_minimal_tiff_with_strip_storage_little_endian(),
+        make_minimal_tiff_big_endian(),
+        make_minimal_bigtiff_little_endian(),
+        make_minimal_bigtiff_big_endian(),
+    };
+    for (size_t variant = 0U; variant < targets.size(); ++variant) {
+        const openmeta::TiffEditPlan first_plan
+            = openmeta::plan_prepared_bundle_tiff_edit(targets[variant],
+                                                       initial_bundle);
+        ASSERT_EQ(first_plan.status, openmeta::TransferStatus::Ok);
+        std::vector<std::byte> first;
+        ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(targets[variant],
+                                                            initial_bundle,
+                                                            first_plan, &first)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        const std::vector<std::byte> original = first;
+        const openmeta::TiffEditPlan omission_plan
+            = openmeta::plan_prepared_bundle_tiff_edit(first, omission_bundle);
+        ASSERT_EQ(omission_plan.status, openmeta::TransferStatus::Ok);
+        std::vector<std::byte> omitted;
+        ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(
+                      first, omission_bundle, omission_plan, &omitted)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        openmeta::MetaStore omitted_store;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(omitted, &omitted_store));
+        for (size_t i = 0U; i < tags.size(); ++i) {
+            EXPECT_TRUE(store_has_text_entry(omitted_store,
+                                             exif_key_view("ifd0", tags[i]),
+                                             values[i]))
+                << "variant=" << variant;
+        }
+        const openmeta::TiffEditPlan plan
+            = openmeta::plan_prepared_bundle_tiff_edit(first, deletion_bundle);
+        ASSERT_EQ(plan.status, openmeta::TransferStatus::Ok);
+        std::vector<std::byte> output;
+        ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(first,
+                                                            deletion_bundle,
+                                                            plan, &output)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        BufferByteWriter stream;
+        ASSERT_EQ(openmeta::write_prepared_bundle_tiff_edit(first,
+                                                            deletion_bundle,
+                                                            plan, stream)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        EXPECT_EQ(stream.out, output);
+        openmeta::PreparedTransferPackagePlan package;
+        ASSERT_EQ(openmeta::build_prepared_bundle_tiff_package(first,
+                                                               deletion_bundle,
+                                                               plan, &package)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        openmeta::PreparedTransferPackageBatch batch;
+        ASSERT_EQ(openmeta::build_prepared_transfer_package_batch(
+                      first, deletion_bundle, package, &batch)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        BufferByteWriter replay;
+        ASSERT_EQ(openmeta::write_prepared_transfer_package_batch(batch, replay)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        EXPECT_EQ(replay.out, output);
+        EXPECT_EQ(first, original);
+        openmeta::MetaStore decoded;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(output, &decoded));
+        for (size_t i = 0U; i < tags.size(); ++i) {
+            EXPECT_TRUE(store_lacks_text_entry(decoded,
+                                               exif_key_view("ifd0", tags[i])));
+            EXPECT_TRUE(store_lacks_text_entry(
+                decoded,
+                openmeta::make_xmp_property_key_view(i == 2U ? xmp_ns : tiff_ns,
+                                                     paths[i])));
+        }
+        EXPECT_TRUE(store_has_text_entry(decoded,
+                                         exif_key_view("ifd0", 0x013BU),
+                                         "Retained Artist"));
+        if (variant == 0U) {
+            ASSERT_GE(output.size(), 66U);
+            for (size_t i = 62U; i < 66U; ++i) {
+                EXPECT_EQ(output[i], targets[variant][i]);
+            }
+        }
+        openmeta::PreparedTransferBundle conflicting = initial_bundle;
+        conflicting.tiff_ifd0_removals = deletion_bundle.tiff_ifd0_removals;
+        EXPECT_EQ(
+            openmeta::plan_prepared_bundle_tiff_edit(first, conflicting).status,
+            openmeta::TransferStatus::InvalidArgument);
+        BufferByteWriter rejected;
+        EXPECT_EQ(openmeta::write_prepared_bundle_tiff_edit(first, conflicting,
+                                                            plan, rejected)
+                      .status,
+                  openmeta::TransferStatus::InvalidArgument);
+        EXPECT_EQ(rejected.writes, 0U);
+    }
+}
+
 TEST(MetadataTransferApi,
      DirtyNativeIfd0TombstoneCollectionIsExactAndTargetScoped)
 {
     const openmeta::EntryFlags dirty_deleted = openmeta::EntryFlags::Dirty
                                                | openmeta::EntryFlags::Deleted;
-    const std::array<uint16_t, 3U> tags = { 0x010EU, 0x013BU, 0x8298U };
+    const std::array<uint16_t, 6U> tags = {
+        0x010EU, 0x010FU, 0x0110U, 0x0131U, 0x013BU, 0x8298U,
+    };
 
     for (uint32_t scenario = 0U; scenario < 4U; ++scenario) {
         openmeta::MetaStore source;
@@ -8989,8 +9508,9 @@ TEST(MetadataTransferApi,
                                              openmeta::TextEncoding::Ascii);
             ASSERT_NE(source.add_entry(live), openmeta::kInvalidEntryId);
         } else {
-            const std::array<uint16_t, 5U> duplicate_tags = {
-                tags[2], tags[1], tags[1], tags[0], tags[2],
+            const std::array<uint16_t, 8U> duplicate_tags = {
+                tags[5], tags[3], tags[1], tags[1],
+                tags[0], tags[2], tags[4], tags[5],
             };
             for (const uint16_t tag : duplicate_tags) {
                 openmeta::Entry tombstone;
@@ -9022,7 +9542,7 @@ TEST(MetadataTransferApi,
 
         std::vector<uint16_t> expected;
         if (scenario == 3U) {
-            expected = { tags[0], tags[1], tags[2] };
+            expected.assign(tags.begin(), tags.end());
         }
         EXPECT_EQ(direct_bundle.tiff_ifd0_removals, expected)
             << "scenario=" << scenario << " direct";
@@ -9031,8 +9551,8 @@ TEST(MetadataTransferApi,
     }
 
     openmeta::MetaStore duplicate_source;
-    const std::array<uint16_t, 5U> duplicate_tags = {
-        tags[2], tags[1], tags[1], tags[0], tags[2],
+    const std::array<uint16_t, 8U> duplicate_tags = {
+        tags[5], tags[3], tags[1], tags[1], tags[0], tags[2], tags[4], tags[5],
     };
     const openmeta::EntryFlags dirty_deleted_duplicate
         = openmeta::EntryFlags::Dirty | openmeta::EntryFlags::Deleted;
@@ -9075,7 +9595,7 @@ TEST(MetadataTransferApi,
                   openmeta::TransferStatus::Ok);
         std::vector<uint16_t> expected;
         if (target_index == 1U) {
-            expected = { tags[0], tags[1], tags[2] };
+            expected.assign(tags.begin(), tags.end());
         }
         EXPECT_EQ(direct_bundle.tiff_ifd0_removals, expected)
             << "target=" << target_index << " direct";
@@ -9468,7 +9988,7 @@ TEST(MetadataTransferApi,
         = openmeta::plan_prepared_bundle_tiff_edit(input, removal_bundle);
     ASSERT_EQ(valid_plan.status, openmeta::TransferStatus::Ok);
     const std::array<std::vector<uint16_t>, 4U> invalid_removal_lists = {
-        std::vector<uint16_t> { 0x010FU },
+        std::vector<uint16_t> { 0x0132U },
         std::vector<uint16_t> { 0x013BU, 0x013BU },
         std::vector<uint16_t> { 0x013BU, 0x010EU },
         std::vector<uint16_t> { 0x010EU, 0x013BU, 0x8298U, 0x8298U },
@@ -49591,12 +50111,6 @@ TEST(MetadataTransferApi,
         write_test_u32be(&truncated_dref, dinf_offset + 24U, 0xFFFFFFF0U));
     cases.push_back({ "truncated dref entry", std::move(truncated_dref),
                       "failed to parse dref entry" });
-    cases.push_back(
-        { "unsupported nested method 2",
-          make_bmff_foreign_meta_iloc_method2_reference_target(true, false,
-                                                               true, 0U, 0U, 2U),
-          "iloc construction method 2 references unsupported item" });
-
     for (const Case& one : cases) {
         SCOPED_TRACE(one.label);
         openmeta::PreparedTransferBundle bundle;
@@ -49624,6 +50138,436 @@ TEST(MetadataTransferApi,
         EXPECT_NE(result.edit_apply.status, openmeta::TransferStatus::Ok);
         EXPECT_TRUE(result.edited_output.empty());
         EXPECT_EQ(one.input, original_input);
+    }
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditRejectsNestedMethod2SelfReference)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+    openmeta::PreparedTransferBlock exif;
+    exif.route   = "bmff:item-exif";
+    exif.payload = make_test_bmff_exif_item_payload();
+    bundle.blocks.push_back(exif);
+
+    std::vector<std::byte> input
+        = make_bmff_foreign_meta_iloc_method2_reference_target(true, false,
+                                                               true, 0U, 0U,
+                                                               2U);
+    size_t iref_offset = 0U;
+    size_t iref_size   = 0U;
+    ASSERT_TRUE(find_top_level_bmff_meta_child_box(
+        std::span<const std::byte>(input.data(), input.size()),
+        openmeta::fourcc('i', 'r', 'e', 'f'), &iref_offset, &iref_size));
+    ASSERT_GE(iref_size, 12U);
+
+    uint32_t first_relation_size = 0U;
+    ASSERT_TRUE(
+        read_test_u32be(std::span<const std::byte>(input.data(), input.size()),
+                        iref_offset + 12U, &first_relation_size));
+    const size_t nested_target_offset = iref_offset + 12U + first_relation_size
+                                        + 8U + 4U + 2U;
+    ASSERT_LE(nested_target_offset + 4U, iref_offset + iref_size);
+    ASSERT_TRUE(write_test_u32be(&input, nested_target_offset, 2U));
+
+    const std::vector<std::byte> original_input = input;
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested = true;
+    options.edit_apply     = true;
+    const openmeta::ExecutePreparedTransferResult result
+        = openmeta::execute_prepared_transfer(
+            &bundle, std::span<const std::byte>(input.data(), input.size()),
+            options);
+
+    EXPECT_NE(result.edit_plan_status, openmeta::TransferStatus::Ok);
+    EXPECT_NE(result.edit_plan_message.find(
+                  "iloc construction method 2 references unsupported item"),
+              std::string::npos);
+    EXPECT_NE(result.edit_apply.status, openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(result.edited_output.empty());
+    EXPECT_EQ(input, original_input);
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditPreservesNestedMethod2RangesAndStreams)
+{
+    struct Case final {
+        const char* label;
+        TestBmffNestedMethod2FixtureOptions fixture;
+        uint32_t moved_item_id;
+    };
+    std::vector<Case> cases;
+    cases.push_back({ "explicit terminal method 1", {}, 0U });
+
+    TestBmffNestedMethod2FixtureOptions implicit;
+    implicit.use_extent_indices                = false;
+    implicit.repeated_nested_targets           = 2U;
+    implicit.primary_direct_terminal_reference = true;
+    implicit.outer_extent_length               = 1U;
+    implicit.nested_extent_length              = 1U;
+    implicit.direct_terminal_extent_length     = 2U;
+    cases.push_back({ "implicit repeated nested target", implicit, 0U });
+
+    TestBmffNestedMethod2FixtureOptions terminal_method0;
+    terminal_method0.terminal_method = 0U;
+    cases.push_back({ "terminal method 0", terminal_method0, 0U });
+
+    TestBmffNestedMethod2FixtureOptions nonzero_bases;
+    nonzero_bases.base_width             = 8U;
+    nonzero_bases.terminal_extent_length = 6U;
+    nonzero_bases.nested_base_offset     = 1U;
+    nonzero_bases.outer_base_offset      = 1U;
+    nonzero_bases.outer_extent_length    = 2U;
+    cases.push_back({ "nonzero nested and outer bases", nonzero_bases, 0U });
+
+    TestBmffNestedMethod2FixtureOptions direct_method0;
+    direct_method0.nested_method               = 0U;
+    direct_method0.nested_data_reference_index = 1U;
+    direct_method0.outer_data_reference_index  = 1U;
+    direct_method0.include_dref                = true;
+    direct_method0.mdat_after_meta             = true;
+    cases.push_back(
+        { "direct method 0 with local dref after meta", direct_method0, 2U });
+
+    TestBmffNestedMethod2FixtureOptions nested_method0_after_meta;
+    nested_method0_after_meta.terminal_method                   = 0U;
+    nested_method0_after_meta.primary_direct_terminal_reference = true;
+    nested_method0_after_meta.outer_extent_length               = 1U;
+    nested_method0_after_meta.nested_extent_length              = 1U;
+    nested_method0_after_meta.direct_terminal_extent_length     = 2U;
+    nested_method0_after_meta.outer_data_reference_index        = 1U;
+    nested_method0_after_meta.nested_data_reference_index       = 1U;
+    nested_method0_after_meta.terminal_data_reference_index     = 1U;
+    nested_method0_after_meta.include_dref                      = true;
+    nested_method0_after_meta.mdat_after_meta                   = true;
+    cases.push_back({ "nested and direct method 0 with local drefs after meta",
+                      nested_method0_after_meta, 3U });
+
+    TestBmffNestedMethod2FixtureOptions two_nested_levels;
+    two_nested_levels.third_level_chain = true;
+    two_nested_levels.outer_method      = 1U;
+    cases.push_back(
+        { "two nested method-2 levels from item 2", two_nested_levels, 0U });
+
+    for (const Case& one : cases) {
+        SCOPED_TRACE(one.label);
+        openmeta::PreparedTransferBundle bundle;
+        bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+        openmeta::PreparedTransferBlock exif;
+        exif.route   = "bmff:item-exif";
+        exif.payload = make_test_bmff_exif_item_payload();
+        bundle.blocks.push_back(exif);
+
+        const std::vector<std::byte> input
+            = make_bmff_foreign_meta_nested_method2_target(one.fixture);
+        ASSERT_FALSE(input.empty());
+        const std::vector<std::byte> original_input = input;
+
+        openmeta::ExecutePreparedTransferOptions options;
+        options.edit_requested = true;
+        options.edit_apply     = true;
+        const openmeta::ExecutePreparedTransferResult result
+            = openmeta::execute_prepared_transfer(
+                &bundle, std::span<const std::byte>(input.data(), input.size()),
+                options);
+
+        ASSERT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok)
+            << result.edit_plan_message;
+        ASSERT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+        ASSERT_FALSE(result.edited_output.empty());
+        EXPECT_EQ(input, original_input);
+
+        const std::span<const std::byte> edited(result.edited_output.data(),
+                                                result.edited_output.size());
+        TestBmffIlocRecordInfo primary;
+        ASSERT_TRUE(read_test_bmff_iloc_record(edited, 1U, &primary));
+        EXPECT_EQ(primary.construction_method, one.fixture.outer_method);
+        if (one.fixture.repeated_nested_targets == 2U) {
+            uint32_t relation_count = 0U;
+            std::vector<uint32_t> targets;
+            ASSERT_TRUE(count_test_bmff_iref_relations(
+                edited, openmeta::fourcc('i', 'l', 'o', 'c'), true, 1U, 2U,
+                &relation_count, &targets));
+            EXPECT_EQ(relation_count, 2U);
+            EXPECT_EQ(targets, (std::vector<uint32_t> { 2U, 2U, 3U }));
+        }
+
+        if (one.moved_item_id != 0U) {
+            TestBmffIlocRecordInfo source_location;
+            TestBmffIlocRecordInfo output_location;
+            ASSERT_TRUE(read_test_bmff_iloc_record(
+                std::span<const std::byte>(input.data(), input.size()),
+                one.moved_item_id, &source_location));
+            ASSERT_TRUE(read_test_bmff_iloc_record(edited, one.moved_item_id,
+                                                   &output_location));
+            EXPECT_GT(output_location.extent_offset,
+                      source_location.extent_offset);
+            ASSERT_LE(source_location.extent_offset, input.size());
+            ASSERT_LE(source_location.extent_length,
+                      input.size() - source_location.extent_offset);
+            ASSERT_LE(output_location.extent_offset, edited.size());
+            ASSERT_LE(output_location.extent_length,
+                      edited.size() - output_location.extent_offset);
+            EXPECT_EQ(std::memcmp(input.data() + source_location.extent_offset,
+                                  edited.data() + output_location.extent_offset,
+                                  static_cast<size_t>(
+                                      source_location.extent_length)),
+                      0);
+        }
+
+        openmeta::PreparedTransferPackageBatch batch;
+        const openmeta::EmitTransferResult batch_result
+            = openmeta::build_executed_transfer_package_batch(input, bundle,
+                                                              result, &batch);
+        ASSERT_EQ(batch_result.status, openmeta::TransferStatus::Ok);
+        openmeta::EmitTransferResult package_write;
+        const std::vector<std::byte> packaged
+            = materialize_transfer_package_batch(batch, &package_write);
+        ASSERT_EQ(package_write.status, openmeta::TransferStatus::Ok);
+        EXPECT_EQ(packaged, result.edited_output);
+
+        openmeta::PreparedTransferBundle stream_bundle = bundle;
+        BufferByteWriter writer;
+        openmeta::ExecutePreparedTransferOptions stream_options;
+        stream_options.edit_requested     = true;
+        stream_options.edit_apply         = true;
+        stream_options.edit_output_writer = &writer;
+        const openmeta::ExecutePreparedTransferResult streamed
+            = openmeta::execute_prepared_transfer(
+                &stream_bundle,
+                std::span<const std::byte>(input.data(), input.size()),
+                stream_options);
+        ASSERT_EQ(streamed.edit_plan_status, openmeta::TransferStatus::Ok);
+        ASSERT_EQ(streamed.edit_apply.status, openmeta::TransferStatus::Ok);
+        EXPECT_GT(writer.writes, 0U);
+        EXPECT_EQ(writer.out, result.edited_output);
+        EXPECT_EQ(input, original_input);
+    }
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditRejectsNestedMethod2InvalidInputsAtomically)
+{
+    struct Case final {
+        const char* label;
+        TestBmffNestedMethod2FixtureOptions fixture;
+        const char* expected_message;
+        openmeta::TransferStatus expected_status
+            = openmeta::TransferStatus::Malformed;
+    };
+    std::vector<Case> cases;
+
+    TestBmffNestedMethod2FixtureOptions outer_range;
+    outer_range.base_width          = 4U;
+    outer_range.outer_base_offset   = 1U;
+    outer_range.outer_extent_length = 3U;
+    cases.push_back({ "outer range past nested item", outer_range,
+                      "iloc construction method 2 target range is invalid" });
+
+    TestBmffNestedMethod2FixtureOptions nested_range;
+    nested_range.nested_extent_offset = 1U;
+    cases.push_back({ "nested range past terminal item", nested_range,
+                      "iloc construction method 2 target range is invalid" });
+
+    TestBmffNestedMethod2FixtureOptions outer_overflow;
+    outer_overflow.offset_width        = 8U;
+    outer_overflow.length_width        = 8U;
+    outer_overflow.base_width          = 8U;
+    outer_overflow.outer_base_offset   = std::numeric_limits<uint64_t>::max();
+    outer_overflow.outer_extent_length = 1U;
+    cases.push_back({ "outer base plus length overflow", outer_overflow,
+                      "iloc construction method 2 target range is invalid" });
+
+    TestBmffNestedMethod2FixtureOptions nested_overflow;
+    nested_overflow.offset_width         = 8U;
+    nested_overflow.length_width         = 8U;
+    nested_overflow.base_width           = 8U;
+    nested_overflow.nested_base_offset   = std::numeric_limits<uint64_t>::max();
+    nested_overflow.nested_extent_offset = 1U;
+    nested_overflow.nested_extent_length = 1U;
+    cases.push_back({ "nested base plus extent offset overflow",
+                      nested_overflow,
+                      "iloc construction method 2 target range is invalid" });
+
+    TestBmffNestedMethod2FixtureOptions zero_outer_length;
+    zero_outer_length.outer_extent_length = 0U;
+    cases.push_back({ "zero outer length", zero_outer_length,
+                      "iloc construction method 2 target range is invalid" });
+
+    TestBmffNestedMethod2FixtureOptions zero_nested_length;
+    zero_nested_length.nested_extent_length = 0U;
+    cases.push_back({ "zero nested length", zero_nested_length,
+                      "iloc construction method 2 target range is invalid" });
+
+    TestBmffNestedMethod2FixtureOptions zero_terminal_length;
+    zero_terminal_length.terminal_extent_length = 0U;
+    cases.push_back({ "zero terminal length", zero_terminal_length,
+                      "iloc construction method 2 target range is invalid" });
+
+    TestBmffNestedMethod2FixtureOptions omitted_length;
+    omitted_length.length_width = 0U;
+    cases.push_back({ "omitted extent lengths", omitted_length,
+                      "iloc omitted extent lengths are not supported",
+                      openmeta::TransferStatus::Unsupported });
+
+    TestBmffNestedMethod2FixtureOptions terminal_file_overrun;
+    terminal_file_overrun.terminal_method        = 0U;
+    terminal_file_overrun.terminal_extent_length = 7U;
+    terminal_file_overrun.mdat_after_meta        = true;
+    cases.push_back({ "terminal file extent exceeds input",
+                      terminal_file_overrun,
+                      "iloc construction method 2 target range is invalid" });
+
+    TestBmffNestedMethod2FixtureOptions terminal_idat_overrun;
+    terminal_idat_overrun.terminal_extent_length = 7U;
+    cases.push_back({ "terminal idat extent exceeds payload",
+                      terminal_idat_overrun,
+                      "iloc construction method 2 target range is invalid" });
+
+    TestBmffNestedMethod2FixtureOptions missing_relation;
+    missing_relation.omit_nested_reference = true;
+    cases.push_back({ "missing nested reference", missing_relation,
+                      "iloc construction method 2 references are missing",
+                      openmeta::TransferStatus::Unsupported });
+
+    TestBmffNestedMethod2FixtureOptions missing_target;
+    missing_target.nested_reference_target = 4U;
+    cases.push_back({ "missing nested target", missing_target,
+                      "iloc construction method 2 references unsupported item",
+                      openmeta::TransferStatus::Unsupported });
+
+    TestBmffNestedMethod2FixtureOptions removed_target;
+    removed_target.terminal_is_exif       = true;
+    removed_target.terminal_extent_length = 0U;
+    cases.push_back({ "nested target removed by replacement", removed_target,
+                      "iloc construction method 2 references removed item",
+                      openmeta::TransferStatus::Unsupported });
+
+    TestBmffNestedMethod2FixtureOptions external_reference;
+    external_reference.include_dref                = true;
+    external_reference.dref_self_contained         = false;
+    external_reference.nested_data_reference_index = 1U;
+    cases.push_back({ "external nested data reference", external_reference,
+                      "iloc data reference is not self-contained",
+                      openmeta::TransferStatus::Unsupported });
+
+    TestBmffNestedMethod2FixtureOptions third_level;
+    third_level.third_level_chain = true;
+    cases.push_back({ "third method-2 level", third_level,
+                      "iloc construction method 2 references unsupported item",
+                      openmeta::TransferStatus::Unsupported });
+
+    TestBmffNestedMethod2FixtureOptions self_cycle;
+    self_cycle.nested_reference_target = 2U;
+    cases.push_back({ "nested self-reference", self_cycle,
+                      "iloc construction method 2 references unsupported item",
+                      openmeta::TransferStatus::Unsupported });
+
+    TestBmffNestedMethod2FixtureOptions source_cycle;
+    source_cycle.nested_reference_target = 1U;
+    cases.push_back({ "nested reference returns to source", source_cycle,
+                      "iloc construction method 2 references unsupported item",
+                      openmeta::TransferStatus::Unsupported });
+
+    TestBmffNestedMethod2FixtureOptions reserved_bits;
+    reserved_bits.nested_method = 0xFFF2U;
+    cases.push_back(
+        { "nested reserved construction bits", reserved_bits,
+          "iloc construction method reserved bits are not supported",
+          openmeta::TransferStatus::Unsupported });
+
+    for (const Case& one : cases) {
+        SCOPED_TRACE(one.label);
+        openmeta::PreparedTransferBundle bundle;
+        bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+        openmeta::PreparedTransferBlock exif;
+        exif.route   = "bmff:item-exif";
+        exif.payload = make_test_bmff_exif_item_payload();
+        bundle.blocks.push_back(exif);
+
+        const std::vector<std::byte> input
+            = make_bmff_foreign_meta_nested_method2_target(one.fixture);
+        ASSERT_FALSE(input.empty());
+        const std::vector<std::byte> original_input = input;
+
+        for (uint32_t output_mode = 0U; output_mode < 2U; ++output_mode) {
+            openmeta::PreparedTransferBundle run_bundle = bundle;
+            BufferByteWriter writer;
+            openmeta::ExecutePreparedTransferOptions options;
+            options.edit_requested = true;
+            options.edit_apply     = true;
+            if (output_mode != 0U) {
+                options.edit_output_writer = &writer;
+            }
+            const openmeta::ExecutePreparedTransferResult result
+                = openmeta::execute_prepared_transfer(
+                    &run_bundle,
+                    std::span<const std::byte>(input.data(), input.size()),
+                    options);
+
+            EXPECT_EQ(result.edit_plan_status, one.expected_status)
+                << result.edit_plan_message;
+            EXPECT_NE(result.edit_plan_message.find(one.expected_message),
+                      std::string::npos)
+                << result.edit_plan_message;
+            EXPECT_NE(result.edit_apply.status, openmeta::TransferStatus::Ok);
+            EXPECT_TRUE(result.edited_output.empty());
+            EXPECT_EQ(writer.writes, 0U);
+            EXPECT_TRUE(writer.out.empty());
+            EXPECT_EQ(input, original_input);
+        }
+    }
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditBoundsRepeatedNestedMethod2Work)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+    openmeta::PreparedTransferBlock exif;
+    exif.route   = "bmff:item-exif";
+    exif.payload = make_test_bmff_exif_item_payload();
+    bundle.blocks.push_back(exif);
+
+    TestBmffNestedMethod2FixtureOptions fixture;
+    fixture.repeated_nested_targets = 4U;
+    fixture.nested_extent_count     = std::numeric_limits<uint16_t>::max();
+    fixture.nested_extent_length    = 1U;
+    fixture.terminal_extent_length  = 1U;
+    const std::vector<std::byte> input
+        = make_bmff_foreign_meta_nested_method2_target(fixture);
+    ASSERT_FALSE(input.empty());
+
+    for (uint32_t output_mode = 0U; output_mode < 2U; ++output_mode) {
+        openmeta::PreparedTransferBundle run_bundle = bundle;
+        BufferByteWriter writer;
+        openmeta::ExecutePreparedTransferOptions options;
+        options.edit_requested = true;
+        options.edit_apply     = true;
+        if (output_mode != 0U) {
+            options.edit_output_writer = &writer;
+        }
+        const openmeta::ExecutePreparedTransferResult result
+            = openmeta::execute_prepared_transfer(
+                &run_bundle,
+                std::span<const std::byte>(input.data(), input.size()),
+                options);
+
+        EXPECT_EQ(result.edit_plan_status,
+                  openmeta::TransferStatus::LimitExceeded);
+        EXPECT_NE(result.edit_plan_message.find(
+                      "iloc nested method-2 validation work exceeds limit"),
+                  std::string::npos);
+        EXPECT_EQ(result.edit_apply.status,
+                  openmeta::TransferStatus::LimitExceeded);
+        EXPECT_TRUE(result.edited_output.empty());
+        EXPECT_EQ(writer.writes, 0U);
+        EXPECT_TRUE(writer.out.empty());
     }
 }
 
@@ -50176,6 +51120,8 @@ TEST(MetadataTransferApi,
     static constexpr Case kCases[] = {
         { openmeta::TransferTargetFormat::Heif,
           openmeta::fourcc('h', 'e', 'i', 'c'), 0U, true },
+        { openmeta::TransferTargetFormat::Heif,
+          openmeta::fourcc('h', 'e', 'i', 'c'), 2U, true },
         { openmeta::TransferTargetFormat::Avif,
           openmeta::fourcc('a', 'v', 'i', 'f'), 1U, false },
         { openmeta::TransferTargetFormat::Cr3,

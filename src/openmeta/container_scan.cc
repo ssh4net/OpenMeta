@@ -5526,9 +5526,143 @@ namespace {
     };
 
     template<class Bytes>
+    static void bmff_scan_cr3_stsd(const Bytes& bytes, const BmffBox& stsd,
+                                   BlockSink* sink,
+                                   BmffScanBudget* budget) noexcept
+    {
+        if (!sink || !budget || sink->result.status != ScanStatus::Ok) {
+            return;
+        }
+
+        const uint64_t payload_off = stsd.offset + stsd.header_size;
+        if (stsd.end < payload_off || stsd.end - payload_off < 8U) {
+            sink->result.status = ScanStatus::Malformed;
+            return;
+        }
+
+        uint32_t version_flags = 0U;
+        uint32_t entry_count   = 0U;
+        if (!read_u32be(bytes, payload_off, &version_flags)
+            || !read_u32be(bytes, payload_off + 4U, &entry_count)) {
+            sink->result.status = ScanStatus::Malformed;
+            return;
+        }
+        if (version_flags != 0U) {
+            return;
+        }
+        if (entry_count > budget->boxes_remaining) {
+            sink->result.status = ScanStatus::Malformed;
+            return;
+        }
+
+        uint64_t entry_off = payload_off + 8U;
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            if (budget->boxes_remaining == 0U) {
+                sink->result.status = ScanStatus::Malformed;
+                return;
+            }
+            budget->boxes_remaining -= 1U;
+
+            BmffBox entry;
+            if (!parse_bmff_box(bytes, entry_off, stsd.end, &entry)) {
+                sink->result.status = ScanStatus::Malformed;
+                return;
+            }
+
+            uint32_t declared_entry_size = 0U;
+            uint32_t extension           = 0U;
+            const bool known_craw_entry
+                = entry.type == fourcc('C', 'R', 'A', 'W')
+                  && entry.header_size == 8U && entry.size >= 90U
+                  && read_u32be(bytes, entry.offset, &declared_entry_size)
+                  && declared_entry_size == entry.size
+                  && read_u32be(bytes, entry.offset + 86U, &extension)
+                  && extension == 0x00010001U;
+
+            if (known_craw_entry) {
+                uint64_t child_off = entry.offset + 90U;
+                while (child_off < entry.end) {
+                    if (budget->boxes_remaining == 0U) {
+                        sink->result.status = ScanStatus::Malformed;
+                        return;
+                    }
+                    budget->boxes_remaining -= 1U;
+
+                    BmffBox child;
+                    if (!parse_bmff_box(bytes, child_off, entry.end, &child)) {
+                        sink->result.status = ScanStatus::Malformed;
+                        return;
+                    }
+                    child_off = child.end;
+                }
+                if (child_off != entry.end) {
+                    sink->result.status = ScanStatus::Malformed;
+                    return;
+                }
+            }
+
+            entry_off = entry.end;
+        }
+        if (entry_off != stsd.end) {
+            sink->result.status = ScanStatus::Malformed;
+            return;
+        }
+
+        entry_off = payload_off + 8U;
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            BmffBox entry;
+            if (!parse_bmff_box(bytes, entry_off, stsd.end, &entry)) {
+                sink->result.status = ScanStatus::Malformed;
+                return;
+            }
+
+            uint32_t declared_entry_size = 0U;
+            uint32_t extension           = 0U;
+            const bool known_craw_entry
+                = entry.type == fourcc('C', 'R', 'A', 'W')
+                  && entry.header_size == 8U && entry.size >= 90U
+                  && read_u32be(bytes, entry.offset, &declared_entry_size)
+                  && declared_entry_size == entry.size
+                  && read_u32be(bytes, entry.offset + 86U, &extension)
+                  && extension == 0x00010001U;
+            if (known_craw_entry) {
+                uint64_t child_off = entry.offset + 90U;
+                while (child_off < entry.end) {
+                    BmffBox child;
+                    if (!parse_bmff_box(bytes, child_off, entry.end, &child)) {
+                        sink->result.status = ScanStatus::Malformed;
+                        return;
+                    }
+
+                    uint32_t declared_child_size = 0U;
+                    if (child.type == fourcc('C', 'M', 'P', '1')
+                        && child.header_size == 8U && child.size == 60U
+                        && read_u32be(bytes, child.offset, &declared_child_size)
+                        && declared_child_size == 60U) {
+                        ContainerBlockRef block;
+                        block.format       = ContainerFormat::Cr3;
+                        block.kind         = ContainerBlockKind::MakerNote;
+                        block.outer_offset = child.offset;
+                        block.outer_size   = child.size;
+                        block.data_offset  = child.offset + child.header_size;
+                        block.data_size    = child.size - child.header_size;
+                        block.id           = child.type;
+                        block.aux_u32      = 0x00010001U;
+                        sink_emit(sink, block);
+                    }
+
+                    child_off = child.end;
+                }
+            }
+            entry_off = entry.end;
+        }
+    }
+
+    template<class Bytes>
     static void bmff_scan_for_meta(const Bytes& bytes, uint64_t begin,
                                    uint64_t end, uint32_t depth,
-                                   ContainerFormat format, BlockSink* sink,
+                                   uint32_t parent_type, ContainerFormat format,
+                                   BlockSink* sink,
                                    BmffScanBudget* budget) noexcept
     {
         if (!budget || sink->result.status != ScanStatus::Ok) {
@@ -5555,6 +5689,13 @@ namespace {
 
             if (box.type == fourcc('m', 'e', 't', 'a')) {
                 bmff_scan_meta_box(bytes, box, format, sink);
+                if (sink->result.status != ScanStatus::Ok) {
+                    return;
+                }
+            } else if (format == ContainerFormat::Cr3
+                       && parent_type == fourcc('s', 't', 'b', 'l')
+                       && box.type == fourcc('s', 't', 's', 'd')) {
+                bmff_scan_cr3_stsd(bytes, box, sink, budget);
                 if (sink->result.status != ScanStatus::Ok) {
                     return;
                 }
@@ -5598,7 +5739,7 @@ namespace {
                 const uint64_t child_end = box.end;
                 if (child_off < child_end) {
                     bmff_scan_for_meta(bytes, child_off, child_end, depth + 1,
-                                       format, sink, budget);
+                                       box.type, format, sink, budget);
                     if (sink->result.status != ScanStatus::Ok) {
                         return;
                     }
@@ -5662,7 +5803,8 @@ namespace {
         }
 
         BmffScanBudget budget;
-        bmff_scan_for_meta(bytes, 0, bytes.size(), 0, format, &sink, &budget);
+        bmff_scan_for_meta(bytes, 0, bytes.size(), 0, 0U, format, &sink,
+                           &budget);
         return sink.result;
     }
 

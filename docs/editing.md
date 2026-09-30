@@ -258,3 +258,23 @@ list. A manual list must be sorted, unique and limited to those three tags;
 contradictory replacements fail before output. Fresh emitters and codec
 handoffs that cannot delete destination entries reject the bundle. This is an
 ABI-4 change: rebuild against 0.6.0. See [migration details](migration_0_6.md).
+
+### Technical identity deletion (0.6.2)
+
+The same bounded removal list also accepts IFD0 Make `010F`, Model `0110` and
+Software `0131`. Edit `tiff:Make`, `tiff:Model` or `xmp:CreatorTool`, then call
+`translate_xmp_technical_metadata` with `DirtyOnly` and `ReplaceExisting` to
+produce the native dirty tombstones. Snapshot preparation and TIFF/BigTIFF
+edit, stream and package paths retain the requests. An absent source value
+preserves the existing native tag. A live native value wins over historical
+tombstones; a manually supplied removal conflicting with a replacement fails
+before output. The group is tested in both byte orders for classic TIFF and
+BigTIFF, with unrelated descriptive values and strip bytes preserved.
+
+The six supported tags form a sorted unique list. DateTime and its ExifIFD
+companions, other IFDs/pages, structural tags and MakerNotes remain outside
+this contract. Removing Make or Model does not remove private camera records;
+removing Software does not remove separate software-detail fields. Hosts own
+those companion decisions. Fresh emitters and codec handoffs still reject
+deletion-bearing bundles. ABI 4 and snapshot v1 are unchanged; these additional
+tags require a 0.6.2 or newer library.

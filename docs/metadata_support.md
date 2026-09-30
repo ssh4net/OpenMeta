@@ -236,6 +236,9 @@ partially decoded reference element is never emitted.
 ### BMFF (`HEIF` / `AVIF` / `CR3`)
 
 OpenMeta now has a bounded semantic model on top of raw item discovery:
+- source-bound CR3 compressor text, CTBO carrier locations, and repeated
+  CMP1 record dimensions/offsets from the recognized CRAW sample-entry layout;
+  these derived values are not writable or projected into portable XMP
 - `ftyp.*`, including brand names and compatible-brand counts
 - primary item properties, primary metadata-carrier flags, primary sidecar
   counts/flags for linked metadata and image sidecars, content-bound

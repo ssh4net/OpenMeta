@@ -17,6 +17,11 @@ is enabled. A live entry wins over historical tombstones; duplicate tombstones
 produce one sorted instruction. Source omission and clean tombstones preserve
 destination tags. Snapshot v1 already preserves the required entry flags.
 
+Version 0.6.2 adds IFD0 Make (``0x010F``), Model (``0x0110``) and Software
+(``0x0131``) without changing ABI 4 or snapshot v1. These additions require
+0.6.2 or newer; older 0.6 libraries reject their manual removal instructions.
+Deleting these values does not delete separate camera or software records.
+
 Manual removal lists must be sorted, unique and restricted to those tags.
 Invalid lists and contradictory serialized replacements fail before output.
 Existing TIFF/BigTIFF edit planning, apply, stream and edit-package paths honor

@@ -10919,14 +10919,18 @@ namespace {
         return true;
     }
 
+    static constexpr std::array<uint16_t, 6U> kTiffIfd0RemovalTags = {
+        0x010EU, 0x010FU, 0x0110U, 0x0131U, 0x013BU, 0x8298U,
+    };
+
     static uint32_t tiff_ifd0_profile_removal_slot(uint16_t tag) noexcept
     {
-        switch (tag) {
-        case 0x010EU: return 0U;
-        case 0x013BU: return 1U;
-        case 0x8298U: return 2U;
-        default: return 3U;
+        for (uint32_t i = 0U; i < kTiffIfd0RemovalTags.size(); ++i) {
+            if (kTiffIfd0RemovalTags[i] == tag) {
+                return i;
+            }
         }
+        return static_cast<uint32_t>(kTiffIfd0RemovalTags.size());
     }
 
     static std::vector<TiffTagUpdate>
@@ -10987,12 +10991,12 @@ namespace {
     static bool prepared_tiff_ifd0_removals_are_valid(
         const PreparedTransferBundle& bundle) noexcept
     {
-        if (bundle.tiff_ifd0_removals.size() > 3U) {
+        if (bundle.tiff_ifd0_removals.size() > kTiffIfd0RemovalTags.size()) {
             return false;
         }
         for (size_t i = 0U; i < bundle.tiff_ifd0_removals.size(); ++i) {
             if (tiff_ifd0_profile_removal_slot(bundle.tiff_ifd0_removals[i])
-                >= 3U) {
+                >= kTiffIfd0RemovalTags.size()) {
                 return false;
             }
             if (i > 0U
@@ -12460,8 +12464,8 @@ collect_tiff_ifd0_profile_removals(const MetaStore& store, bool enabled,
         return;
     }
 
-    std::array<bool, 3U> has_dirty_tombstone {};
-    std::array<bool, 3U> has_live_entry {};
+    std::array<bool, kTiffIfd0RemovalTags.size()> has_dirty_tombstone {};
+    std::array<bool, kTiffIfd0RemovalTags.size()> has_live_entry {};
     for (const Entry& entry : store.entries()) {
         if (entry.key.kind != MetaKeyKind::ExifTag
             || arena_string(store.arena(), entry.key.data.exif_tag.ifd)
@@ -12482,15 +12486,10 @@ collect_tiff_ifd0_profile_removals(const MetaStore& store, bool enabled,
         }
     }
 
-    static constexpr std::array<uint16_t, 3U> kSupportedTags = {
-        0x010EU,
-        0x013BU,
-        0x8298U,
-    };
-    out_removals->reserve(kSupportedTags.size());
-    for (size_t i = 0U; i < kSupportedTags.size(); ++i) {
+    out_removals->reserve(kTiffIfd0RemovalTags.size());
+    for (size_t i = 0U; i < kTiffIfd0RemovalTags.size(); ++i) {
         if (has_dirty_tombstone[i] && !has_live_entry[i]) {
-            out_removals->push_back(kSupportedTags[i]);
+            out_removals->push_back(kTiffIfd0RemovalTags[i]);
         }
     }
 }
@@ -27653,16 +27652,148 @@ namespace {
         return true;
     }
 
-    static const BmffForeignIlocRecord* bmff_find_foreign_iloc_record(
-        const std::vector<BmffForeignIlocRecord>& records,
-        uint32_t item_id) noexcept
+    // Bound repeated method-2 edges without changing direct method-2 handling.
+    static constexpr uint64_t kBmffNestedMethod2ValidationWorkBudget = 1ULL
+                                                                       << 20U;
+
+    static bool
+    bmff_charge_nested_method2_validation_work(uint64_t* work_remaining,
+                                               uint64_t work,
+                                               EmitTransferResult* out) noexcept
     {
-        for (size_t i = 0; i < records.size(); ++i) {
+        if (!work_remaining || work > *work_remaining) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::LimitExceeded,
+                EmitTransferCode::InvalidPayload,
+                "iloc nested method-2 validation work exceeds limit");
+        }
+        *work_remaining -= work;
+        return true;
+    }
+
+    static const BmffForeignIlocRecord* bmff_find_foreign_iloc_record_counted(
+        const std::vector<BmffForeignIlocRecord>& records, uint32_t item_id,
+        uint64_t* out_visited) noexcept
+    {
+        if (!out_visited) {
+            return nullptr;
+        }
+        *out_visited = 0U;
+        for (size_t i = 0U; i < records.size(); ++i) {
+            *out_visited += 1U;
             if (records[i].item_id == item_id) {
                 return &records[i];
             }
         }
         return nullptr;
+    }
+
+    static const BmffForeignIlocRefs*
+    bmff_find_foreign_iloc_refs_counted(const BmffForeignIlocRefTable& table,
+                                        uint32_t from_item_id,
+                                        uint64_t* out_visited) noexcept
+    {
+        if (!out_visited) {
+            return nullptr;
+        }
+        *out_visited = 0U;
+        if (!table.parsed) {
+            return nullptr;
+        }
+        for (size_t i = 0U; i < table.entries.size(); ++i) {
+            *out_visited += 1U;
+            if (table.entries[i].from_item_id == from_item_id) {
+                return &table.entries[i];
+            }
+        }
+        return nullptr;
+    }
+
+    static bool
+    bmff_removed_item_id_counted(const std::vector<uint32_t>& removed_item_ids,
+                                 uint32_t item_id,
+                                 uint64_t* out_visited) noexcept
+    {
+        if (!out_visited) {
+            return false;
+        }
+        *out_visited = 0U;
+        for (size_t i = 0U; i < removed_item_ids.size(); ++i) {
+            *out_visited += 1U;
+            if (removed_item_ids[i] == item_id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool
+    bmff_accumulate_nested_method2_work(uint64_t* pending_work, uint64_t work,
+                                        EmitTransferResult* out) noexcept
+    {
+        if (!pending_work
+            || work > std::numeric_limits<uint64_t>::max() - *pending_work) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::LimitExceeded,
+                EmitTransferCode::InvalidPayload,
+                "iloc nested method-2 validation work exceeds limit");
+        }
+        *pending_work += work;
+        return true;
+    }
+
+    static bool bmff_foreign_iloc_range_fits(uint64_t base_offset,
+                                             uint64_t extent_offset,
+                                             uint64_t extent_length,
+                                             uint64_t target_size) noexcept;
+
+    static bool bmff_foreign_iloc_sum_extent_lengths(
+        const BmffForeignIlocRecord& record, uint64_t* out_total,
+        uint64_t target_byte_size, uint64_t* work_remaining,
+        EmitTransferResult* out) noexcept
+    {
+        if (!out_total || record.extents.empty()) {
+            return false;
+        }
+        uint64_t total = 0U;
+        for (size_t i = 0U; i < record.extents.size(); ++i) {
+            if (!bmff_charge_nested_method2_validation_work(work_remaining, 1U,
+                                                            out)) {
+                return false;
+            }
+            const uint64_t length = record.extents[i].length;
+            if (length == 0U
+                || length > std::numeric_limits<uint64_t>::max() - total
+                || !bmff_foreign_iloc_range_fits(record.base_offset,
+                                                 record.extents[i].offset,
+                                                 length, target_byte_size)) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Malformed,
+                    EmitTransferCode::InvalidPayload,
+                    "iloc construction method 2 target range is invalid");
+            }
+            total += length;
+        }
+        *out_total = total;
+        return true;
+    }
+
+    static bool bmff_foreign_iloc_range_fits(uint64_t base_offset,
+                                             uint64_t extent_offset,
+                                             uint64_t extent_length,
+                                             uint64_t target_size) noexcept
+    {
+        if (extent_length == 0U
+            || extent_offset
+                   > std::numeric_limits<uint64_t>::max() - base_offset) {
+            return false;
+        }
+        const uint64_t range_begin = base_offset + extent_offset;
+        if (extent_length
+            > std::numeric_limits<uint64_t>::max() - range_begin) {
+            return false;
+        }
+        return range_begin + extent_length <= target_size;
     }
 
     static BmffForeignIlocRefs*
@@ -27681,21 +27812,6 @@ namespace {
         entry.from_item_id = from_item_id;
         table->entries.push_back(entry);
         return &table->entries.back();
-    }
-
-    static const BmffForeignIlocRefs*
-    bmff_find_foreign_iloc_refs(const BmffForeignIlocRefTable& table,
-                                uint32_t from_item_id) noexcept
-    {
-        if (!table.parsed) {
-            return nullptr;
-        }
-        for (size_t i = 0; i < table.entries.size(); ++i) {
-            if (table.entries[i].from_item_id == from_item_id) {
-                return &table.entries[i];
-            }
-        }
-        return nullptr;
     }
 
     static bool bmff_parse_foreign_iref_iloc_table(
@@ -27802,29 +27918,54 @@ namespace {
         return true;
     }
 
-    static bool bmff_validate_foreign_iloc_method2_refs(
-        const BmffForeignMetaContext& ctx,
+    static bool bmff_validate_foreign_iloc_nested_method2_target(
+        std::span<const std::byte> bytes, const BmffForeignMetaContext& ctx,
         const std::vector<BmffForeignIlocRecord>& records,
         const std::vector<uint32_t>& removed_item_ids,
         const BmffForeignIlocRefTable& ref_table,
-        const BmffForeignIlocRecord& record, EmitTransferResult* out) noexcept
+        const BmffForeignIlocRecord& source_record,
+        const BmffForeignIlocExtent& source_extent,
+        const BmffForeignIlocRecord& nested_record, uint64_t* work_remaining,
+        EmitTransferResult* out) noexcept
     {
-        if (!ctx.has_iref || !ref_table.parsed) {
+        if (nested_record.item_id == source_record.item_id) {
             return fail_bmff_foreign_meta_merge(
                 out, TransferStatus::Unsupported,
                 EmitTransferCode::InvalidArgument,
-                "iloc construction method 2 requires iref");
+                "iloc construction method 2 references unsupported item");
         }
-        const BmffForeignIlocRefs* refs
-            = bmff_find_foreign_iloc_refs(ref_table, record.item_id);
-        if (!refs) {
+        uint64_t refs_visited = 0U;
+        const BmffForeignIlocRefs* nested_refs
+            = bmff_find_foreign_iloc_refs_counted(ref_table,
+                                                  nested_record.item_id,
+                                                  &refs_visited);
+        if (!bmff_charge_nested_method2_validation_work(work_remaining,
+                                                        refs_visited, out)) {
+            return false;
+        }
+        if (!nested_refs) {
             return fail_bmff_foreign_meta_merge(
                 out, TransferStatus::Unsupported,
                 EmitTransferCode::InvalidArgument,
                 "iloc construction method 2 references are missing");
         }
-        for (size_t i = 0; i < refs->to_item_ids.size(); ++i) {
-            if (bmff_removed_item_id(removed_item_ids, refs->to_item_ids[i])) {
+        for (size_t i = 0U; i < nested_refs->to_item_ids.size(); ++i) {
+            if (!bmff_charge_nested_method2_validation_work(work_remaining, 1U,
+                                                            out)) {
+                return false;
+            }
+            bool target_removed = false;
+            for (size_t j = 0U; j < removed_item_ids.size(); ++j) {
+                if (!bmff_charge_nested_method2_validation_work(work_remaining,
+                                                                1U, out)) {
+                    return false;
+                }
+                if (removed_item_ids[j] == nested_refs->to_item_ids[i]) {
+                    target_removed = true;
+                    break;
+                }
+            }
+            if (target_removed) {
                 return fail_bmff_foreign_meta_merge(
                     out, TransferStatus::Unsupported,
                     EmitTransferCode::InvalidArgument,
@@ -27833,7 +27974,167 @@ namespace {
         }
 
         const size_t index_size = static_cast<size_t>(ctx.iloc_sizes1 & 0x0FU);
+        uint64_t nested_logical_size = 0U;
+        for (size_t i = 0U; i < nested_record.extents.size(); ++i) {
+            if (!bmff_charge_nested_method2_validation_work(work_remaining, 1U,
+                                                            out)) {
+                return false;
+            }
+            uint64_t ref_index = nested_record.extents[i].index;
+            if (index_size == 0U) {
+                ref_index = static_cast<uint64_t>(i) + 1U;
+            }
+            if (ref_index == 0U
+                || ref_index > static_cast<uint64_t>(
+                       nested_refs->to_item_ids.size())) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Unsupported,
+                    EmitTransferCode::InvalidArgument,
+                    "iloc construction method 2 references are missing");
+            }
+
+            const uint32_t terminal_item_id
+                = nested_refs->to_item_ids[static_cast<size_t>(ref_index - 1U)];
+            if (terminal_item_id == 0U) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Unsupported,
+                    EmitTransferCode::InvalidArgument,
+                    "iloc construction method 2 references are missing");
+            }
+            if (terminal_item_id == source_record.item_id
+                || terminal_item_id == nested_record.item_id) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Unsupported,
+                    EmitTransferCode::InvalidArgument,
+                    "iloc construction method 2 references unsupported item");
+            }
+
+            uint64_t records_visited = 0U;
+            const BmffForeignIlocRecord* terminal
+                = bmff_find_foreign_iloc_record_counted(records,
+                                                        terminal_item_id,
+                                                        &records_visited);
+            if (!bmff_charge_nested_method2_validation_work(work_remaining,
+                                                            records_visited,
+                                                            out)) {
+                return false;
+            }
+            if (!terminal || (terminal->construction_method & 0xFFF0U) != 0U) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Unsupported,
+                    EmitTransferCode::InvalidArgument,
+                    "iloc construction method 2 references unsupported item");
+            }
+            const uint16_t terminal_method = static_cast<uint16_t>(
+                terminal->construction_method & 0x000FU);
+            if (terminal_method != 0U
+                && !(terminal_method == 1U && ctx.has_idat)) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Unsupported,
+                    EmitTransferCode::InvalidArgument,
+                    "iloc construction method 2 references unsupported item");
+            }
+
+            uint64_t terminal_logical_size = 0U;
+            const uint64_t terminal_byte_size
+                = terminal_method == 0U ? static_cast<uint64_t>(bytes.size())
+                  : ctx.idat.size >= ctx.idat.header_size
+                      ? ctx.idat.size - ctx.idat.header_size
+                      : 0U;
+            if (!bmff_foreign_iloc_sum_extent_lengths(*terminal,
+                                                      &terminal_logical_size,
+                                                      terminal_byte_size,
+                                                      work_remaining, out)) {
+                if (out && out->status == TransferStatus::LimitExceeded) {
+                    return false;
+                }
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Malformed,
+                    EmitTransferCode::InvalidPayload,
+                    "iloc construction method 2 target range is invalid");
+            }
+            if (!bmff_foreign_iloc_range_fits(nested_record.base_offset,
+                                              nested_record.extents[i].offset,
+                                              nested_record.extents[i].length,
+                                              terminal_logical_size)
+                || nested_record.extents[i].length
+                       > std::numeric_limits<uint64_t>::max()
+                             - nested_logical_size) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Malformed,
+                    EmitTransferCode::InvalidPayload,
+                    "iloc construction method 2 target range is invalid");
+            }
+            nested_logical_size += nested_record.extents[i].length;
+        }
+
+        if (!bmff_foreign_iloc_range_fits(source_record.base_offset,
+                                          source_extent.offset,
+                                          source_extent.length,
+                                          nested_logical_size)) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::Malformed,
+                EmitTransferCode::InvalidPayload,
+                "iloc construction method 2 target range is invalid");
+        }
+        return true;
+    }
+
+    static bool bmff_validate_foreign_iloc_method2_refs(
+        std::span<const std::byte> bytes, const BmffForeignMetaContext& ctx,
+        const std::vector<BmffForeignIlocRecord>& records,
+        const std::vector<uint32_t>& removed_item_ids,
+        const BmffForeignIlocRefTable& ref_table,
+        const BmffForeignIlocRecord& record, uint64_t* work_remaining,
+        EmitTransferResult* out) noexcept
+    {
+        if (!ctx.has_iref || !ref_table.parsed) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::Unsupported,
+                EmitTransferCode::InvalidArgument,
+                "iloc construction method 2 requires iref");
+        }
+        uint64_t refs_visited = 0U;
+        const BmffForeignIlocRefs* refs
+            = bmff_find_foreign_iloc_refs_counted(ref_table, record.item_id,
+                                                  &refs_visited);
+        if (!refs) {
+            return fail_bmff_foreign_meta_merge(
+                out, TransferStatus::Unsupported,
+                EmitTransferCode::InvalidArgument,
+                "iloc construction method 2 references are missing");
+        }
+        uint64_t removed_reference_visits = 0U;
+        for (size_t i = 0; i < refs->to_item_ids.size(); ++i) {
+            uint64_t removed_item_visits = 0U;
+            const bool target_removed    = bmff_removed_item_id_counted(
+                removed_item_ids, refs->to_item_ids[i], &removed_item_visits);
+            if (!bmff_accumulate_nested_method2_work(&removed_reference_visits,
+                                                     1U + removed_item_visits,
+                                                     out)) {
+                return false;
+            }
+            if (target_removed) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Unsupported,
+                    EmitTransferCode::InvalidArgument,
+                    "iloc construction method 2 references removed item");
+            }
+        }
+
+        const size_t index_size = static_cast<size_t>(ctx.iloc_sizes1 & 0x0FU);
+        bool nested_path_seen       = false;
+        uint64_t pending_outer_work = 0U;
         for (size_t i = 0; i < record.extents.size(); ++i) {
+            if (nested_path_seen) {
+                if (!bmff_charge_nested_method2_validation_work(work_remaining,
+                                                                1U, out)) {
+                    return false;
+                }
+            } else if (!bmff_accumulate_nested_method2_work(&pending_outer_work,
+                                                            1U, out)) {
+                return false;
+            }
             uint64_t ref_index = record.extents[i].index;
             if (index_size == 0U) {
                 ref_index = static_cast<uint64_t>(i) + 1U;
@@ -27855,8 +28156,21 @@ namespace {
                     EmitTransferCode::InvalidArgument,
                     "iloc construction method 2 references are missing");
             }
+            uint64_t records_visited = 0U;
             const BmffForeignIlocRecord* target
-                = bmff_find_foreign_iloc_record(records, target_item_id);
+                = bmff_find_foreign_iloc_record_counted(records, target_item_id,
+                                                        &records_visited);
+            if (nested_path_seen) {
+                if (!bmff_charge_nested_method2_validation_work(work_remaining,
+                                                                records_visited,
+                                                                out)) {
+                    return false;
+                }
+            } else if (!bmff_accumulate_nested_method2_work(&pending_outer_work,
+                                                            records_visited,
+                                                            out)) {
+                return false;
+            }
             // All retained records already passed the self-contained dref
             // check before method-2 references are validated.
             if (!target || (target->construction_method & 0xFFF0U) != 0U) {
@@ -27872,6 +28186,26 @@ namespace {
                 continue;
             }
             if (target_method == 1U && ctx.has_idat) {
+                continue;
+            }
+            if (target_method == 2U) {
+                if (!nested_path_seen) {
+                    if (!bmff_charge_nested_method2_validation_work(
+                            work_remaining, refs_visited, out)
+                        || !bmff_charge_nested_method2_validation_work(
+                            work_remaining, removed_reference_visits, out)
+                        || !bmff_charge_nested_method2_validation_work(
+                            work_remaining, pending_outer_work, out)) {
+                        return false;
+                    }
+                    nested_path_seen = true;
+                }
+                if (!bmff_validate_foreign_iloc_nested_method2_target(
+                        bytes, ctx, records, removed_item_ids, ref_table,
+                        record, record.extents[i], *target, work_remaining,
+                        out)) {
+                    return false;
+                }
                 continue;
             }
             return fail_bmff_foreign_meta_merge(
@@ -28106,6 +28440,8 @@ namespace {
                                                     out)) {
                 return false;
             }
+            uint64_t nested_work_remaining
+                = kBmffNestedMethod2ValidationWorkBudget;
             for (size_t i = 0; i < records.size(); ++i) {
                 const BmffForeignIlocRecord& record = records[i];
                 if (bmff_removed_item_id(removed_item_ids, record.item_id)) {
@@ -28116,10 +28452,9 @@ namespace {
                 if (method != 2U) {
                     continue;
                 }
-                if (!bmff_validate_foreign_iloc_method2_refs(ctx, records,
-                                                             removed_item_ids,
-                                                             ref_table, record,
-                                                             out)) {
+                if (!bmff_validate_foreign_iloc_method2_refs(
+                        bytes, ctx, records, removed_item_ids, ref_table,
+                        record, &nested_work_remaining, out)) {
                     return false;
                 }
             }
@@ -28409,9 +28744,10 @@ namespace {
             if (records[i].base_offset == 0U) {
                 continue;
             }
-            const bool adjust_file_offsets
-                = records[i].construction_method == 0U
-                  && records[i].data_reference_index == 0U;
+            // Merge validation already proved every retained nonzero dref is
+            // self-contained, so method 0 remains file-relative for any index.
+            const bool adjust_file_offsets = records[i].construction_method
+                                             == 0U;
             if (!adjust_file_offsets) {
                 can_compact_base_offsets = false;
                 break;
@@ -28475,9 +28811,8 @@ namespace {
                 continue;
             }
             uint64_t base_offset = records[i].base_offset;
-            const bool adjust_file_offsets
-                = records[i].construction_method == 0U
-                  && records[i].data_reference_index == 0U;
+            const bool adjust_file_offsets = records[i].construction_method
+                                             == 0U;
             const bool fold_file_offsets = output_base_offset_size == 0U
                                            && adjust_file_offsets;
             if (!fold_file_offsets && adjust_file_offsets
@@ -28741,7 +29076,9 @@ namespace {
                         const uint32_t to_id = bmff_remap_managed_item_id(
                             removed_item_ids, replacements, input_to_id);
                         if (to_id != 0U
-                            && !bmff_u32_vector_contains(kept_to_ids, to_id)) {
+                            && (child.type == fourcc('i', 'l', 'o', 'c')
+                                || !bmff_u32_vector_contains(kept_to_ids,
+                                                             to_id))) {
                             kept_to_ids.push_back(to_id);
                         }
                     }

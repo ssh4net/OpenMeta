@@ -35,6 +35,41 @@ namespace {
     }
 
 
+    static void write_u32be(std::vector<std::byte>* out, size_t offset,
+                            uint32_t value)
+    {
+        (*out)[offset + 0U] = std::byte { static_cast<uint8_t>(value >> 24U) };
+        (*out)[offset + 1U] = std::byte { static_cast<uint8_t>(value >> 16U) };
+        (*out)[offset + 2U] = std::byte { static_cast<uint8_t>(value >> 8U) };
+        (*out)[offset + 3U] = std::byte { static_cast<uint8_t>(value) };
+    }
+
+
+    static size_t find_bmff_box_offset(std::span<const std::byte> bytes,
+                                       uint32_t type)
+    {
+        for (size_t type_offset = 4U; type_offset + 4U <= bytes.size();
+             ++type_offset) {
+            const uint32_t found
+                = (static_cast<uint32_t>(
+                       static_cast<uint8_t>(bytes[type_offset + 0U]))
+                   << 24U)
+                  | (static_cast<uint32_t>(
+                         static_cast<uint8_t>(bytes[type_offset + 1U]))
+                     << 16U)
+                  | (static_cast<uint32_t>(
+                         static_cast<uint8_t>(bytes[type_offset + 2U]))
+                     << 8U)
+                  | static_cast<uint32_t>(
+                      static_cast<uint8_t>(bytes[type_offset + 3U]));
+            if (found == type) {
+                return type_offset - 4U;
+            }
+        }
+        return bytes.size();
+    }
+
+
     static void append_u32le(std::vector<std::byte>* out, uint32_t v)
     {
         out->push_back(std::byte { static_cast<uint8_t>((v >> 0) & 0xFF) });
@@ -103,6 +138,139 @@ namespace {
         append_u32be(out, static_cast<uint32_t>(8 + payload.size()));
         append_fourcc(out, type);
         out->insert(out->end(), payload.begin(), payload.end());
+    }
+
+
+    struct Cr3Cmp1FixtureOptions final {
+        uint32_t extension             = 0x00010001U;
+        uint32_t entry_type            = fourcc('C', 'R', 'A', 'W');
+        uint32_t cmp1_payload_size     = 52U;
+        uint32_t mdat_payload_size     = 0U;
+        bool truncated_first_child     = false;
+        bool wrong_payload_signature   = false;
+        bool zero_width                = false;
+        bool zero_height               = false;
+        bool extended_entry_header     = false;
+        bool trailing_first_child_byte = false;
+        bool trailing_stsd_byte        = false;
+    };
+
+    struct Cr3Cmp1Fixture final {
+        std::vector<std::byte> file;
+        uint64_t mdat_payload_offset = 0U;
+    };
+
+    static std::vector<std::byte>
+    make_cr3_cmp1_payload(uint32_t width, uint32_t height,
+                          bool wrong_signature = false)
+    {
+        std::vector<std::byte> payload;
+        payload.push_back(std::byte {
+            static_cast<uint8_t>(wrong_signature ? 0xfeU : 0xffU) });
+        payload.push_back(std::byte { 0x00 });
+        payload.push_back(std::byte { 0x00 });
+        payload.push_back(std::byte { 0x30 });
+        payload.push_back(std::byte { 0x01 });
+        payload.push_back(std::byte { 0x00 });
+        payload.push_back(std::byte { 0x00 });
+        payload.push_back(std::byte { 0x00 });
+        append_u32be(&payload, 0x12345678U);
+        append_u32be(&payload, 0U);
+        append_u32be(&payload, width);
+        append_u32be(&payload, height);
+        payload.resize(52U, std::byte { 0 });
+        return payload;
+    }
+
+    static Cr3Cmp1Fixture
+    make_cr3_cmp1_fixture(Cr3Cmp1FixtureOptions options = {})
+    {
+        Cr3Cmp1Fixture fixture;
+        std::vector<std::byte> stsd_payload;
+        append_fullbox_header(&stsd_payload, 0U);
+        append_u32be(&stsd_payload, 2U);
+
+        const std::array<uint32_t, 2U> widths  = { 1624U, 5568U };
+        const std::array<uint32_t, 2U> heights = { 1080U, 3708U };
+        for (size_t i = 0U; i < widths.size(); ++i) {
+            std::vector<std::byte> entry_payload(78U, std::byte { 0 });
+            entry_payload[24U] = std::byte { 0x02 };
+            entry_payload[25U] = std::byte { 0x80 };
+            entry_payload[26U] = std::byte { 0x01 };
+            entry_payload[27U] = std::byte { 0xe0 };
+            append_u32be(&entry_payload, options.extension);
+
+            const std::vector<std::byte> cmp1_payload
+                = make_cr3_cmp1_payload(options.zero_width ? 0U : widths[i],
+                                        options.zero_height ? 0U : heights[i],
+                                        options.wrong_payload_signature);
+
+            if (options.truncated_first_child && i == 0U) {
+                append_u32be(&entry_payload, 60U);
+                append_fourcc(&entry_payload, fourcc('C', 'M', 'P', '1'));
+                entry_payload.resize(entry_payload.size() + 8U,
+                                     std::byte { 0 });
+            } else {
+                std::vector<std::byte> sized_payload = cmp1_payload;
+                sized_payload.resize(options.cmp1_payload_size,
+                                     std::byte { 0 });
+                append_bmff_box(&entry_payload, fourcc('C', 'M', 'P', '1'),
+                                sized_payload);
+                if (options.trailing_first_child_byte && i == 0U) {
+                    entry_payload.push_back(std::byte { 0xaa });
+                }
+            }
+            if (options.extended_entry_header) {
+                append_u32be(&stsd_payload, 1U);
+                append_fourcc(&stsd_payload, options.entry_type);
+                append_u64be(&stsd_payload,
+                             16U + static_cast<uint64_t>(entry_payload.size()));
+                stsd_payload.insert(stsd_payload.end(), entry_payload.begin(),
+                                    entry_payload.end());
+            } else {
+                append_bmff_box(&stsd_payload, options.entry_type,
+                                entry_payload);
+            }
+        }
+        if (options.trailing_stsd_byte) {
+            stsd_payload.push_back(std::byte { 0xaa });
+        }
+
+        std::vector<std::byte> stbl_payload;
+        append_bmff_box(&stbl_payload, fourcc('s', 't', 's', 'd'),
+                        stsd_payload);
+        std::vector<std::byte> minf_payload;
+        append_bmff_box(&minf_payload, fourcc('s', 't', 'b', 'l'),
+                        stbl_payload);
+        std::vector<std::byte> mdia_payload;
+        append_bmff_box(&mdia_payload, fourcc('m', 'i', 'n', 'f'),
+                        minf_payload);
+        std::vector<std::byte> trak_payload;
+        append_bmff_box(&trak_payload, fourcc('m', 'd', 'i', 'a'),
+                        mdia_payload);
+        std::vector<std::byte> moov_payload;
+        append_bmff_box(&moov_payload, fourcc('t', 'r', 'a', 'k'),
+                        trak_payload);
+
+        std::vector<std::byte> ftyp_payload;
+        append_fourcc(&ftyp_payload, fourcc('c', 'r', 'x', ' '));
+        append_u32be(&ftyp_payload, 0U);
+        append_fourcc(&ftyp_payload, fourcc('i', 's', 'o', 'm'));
+        append_bmff_box(&fixture.file, fourcc('f', 't', 'y', 'p'),
+                        ftyp_payload);
+        if (options.mdat_payload_size > 0U) {
+            std::vector<std::byte> mdat_payload;
+            append_bmff_box(&mdat_payload, fourcc('C', 'M', 'P', '1'),
+                            make_cr3_cmp1_payload(320U, 240U));
+            mdat_payload.resize(options.mdat_payload_size, std::byte { 0x99 });
+            fixture.mdat_payload_offset
+                = static_cast<uint64_t>(fixture.file.size()) + 8U;
+            append_bmff_box(&fixture.file, fourcc('m', 'd', 'a', 't'),
+                            mdat_payload);
+        }
+        append_bmff_box(&fixture.file, fourcc('m', 'o', 'o', 'v'),
+                        moov_payload);
+        return fixture;
     }
 
 
@@ -3682,6 +3850,189 @@ namespace {
         const ScanResult auto_res = scan_auto(file, blocks);
         EXPECT_EQ(auto_res.status, ScanStatus::Ok);
         EXPECT_EQ(auto_res.written, 1U);
+    }
+
+
+    TEST(ContainerScan, Cr3Cmp1DiscoveryIsBoundedToKnownCrawEntries)
+    {
+        std::array<ContainerBlockRef, 8U> blocks {};
+        const Cr3Cmp1Fixture fixture       = make_cr3_cmp1_fixture();
+        const std::vector<std::byte>& file = fixture.file;
+        const ScanResult result            = scan_bmff(file, blocks);
+        ASSERT_EQ(result.status, ScanStatus::Ok);
+        ASSERT_EQ(result.written, 2U);
+        for (uint32_t i = 0U; i < result.written; ++i) {
+            EXPECT_EQ(blocks[i].format, ContainerFormat::Cr3);
+            EXPECT_EQ(blocks[i].kind, ContainerBlockKind::MakerNote);
+            EXPECT_EQ(blocks[i].id, fourcc('C', 'M', 'P', '1'));
+            EXPECT_EQ(blocks[i].outer_size, 60U);
+            EXPECT_EQ(blocks[i].data_offset, blocks[i].outer_offset + 8U);
+            EXPECT_EQ(blocks[i].data_size, 52U);
+            EXPECT_EQ(blocks[i].aux_u32, 0x00010001U);
+            EXPECT_EQ(file[blocks[i].data_offset], std::byte { 0xff });
+        }
+        EXPECT_LT(blocks[0].outer_offset, blocks[1].outer_offset);
+
+        Cr3Cmp1FixtureOptions wrong_prefix_options;
+        wrong_prefix_options.extension    = 0x00030000U;
+        const Cr3Cmp1Fixture wrong_prefix = make_cr3_cmp1_fixture(
+            wrong_prefix_options);
+        const ScanResult wrong_prefix_result = scan_bmff(wrong_prefix.file,
+                                                         blocks);
+        EXPECT_EQ(wrong_prefix_result.status, ScanStatus::Ok);
+        EXPECT_EQ(wrong_prefix_result.written, 0U);
+
+        Cr3Cmp1FixtureOptions truncated_options;
+        truncated_options.truncated_first_child = true;
+        const Cr3Cmp1Fixture truncated_child    = make_cr3_cmp1_fixture(
+            truncated_options);
+        const ScanResult truncated_child_result
+            = scan_bmff(truncated_child.file, blocks);
+        EXPECT_EQ(truncated_child_result.status, ScanStatus::Malformed);
+        EXPECT_EQ(truncated_child_result.written, 0U);
+    }
+
+
+    TEST(ContainerScan, Cr3Cmp1RejectsUnsupportedStsdAndEntryShapes)
+    {
+        std::array<ContainerBlockRef, 8U> blocks {};
+        const Cr3Cmp1Fixture fixture = make_cr3_cmp1_fixture();
+        const size_t stsd_offset
+            = find_bmff_box_offset(fixture.file, fourcc('s', 't', 's', 'd'));
+        ASSERT_NE(stsd_offset, fixture.file.size());
+
+        {
+            std::vector<std::byte> file = fixture.file;
+            write_u32be(&file, stsd_offset + 8U, 1U);
+            const ScanResult result = scan_bmff(file, blocks);
+            EXPECT_EQ(result.status, ScanStatus::Ok);
+            EXPECT_EQ(result.written, 0U);
+        }
+        {
+            std::vector<std::byte> file = fixture.file;
+            write_u32be(&file, stsd_offset + 8U, 0x01000000U);
+            const ScanResult result = scan_bmff(file, blocks);
+            EXPECT_EQ(result.status, ScanStatus::Ok);
+            EXPECT_EQ(result.written, 0U);
+        }
+        {
+            std::vector<std::byte> file = fixture.file;
+            write_u32be(&file, stsd_offset + 12U, 3U);
+            const ScanResult result = scan_bmff(file, blocks);
+            EXPECT_EQ(result.status, ScanStatus::Malformed);
+            EXPECT_EQ(result.written, 0U);
+        }
+        {
+            std::vector<std::byte> file = fixture.file;
+            write_u32be(&file, stsd_offset + 16U, 0xffffffffU);
+            const ScanResult result = scan_bmff(file, blocks);
+            EXPECT_EQ(result.status, ScanStatus::Malformed);
+            EXPECT_EQ(result.written, 0U);
+        }
+        {
+            Cr3Cmp1FixtureOptions options;
+            options.trailing_stsd_byte         = true;
+            const Cr3Cmp1Fixture trailing_stsd = make_cr3_cmp1_fixture(options);
+            const ScanResult result = scan_bmff(trailing_stsd.file, blocks);
+            EXPECT_EQ(result.status, ScanStatus::Malformed);
+            EXPECT_EQ(result.written, 0U);
+        }
+        {
+            Cr3Cmp1FixtureOptions options;
+            options.trailing_first_child_byte   = true;
+            const Cr3Cmp1Fixture trailing_child = make_cr3_cmp1_fixture(
+                options);
+            const ScanResult result = scan_bmff(trailing_child.file, blocks);
+            EXPECT_EQ(result.status, ScanStatus::Malformed);
+            EXPECT_EQ(result.written, 0U);
+        }
+
+        Cr3Cmp1FixtureOptions unknown_entry_options;
+        unknown_entry_options.entry_type   = fourcc('U', 'N', 'K', 'N');
+        const Cr3Cmp1Fixture unknown_entry = make_cr3_cmp1_fixture(
+            unknown_entry_options);
+        const ScanResult unknown_entry_result = scan_bmff(unknown_entry.file,
+                                                          blocks);
+        EXPECT_EQ(unknown_entry_result.status, ScanStatus::Ok);
+        EXPECT_EQ(unknown_entry_result.written, 0U);
+
+        Cr3Cmp1FixtureOptions unexpected_size_options;
+        unexpected_size_options.cmp1_payload_size = 53U;
+        const Cr3Cmp1Fixture unexpected_size      = make_cr3_cmp1_fixture(
+            unexpected_size_options);
+        const ScanResult unexpected_size_result
+            = scan_bmff(unexpected_size.file, blocks);
+        EXPECT_EQ(unexpected_size_result.status, ScanStatus::Ok);
+        EXPECT_EQ(unexpected_size_result.written, 0U);
+
+        Cr3Cmp1FixtureOptions extended_entry_options;
+        extended_entry_options.extended_entry_header = true;
+        const Cr3Cmp1Fixture extended_entry          = make_cr3_cmp1_fixture(
+            extended_entry_options);
+        const ScanResult extended_entry_result = scan_bmff(extended_entry.file,
+                                                           blocks);
+        EXPECT_EQ(extended_entry_result.status, ScanStatus::Ok);
+        EXPECT_EQ(extended_entry_result.written, 0U);
+    }
+
+
+    TEST(ContainerScan, Cr3Cmp1RandomAccessSkipsLargeMdatAndTruncatesOutput)
+    {
+        Cr3Cmp1FixtureOptions options;
+        options.mdat_payload_size    = 1U << 20U;
+        const Cr3Cmp1Fixture fixture = make_cr3_cmp1_fixture(options);
+        const uint64_t mdat_end      = fixture.mdat_payload_offset
+                                  + options.mdat_payload_size;
+        expect_random_access_parity(
+            fixture.file, fixture.mdat_payload_offset + 4096U, mdat_end - 4096U,
+            [](std::span<const std::byte> bytes,
+               std::span<ContainerBlockRef> out) noexcept {
+                return scan_bmff(bytes, out);
+            },
+            [](const RandomAccessSourceRange& range,
+               std::span<ContainerBlockRef> out,
+               const ContainerRandomAccessScratch& scratch) noexcept {
+                return scan_bmff_random_access(range, out, scratch);
+            },
+            [](const RandomAccessSourceRange& range,
+               const ContainerRandomAccessScratch& scratch) noexcept {
+                return measure_scan_bmff_random_access(range, scratch);
+            });
+
+        std::array<ContainerBlockRef, 8U> full_blocks {};
+        const ScanResult full = scan_bmff(fixture.file, full_blocks);
+        ASSERT_EQ(full.status, ScanStatus::Ok);
+        ASSERT_EQ(full.written, 2U);
+        EXPECT_GT(full_blocks[0].outer_offset, mdat_end);
+        EXPECT_GT(full_blocks[1].outer_offset, mdat_end);
+
+        std::array<ContainerBlockRef, 1U> contiguous_blocks {};
+        const ScanResult contiguous = scan_bmff(fixture.file,
+                                                contiguous_blocks);
+        ASSERT_EQ(contiguous.status, ScanStatus::OutputTruncated);
+        ASSERT_EQ(contiguous.written, 1U);
+        ASSERT_EQ(contiguous.needed, 2U);
+
+        JpegCallbackState callback { fixture.file };
+        const RandomAccessSource source
+            = make_callback_random_access_source(fixture.file.size(), &callback,
+                                                 jpeg_read_at, true);
+        const RandomAccessSourceRange range = make_random_access_source_range(
+            source);
+        std::array<std::byte, 128U> read_window {};
+        ContainerRandomAccessScratch scratch;
+        scratch.read_window                       = read_window;
+        scratch.window_options.minimum_read_bytes = read_window.size();
+        std::array<ContainerBlockRef, 1U> random_blocks {};
+        const ContainerRandomAccessScanResult random
+            = scan_bmff_random_access(range, random_blocks, scratch);
+        ASSERT_TRUE(random.complete());
+        EXPECT_EQ(random.scan.status, ScanStatus::OutputTruncated);
+        EXPECT_EQ(random.scan.written, contiguous.written);
+        EXPECT_EQ(random.scan.needed, contiguous.needed);
+        expect_same_block(contiguous_blocks[0], random_blocks[0]);
+        EXPECT_LT(random.input.bytes_requested,
+                  static_cast<uint64_t>(fixture.file.size()));
     }
 
 
