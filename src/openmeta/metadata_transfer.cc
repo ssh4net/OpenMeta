@@ -8504,6 +8504,23 @@ namespace {
         return removed;
     }
 
+    static void
+    append_tiff_ifd_pointer_placeholder(std::vector<TiffIfdEntry>* entries,
+                                        uint16_t tag,
+                                        const TiffLayout& layout) noexcept
+    {
+        if (!entries) {
+            return;
+        }
+        TiffIfdEntry entry;
+        entry.tag                = tag;
+        entry.type               = layout.bigtiff ? 18U : 4U;
+        entry.count              = 1U;
+        entry.has_inline_payload = true;
+        entry.inline_payload.fill(std::byte { 0x00 });
+        entries->push_back(std::move(entry));
+    }
+
     struct ParsedTiffIfdEntry final {
         uint16_t tag   = 0U;
         uint16_t type  = 0U;
@@ -10466,7 +10483,8 @@ namespace {
 
     static void
     merge_preserved_exif_ifd_entries(ParsedTiffIfd* dst,
-                                     const ParsedTiffIfd& src) noexcept
+                                     const ParsedTiffIfd& src,
+                                     bool preserve_all_missing) noexcept
     {
         if (!dst || !dst->present || !src.present) {
             return;
@@ -10477,7 +10495,8 @@ namespace {
         bool appended = false;
         for (size_t i = 0; i < src.entries.size(); ++i) {
             const ParsedTiffIfdEntry& e = src.entries[i];
-            if (e.tag != 0x927CU || has_ifd_entry_tag(*dst, e.tag)) {
+            if ((!preserve_all_missing && e.tag != 0x927CU)
+                || has_ifd_entry_tag(*dst, e.tag)) {
                 continue;
             }
             dst->entries.push_back(e);
@@ -10553,7 +10572,7 @@ namespace {
         if (!out || e.count != 1U) {
             return false;
         }
-        if (!layout.bigtiff) {
+        if (!layout.bigtiff || e.type == 4U || e.type == 13U) {
             uint32_t value = 0U;
             if (!payload_to_u32(e, endian, &value)) {
                 return false;
@@ -10568,6 +10587,33 @@ namespace {
                                                         e.payload.size()),
                              0U, endian);
         return true;
+    }
+
+    static bool read_target_tiff_ifd_pointer(std::span<const std::byte> input,
+                                             size_t entry_offset, uint16_t type,
+                                             uint64_t count, TiffEndian endian,
+                                             const TiffLayout& layout,
+                                             uint64_t* out) noexcept
+    {
+        if (!out || count != 1U) {
+            return false;
+        }
+        const size_t value_offset = entry_offset + (layout.bigtiff ? 12U : 8U);
+        const size_t value_bytes  = layout.bigtiff ? 8U : 4U;
+        if (value_offset > input.size()
+            || value_bytes > input.size() - value_offset) {
+            return false;
+        }
+        if (type == 4U || type == 13U) {
+            *out = static_cast<uint64_t>(
+                read_u32_tiff(input, value_offset, endian));
+            return true;
+        }
+        if (layout.bigtiff && type == 18U) {
+            *out = read_u64_tiff(input, value_offset, endian);
+            return true;
+        }
+        return false;
     }
 
     static bool parse_classic_ifd_next_offset(std::span<const std::byte> tiff,
@@ -10919,8 +10965,12 @@ namespace {
         return true;
     }
 
-    static constexpr std::array<uint16_t, 6U> kTiffIfd0RemovalTags = {
-        0x010EU, 0x010FU, 0x0110U, 0x0131U, 0x013BU, 0x8298U,
+    static constexpr std::array<uint16_t, 7U> kTiffIfd0RemovalTags = {
+        0x010EU, 0x010FU, 0x0110U, 0x0131U, 0x0132U, 0x013BU, 0x8298U,
+    };
+
+    static constexpr std::array<uint16_t, 8U> kTiffExifRemovalTags = {
+        0x9003U, 0x9004U, 0x9010U, 0x9011U, 0x9012U, 0x9290U, 0x9291U, 0x9292U,
     };
 
     static uint32_t tiff_ifd0_profile_removal_slot(uint16_t tag) noexcept
@@ -10931,6 +10981,16 @@ namespace {
             }
         }
         return static_cast<uint32_t>(kTiffIfd0RemovalTags.size());
+    }
+
+    static uint32_t tiff_exif_profile_removal_slot(uint16_t tag) noexcept
+    {
+        for (uint32_t i = 0U; i < kTiffExifRemovalTags.size(); ++i) {
+            if (kTiffExifRemovalTags[i] == tag) {
+                return i;
+            }
+        }
+        return static_cast<uint32_t>(kTiffExifRemovalTags.size());
     }
 
     static std::vector<TiffTagUpdate>
@@ -10988,7 +11048,7 @@ namespace {
         return out;
     }
 
-    static bool prepared_tiff_ifd0_removals_are_valid(
+    static bool prepared_tiff_removals_are_valid(
         const PreparedTransferBundle& bundle) noexcept
     {
         if (bundle.tiff_ifd0_removals.size() > kTiffIfd0RemovalTags.size()) {
@@ -11005,7 +11065,23 @@ namespace {
                 return false;
             }
         }
-        if (bundle.tiff_ifd0_removals.empty()) {
+        if (bundle.tiff_exif_removals.size() > kTiffExifRemovalTags.size()) {
+            return false;
+        }
+        for (size_t i = 0U; i < bundle.tiff_exif_removals.size(); ++i) {
+            if (tiff_exif_profile_removal_slot(bundle.tiff_exif_removals[i])
+                >= kTiffExifRemovalTags.size()) {
+                return false;
+            }
+            if (i > 0U
+                && bundle.tiff_exif_removals[i - 1U]
+                       >= bundle.tiff_exif_removals[i]) {
+                return false;
+            }
+        }
+        if (bundle.tiff_ifd0_removals.empty()
+            && bundle.tiff_exif_removals.empty()
+            && !bundle.tiff_merge_existing_exif) {
             return true;
         }
 
@@ -11019,13 +11095,27 @@ namespace {
                     std::span<const std::byte>(block.payload.data(),
                                                block.payload.size()),
                     &parsed, nullptr)) {
-                continue;
+                return false;
+            }
+            if (parsed.exif_ifd.present && parsed.exif_ifd.entries.empty()
+                && (bundle.tiff_merge_existing_exif
+                    || !bundle.tiff_exif_removals.empty())) {
+                return false;
             }
             for (size_t update_index = 0U;
                  update_index < parsed.ifd0_updates.size(); ++update_index) {
                 const uint16_t tag = parsed.ifd0_updates[update_index].tag;
                 for (size_t j = 0U; j < bundle.tiff_ifd0_removals.size(); ++j) {
                     if (bundle.tiff_ifd0_removals[j] == tag) {
+                        return false;
+                    }
+                }
+            }
+            for (size_t entry_index = 0U;
+                 entry_index < parsed.exif_ifd.entries.size(); ++entry_index) {
+                const uint16_t tag = parsed.exif_ifd.entries[entry_index].tag;
+                for (size_t j = 0U; j < bundle.tiff_exif_removals.size(); ++j) {
+                    if (bundle.tiff_exif_removals[j] == tag) {
                         return false;
                     }
                 }
@@ -11044,6 +11134,13 @@ namespace {
             }
         }
         return {};
+    }
+
+    static bool
+    bundle_has_tiff_removals(const PreparedTransferBundle& bundle) noexcept
+    {
+        return !bundle.tiff_ifd0_removals.empty()
+               || !bundle.tiff_exif_removals.empty();
     }
 
     static bool has_update_for_tag(const std::vector<TiffTagUpdate>& updates,
@@ -11388,7 +11485,9 @@ namespace {
     build_tiff_rewrite_tail(std::span<const std::byte> input,
                             const std::vector<TiffTagUpdate>& updates,
                             std::span<const std::byte> exif_app1_payload,
-                            TiffRewriteTail* out, std::string* err) noexcept
+                            const std::vector<uint16_t>& exif_removals,
+                            bool merge_existing_exif, TiffRewriteTail* out,
+                            std::string* err) noexcept
     {
         if (!out) {
             return false;
@@ -11397,7 +11496,8 @@ namespace {
         out->new_ifd0_off = 0U;
         out->layout       = TiffLayout {};
 
-        if (updates.empty() && exif_app1_payload.empty()) {
+        if (updates.empty() && exif_app1_payload.empty()
+            && exif_removals.empty()) {
             if (err) {
                 *err = "no tiff updates";
             }
@@ -11485,6 +11585,13 @@ namespace {
         const bool clear_exif_ifd                 = parsed_exif.exif_ifd.present
                                     && parsed_exif.exif_ifd.entries.empty();
         if (clear_exif_ifd) {
+            if (merge_existing_exif || !exif_removals.empty()) {
+                if (err) {
+                    *err
+                        = "explicit ExifIFD clear conflicts with merge or removals";
+                }
+                return false;
+            }
             parsed_exif.exif_ifd.present = false;
             TiffTagUpdate removal;
             removal.tag    = 0x8769U;
@@ -11521,11 +11628,15 @@ namespace {
 
         const bool strip_existing_xmp = has_remove_for_tag(merged_updates,
                                                            700U);
+        const bool preserve_missing_exif_entries = merge_existing_exif
+                                                   || !exif_removals.empty();
         bool need_exif_ptr            = parsed_exif.exif_ifd.present;
         bool need_gps_ptr             = parsed_exif.gps_ifd.present;
         const bool need_subifd_ptr    = !parsed_exif.subifds.empty();
         const bool inspect_existing_exif_ifd
-            = !clear_exif_ifd && (need_exif_ptr || strip_existing_xmp);
+            = !clear_exif_ifd
+              && (need_exif_ptr || strip_existing_xmp
+                  || preserve_missing_exif_entries);
         const bool inspect_existing_gps_ifd
             = !clear_gps_ifd && (need_gps_ptr || strip_existing_xmp);
         const bool inspect_existing_subifds = need_subifd_ptr
@@ -11533,6 +11644,7 @@ namespace {
         uint64_t existing_exif_ifd_off = 0U;
         uint64_t existing_gps_ifd_off  = 0U;
         std::vector<uint64_t> existing_subifd_offsets;
+        bool saw_existing_exif_ifd_pointer = false;
 
         std::vector<TiffIfdEntry> final_entries;
         final_entries.reserve(count + merged_updates.size() + 3U);
@@ -11553,9 +11665,18 @@ namespace {
                 count_value  = read_u64_tiff(input, p + 4U, endian);
                 value_or_off = read_u64_tiff(input, p + 12U, endian);
             }
-            if (inspect_existing_exif_ifd && tag == 0x8769U && count_value == 1U
-                && (type == 4U || type == 13U || type == 18U)) {
-                existing_exif_ifd_off = value_or_off;
+            if (inspect_existing_exif_ifd && tag == 0x8769U) {
+                if (saw_existing_exif_ifd_pointer
+                    || !read_target_tiff_ifd_pointer(input, p, type,
+                                                     count_value, endian,
+                                                     layout,
+                                                     &existing_exif_ifd_off)) {
+                    if (err) {
+                        *err = "target TIFF ExifIFD pointer is malformed";
+                    }
+                    return false;
+                }
+                saw_existing_exif_ifd_pointer = true;
             }
             if (inspect_existing_gps_ifd && tag == 0x8825U && count_value == 1U
                 && (type == 4U || type == 13U || type == 18U)) {
@@ -11951,14 +12072,42 @@ namespace {
             }
         }
 
-        if (parsed_exif.exif_ifd.present && existing_exif_ifd_off != 0U) {
+        if (existing_exif_ifd_off != 0U
+            && (parsed_exif.exif_ifd.present || preserve_missing_exif_entries)) {
             ParsedTiffIfd existing_exif_ifd;
             if (!parse_target_tiff_ifd(input, existing_exif_ifd_off, endian,
                                        layout, &existing_exif_ifd, err)) {
                 return false;
             }
-            merge_preserved_exif_ifd_entries(&parsed_exif.exif_ifd,
-                                             existing_exif_ifd);
+            if (strip_existing_xmp) {
+                (void)remove_ifd_entry_tag(&existing_exif_ifd, 700U);
+            }
+            if (!parsed_exif.exif_ifd.present) {
+                parsed_exif.exif_ifd = std::move(existing_exif_ifd);
+                if (!need_exif_ptr) {
+                    need_exif_ptr = true;
+                    (void)remove_tiff_ifd_entry_tag(&final_entries, 0x8769U);
+                    append_tiff_ifd_pointer_placeholder(&final_entries, 0x8769U,
+                                                        layout);
+                }
+            } else {
+                merge_preserved_exif_ifd_entries(&parsed_exif.exif_ifd,
+                                                 existing_exif_ifd,
+                                                 preserve_missing_exif_entries);
+            }
+        }
+        if (parsed_exif.exif_ifd.present && !exif_removals.empty()) {
+            bool removed = false;
+            for (size_t i = 0U; i < exif_removals.size(); ++i) {
+                removed = remove_ifd_entry_tag(&parsed_exif.exif_ifd,
+                                               exif_removals[i])
+                          || removed;
+            }
+            if (removed) {
+                std::stable_sort(parsed_exif.exif_ifd.entries.begin(),
+                                 parsed_exif.exif_ifd.entries.end(),
+                                 ParsedTiffIfdEntryLess {});
+            }
         }
 
         uint64_t interop_ifd_off = 0U;
@@ -12184,12 +12333,12 @@ namespace {
         return true;
     }
 
-    static bool
-    rewrite_tiff_ifd0_tags(std::span<const std::byte> input,
-                           const std::vector<TiffTagUpdate>& updates,
-                           std::span<const std::byte> exif_app1_payload,
-                           std::vector<std::byte>* out,
-                           std::string* err) noexcept
+    static bool rewrite_tiff_ifd0_tags(
+        std::span<const std::byte> input,
+        const std::vector<TiffTagUpdate>& updates,
+        std::span<const std::byte> exif_app1_payload,
+        const std::vector<uint16_t>& exif_removals, bool merge_existing_exif,
+        std::vector<std::byte>* out, std::string* err) noexcept
     {
         if (!out) {
             return false;
@@ -12198,6 +12347,7 @@ namespace {
 
         TiffRewriteTail rewrite;
         if (!build_tiff_rewrite_tail(input, updates, exif_app1_payload,
+                                     exif_removals, merge_existing_exif,
                                      &rewrite, err)) {
             return false;
         }
@@ -12494,6 +12644,69 @@ collect_tiff_ifd0_profile_removals(const MetaStore& store, bool enabled,
     }
 }
 
+static void
+collect_tiff_exif_profile_removals(const MetaStore& store, bool enabled,
+                                   std::vector<uint16_t>* out_removals) noexcept
+{
+    if (!out_removals) {
+        return;
+    }
+    out_removals->clear();
+    if (!enabled) {
+        return;
+    }
+
+    std::array<bool, kTiffExifRemovalTags.size()> has_dirty_tombstone {};
+    std::array<bool, kTiffExifRemovalTags.size()> has_live_entry {};
+    for (const Entry& entry : store.entries()) {
+        if (entry.key.kind != MetaKeyKind::ExifTag
+            || arena_string(store.arena(), entry.key.data.exif_tag.ifd)
+                   != "exififd") {
+            continue;
+        }
+        const uint32_t slot = tiff_exif_profile_removal_slot(
+            entry.key.data.exif_tag.tag);
+        if (slot >= has_dirty_tombstone.size()) {
+            continue;
+        }
+        if (any(entry.flags, EntryFlags::Deleted)) {
+            if (any(entry.flags, EntryFlags::Dirty)) {
+                has_dirty_tombstone[slot] = true;
+            }
+        } else {
+            has_live_entry[slot] = true;
+        }
+    }
+
+    out_removals->reserve(kTiffExifRemovalTags.size());
+    for (size_t i = 0U; i < kTiffExifRemovalTags.size(); ++i) {
+        if (has_dirty_tombstone[i] && !has_live_entry[i]) {
+            out_removals->push_back(kTiffExifRemovalTags[i]);
+        }
+    }
+}
+
+static bool
+has_dirty_tiff_timestamp_intent(const MetaStore& store) noexcept
+{
+    for (const Entry& entry : store.entries()) {
+        if (entry.key.kind != MetaKeyKind::ExifTag
+            || !any(entry.flags, EntryFlags::Dirty)) {
+            continue;
+        }
+        const std::string_view ifd = arena_string(store.arena(),
+                                                  entry.key.data.exif_tag.ifd);
+        const uint16_t tag         = entry.key.data.exif_tag.tag;
+        if ((ifd == "ifd0" && tag == 0x0132U)
+            || (ifd == "exififd"
+                && tiff_exif_profile_removal_slot(tag)
+                       < kTiffExifRemovalTags.size())) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static PrepareTransferResult
 prepare_metadata_for_target_impl(const MetaStore& store,
                                  const PrepareTransferRequest& request,
@@ -12550,11 +12763,15 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         return r;
     }
 
-    collect_tiff_ifd0_profile_removals(store,
-                                       transfer_target_is_tiff_family(
-                                           request.target_format)
-                                           && request.include_exif_app1,
+    const bool native_tiff_exif_enabled = transfer_target_is_tiff_family(
+                                              request.target_format)
+                                          && request.include_exif_app1;
+    collect_tiff_ifd0_profile_removals(store, native_tiff_exif_enabled,
                                        &bundle.tiff_ifd0_removals);
+    collect_tiff_exif_profile_removals(store, native_tiff_exif_enabled,
+                                       &bundle.tiff_exif_removals);
+    bundle.tiff_merge_existing_exif = native_tiff_exif_enabled
+                                      && has_dirty_tiff_timestamp_intent(store);
 
     MetaStore target_safe_store;
     const MetaStore* prepared_store_ptr = &store;
@@ -12644,8 +12861,12 @@ prepare_metadata_for_target_impl(const MetaStore& store,
     const bool explicit_empty_gps_ifd = transfer_target_is_tiff_family(
                                             request.target_format)
                                         && gps_ifd_is_explicitly_removed(store);
+    // Timestamp intents address individual tags, even when every source
+    // ExifIFD member is deleted. Do not also request a whole-directory clear.
     const bool explicit_empty_exif_ifd
         = transfer_target_is_tiff_family(request.target_format)
+          && !bundle.tiff_merge_existing_exif
+          && bundle.tiff_exif_removals.empty()
           && exif_ifd_is_explicitly_removed(store);
     const bool has_exif = exif_entry_count > 0U || explicit_empty_gps_ifd
                           || explicit_empty_exif_ifd
@@ -17774,19 +17995,19 @@ emit_prepared_bundle_tiff(const PreparedTransferBundle& bundle,
         return r;
     }
 
-    if (!prepared_tiff_ifd0_removals_are_valid(bundle)) {
+    if (!prepared_tiff_removals_are_valid(bundle)) {
         r.status = TransferStatus::InvalidArgument;
         r.code   = EmitTransferCode::InvalidArgument;
         r.errors = 1U;
         r.message
-            = "prepared TIFF IFD0 removal list or replacement conflict is invalid";
+            = "prepared TIFF removal list or replacement conflict is invalid";
         return r;
     }
-    if (!bundle.tiff_ifd0_removals.empty()) {
+    if (bundle_has_tiff_removals(bundle)) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
         r.errors  = 1U;
-        r.message = "fresh TIFF/DNG emit cannot represent native IFD0 removals";
+        r.message = "fresh TIFF/DNG emit cannot represent native TIFF removals";
         return r;
     }
 
@@ -17858,19 +18079,19 @@ compile_prepared_bundle_tiff(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
-    if (!prepared_tiff_ifd0_removals_are_valid(bundle)) {
+    if (!prepared_tiff_removals_are_valid(bundle)) {
         r.status = TransferStatus::InvalidArgument;
         r.code   = EmitTransferCode::InvalidArgument;
         r.errors = 1U;
         r.message
-            = "prepared TIFF IFD0 removal list or replacement conflict is invalid";
+            = "prepared TIFF removal list or replacement conflict is invalid";
         return r;
     }
-    if (!bundle.tiff_ifd0_removals.empty()) {
+    if (bundle_has_tiff_removals(bundle)) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
         r.errors  = 1U;
-        r.message = "fresh TIFF/DNG emit cannot represent native IFD0 removals";
+        r.message = "fresh TIFF/DNG emit cannot represent native TIFF removals";
         return r;
     }
     out_plan->contract_version = bundle.contract_version;
@@ -17933,19 +18154,19 @@ emit_prepared_bundle_tiff_compiled(const PreparedTransferBundle& bundle,
         r.message = "bundle target format is not tiff/dng";
         return r;
     }
-    if (!prepared_tiff_ifd0_removals_are_valid(bundle)) {
+    if (!prepared_tiff_removals_are_valid(bundle)) {
         r.status = TransferStatus::InvalidArgument;
         r.code   = EmitTransferCode::InvalidArgument;
         r.errors = 1U;
         r.message
-            = "prepared TIFF IFD0 removal list or replacement conflict is invalid";
+            = "prepared TIFF removal list or replacement conflict is invalid";
         return r;
     }
-    if (!bundle.tiff_ifd0_removals.empty()) {
+    if (bundle_has_tiff_removals(bundle)) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
         r.errors  = 1U;
-        r.message = "fresh TIFF/DNG emit cannot represent native IFD0 removals";
+        r.message = "fresh TIFF/DNG emit cannot represent native TIFF removals";
         return r;
     }
     if (plan.contract_version != bundle.contract_version) {
@@ -18347,6 +18568,22 @@ build_prepared_jxl_encoder_handoff_view(
 
     *out_view                  = PreparedJxlEncoderHandoffView {};
     out_view->contract_version = bundle.contract_version;
+
+    if (!prepared_tiff_removals_are_valid(bundle)) {
+        r.status = TransferStatus::InvalidArgument;
+        r.code   = EmitTransferCode::InvalidArgument;
+        r.errors = 1U;
+        r.message
+            = "prepared TIFF removal list or replacement conflict is invalid";
+        return r;
+    }
+    if (bundle_has_tiff_removals(bundle)) {
+        r.status  = TransferStatus::Unsupported;
+        r.code    = EmitTransferCode::InvalidArgument;
+        r.errors  = 1U;
+        r.message = "JXL encoder handoff cannot represent native TIFF removals";
+        return r;
+    }
 
     if (bundle.target_format != TransferTargetFormat::Jxl) {
         r.status  = TransferStatus::Unsupported;
@@ -20170,9 +20407,9 @@ plan_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         plan.message = "bundle target format is not tiff/dng";
         return plan;
     }
-    if (!prepared_tiff_ifd0_removals_are_valid(bundle)) {
+    if (!prepared_tiff_removals_are_valid(bundle)) {
         plan.status  = TransferStatus::InvalidArgument;
-        plan.message = "prepared TIFF IFD0 removal list is invalid";
+        plan.message = "prepared TIFF removal list is invalid";
         return plan;
     }
 
@@ -20180,12 +20417,14 @@ plan_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         = collect_tiff_tag_updates(bundle, options.strip_existing_xmp);
     const std::vector<std::byte> exif_app1_payload
         = first_tiff_exif_app1_payload(bundle);
-    plan.tag_updates        = static_cast<uint32_t>(updates.size());
-    plan.has_exif_ifd       = !exif_app1_payload.empty();
+    plan.tag_updates = static_cast<uint32_t>(
+        updates.size() + bundle.tiff_exif_removals.size());
+    plan.has_exif_ifd = !exif_app1_payload.empty()
+                        || !bundle.tiff_exif_removals.empty();
     plan.strip_existing_xmp = options.strip_existing_xmp;
 
-    if (options.require_updates && updates.empty()
-        && exif_app1_payload.empty()) {
+    if (options.require_updates && updates.empty() && exif_app1_payload.empty()
+        && bundle.tiff_exif_removals.empty()) {
         plan.status  = TransferStatus::Unsupported;
         plan.message = "no tiff updates";
         return plan;
@@ -20197,6 +20436,7 @@ plan_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
             input_tiff, updates,
             std::span<const std::byte>(exif_app1_payload.data(),
                                        exif_app1_payload.size()),
+            bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
             &rewrite, &err)) {
         plan.status  = tiff_edit_status_from_error(err);
         plan.message = err;
@@ -20236,11 +20476,11 @@ apply_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         out.message = "bundle target format is not tiff/dng";
         return out;
     }
-    if (!prepared_tiff_ifd0_removals_are_valid(bundle)) {
+    if (!prepared_tiff_removals_are_valid(bundle)) {
         out.status  = TransferStatus::InvalidArgument;
         out.code    = EmitTransferCode::InvalidArgument;
         out.errors  = 1U;
-        out.message = "prepared TIFF IFD0 removal list is invalid";
+        out.message = "prepared TIFF removal list is invalid";
         return out;
     }
 
@@ -20248,8 +20488,12 @@ apply_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         = collect_tiff_tag_updates(bundle, plan.strip_existing_xmp);
     const std::vector<std::byte> exif_app1_payload
         = first_tiff_exif_app1_payload(bundle);
-    if (plan.tag_updates != static_cast<uint32_t>(updates.size())
-        || plan.has_exif_ifd != !exif_app1_payload.empty()) {
+    const uint32_t expected_tag_updates = static_cast<uint32_t>(
+        updates.size() + bundle.tiff_exif_removals.size());
+    const bool expected_has_exif_ifd = !exif_app1_payload.empty()
+                                       || !bundle.tiff_exif_removals.empty();
+    if (plan.tag_updates != expected_tag_updates
+        || plan.has_exif_ifd != expected_has_exif_ifd) {
         out.status  = TransferStatus::InvalidArgument;
         out.code    = EmitTransferCode::PlanMismatch;
         out.errors  = 1U;
@@ -20262,7 +20506,8 @@ apply_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         input_tiff, updates,
         std::span<const std::byte>(exif_app1_payload.data(),
                                    exif_app1_payload.size()),
-        out_tiff, &err);
+        bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif, out_tiff,
+        &err);
     if (!rewritten) {
         out.status  = tiff_edit_status_from_error(err);
         out.code    = EmitTransferCode::PlanMismatch;
@@ -20324,20 +20569,19 @@ build_prepared_transfer_emit_package(const PreparedTransferBundle& bundle,
         out.message = "out_plan is null";
         return out;
     }
-    if (!prepared_tiff_ifd0_removals_are_valid(bundle)) {
+    if (!prepared_tiff_removals_are_valid(bundle)) {
         out.status = TransferStatus::InvalidArgument;
         out.code   = EmitTransferCode::InvalidArgument;
         out.errors = 1U;
         out.message
-            = "prepared TIFF IFD0 removal list or replacement conflict is invalid";
+            = "prepared TIFF removal list or replacement conflict is invalid";
         return out;
     }
-    if (!bundle.tiff_ifd0_removals.empty()) {
+    if (bundle_has_tiff_removals(bundle)) {
         out.status = TransferStatus::Unsupported;
         out.code   = EmitTransferCode::InvalidArgument;
         out.errors = 1U;
-        out.message
-            = "fresh emit package cannot represent native TIFF IFD0 removals";
+        out.message = "fresh emit package cannot represent native TIFF removals";
         return out;
     }
 
@@ -20780,11 +21024,11 @@ build_prepared_bundle_tiff_package(
         out.message = "out_plan is null";
         return out;
     }
-    if (!prepared_tiff_ifd0_removals_are_valid(bundle)) {
+    if (!prepared_tiff_removals_are_valid(bundle)) {
         out.status  = TransferStatus::InvalidArgument;
         out.code    = EmitTransferCode::InvalidArgument;
         out.errors  = 1U;
-        out.message = "prepared TIFF IFD0 removal list is invalid";
+        out.message = "prepared TIFF removal list is invalid";
         return out;
     }
     out_plan->contract_version = bundle.contract_version;
@@ -20812,8 +21056,12 @@ build_prepared_bundle_tiff_package(
         = collect_tiff_tag_updates(bundle, plan.strip_existing_xmp);
     const std::vector<std::byte> exif_app1_payload
         = first_tiff_exif_app1_payload(bundle);
-    if (plan.tag_updates != static_cast<uint32_t>(updates.size())
-        || plan.has_exif_ifd != !exif_app1_payload.empty()) {
+    const uint32_t expected_tag_updates = static_cast<uint32_t>(
+        updates.size() + bundle.tiff_exif_removals.size());
+    const bool expected_has_exif_ifd = !exif_app1_payload.empty()
+                                       || !bundle.tiff_exif_removals.empty();
+    if (plan.tag_updates != expected_tag_updates
+        || plan.has_exif_ifd != expected_has_exif_ifd) {
         out.status  = TransferStatus::InvalidArgument;
         out.code    = EmitTransferCode::PlanMismatch;
         out.errors  = 1U;
@@ -20827,6 +21075,7 @@ build_prepared_bundle_tiff_package(
             input_tiff, updates,
             std::span<const std::byte>(exif_app1_payload.data(),
                                        exif_app1_payload.size()),
+            bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
             &rewrite, &err)) {
         out.status  = tiff_edit_status_from_error(err);
         out.code    = EmitTransferCode::PlanMismatch;
@@ -31002,15 +31251,15 @@ namespace {
         const PreparedTransferPackagePlan& plan) noexcept
     {
         EmitTransferResult out;
-        if (!prepared_tiff_ifd0_removals_are_valid(bundle)) {
+        if (!prepared_tiff_removals_are_valid(bundle)) {
             out.status = TransferStatus::InvalidArgument;
             out.code   = EmitTransferCode::InvalidArgument;
             out.errors = 1U;
             out.message
-                = "prepared TIFF IFD0 removal list or replacement conflict is invalid";
+                = "prepared TIFF removal list or replacement conflict is invalid";
             return out;
         }
-        if (!bundle.tiff_ifd0_removals.empty()) {
+        if (bundle_has_tiff_removals(bundle)) {
             bool has_block_payload = false;
             for (size_t i = 0U; i < plan.chunks.size(); ++i) {
                 const TransferPackageChunkKind kind = plan.chunks[i].kind;
@@ -31025,7 +31274,7 @@ namespace {
                 out.code   = EmitTransferCode::InvalidArgument;
                 out.errors = 1U;
                 out.message
-                    = "native TIFF IFD0 removals require a final-output TIFF edit package";
+                    = "native TIFF removals require a final-output TIFF edit package";
                 return out;
             }
         }
@@ -31871,20 +32120,20 @@ namespace {
         const PreparedTransferExecutionPlan& plan) noexcept
     {
         EmitTransferResult out;
-        if (!prepared_tiff_ifd0_removals_are_valid(bundle)) {
+        if (!prepared_tiff_removals_are_valid(bundle)) {
             out.status = TransferStatus::InvalidArgument;
             out.code   = EmitTransferCode::InvalidArgument;
             out.errors = 1U;
             out.message
-                = "prepared TIFF IFD0 removal list or replacement conflict is invalid";
+                = "prepared TIFF removal list or replacement conflict is invalid";
             return out;
         }
-        if (!bundle.tiff_ifd0_removals.empty()) {
+        if (bundle_has_tiff_removals(bundle)) {
             out.status = TransferStatus::Unsupported;
             out.code   = EmitTransferCode::InvalidArgument;
             out.errors = 1U;
             out.message
-                = "compiled emit plan cannot represent native TIFF IFD0 removals";
+                = "compiled emit plan cannot represent native TIFF removals";
             return out;
         }
         if (plan.contract_version != bundle.contract_version) {
@@ -32028,13 +32277,13 @@ namespace {
             return out;
         }
 
-        const bool has_tiff_ifd0_removals = !bundle->tiff_ifd0_removals.empty();
-        if (!prepared_tiff_ifd0_removals_are_valid(*bundle)) {
+        const bool has_tiff_removals = bundle_has_tiff_removals(*bundle);
+        if (!prepared_tiff_removals_are_valid(*bundle)) {
             out.compile.status = TransferStatus::InvalidArgument;
             out.compile.code   = EmitTransferCode::InvalidArgument;
             out.compile.errors = 1U;
             out.compile.message
-                = "prepared TIFF IFD0 removal list or replacement conflict is invalid";
+                = "prepared TIFF removal list or replacement conflict is invalid";
             out.emit = out.compile;
             if (options.edit_requested) {
                 out.edit_plan_status   = TransferStatus::InvalidArgument;
@@ -32046,14 +32295,14 @@ namespace {
             }
             return out;
         }
-        if (has_tiff_ifd0_removals && options.edit_requested
+        if (has_tiff_removals && options.edit_requested
             && (!transfer_target_is_tiff_family(bundle->target_format)
                 || options.emit_output_writer || compiled_plan)) {
             out.compile.status = TransferStatus::Unsupported;
             out.compile.code   = EmitTransferCode::InvalidArgument;
             out.compile.errors = 1U;
             out.compile.message
-                = "native TIFF IFD0 removal editing cannot be combined with a fresh emit request";
+                = "native TIFF removal editing cannot be combined with a fresh emit request";
             out.emit               = out.compile;
             out.edit_plan_status   = TransferStatus::Unsupported;
             out.edit_plan_message  = out.compile.message;
@@ -32089,13 +32338,13 @@ namespace {
 
         PreparedTransferExecutionPlan local_plan;
         const PreparedTransferExecutionPlan* effective_plan = compiled_plan;
-        const bool tiff_removal_edit_only = has_tiff_ifd0_removals
+        const bool tiff_removal_edit_only                   = has_tiff_removals
                                             && options.edit_requested;
         if (tiff_removal_edit_only) {
             out.compile.status = TransferStatus::Ok;
             out.compile.code   = EmitTransferCode::None;
             out.compile.message
-                = "fresh TIFF emit skipped for native IFD0 removal edit execution";
+                = "fresh TIFF emit skipped for native TIFF removal edit execution";
             out.emit         = out.compile;
             effective_plan   = nullptr;
             out.compiled_ops = 0U;
@@ -33935,20 +34184,20 @@ compile_prepared_transfer_execution(
         out.message = "out_plan is null";
         return out;
     }
-    if (!prepared_tiff_ifd0_removals_are_valid(bundle)) {
+    if (!prepared_tiff_removals_are_valid(bundle)) {
         out.status = TransferStatus::InvalidArgument;
         out.code   = EmitTransferCode::InvalidArgument;
         out.errors = 1U;
         out.message
-            = "prepared TIFF IFD0 removal list or replacement conflict is invalid";
+            = "prepared TIFF removal list or replacement conflict is invalid";
         return out;
     }
-    if (!bundle.tiff_ifd0_removals.empty()) {
+    if (bundle_has_tiff_removals(bundle)) {
         out.status = TransferStatus::Unsupported;
         out.code   = EmitTransferCode::InvalidArgument;
         out.errors = 1U;
         out.message
-            = "fresh emit execution plan cannot represent native TIFF IFD0 removals";
+            = "fresh emit execution plan cannot represent native TIFF removals";
         return out;
     }
 
@@ -34259,20 +34508,19 @@ get_prepared_transfer_adapter_exr_attribute_view(
         out.message = "out_attribute is null";
         return out;
     }
-    if (!prepared_tiff_ifd0_removals_are_valid(bundle)) {
+    if (!prepared_tiff_removals_are_valid(bundle)) {
         out.status = TransferStatus::InvalidArgument;
         out.code   = EmitTransferCode::InvalidArgument;
         out.errors = 1U;
         out.message
-            = "prepared TIFF IFD0 removal list or replacement conflict is invalid";
+            = "prepared TIFF removal list or replacement conflict is invalid";
         return out;
     }
-    if (!bundle.tiff_ifd0_removals.empty()) {
+    if (bundle_has_tiff_removals(bundle)) {
         out.status = TransferStatus::Unsupported;
         out.code   = EmitTransferCode::InvalidArgument;
         out.errors = 1U;
-        out.message
-            = "EXR adapter view cannot represent native TIFF IFD0 removals";
+        out.message = "EXR adapter view cannot represent native TIFF removals";
         return out;
     }
     if (bundle.target_format != TransferTargetFormat::Exr

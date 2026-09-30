@@ -3228,6 +3228,14 @@ namespace {
         }
         out["tiff_ifd0_removals"] = std::move(tiff_ifd0_removals);
 
+        nb::list tiff_exif_removals;
+        for (uint16_t tag : prepared.bundle.tiff_exif_removals) {
+            tiff_exif_removals.append(nb::int_(tag));
+        }
+        out["tiff_exif_removals"] = std::move(tiff_exif_removals);
+        out["tiff_merge_existing_exif"]
+            = prepared.bundle.tiff_merge_existing_exif;
+
         nb::list policy_decisions;
         for (size_t i = 0; i < prepared.bundle.policy_decisions.size(); ++i) {
             const PreparedTransferPolicyDecision& decision

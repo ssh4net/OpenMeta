@@ -1268,3 +1268,13 @@ version is inferred or changed. Compatible-file and rendered-image transfer
 retain these standard processing-history fields when present. OpenMeta does not
 infer processing history from RAW or MakerNote data. See
 [the translation contract](translation.md#exif-31-development-and-correction-data-0511).
+
+## Grouped timestamp destination editing (0.7.0)
+
+Prepared bundles carry bounded primary IFD0 and ExifIFD timestamp removals,
+with an explicit ExifIFD merge mode for dirty timestamp edits. Accepted XMP
+owners control companion absence as well as values, even when native source
+keys were missing. Edit/stream/package paths preserve unselected target native
+records in that mode. Fresh emit/codec consumers reject removal-bearing bundles.
+The public bundle change requires ABI 5; source snapshot v1 stays unchanged.
+See [migration](migration_0_7.md) for tags, conflict policies and exclusions.

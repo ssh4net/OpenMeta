@@ -271,10 +271,22 @@ tombstones; a manually supplied removal conflicting with a replacement fails
 before output. The group is tested in both byte orders for classic TIFF and
 BigTIFF, with unrelated descriptive values and strip bytes preserved.
 
-The six supported tags form a sorted unique list. DateTime and its ExifIFD
-companions, other IFDs/pages, structural tags and MakerNotes remain outside
-this contract. Removing Make or Model does not remove private camera records;
+In 0.6.2, the six supported tags form a sorted unique list. Its contract
+excludes DateTime and its ExifIFD companions, other IFDs/pages, structural tags
+and MakerNotes. Version 0.7.0 adds the timestamp contract below. Removing Make
+or Model does not remove private camera records;
 removing Software does not remove separate software-detail fields. Hosts own
 those companion decisions. Fresh emitters and codec handoffs still reject
 deletion-bearing bundles. ABI 4 and snapshot v1 are unchanged; these additional
 tags require a 0.6.2 or newer library.
+
+### Grouped timestamp lifecycle (0.7.0)
+
+All three EXIF timestamp families now support explicit native deletion and
+companion synchronization across primary IFD0 and ExifIFD. Accepted XMP date
+owners produce missing-companion removal intents even when the native source
+keys are absent. Preparation enables ExifIFD merging for dirty timestamp edits;
+unselected timestamp families and unrelated native destination entries survive.
+Source omission still preserves values. Manual lists are validated before output
+and do not implicitly synchronize XMP. The bundle layout requires ABI 5.
+See [migration and authority rules](migration_0_7.md).

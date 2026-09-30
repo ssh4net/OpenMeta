@@ -21,8 +21,12 @@ technical translator projects dirty ``tiff:Make``, ``tiff:Model`` and
 BigTIFF in both byte orders retain requests through snapshots, edit/stream and
 package replay. Omission preserves existing native tags. Live native values
 win over old tombstones; conflicting manual replacements fail before output.
-ABI 4 and snapshot v1 stay unchanged. DateTime and its ExifIFD companions,
-structural fields, other IFDs and private records remain separate contracts.
+ABI 4 and snapshot v1 stayed unchanged in 0.6.2. Version 0.7.0 adds grouped
+timestamp deletion and synchronization across primary IFD0 and ExifIFD, with
+explicit missing-companion intents and merging that preserves unselected
+native destination entries. This changes the bundle to ABI 5; see
+:doc:`migration_0_7`. Structural fields, other pages and private-record deletion
+remain outside the bounded contract.
 
 C++ example
 -----------

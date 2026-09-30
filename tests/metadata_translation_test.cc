@@ -89,6 +89,19 @@ namespace {
         return store->add_entry(entry);
     }
 
+    static EntryId add_exif_ifd_tombstone(MetaStore* store, BlockId block,
+                                          std::string_view ifd, uint16_t tag,
+                                          EntryFlags flags, uint32_t order)
+    {
+        Entry entry;
+        entry.key          = make_exif_tag_key(store->arena(), ifd, tag);
+        entry.value        = make_text(store->arena(), {}, TextEncoding::Ascii);
+        entry.origin.block = block;
+        entry.origin.order_in_block = order;
+        entry.flags                 = flags;
+        return store->add_entry(entry);
+    }
+
     static EntryId add_iptc_bytes(MetaStore* store, BlockId block,
                                   uint16_t dataset, std::string_view value,
                                   uint32_t order)
@@ -162,6 +175,28 @@ namespace {
                                  ifd_bytes.size())
                     == expected_ifd
                 && entry_matches_text(store, entry, expected)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool has_exif_dirty_tombstone(const MetaStore& store,
+                                         std::string_view expected_ifd,
+                                         uint16_t tag) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (!any(entry.flags, EntryFlags::Dirty)
+                || !any(entry.flags, EntryFlags::Deleted)
+                || entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != tag) {
+                continue;
+            }
+            const std::span<const std::byte> ifd_bytes = store.arena().span(
+                entry.key.data.exif_tag.ifd);
+            if (std::string_view(reinterpret_cast<const char*>(ifd_bytes.data()),
+                                 ifd_bytes.size())
+                == expected_ifd) {
                 return true;
             }
         }
@@ -321,7 +356,7 @@ namespace {
         ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
         EXPECT_EQ(result.source_properties, 3U);
         EXPECT_EQ(result.groups_translated, 4U);
-        EXPECT_EQ(result.entries_added, 9U);
+        EXPECT_EQ(result.entries_added, 10U);
         EXPECT_EQ(result.entries_updated, 0U);
         EXPECT_EQ(result.entries_removed, 0U);
 
@@ -331,6 +366,7 @@ namespace {
         EXPECT_TRUE(
             active_exif_origin_wire_name(translated, 0x9004U, "xmp-date"));
         EXPECT_EQ(active_exif_count(translated, 0x9292U), 0U);
+        EXPECT_TRUE(has_exif_dirty_tombstone(translated, "exififd", 0x9292U));
         EXPECT_TRUE(active_iptc_text(translated, 62U, "20240830"));
         EXPECT_TRUE(active_iptc_text(translated, 63U, "010203-0230"));
 
@@ -436,6 +472,31 @@ namespace {
         result = translate_xmp_creation_dates(malformed, iptc_only, &output);
         EXPECT_EQ(result.status,
                   MetadataDateTranslationStatus::InvalidDateTime);
+
+        MetaStore later_failure;
+        const BlockId later_failure_block = later_failure.add_block(
+            BlockInfo {});
+        ASSERT_NE(later_failure_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&later_failure, later_failure_block,
+                               "http://ns.adobe.com/xap/1.0/", "CreateDate",
+                               "2024-08-30T01:02:03Z", EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&later_failure, later_failure_block,
+                               "http://ns.adobe.com/exif/1.0/",
+                               "DateTimeOriginal", "2023-02-29T01:02:03Z",
+                               EntryFlags::Dirty, 1U),
+                  kInvalidEntryId);
+        later_failure.finalize();
+        output = sentinel;
+        result = translate_xmp_creation_dates(later_failure,
+                                              MetadataDateTranslationOptions {},
+                                              &output);
+        EXPECT_EQ(result.status,
+                  MetadataDateTranslationStatus::InvalidDateTime);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataDateTranslationMapping::XmpDateTimeOriginal);
+        EXPECT_EQ(output.entries().size(), sentinel.entries().size());
+        EXPECT_TRUE(active_iptc_text(output, 5U, "sentinel"));
     }
 
     TEST(MetadataTranslation, HonorsSourceSelectionAndRejectsDuplicates)
@@ -514,7 +575,16 @@ namespace {
             = translate_xmp_creation_dates(source, options, &output);
         ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
         EXPECT_EQ(result.groups_preserved, 1U);
+        EXPECT_EQ(result.groups_translated, 0U);
+        EXPECT_EQ(result.entries_added, 0U);
+        EXPECT_EQ(result.entries_updated, 0U);
+        EXPECT_EQ(result.entries_removed, 0U);
+        EXPECT_EQ(active_exif_count(output, 0x9004U), 1U);
+        EXPECT_EQ(active_exif_count(output, 0x9012U), 2U);
+        EXPECT_EQ(active_exif_count(output, 0x9292U), 1U);
         EXPECT_TRUE(active_exif_text(output, 0x9004U, "2001:02:03 04:05:06"));
+        EXPECT_TRUE(active_exif_text(output, 0x9292U, "999"));
+        EXPECT_FALSE(has_exif_dirty_tombstone(output, "exififd", 0x9292U));
 
         options.conflict_policy
             = MetadataDateTranslationConflictPolicy::FailOnConflict;
@@ -581,10 +651,598 @@ namespace {
         EXPECT_EQ(result.source_properties, 1U);
         EXPECT_EQ(result.groups_translated, 2U);
         EXPECT_EQ(result.entries_removed, 4U);
+        EXPECT_EQ(result.entries_added, 1U);
+        EXPECT_TRUE(has_exif_dirty_tombstone(translated, "exififd", 0x9292U));
         EXPECT_EQ(active_exif_count(translated, 0x9004U), 0U);
         EXPECT_EQ(active_exif_count(translated, 0x9012U), 0U);
         EXPECT_EQ(active_iptc_count(translated, 62U), 0U);
         EXPECT_EQ(active_iptc_count(translated, 63U), 0U);
+    }
+
+    TEST(MetadataTranslation,
+         MissingDateCompanionsProduceBoundedIdempotentIntents)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/exif/1.0/",
+                               "DateTimeOriginal", "2026-09-30T12:34:56",
+                               EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/xap/1.0/",
+                               "ModifyDate", "2026-09-30T12:34:56",
+                               EntryFlags::Dirty, 1U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        MetadataDateTranslationOptions date_options;
+        date_options.create_date_to_exif_digitized        = false;
+        date_options.create_date_to_iptc_digital_creation = false;
+        date_options.date_created_to_iptc_created         = false;
+        MetaStore date_output;
+        const BlockId output_block = date_output.add_block(BlockInfo {});
+        ASSERT_NE(output_block, kInvalidBlockId);
+        ASSERT_NE(add_exif_ifd_text(&date_output, output_block, "ifd0", 0x0131U,
+                                    "sentinel", 0U),
+                  kInvalidEntryId);
+        date_output.finalize();
+
+        date_options.max_added_entries = 2U;
+        MetadataDateTranslationResult date_result
+            = translate_xmp_creation_dates(source, date_options, &date_output);
+        EXPECT_EQ(date_result.status,
+                  MetadataDateTranslationStatus::EntryLimitExceeded);
+        EXPECT_EQ(date_output.entries().size(), 1U);
+        EXPECT_TRUE(
+            active_exif_ifd_text(date_output, "ifd0", 0x0131U, "sentinel"));
+
+        date_options.max_added_entries = kMetadataDateTranslationMaxAddedEntries;
+        date_options.max_operations = 2U;
+        date_result = translate_xmp_creation_dates(source, date_options,
+                                                   &date_output);
+        EXPECT_EQ(date_result.status,
+                  MetadataDateTranslationStatus::OperationLimitExceeded);
+        EXPECT_EQ(date_output.entries().size(), 1U);
+        EXPECT_TRUE(
+            active_exif_ifd_text(date_output, "ifd0", 0x0131U, "sentinel"));
+
+        date_options.max_operations = kMetadataDateTranslationMaxOperations;
+        date_result = translate_xmp_creation_dates(source, date_options,
+                                                   &date_output);
+        ASSERT_EQ(date_result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(date_result.entries_added, 3U);
+        EXPECT_EQ(date_result.groups_translated, 1U);
+        EXPECT_TRUE(active_exif_ifd_text(date_output, "exififd", 0x9003U,
+                                         "2026:09:30 12:34:56"));
+        EXPECT_TRUE(has_exif_dirty_tombstone(date_output, "exififd", 0x9011U));
+        EXPECT_TRUE(has_exif_dirty_tombstone(date_output, "exififd", 0x9291U));
+        EXPECT_EQ(active_exif_count(date_output, 0x9011U), 0U);
+        EXPECT_EQ(active_exif_count(date_output, 0x9291U), 0U);
+
+        MetaStore date_repeated;
+        date_result = translate_xmp_creation_dates(date_output, date_options,
+                                                   &date_repeated);
+        ASSERT_EQ(date_result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(date_result.entries_added, 0U);
+        EXPECT_EQ(date_result.groups_unchanged, 1U);
+        EXPECT_EQ(date_repeated.entries().size(), date_output.entries().size());
+
+        MetadataTechnicalTranslationOptions technical_options;
+        MetadataTechnicalTranslationResult technical_result;
+
+        MetaStore clean_deleted_source;
+        const BlockId clean_deleted_block = clean_deleted_source.add_block(
+            BlockInfo {});
+        ASSERT_NE(clean_deleted_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&clean_deleted_source, clean_deleted_block,
+                               "http://ns.adobe.com/exif/1.0/",
+                               "DateTimeOriginal", "2026-09-30T12:34:56",
+                               EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&clean_deleted_source, clean_deleted_block,
+                               "http://ns.adobe.com/xap/1.0/", "ModifyDate",
+                               "2026-09-30T12:34:56", EntryFlags::Dirty, 1U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&clean_deleted_source, clean_deleted_block,
+                                    "exififd", 0x9003U, "2026:09:30 12:34:56",
+                                    2U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_tombstone(&clean_deleted_source,
+                                         clean_deleted_block, "exififd",
+                                         0x9011U, EntryFlags::Deleted, 3U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&clean_deleted_source, clean_deleted_block,
+                                    "ifd0", 0x0132U, "2026:09:30 12:34:56", 4U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_tombstone(&clean_deleted_source,
+                                         clean_deleted_block, "exififd",
+                                         0x9010U, EntryFlags::Deleted, 5U),
+                  kInvalidEntryId);
+        clean_deleted_source.finalize();
+
+        MetaStore clean_deleted_date_output;
+        date_result = translate_xmp_creation_dates(clean_deleted_source,
+                                                   date_options,
+                                                   &clean_deleted_date_output);
+        ASSERT_EQ(date_result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(date_result.entries_added, 1U);
+        EXPECT_EQ(date_result.entries_updated, 2U);
+        EXPECT_EQ(date_result.entries_removed, 0U);
+        EXPECT_TRUE(active_exif_ifd_text(clean_deleted_date_output, "exififd",
+                                         0x9003U, "2026:09:30 12:34:56"));
+        EXPECT_TRUE(has_exif_dirty_tombstone(clean_deleted_date_output,
+                                             "exififd", 0x9011U));
+        EXPECT_TRUE(has_exif_dirty_tombstone(clean_deleted_date_output,
+                                             "exififd", 0x9291U));
+        EXPECT_EQ(active_exif_count(clean_deleted_date_output, 0x9003U), 1U);
+
+        MetaStore clean_deleted_technical_output;
+        technical_result
+            = translate_xmp_technical_metadata(clean_deleted_source,
+                                               technical_options,
+                                               &clean_deleted_technical_output);
+        ASSERT_EQ(technical_result.status,
+                  MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(technical_result.entries_added, 1U);
+        EXPECT_EQ(technical_result.entries_updated, 2U);
+        EXPECT_EQ(technical_result.entries_removed, 0U);
+        EXPECT_TRUE(active_exif_ifd_text(clean_deleted_technical_output, "ifd0",
+                                         0x0132U, "2026:09:30 12:34:56"));
+        EXPECT_TRUE(has_exif_dirty_tombstone(clean_deleted_technical_output,
+                                             "exififd", 0x9010U));
+        EXPECT_TRUE(has_exif_dirty_tombstone(clean_deleted_technical_output,
+                                             "exififd", 0x9290U));
+        EXPECT_EQ(active_exif_count(clean_deleted_technical_output, 0x0132U),
+                  1U);
+
+        MetaStore technical_output;
+        const BlockId technical_output_block = technical_output.add_block(
+            BlockInfo {});
+        ASSERT_NE(technical_output_block, kInvalidBlockId);
+        ASSERT_NE(add_exif_ifd_text(&technical_output, technical_output_block,
+                                    "ifd0", 0x0131U, "sentinel", 0U),
+                  kInvalidEntryId);
+        technical_output.finalize();
+
+        technical_options.max_added_entries = 2U;
+        technical_result = translate_xmp_technical_metadata(source,
+                                                            technical_options,
+                                                            &technical_output);
+        EXPECT_EQ(technical_result.status,
+                  MetadataTechnicalTranslationStatus::EntryLimitExceeded);
+        EXPECT_EQ(technical_output.entries().size(), 1U);
+        EXPECT_TRUE(active_exif_ifd_text(technical_output, "ifd0", 0x0131U,
+                                         "sentinel"));
+
+        technical_options.max_added_entries
+            = kMetadataTechnicalTranslationMaxAddedEntries;
+        technical_options.max_operations = 2U;
+        technical_result = translate_xmp_technical_metadata(source,
+                                                            technical_options,
+                                                            &technical_output);
+        EXPECT_EQ(technical_result.status,
+                  MetadataTechnicalTranslationStatus::OperationLimitExceeded);
+        EXPECT_EQ(technical_output.entries().size(), 1U);
+        EXPECT_TRUE(active_exif_ifd_text(technical_output, "ifd0", 0x0131U,
+                                         "sentinel"));
+
+        technical_options.max_operations
+            = kMetadataTechnicalTranslationMaxOperations;
+        technical_result = translate_xmp_technical_metadata(source,
+                                                            technical_options,
+                                                            &technical_output);
+        ASSERT_EQ(technical_result.status,
+                  MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(technical_result.entries_added, 3U);
+        EXPECT_EQ(technical_result.groups_translated, 1U);
+        EXPECT_TRUE(active_exif_ifd_text(technical_output, "ifd0", 0x0132U,
+                                         "2026:09:30 12:34:56"));
+        EXPECT_TRUE(
+            has_exif_dirty_tombstone(technical_output, "exififd", 0x9010U));
+        EXPECT_TRUE(
+            has_exif_dirty_tombstone(technical_output, "exififd", 0x9290U));
+        EXPECT_EQ(active_exif_count(technical_output, 0x9010U), 0U);
+        EXPECT_EQ(active_exif_count(technical_output, 0x9290U), 0U);
+
+        MetaStore technical_repeated;
+        technical_result = translate_xmp_technical_metadata(
+            technical_output, technical_options, &technical_repeated);
+        ASSERT_EQ(technical_result.status,
+                  MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(technical_result.entries_added, 0U);
+        EXPECT_EQ(technical_result.groups_unchanged, 1U);
+        EXPECT_EQ(technical_repeated.entries().size(),
+                  technical_output.entries().size());
+    }
+
+    TEST(MetadataTranslation,
+         ExactFullPrecisionTimestampGroupsCarryDirtyAuthority)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/exif/1.0/",
+                               "DateTimeOriginal",
+                               "2026-09-30T12:34:56.125+09:00",
+                               EntryFlags::None, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/xap/1.0/",
+                               "ModifyDate", "2026-09-30T12:34:56.125+09:00",
+                               EntryFlags::None, 1U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&source, block, "exififd", 0x9003U,
+                                    "2026:09:30 12:34:56", 2U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&source, block, "exififd", 0x9011U,
+                                    "+09:00", 3U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&source, block, "exififd", 0x9291U, "125",
+                                    4U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&source, block, "ifd0", 0x0132U,
+                                    "2026:09:30 12:34:56", 5U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&source, block, "exififd", 0x9010U,
+                                    "+09:00", 6U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&source, block, "exififd", 0x9290U, "125",
+                                    7U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        MetadataDateTranslationOptions date_options;
+        date_options.source_mode = MetadataDateTranslationSourceMode::All;
+        date_options.create_date_to_exif_digitized        = false;
+        date_options.create_date_to_iptc_digital_creation = false;
+        date_options.date_created_to_iptc_created         = false;
+        date_options.max_operations                       = 2U;
+        date_options.conflict_policy
+            = MetadataDateTranslationConflictPolicy::PreserveExisting;
+        MetaStore date_preserved;
+        MetadataDateTranslationResult date_result
+            = translate_xmp_creation_dates(source, date_options,
+                                           &date_preserved);
+        ASSERT_EQ(date_result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(date_result.groups_preserved, 1U);
+        EXPECT_EQ(date_result.entries_added, 0U);
+        EXPECT_EQ(date_result.entries_updated, 0U);
+        EXPECT_EQ(date_result.entries_removed, 0U);
+        const Entry* preserved_date_time
+            = active_exif_entry(date_preserved, "exififd", 0x9003U);
+        ASSERT_NE(preserved_date_time, nullptr);
+        EXPECT_FALSE(any(preserved_date_time->flags, EntryFlags::Dirty));
+
+        date_options.conflict_policy
+            = MetadataDateTranslationConflictPolicy::FailOnConflict;
+        MetaStore date_output;
+        const BlockId date_output_block = date_output.add_block(BlockInfo {});
+        ASSERT_NE(date_output_block, kInvalidBlockId);
+        ASSERT_NE(add_exif_ifd_text(&date_output, date_output_block, "ifd0",
+                                    0x0131U, "sentinel", 0U),
+                  kInvalidEntryId);
+        date_output.finalize();
+
+        date_result = translate_xmp_creation_dates(source, date_options,
+                                                   &date_output);
+        EXPECT_EQ(date_result.status,
+                  MetadataDateTranslationStatus::OperationLimitExceeded);
+        EXPECT_EQ(date_output.entries().size(), 1U);
+        EXPECT_TRUE(
+            active_exif_ifd_text(date_output, "ifd0", 0x0131U, "sentinel"));
+
+        date_options.max_operations = kMetadataDateTranslationMaxOperations;
+        date_result = translate_xmp_creation_dates(source, date_options,
+                                                   &date_output);
+        ASSERT_EQ(date_result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(date_result.groups_translated, 1U);
+        EXPECT_EQ(date_result.groups_unchanged, 0U);
+        EXPECT_EQ(date_result.entries_added, 0U);
+        EXPECT_EQ(date_result.entries_updated, 3U);
+        EXPECT_EQ(date_result.entries_removed, 0U);
+        const Entry* date_time     = active_exif_entry(date_output, "exififd",
+                                                       0x9003U);
+        const Entry* date_offset   = active_exif_entry(date_output, "exififd",
+                                                       0x9011U);
+        const Entry* date_fraction = active_exif_entry(date_output, "exififd",
+                                                       0x9291U);
+        ASSERT_NE(date_time, nullptr);
+        ASSERT_NE(date_offset, nullptr);
+        ASSERT_NE(date_fraction, nullptr);
+        EXPECT_TRUE(any(date_time->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(date_offset->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(date_fraction->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(
+            entry_matches_text(date_output, *date_time, "2026:09:30 12:34:56"));
+        EXPECT_TRUE(entry_matches_text(date_output, *date_offset, "+09:00"));
+        EXPECT_TRUE(entry_matches_text(date_output, *date_fraction, "125"));
+
+        MetaStore date_repeated;
+        date_result = translate_xmp_creation_dates(date_output, date_options,
+                                                   &date_repeated);
+        ASSERT_EQ(date_result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(date_result.groups_translated, 0U);
+        EXPECT_EQ(date_result.groups_unchanged, 1U);
+        EXPECT_EQ(date_result.entries_updated, 0U);
+
+        MetaStore create_source;
+        const BlockId create_block = create_source.add_block(BlockInfo {});
+        ASSERT_NE(create_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&create_source, create_block,
+                               "http://ns.adobe.com/xap/1.0/", "CreateDate",
+                               "2026-09-30T12:34:56.125+09:00",
+                               EntryFlags::None, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&create_source, create_block, "exififd",
+                                    0x9004U, "2026:09:30 12:34:56", 1U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&create_source, create_block, "exififd",
+                                    0x9012U, "+09:00", 2U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&create_source, create_block, "exififd",
+                                    0x9292U, "125", 3U),
+                  kInvalidEntryId);
+        create_source.finalize();
+
+        MetadataDateTranslationOptions create_options;
+        create_options.source_mode = MetadataDateTranslationSourceMode::All;
+        create_options.create_date_to_iptc_digital_creation = false;
+        create_options.date_created_to_iptc_created         = false;
+        create_options.date_time_original_to_exif_original  = false;
+        create_options.max_operations                       = 2U;
+        MetaStore create_output;
+        const BlockId create_output_block = create_output.add_block(
+            BlockInfo {});
+        ASSERT_NE(create_output_block, kInvalidBlockId);
+        ASSERT_NE(add_exif_ifd_text(&create_output, create_output_block, "ifd0",
+                                    0x0131U, "sentinel", 0U),
+                  kInvalidEntryId);
+        create_output.finalize();
+        MetadataDateTranslationResult create_result
+            = translate_xmp_creation_dates(create_source, create_options,
+                                           &create_output);
+        EXPECT_EQ(create_result.status,
+                  MetadataDateTranslationStatus::OperationLimitExceeded);
+        EXPECT_EQ(create_output.entries().size(), 1U);
+        EXPECT_TRUE(
+            active_exif_ifd_text(create_output, "ifd0", 0x0131U, "sentinel"));
+
+        create_options.max_operations = kMetadataDateTranslationMaxOperations;
+        create_result = translate_xmp_creation_dates(create_source,
+                                                     create_options,
+                                                     &create_output);
+        ASSERT_EQ(create_result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(create_result.groups_translated, 1U);
+        EXPECT_EQ(create_result.groups_unchanged, 0U);
+        EXPECT_EQ(create_result.entries_added, 0U);
+        EXPECT_EQ(create_result.entries_updated, 3U);
+        EXPECT_EQ(create_result.entries_removed, 0U);
+        const Entry* digitized_time     = active_exif_entry(create_output,
+                                                            "exififd", 0x9004U);
+        const Entry* digitized_offset   = active_exif_entry(create_output,
+                                                            "exififd", 0x9012U);
+        const Entry* digitized_fraction = active_exif_entry(create_output,
+                                                            "exififd", 0x9292U);
+        ASSERT_NE(digitized_time, nullptr);
+        ASSERT_NE(digitized_offset, nullptr);
+        ASSERT_NE(digitized_fraction, nullptr);
+        EXPECT_TRUE(any(digitized_time->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(digitized_offset->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(digitized_fraction->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(entry_matches_text(create_output, *digitized_time,
+                                       "2026:09:30 12:34:56"));
+        EXPECT_TRUE(
+            entry_matches_text(create_output, *digitized_offset, "+09:00"));
+        EXPECT_TRUE(
+            entry_matches_text(create_output, *digitized_fraction, "125"));
+
+        MetadataTechnicalTranslationOptions technical_options;
+        technical_options.source_mode
+            = MetadataTechnicalTranslationSourceMode::All;
+        technical_options.make_to_exif_make             = false;
+        technical_options.model_to_exif_model           = false;
+        technical_options.creator_tool_to_exif_software = false;
+        technical_options.max_operations                = 2U;
+        technical_options.conflict_policy
+            = MetadataTechnicalTranslationConflictPolicy::PreserveExisting;
+        MetaStore technical_preserved;
+        MetadataTechnicalTranslationResult technical_result
+            = translate_xmp_technical_metadata(source, technical_options,
+                                               &technical_preserved);
+        ASSERT_EQ(technical_result.status,
+                  MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(technical_result.groups_preserved, 1U);
+        EXPECT_EQ(technical_result.entries_added, 0U);
+        EXPECT_EQ(technical_result.entries_updated, 0U);
+        EXPECT_EQ(technical_result.entries_removed, 0U);
+        const Entry* preserved_modify_time
+            = active_exif_entry(technical_preserved, "ifd0", 0x0132U);
+        ASSERT_NE(preserved_modify_time, nullptr);
+        EXPECT_FALSE(any(preserved_modify_time->flags, EntryFlags::Dirty));
+
+        technical_options.conflict_policy
+            = MetadataTechnicalTranslationConflictPolicy::FailOnConflict;
+        MetaStore technical_output;
+        const BlockId technical_output_block = technical_output.add_block(
+            BlockInfo {});
+        ASSERT_NE(technical_output_block, kInvalidBlockId);
+        ASSERT_NE(add_exif_ifd_text(&technical_output, technical_output_block,
+                                    "ifd0", 0x0131U, "sentinel", 0U),
+                  kInvalidEntryId);
+        technical_output.finalize();
+
+        technical_result = translate_xmp_technical_metadata(source,
+                                                            technical_options,
+                                                            &technical_output);
+        EXPECT_EQ(technical_result.status,
+                  MetadataTechnicalTranslationStatus::OperationLimitExceeded);
+        EXPECT_EQ(technical_output.entries().size(), 1U);
+        EXPECT_TRUE(active_exif_ifd_text(technical_output, "ifd0", 0x0131U,
+                                         "sentinel"));
+
+        technical_options.max_operations
+            = kMetadataTechnicalTranslationMaxOperations;
+        technical_result = translate_xmp_technical_metadata(source,
+                                                            technical_options,
+                                                            &technical_output);
+        ASSERT_EQ(technical_result.status,
+                  MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(technical_result.groups_translated, 1U);
+        EXPECT_EQ(technical_result.groups_unchanged, 0U);
+        EXPECT_EQ(technical_result.entries_added, 0U);
+        EXPECT_EQ(technical_result.entries_updated, 3U);
+        EXPECT_EQ(technical_result.entries_removed, 0U);
+        const Entry* modify_time   = active_exif_entry(technical_output, "ifd0",
+                                                       0x0132U);
+        const Entry* modify_offset = active_exif_entry(technical_output,
+                                                       "exififd", 0x9010U);
+        const Entry* modify_fraction = active_exif_entry(technical_output,
+                                                         "exififd", 0x9290U);
+        ASSERT_NE(modify_time, nullptr);
+        ASSERT_NE(modify_offset, nullptr);
+        ASSERT_NE(modify_fraction, nullptr);
+        EXPECT_TRUE(any(modify_time->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(modify_offset->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(modify_fraction->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(entry_matches_text(technical_output, *modify_time,
+                                       "2026:09:30 12:34:56"));
+        EXPECT_TRUE(
+            entry_matches_text(technical_output, *modify_offset, "+09:00"));
+        EXPECT_TRUE(
+            entry_matches_text(technical_output, *modify_fraction, "125"));
+
+        MetaStore technical_repeated;
+        technical_result = translate_xmp_technical_metadata(
+            technical_output, technical_options, &technical_repeated);
+        ASSERT_EQ(technical_result.status,
+                  MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(technical_result.groups_translated, 0U);
+        EXPECT_EQ(technical_result.groups_unchanged, 1U);
+        EXPECT_EQ(technical_result.entries_updated, 0U);
+    }
+
+    TEST(MetadataTranslation, ExactIptcAndTechnicalSingletonsKeepNoopCounters)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block,
+                               "http://ns.adobe.com/photoshop/1.0/",
+                               "DateCreated", "2026-09-30T12:34:56+09:00",
+                               EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/tiff/1.0/",
+                               "Make", "OpenMeta Camera", EntryFlags::Dirty,
+                               1U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_iptc_bytes(&source, block, 55U, "20260930", 2U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_iptc_bytes(&source, block, 60U, "123456+0900", 3U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_exif_ifd_text(&source, block, "ifd0", 0x010fU,
+                                    "OpenMeta Camera", 4U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        MetadataDateTranslationOptions date_options;
+        date_options.create_date_to_exif_digitized        = false;
+        date_options.create_date_to_iptc_digital_creation = false;
+        date_options.date_time_original_to_exif_original  = false;
+        MetaStore date_output;
+        const MetadataDateTranslationResult date_result
+            = translate_xmp_creation_dates(source, date_options, &date_output);
+        ASSERT_EQ(date_result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(date_result.source_properties, 1U);
+        EXPECT_EQ(date_result.groups_translated, 0U);
+        EXPECT_EQ(date_result.groups_unchanged, 1U);
+        EXPECT_EQ(date_result.entries_added, 0U);
+        EXPECT_EQ(date_result.entries_updated, 0U);
+        EXPECT_EQ(date_result.entries_removed, 0U);
+        EXPECT_TRUE(active_iptc_text(date_output, 55U, "20260930"));
+        EXPECT_TRUE(active_iptc_text(date_output, 60U, "123456+0900"));
+
+        MetadataTechnicalTranslationOptions technical_options;
+        technical_options.modify_date_to_exif_datetime  = false;
+        technical_options.model_to_exif_model           = false;
+        technical_options.creator_tool_to_exif_software = false;
+        MetaStore technical_output;
+        const MetadataTechnicalTranslationResult technical_result
+            = translate_xmp_technical_metadata(source, technical_options,
+                                               &technical_output);
+        ASSERT_EQ(technical_result.status,
+                  MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(technical_result.source_properties, 1U);
+        EXPECT_EQ(technical_result.groups_translated, 0U);
+        EXPECT_EQ(technical_result.groups_unchanged, 1U);
+        EXPECT_EQ(technical_result.entries_added, 0U);
+        EXPECT_EQ(technical_result.entries_updated, 0U);
+        EXPECT_EQ(technical_result.entries_removed, 0U);
+        const Entry* make = active_exif_entry(technical_output, "ifd0",
+                                              0x010fU);
+        ASSERT_NE(make, nullptr);
+        EXPECT_FALSE(any(make->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(
+            entry_matches_text(technical_output, *make, "OpenMeta Camera"));
+    }
+
+    TEST(MetadataTranslation, DeletedTimestampOwnersEmitAllExifIntents)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/exif/1.0/",
+                               "DateTimeOriginal", "removed",
+                               EntryFlags::Dirty | EntryFlags::Deleted, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/xap/1.0/",
+                               "CreateDate", "removed",
+                               EntryFlags::Dirty | EntryFlags::Deleted, 1U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/xap/1.0/",
+                               "ModifyDate", "removed",
+                               EntryFlags::Dirty | EntryFlags::Deleted, 2U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        MetadataDateTranslationOptions date_options;
+        date_options.create_date_to_exif_digitized        = true;
+        date_options.create_date_to_iptc_digital_creation = true;
+        date_options.date_created_to_iptc_created         = false;
+        date_options.conflict_policy
+            = MetadataDateTranslationConflictPolicy::PreserveExisting;
+        MetaStore date_output;
+        MetadataDateTranslationResult date_result
+            = translate_xmp_creation_dates(source, date_options, &date_output);
+        ASSERT_EQ(date_result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(date_result.source_properties, 2U);
+        EXPECT_EQ(date_result.entries_added, 6U);
+        EXPECT_EQ(date_result.groups_translated, 3U);
+        EXPECT_EQ(date_result.groups_unchanged, 0U);
+        EXPECT_TRUE(has_exif_dirty_tombstone(date_output, "exififd", 0x9003U));
+        EXPECT_TRUE(has_exif_dirty_tombstone(date_output, "exififd", 0x9011U));
+        EXPECT_TRUE(has_exif_dirty_tombstone(date_output, "exififd", 0x9291U));
+        EXPECT_TRUE(has_exif_dirty_tombstone(date_output, "exififd", 0x9004U));
+        EXPECT_TRUE(has_exif_dirty_tombstone(date_output, "exififd", 0x9012U));
+        EXPECT_TRUE(has_exif_dirty_tombstone(date_output, "exififd", 0x9292U));
+        EXPECT_EQ(active_iptc_count(date_output, 62U), 0U);
+        EXPECT_EQ(active_iptc_count(date_output, 63U), 0U);
+
+        MetadataTechnicalTranslationOptions technical_options;
+        technical_options.conflict_policy
+            = MetadataTechnicalTranslationConflictPolicy::ReplaceExisting;
+        MetaStore technical_output;
+        MetadataTechnicalTranslationResult technical_result
+            = translate_xmp_technical_metadata(source, technical_options,
+                                               &technical_output);
+        ASSERT_EQ(technical_result.status,
+                  MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(technical_result.entries_added, 3U);
+        EXPECT_EQ(technical_result.groups_translated, 1U);
+        EXPECT_TRUE(
+            has_exif_dirty_tombstone(technical_output, "ifd0", 0x0132U));
+        EXPECT_TRUE(
+            has_exif_dirty_tombstone(technical_output, "exififd", 0x9010U));
+        EXPECT_TRUE(
+            has_exif_dirty_tombstone(technical_output, "exififd", 0x9290U));
     }
 
     TEST(MetadataTranslation, TranslatesTechnicalXmpToExactExifGroups)
@@ -694,6 +1352,30 @@ namespace {
                   MetadataTechnicalTranslationStatus::NonAsciiSource);
         EXPECT_EQ(result.failed_mapping,
                   MetadataTechnicalTranslationMapping::TiffMake);
+        EXPECT_TRUE(
+            active_exif_ifd_text(translated, "ifd0", 0x010fU, "Clean ignored"));
+
+        MetaStore later_failure;
+        const BlockId later_failure_block = later_failure.add_block(
+            BlockInfo {});
+        ASSERT_NE(later_failure_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&later_failure, later_failure_block,
+                               "http://ns.adobe.com/xap/1.0/", "ModifyDate",
+                               "2026-09-30T12:34:56Z", EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&later_failure, later_failure_block,
+                               "http://ns.adobe.com/tiff/1.0/", "Make",
+                               "M\xc3\xa4ke", EntryFlags::Dirty, 1U),
+                  kInvalidEntryId);
+        later_failure.finalize();
+        const size_t sentinel_entries = translated.entries().size();
+        result = translate_xmp_technical_metadata(later_failure, options,
+                                                  &translated);
+        EXPECT_EQ(result.status,
+                  MetadataTechnicalTranslationStatus::NonAsciiSource);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataTechnicalTranslationMapping::TiffMake);
+        EXPECT_EQ(translated.entries().size(), sentinel_entries);
         EXPECT_TRUE(
             active_exif_ifd_text(translated, "ifd0", 0x010fU, "Clean ignored"));
 
@@ -846,6 +1528,34 @@ namespace {
         ASSERT_EQ(result.status, MetadataTechnicalTranslationStatus::Ok);
         EXPECT_EQ(result.entries_removed, 1U);
         EXPECT_EQ(active_exif_count(output, 0x0110U), 0U);
+
+        MetaStore empty_singleton_deletion;
+        const BlockId empty_singleton_block
+            = empty_singleton_deletion.add_block(BlockInfo {});
+        ASSERT_NE(empty_singleton_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&empty_singleton_deletion, empty_singleton_block,
+                               "http://ns.adobe.com/tiff/1.0/", "Make",
+                               "Old make",
+                               EntryFlags::Dirty | EntryFlags::Deleted, 0U),
+                  kInvalidEntryId);
+        empty_singleton_deletion.finalize();
+
+        MetadataTechnicalTranslationOptions singleton_options;
+        singleton_options.modify_date_to_exif_datetime  = false;
+        singleton_options.model_to_exif_model           = false;
+        singleton_options.creator_tool_to_exif_software = false;
+        singleton_options.conflict_policy
+            = MetadataTechnicalTranslationConflictPolicy::PreserveExisting;
+        MetaStore empty_singleton_output;
+        result = translate_xmp_technical_metadata(empty_singleton_deletion,
+                                                  singleton_options,
+                                                  &empty_singleton_output);
+        ASSERT_EQ(result.status, MetadataTechnicalTranslationStatus::Ok);
+        EXPECT_EQ(result.groups_translated, 1U);
+        EXPECT_EQ(result.groups_unchanged, 0U);
+        EXPECT_EQ(result.entries_added, 0U);
+        EXPECT_EQ(result.entries_updated, 0U);
+        EXPECT_EQ(result.entries_removed, 0U);
     }
 
     TEST(MetadataTranslation, TranslatesCaptureXmpToTypedExifScalars)

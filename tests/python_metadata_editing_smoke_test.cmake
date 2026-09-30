@@ -89,8 +89,8 @@ dates = openmeta.create_metadata([
 ])
 translated_dates = dates.translate_creation_dates(
     date_created_to_iptc_created=False)
-assert openmeta.METADATA_DATE_TRANSLATION_CONTRACT_VERSION == 1
-assert translated_dates.entry_count == dates.entry_count + 7
+assert openmeta.METADATA_DATE_TRANSLATION_CONTRACT_VERSION == 2
+assert translated_dates.entry_count == dates.entry_count + 8
 assert dates.entry_count == 2
 translated_packet, _ = translated_dates.dump_xmp_portable(
     include_existing_xmp=True,
@@ -125,9 +125,56 @@ technical = openmeta.create_metadata([
     openmeta.metadata_creation_text(K.Software, 'OpenMeta Python'),
 ])
 translated_technical = technical.translate_technical_metadata()
-assert openmeta.METADATA_TECHNICAL_TRANSLATION_CONTRACT_VERSION == 1
+assert openmeta.METADATA_TECHNICAL_TRANSLATION_CONTRACT_VERSION == 2
 assert translated_technical.entry_count == technical.entry_count + 6
 assert technical.entry_count == 4
+
+# Accepted timestamp owners carry absent companion intent even with no native input.
+naive_dates = openmeta.create_metadata([
+    openmeta.metadata_creation_text(K.CreateDate, '2026-09-30T01:02:03'),
+    openmeta.metadata_creation_text(K.DateTimeOriginal, '2026-09-30T01:02:03'),
+    openmeta.metadata_creation_text(K.ModifyDate, '2026-09-30T01:02:03'),
+])
+naive_native = naive_dates.translate_creation_dates(
+    create_date_to_iptc_digital_creation=False,
+    date_created_to_iptc_created=False,
+).translate_technical_metadata()
+assert naive_native.entry_count == naive_dates.entry_count + 9
+naive_probe = openmeta.unsafe_transfer_snapshot_probe(
+    naive_native.build_transfer_source_snapshot(),
+    target_format=openmeta.TransferTargetFormat.Tiff,
+    edit_target_path='memory_timestamp.tiff',
+    target_bytes=bytes([73, 73, 42, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+    include_edited_bytes=True,
+)
+assert naive_probe['overall_status'] == openmeta.TransferStatus.Ok, naive_probe
+assert naive_probe['tiff_ifd0_removals'] == [], naive_probe
+assert naive_probe['tiff_exif_removals'] == [0x9010, 0x9011, 0x9012, 0x9290, 0x9291, 0x9292], naive_probe
+assert naive_probe['tiff_merge_existing_exif'] is True, naive_probe
+assert naive_probe['edit_apply_status'] == openmeta.TransferStatus.Ok, naive_probe
+assert isinstance(naive_probe['edited_bytes'], (bytes, bytearray))
+removed_owners = naive_dates.edit_metadata([
+    openmeta.metadata_edit_remove_all(K.CreateDate),
+    openmeta.metadata_edit_remove_all(K.DateTimeOriginal),
+    openmeta.metadata_edit_remove_all(K.ModifyDate),
+])
+removed_native = removed_owners.translate_creation_dates(
+    conflict_policy=openmeta.MetadataDateTranslationConflictPolicy.ReplaceExisting,
+    create_date_to_iptc_digital_creation=False,
+    date_created_to_iptc_created=False,
+).translate_technical_metadata(
+    conflict_policy=openmeta.MetadataTechnicalTranslationConflictPolicy.ReplaceExisting,
+)
+removed_probe = openmeta.unsafe_transfer_snapshot_probe(
+    removed_native.build_transfer_source_snapshot(),
+    target_format=openmeta.TransferTargetFormat.Tiff,
+    edit_target_path='memory_timestamp.tiff',
+    target_bytes=bytes(naive_probe['edited_bytes']),
+    include_edited_bytes=True,
+)
+assert removed_probe['overall_status'] == openmeta.TransferStatus.Ok, removed_probe
+assert removed_probe['tiff_ifd0_removals'] == [0x0132], removed_probe
+assert removed_probe['tiff_exif_removals'] == [0x9003, 0x9004, 0x9010, 0x9011, 0x9012, 0x9290, 0x9291, 0x9292], removed_probe
 
 non_ascii_technical = openmeta.create_metadata([
     openmeta.metadata_creation_text(K.CameraMake, 'M' + chr(0xe4) + 'ke'),

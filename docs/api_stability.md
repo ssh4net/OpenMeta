@@ -4,10 +4,10 @@ This page defines the adoption status for public OpenMeta APIs.
 Python bindings mirror these labels unless a Python wrapper documents a
 different status.
 
-OpenMeta 0.6.0 uses C++ ABI 4. `PreparedTransferBundle` now owns explicit native
-TIFF IFD0 removal instructions; consumers must rebuild. The bounded deletion
-surface is experimental. Existing patch/handoff contract versions and source
-snapshot v1 encoding are unchanged. See [the migration guide](migration_0_6.md).
+OpenMeta 0.7.0 uses C++ ABI 5. The prepared bundle adds primary ExifIFD
+removals and explicit destination merging for timestamp edits; consumers must
+rebuild. Date and technical translation contracts are version 2. Existing
+patch/handoff contracts and snapshot v1 encoding remain unchanged. See [the migration guide](migration_0_7.md).
 
 ## Stability Levels
 

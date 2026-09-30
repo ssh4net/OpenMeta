@@ -1,5 +1,23 @@
 # OpenMeta Changes
 
+## 0.7.0 - 2026-09-30
+
+- Synchronize all three native EXIF timestamp families from their accepted XMP
+  owners. Carry explicit dirty tombstones for absent timezone/subsecond members
+  and deleted owners, even when native source keys were missing. Preserve
+  omission and conflict policies, count every intent/authority update before
+  transactional publication, and reuse intents on repeated translation.
+- Add bounded primary ExifIFD timestamp removals and explicit preservation of
+  unspecified destination fields during TIFF/BigTIFF timestamp edits. Keep
+  unrelated records, MakerNotes, pointers and media; reject conflicting clears
+  and replacement/removal requests before output or writer callbacks. Extend
+  fresh-output and codec handoff rejection to the new removal list.
+- Advance C++ ABI 4 to 5 for the prepared-bundle fields. Require a consumer
+  rebuild and a 0.7 CMake package request; date and technical translation
+  contracts become version 2. Snapshot v1 encoding, existing patch contracts
+  and host-owned synchronization remain unchanged. Expose the new transfer
+  diagnostics in Python and document migration.
+
 ## 0.6.0 - 2026-09-28
 
 - Carry explicit native IFD0 ImageDescription, Artist and Copyright deletion

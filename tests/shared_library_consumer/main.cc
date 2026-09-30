@@ -107,7 +107,7 @@ main()
             translation_source, openmeta::MetadataDateTranslationOptions {},
             &translated);
     const bool translation_contract_matches
-        = openmeta::kMetadataDateTranslationContractVersion == 1U
+        = openmeta::kMetadataDateTranslationContractVersion == 2U
           && translation.status == openmeta::MetadataDateTranslationStatus::Ok
           && translated.is_finalized();
     openmeta::MetaStore descriptive_translated;

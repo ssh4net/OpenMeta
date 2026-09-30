@@ -7261,6 +7261,354 @@ make_minimal_tiff_with_strip_storage_little_endian()
     return tiff;
 }
 
+static uint64_t
+read_tiff_test_unsigned(std::span<const std::byte> bytes, size_t offset,
+                        size_t width, bool big_endian) noexcept
+{
+    uint64_t value = 0U;
+    for (size_t i = 0U; i < width; ++i) {
+        const size_t shift = big_endian ? (width - 1U - i) * 8U : i * 8U;
+        value
+            |= static_cast<uint64_t>(std::to_integer<uint8_t>(bytes[offset + i]))
+               << shift;
+    }
+    return value;
+}
+
+static void
+append_tiff_test_unsigned(std::vector<std::byte>* bytes, size_t width,
+                          uint64_t value, bool big_endian)
+{
+    if (big_endian) {
+        append_test_u_nbe(bytes, width, value);
+        return;
+    }
+    for (size_t i = 0U; i < width; ++i) {
+        bytes->push_back(static_cast<std::byte>((value >> (i * 8U)) & 0xFFU));
+    }
+}
+
+static void
+write_test_tiff_unsigned(std::vector<std::byte>* bytes, size_t offset,
+                         size_t width, uint64_t value, bool big_endian) noexcept
+{
+    if (!bytes || offset > bytes->size() || width > bytes->size() - offset
+        || width > sizeof(value)) {
+        return;
+    }
+    for (size_t i = 0U; i < width; ++i) {
+        const size_t shift   = big_endian ? (width - 1U - i) * 8U : i * 8U;
+        (*bytes)[offset + i] = static_cast<std::byte>((value >> shift) & 0xFFU);
+    }
+}
+
+static size_t
+tiff_test_type_width(uint16_t type) noexcept
+{
+    switch (type) {
+    case 1U:
+    case 2U:
+    case 6U:
+    case 7U: return 1U;
+    case 3U:
+    case 8U: return 2U;
+    case 4U:
+    case 9U:
+    case 11U:
+    case 13U: return 4U;
+    case 5U:
+    case 10U:
+    case 12U:
+    case 16U:
+    case 17U:
+    case 18U: return 8U;
+    default: return 0U;
+    }
+}
+
+static bool
+find_tiff_test_entry(std::span<const std::byte> bytes, uint64_t ifd_offset,
+                     uint16_t tag, bool big_tiff, bool big_endian,
+                     uint16_t* out_type, uint64_t* out_count,
+                     uint64_t* out_value_or_offset) noexcept
+{
+    const size_t count_width  = big_tiff ? 8U : 2U;
+    const size_t entry_width  = big_tiff ? 20U : 12U;
+    const size_t inline_width = big_tiff ? 8U : 4U;
+    const size_t next_width   = big_tiff ? 8U : 4U;
+    if (ifd_offset > static_cast<uint64_t>(bytes.size())
+        || count_width > bytes.size() - static_cast<size_t>(ifd_offset)) {
+        return false;
+    }
+    const size_t base    = static_cast<size_t>(ifd_offset);
+    const uint64_t count = read_tiff_test_unsigned(bytes, base, count_width,
+                                                   big_endian);
+    const size_t entries_offset = base + count_width;
+    if (count > static_cast<uint64_t>(SIZE_MAX / entry_width)
+        || count * static_cast<uint64_t>(entry_width)
+               > bytes.size() - entries_offset
+        || next_width > bytes.size() - entries_offset
+                            - static_cast<size_t>(count) * entry_width) {
+        return false;
+    }
+    for (size_t i = 0U; i < static_cast<size_t>(count); ++i) {
+        const size_t entry_offset = entries_offset + i * entry_width;
+        if (read_tiff_test_unsigned(bytes, entry_offset, 2U, big_endian)
+            != tag) {
+            continue;
+        }
+        const uint16_t type = static_cast<uint16_t>(
+            read_tiff_test_unsigned(bytes, entry_offset + 2U, 2U, big_endian));
+        const size_t count_field_width = big_tiff ? 8U : 4U;
+        const uint64_t entry_count
+            = read_tiff_test_unsigned(bytes, entry_offset + 4U,
+                                      count_field_width, big_endian);
+        const size_t type_width = tiff_test_type_width(type);
+        if (type_width == 0U
+            || entry_count > static_cast<uint64_t>(SIZE_MAX / type_width)) {
+            return false;
+        }
+        if (out_type) {
+            *out_type = type;
+        }
+        if (out_count) {
+            *out_count = entry_count;
+        }
+        if (out_value_or_offset) {
+            const size_t payload_size = static_cast<size_t>(entry_count)
+                                        * type_width;
+            const size_t value_offset = entry_offset + (big_tiff ? 12U : 8U);
+            if (payload_size <= inline_width) {
+                if (payload_size == 0U || payload_size > 8U) {
+                    return false;
+                }
+                *out_value_or_offset
+                    = read_tiff_test_unsigned(bytes, value_offset, payload_size,
+                                              big_endian);
+            } else {
+                *out_value_or_offset
+                    = read_tiff_test_unsigned(bytes, value_offset,
+                                              big_tiff ? 8U : 4U, big_endian);
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+static std::vector<std::byte>
+make_tiff_test_unsigned(size_t width, uint64_t value, bool big_endian)
+{
+    std::vector<std::byte> encoded;
+    append_tiff_test_unsigned(&encoded, width, value, big_endian);
+    return encoded;
+}
+
+static void
+append_tiff_test_entry(std::vector<std::byte>* tiff, uint16_t tag,
+                       uint16_t type, uint64_t count, uint64_t value_or_offset,
+                       std::span<const std::byte> inline_payload, bool big_tiff,
+                       bool big_endian)
+{
+    const size_t inline_width = big_tiff ? 8U : 4U;
+    append_tiff_test_unsigned(tiff, 2U, tag, big_endian);
+    append_tiff_test_unsigned(tiff, 2U, type, big_endian);
+    append_tiff_test_unsigned(tiff, big_tiff ? 8U : 4U, count, big_endian);
+    if (!inline_payload.empty()) {
+        tiff->insert(tiff->end(), inline_payload.begin(), inline_payload.end());
+        tiff->resize(tiff->size() + inline_width - inline_payload.size(),
+                     std::byte { 0x00 });
+    } else {
+        append_tiff_test_unsigned(tiff, inline_width, value_or_offset,
+                                  big_endian);
+    }
+}
+
+static std::vector<std::byte>
+make_timestamp_exif_target(bool big_tiff, bool big_endian)
+{
+    static constexpr std::array<uint8_t, 10U> maker_note = {
+        0x01U, 0x02U, 0x03U, 0x04U, 0x05U, 0x06U, 0x07U, 0x08U, 0x09U, 0x0AU,
+    };
+    const size_t count_width   = big_tiff ? 8U : 2U;
+    const size_t entry_width   = big_tiff ? 20U : 12U;
+    const size_t next_width    = big_tiff ? 8U : 4U;
+    const uint64_t ifd0_offset = big_tiff ? 16U : 8U;
+    const uint64_t ifd0_size   = count_width + 4U * entry_width + next_width;
+    const uint64_t exif_ifd_offset = ifd0_offset + ifd0_size;
+    const uint64_t exif_ifd_size = count_width + 12U * entry_width + next_width;
+    const uint64_t interop_ifd_offset = exif_ifd_offset + exif_ifd_size;
+    const uint64_t interop_ifd_size   = count_width + 2U * entry_width
+                                      + next_width;
+    const uint64_t storage_offset       = interop_ifd_offset + interop_ifd_size;
+    const uint64_t ifd0_time_offset     = storage_offset + 4U;
+    const uint64_t original_time_offset = ifd0_time_offset + 20U;
+    const uint64_t digitized_time_offset        = original_time_offset + 20U;
+    const uint64_t offset_time_offset           = digitized_time_offset + 20U;
+    const uint64_t offset_original_time_offset  = offset_time_offset + 7U;
+    const uint64_t offset_digitized_time_offset = offset_original_time_offset
+                                                  + 7U;
+    const uint64_t maker_note_offset = offset_digitized_time_offset + 7U;
+
+    std::vector<std::byte> tiff;
+    append_bytes(&tiff, big_endian ? "MM" : "II");
+    if (big_tiff) {
+        append_tiff_test_unsigned(&tiff, 2U, 43U, big_endian);
+        append_tiff_test_unsigned(&tiff, 2U, 8U, big_endian);
+        append_tiff_test_unsigned(&tiff, 2U, 0U, big_endian);
+        append_tiff_test_unsigned(&tiff, 8U, ifd0_offset, big_endian);
+    } else {
+        append_tiff_test_unsigned(&tiff, 2U, 42U, big_endian);
+        append_tiff_test_unsigned(&tiff, 4U, ifd0_offset, big_endian);
+    }
+
+    const std::vector<std::byte> strip_offset
+        = make_tiff_test_unsigned(4U, storage_offset, big_endian);
+    const std::vector<std::byte> strip_size
+        = make_tiff_test_unsigned(4U, 4U, big_endian);
+    const std::vector<std::byte> exif_pointer
+        = make_tiff_test_unsigned(4U, exif_ifd_offset, big_endian);
+    append_tiff_test_unsigned(&tiff, count_width, 4U, big_endian);
+    append_tiff_test_entry(&tiff, 0x0111U, 4U, 1U, 0U, strip_offset, big_tiff,
+                           big_endian);
+    append_tiff_test_entry(&tiff, 0x0117U, 4U, 1U, 0U, strip_size, big_tiff,
+                           big_endian);
+    append_tiff_test_entry(&tiff, 0x0132U, 2U, 20U, ifd0_time_offset, {},
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x8769U, 4U, 1U, 0U, exif_pointer, big_tiff,
+                           big_endian);
+    append_tiff_test_unsigned(&tiff, next_width, 0U, big_endian);
+
+    const std::array<std::byte, 4U> exif_xmp = {
+        std::byte { 'X' },
+        std::byte { 'M' },
+        std::byte { 'P' },
+        std::byte { 0x00 },
+    };
+    const std::array<std::byte, 4U> interop_id = {
+        std::byte { 'R' },
+        std::byte { '9' },
+        std::byte { '8' },
+        std::byte { 0x00 },
+    };
+    const std::array<std::byte, 4U> interop_xmp = {
+        std::byte { 'I' },
+        std::byte { 'N' },
+        std::byte { 'T' },
+        std::byte { 0x00 },
+    };
+    const std::array<std::byte, 3U> subsec_original = {
+        std::byte { '4' },
+        std::byte { '5' },
+        std::byte { 0x00 },
+    };
+    const std::array<std::byte, 3U> subsec_digitized = {
+        std::byte { '2' },
+        std::byte { '1' },
+        std::byte { 0x00 },
+    };
+    const std::array<std::byte, 4U> subsec = {
+        std::byte { '7' },
+        std::byte { '8' },
+        std::byte { '9' },
+        std::byte { 0x00 },
+    };
+    const std::vector<std::byte> exposure = make_tiff_test_unsigned(2U, 7U,
+                                                                    big_endian);
+    const std::vector<std::byte> interop_pointer
+        = make_tiff_test_unsigned(4U, interop_ifd_offset, big_endian);
+    append_tiff_test_unsigned(&tiff, count_width, 12U, big_endian);
+    append_tiff_test_entry(&tiff, 700U, 7U, exif_xmp.size(), 0U, exif_xmp,
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x9003U, 2U, 20U, original_time_offset, {},
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x9004U, 2U, 20U, digitized_time_offset, {},
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x9010U, 2U, 7U, offset_time_offset,
+                           big_tiff ? std::as_bytes(
+                                          std::span<const char>("+00:00", 7U))
+                                    : std::span<const std::byte> {},
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x9011U, 2U, 7U, offset_original_time_offset,
+                           big_tiff ? std::as_bytes(
+                                          std::span<const char>("+01:00", 7U))
+                                    : std::span<const std::byte> {},
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x9012U, 2U, 7U, offset_digitized_time_offset,
+                           big_tiff ? std::as_bytes(
+                                          std::span<const char>("+02:00", 7U))
+                                    : std::span<const std::byte> {},
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x9209U, 3U, 1U, 0U, exposure, big_tiff,
+                           big_endian);
+    append_tiff_test_entry(&tiff, 0x927CU, 7U, maker_note.size(),
+                           maker_note_offset, {}, big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x9290U, 2U, subsec.size(), 0U, subsec,
+                           big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x9291U, 2U, subsec_original.size(), 0U,
+                           subsec_original, big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0x9292U, 2U, subsec_digitized.size(), 0U,
+                           subsec_digitized, big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 0xA005U, 4U, 1U, 0U, interop_pointer,
+                           big_tiff, big_endian);
+    append_tiff_test_unsigned(&tiff, next_width, 0U, big_endian);
+
+    append_tiff_test_unsigned(&tiff, count_width, 2U, big_endian);
+    append_tiff_test_entry(&tiff, 0x0001U, 2U, interop_id.size(), 0U,
+                           interop_id, big_tiff, big_endian);
+    append_tiff_test_entry(&tiff, 700U, 7U, interop_xmp.size(), 0U, interop_xmp,
+                           big_tiff, big_endian);
+    append_tiff_test_unsigned(&tiff, next_width, 0U, big_endian);
+
+    tiff.push_back(std::byte { 0x11U });
+    tiff.push_back(std::byte { 0x22U });
+    tiff.push_back(std::byte { 0x33U });
+    tiff.push_back(std::byte { 0x44U });
+    append_bytes(&tiff, "2012:04:05 06:07:08");
+    tiff.push_back(std::byte { 0x00 });
+    append_bytes(&tiff, "2010:11:14 16:25:16");
+    tiff.push_back(std::byte { 0x00 });
+    append_bytes(&tiff, "2009:03:02 01:02:03");
+    tiff.push_back(std::byte { 0x00 });
+    append_bytes(&tiff, "+00:00");
+    tiff.push_back(std::byte { 0x00 });
+    append_bytes(&tiff, "+01:00");
+    tiff.push_back(std::byte { 0x00 });
+    append_bytes(&tiff, "+02:00");
+    tiff.push_back(std::byte { 0x00 });
+    for (size_t i = 0U; i < maker_note.size(); ++i) {
+        tiff.push_back(static_cast<std::byte>(maker_note[i]));
+    }
+    return tiff;
+}
+
+static std::vector<std::byte>
+make_minimal_tiff_timestamp_exif_target_little_endian()
+{
+    return make_timestamp_exif_target(false, false);
+}
+
+static std::vector<std::byte>
+make_empty_source_exif_ifd_app1_payload()
+{
+    std::vector<std::byte> payload;
+    append_bytes(&payload, "Exif");
+    payload.push_back(std::byte { 0x00 });
+    payload.push_back(std::byte { 0x00 });
+    append_bytes(&payload, "II");
+    append_u16le(&payload, 42U);
+    append_u32le(&payload, 8U);
+    append_u16le(&payload, 1U);
+    append_u16le(&payload, 0x8769U);
+    append_u16le(&payload, 4U);
+    append_u32le(&payload, 1U);
+    append_u32le(&payload, 26U);
+    append_u32le(&payload, 0U);
+    append_u16le(&payload, 0U);
+    append_u32le(&payload, 0U);
+    return payload;
+}
+
 static bool
 build_minimal_transfer_target_for_format(openmeta::TransferTargetFormat format,
                                          std::vector<std::byte>* out)
@@ -9803,6 +10151,784 @@ TEST(MetadataTransferApi,
 }
 
 TEST(MetadataTransferApi,
+     NativeTimestampTiffRemovalsAndMergePreserveExistingEntries)
+{
+    const std::vector<std::byte> input
+        = make_minimal_tiff_timestamp_exif_target_little_endian();
+
+    openmeta::MetaStore tombstones;
+    openmeta::Entry date_time_tombstone;
+    date_time_tombstone.key   = openmeta::make_exif_tag_key(tombstones.arena(),
+                                                            "ifd0", 0x0132U);
+    date_time_tombstone.flags = openmeta::EntryFlags::Dirty
+                                | openmeta::EntryFlags::Deleted;
+    ASSERT_NE(tombstones.add_entry(date_time_tombstone),
+              openmeta::kInvalidEntryId);
+
+    openmeta::Entry original_tombstone;
+    original_tombstone.key   = openmeta::make_exif_tag_key(tombstones.arena(),
+                                                           "exififd", 0x9003U);
+    original_tombstone.flags = openmeta::EntryFlags::Dirty
+                               | openmeta::EntryFlags::Deleted;
+    ASSERT_NE(tombstones.add_entry(original_tombstone),
+              openmeta::kInvalidEntryId);
+
+    openmeta::Entry offset_tombstone;
+    offset_tombstone.key   = openmeta::make_exif_tag_key(tombstones.arena(),
+                                                         "exififd", 0x9010U);
+    offset_tombstone.flags = openmeta::EntryFlags::Dirty
+                             | openmeta::EntryFlags::Deleted;
+    ASSERT_NE(tombstones.add_entry(offset_tombstone),
+              openmeta::kInvalidEntryId);
+
+    const std::array<uint16_t, 5U> additional_timestamp_tags = {
+        0x9004U, 0x9012U, 0x9290U, 0x9291U, 0x9292U,
+    };
+    for (uint16_t tag : additional_timestamp_tags) {
+        openmeta::Entry tombstone;
+        tombstone.key   = openmeta::make_exif_tag_key(tombstones.arena(),
+                                                      "exififd", tag);
+        tombstone.flags = openmeta::EntryFlags::Dirty
+                          | openmeta::EntryFlags::Deleted;
+        ASSERT_NE(tombstones.add_entry(tombstone), openmeta::kInvalidEntryId);
+    }
+
+    openmeta::Entry live_offset;
+    live_offset.key = openmeta::make_exif_tag_key(tombstones.arena(), "exififd",
+                                                  0x9010U);
+    live_offset.value = openmeta::make_text(tombstones.arena(), "+09:00",
+                                            openmeta::TextEncoding::Ascii);
+    ASSERT_NE(tombstones.add_entry(live_offset), openmeta::kInvalidEntryId);
+
+    openmeta::Entry clean_deleted;
+    clean_deleted.key   = openmeta::make_exif_tag_key(tombstones.arena(),
+                                                      "exififd", 0x9011U);
+    clean_deleted.flags = openmeta::EntryFlags::Deleted;
+    ASSERT_NE(tombstones.add_entry(clean_deleted), openmeta::kInvalidEntryId);
+
+    openmeta::Entry misplaced_tombstone;
+    misplaced_tombstone.key   = openmeta::make_exif_tag_key(tombstones.arena(),
+                                                            "ifd1", 0x9004U);
+    misplaced_tombstone.flags = openmeta::EntryFlags::Dirty
+                                | openmeta::EntryFlags::Deleted;
+    ASSERT_NE(tombstones.add_entry(misplaced_tombstone),
+              openmeta::kInvalidEntryId);
+    tombstones.finalize();
+
+    openmeta::PrepareTransferRequest tombstone_request;
+    tombstone_request.target_format      = openmeta::TransferTargetFormat::Tiff;
+    tombstone_request.include_exif_app1  = true;
+    tombstone_request.include_xmp_app1   = false;
+    tombstone_request.include_icc_app2   = false;
+    tombstone_request.include_iptc_app13 = false;
+    openmeta::PreparedTransferBundle tombstone_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(tombstones,
+                                                    tombstone_request,
+                                                    &tombstone_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(tombstone_bundle.tiff_ifd0_removals,
+              (std::vector<uint16_t> { 0x0132U }));
+    EXPECT_EQ(tombstone_bundle.tiff_exif_removals,
+              (std::vector<uint16_t> { 0x9003U, 0x9004U, 0x9012U, 0x9290U,
+                                       0x9291U, 0x9292U }));
+    EXPECT_TRUE(tombstone_bundle.tiff_merge_existing_exif);
+
+    openmeta::PrepareTransferRequest exif_opt_out = tombstone_request;
+    exif_opt_out.include_exif_app1                = false;
+    openmeta::PreparedTransferBundle opt_out_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(tombstones, exif_opt_out,
+                                                    &opt_out_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(opt_out_bundle.tiff_ifd0_removals.empty());
+    EXPECT_TRUE(opt_out_bundle.tiff_exif_removals.empty());
+    EXPECT_FALSE(opt_out_bundle.tiff_merge_existing_exif);
+
+    openmeta::PreparedTransferBundle removal_bundle;
+    removal_bundle.target_format      = openmeta::TransferTargetFormat::Tiff;
+    removal_bundle.tiff_exif_removals = { 0x9003U };
+    const openmeta::TiffEditPlan removal_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(input, removal_bundle);
+    ASSERT_EQ(removal_plan.status, openmeta::TransferStatus::Ok)
+        << removal_plan.message;
+    EXPECT_EQ(removal_plan.tag_updates, 1U);
+    EXPECT_TRUE(removal_plan.has_exif_ifd);
+
+    std::vector<std::byte> removed_output;
+    ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(input, removal_bundle,
+                                                        removal_plan,
+                                                        &removed_output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    const std::span<const std::byte> removed_bytes(removed_output.data(),
+                                                   removed_output.size());
+    const uint32_t removed_ifd0_off = read_u32le(removed_bytes, 4U);
+    uint32_t removed_exif_ifd_off   = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(removed_bytes, removed_ifd0_off, 0x8769U,
+                                       nullptr, nullptr,
+                                       &removed_exif_ifd_off));
+    EXPECT_FALSE(find_tiff_tag_entry_le(removed_bytes, removed_exif_ifd_off,
+                                        0x9003U, nullptr, nullptr, nullptr));
+    uint32_t retained_offset = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(removed_bytes, removed_exif_ifd_off,
+                                       0x9004U, nullptr, nullptr,
+                                       &retained_offset));
+    static constexpr char kOriginalDigitized[20] = "2009:03:02 01:02:03";
+    ASSERT_LE(static_cast<size_t>(retained_offset) + sizeof(kOriginalDigitized),
+              removed_bytes.size());
+    EXPECT_EQ(std::memcmp(removed_bytes.data() + retained_offset,
+                          kOriginalDigitized, sizeof(kOriginalDigitized)),
+              0);
+    EXPECT_TRUE(find_tiff_tag_entry_le(removed_bytes, removed_exif_ifd_off,
+                                       0x9209U, nullptr, nullptr, nullptr));
+    uint32_t retained_makernote_offset = 0U;
+    uint32_t retained_makernote_count  = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(removed_bytes, removed_exif_ifd_off,
+                                       0x927CU, nullptr,
+                                       &retained_makernote_count,
+                                       &retained_makernote_offset));
+    ASSERT_EQ(retained_makernote_count, kTestMakerNoteBytes.size());
+    ASSERT_LE(static_cast<size_t>(retained_makernote_offset)
+                  + kTestMakerNoteBytes.size(),
+              removed_bytes.size());
+    EXPECT_EQ(std::memcmp(removed_bytes.data() + retained_makernote_offset,
+                          kTestMakerNoteBytes.data(),
+                          kTestMakerNoteBytes.size()),
+              0);
+    uint32_t retained_interop_ifd_off = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(removed_bytes, removed_exif_ifd_off,
+                                       0xA005U, nullptr, nullptr,
+                                       &retained_interop_ifd_off));
+    EXPECT_NE(retained_interop_ifd_off, 0U);
+    EXPECT_TRUE(find_tiff_tag_entry_le(removed_bytes, retained_interop_ifd_off,
+                                       0x0001U, nullptr, nullptr, nullptr));
+    EXPECT_TRUE(find_tiff_tag_entry_le(removed_bytes, removed_exif_ifd_off,
+                                       700U, nullptr, nullptr, nullptr));
+    EXPECT_TRUE(find_tiff_tag_entry_le(removed_bytes, retained_interop_ifd_off,
+                                       700U, nullptr, nullptr, nullptr));
+    const std::array<uint16_t, 7U> retained_timestamp_companions = {
+        0x9004U, 0x9010U, 0x9011U, 0x9012U, 0x9290U, 0x9291U, 0x9292U,
+    };
+    for (uint16_t tag : retained_timestamp_companions) {
+        EXPECT_TRUE(find_tiff_tag_entry_le(removed_bytes, removed_exif_ifd_off,
+                                           tag, nullptr, nullptr, nullptr))
+            << "retained ExifIFD tag=" << tag;
+    }
+    uint32_t strip_offset = 0U;
+    uint32_t strip_bytes  = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(removed_bytes, removed_ifd0_off, 0x0111U,
+                                       nullptr, nullptr, &strip_offset));
+    ASSERT_TRUE(find_tiff_tag_entry_le(removed_bytes, removed_ifd0_off, 0x0117U,
+                                       nullptr, nullptr, &strip_bytes));
+    uint32_t input_strip_offset = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(input, read_u32le(input, 4U), 0x0111U,
+                                       nullptr, nullptr, &input_strip_offset));
+    EXPECT_EQ(strip_offset, input_strip_offset);
+    EXPECT_EQ(strip_bytes, 4U);
+    ASSERT_LE(static_cast<size_t>(strip_offset) + strip_bytes,
+              removed_bytes.size());
+    EXPECT_EQ(removed_bytes[strip_offset + 0U], std::byte { 0x11U });
+    EXPECT_EQ(removed_bytes[strip_offset + 1U], std::byte { 0x22U });
+    EXPECT_EQ(removed_bytes[strip_offset + 2U], std::byte { 0x33U });
+    EXPECT_EQ(removed_bytes[strip_offset + 3U], std::byte { 0x44U });
+
+    BufferByteWriter removal_writer;
+    ASSERT_EQ(openmeta::write_prepared_bundle_tiff_edit(input, removal_bundle,
+                                                        removal_plan,
+                                                        removal_writer)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(removal_writer.out, removed_output);
+
+    openmeta::MetaStore mixed_source;
+    openmeta::Entry digitized_update;
+    digitized_update.key   = openmeta::make_exif_tag_key(mixed_source.arena(),
+                                                         "exififd", 0x9004U);
+    digitized_update.value = openmeta::make_text(mixed_source.arena(),
+                                                 "2024:08:30 01:02:03",
+                                                 openmeta::TextEncoding::Ascii);
+    digitized_update.flags = openmeta::EntryFlags::Dirty;
+    ASSERT_NE(mixed_source.add_entry(digitized_update),
+              openmeta::kInvalidEntryId);
+    mixed_source.finalize();
+
+    openmeta::PrepareTransferRequest mixed_request;
+    mixed_request.target_format      = openmeta::TransferTargetFormat::Tiff;
+    mixed_request.include_exif_app1  = true;
+    mixed_request.include_xmp_app1   = false;
+    mixed_request.include_icc_app2   = false;
+    mixed_request.include_iptc_app13 = false;
+    openmeta::PreparedTransferBundle mixed_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target(mixed_source, mixed_request,
+                                                    &mixed_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(mixed_bundle.tiff_merge_existing_exif);
+    EXPECT_TRUE(mixed_bundle.tiff_exif_removals.empty());
+    const openmeta::TiffEditPlan mixed_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(input, mixed_bundle);
+    ASSERT_EQ(mixed_plan.status, openmeta::TransferStatus::Ok)
+        << mixed_plan.message;
+    std::vector<std::byte> mixed_output;
+    ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(input, mixed_bundle,
+                                                        mixed_plan,
+                                                        &mixed_output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+
+    const std::span<const std::byte> mixed_bytes(mixed_output.data(),
+                                                 mixed_output.size());
+    const uint32_t mixed_ifd0_off = read_u32le(mixed_bytes, 4U);
+    uint32_t mixed_exif_ifd_off   = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(mixed_bytes, mixed_ifd0_off, 0x8769U,
+                                       nullptr, nullptr, &mixed_exif_ifd_off));
+    uint32_t original_offset = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(mixed_bytes, mixed_exif_ifd_off, 0x9003U,
+                                       nullptr, nullptr, &original_offset));
+    static constexpr char kUnselectedOriginal[20] = "2010:11:14 16:25:16";
+    ASSERT_LE(static_cast<size_t>(original_offset)
+                  + sizeof(kUnselectedOriginal),
+              mixed_bytes.size());
+    EXPECT_EQ(std::memcmp(mixed_bytes.data() + original_offset,
+                          kUnselectedOriginal, sizeof(kUnselectedOriginal)),
+              0);
+    uint32_t updated_offset = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(mixed_bytes, mixed_exif_ifd_off, 0x9004U,
+                                       nullptr, nullptr, &updated_offset));
+    static constexpr char kUpdatedDigitized[20] = "2024:08:30 01:02:03";
+    ASSERT_LE(static_cast<size_t>(updated_offset) + sizeof(kUpdatedDigitized),
+              mixed_bytes.size());
+    EXPECT_EQ(std::memcmp(mixed_bytes.data() + updated_offset,
+                          kUpdatedDigitized, sizeof(kUpdatedDigitized)),
+              0);
+    EXPECT_TRUE(find_tiff_tag_entry_le(mixed_bytes, mixed_exif_ifd_off, 0x9209U,
+                                       nullptr, nullptr, nullptr));
+    uint32_t mixed_makernote_offset = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(mixed_bytes, mixed_exif_ifd_off, 0x927CU,
+                                       nullptr, nullptr,
+                                       &mixed_makernote_offset));
+    ASSERT_LE(static_cast<size_t>(mixed_makernote_offset)
+                  + kTestMakerNoteBytes.size(),
+              mixed_bytes.size());
+    EXPECT_EQ(std::memcmp(mixed_bytes.data() + mixed_makernote_offset,
+                          kTestMakerNoteBytes.data(),
+                          kTestMakerNoteBytes.size()),
+              0);
+    uint32_t mixed_interop_ifd_off = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(mixed_bytes, mixed_exif_ifd_off, 0xA005U,
+                                       nullptr, nullptr,
+                                       &mixed_interop_ifd_off));
+    EXPECT_NE(mixed_interop_ifd_off, 0U);
+    EXPECT_TRUE(find_tiff_tag_entry_le(mixed_bytes, mixed_interop_ifd_off,
+                                       0x0001U, nullptr, nullptr, nullptr));
+    EXPECT_EQ(mixed_bytes[strip_offset + 0U], std::byte { 0x11U });
+    EXPECT_EQ(mixed_bytes[strip_offset + 1U], std::byte { 0x22U });
+    EXPECT_EQ(mixed_bytes[strip_offset + 2U], std::byte { 0x33U });
+    EXPECT_EQ(mixed_bytes[strip_offset + 3U], std::byte { 0x44U });
+
+    openmeta::PlanTiffEditOptions strip_options;
+    strip_options.strip_existing_xmp = true;
+    const openmeta::TiffEditPlan stripped_removal_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(input, removal_bundle,
+                                                   strip_options);
+    ASSERT_EQ(stripped_removal_plan.status, openmeta::TransferStatus::Ok)
+        << stripped_removal_plan.message;
+    std::vector<std::byte> stripped_removal_output;
+    ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(input, removal_bundle,
+                                                        stripped_removal_plan,
+                                                        &stripped_removal_output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    expect_tiff_exif_aux_xmp_absent(stripped_removal_output, true, true);
+
+    const openmeta::TiffEditPlan stripped_mixed_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(input, mixed_bundle,
+                                                   strip_options);
+    ASSERT_EQ(stripped_mixed_plan.status, openmeta::TransferStatus::Ok)
+        << stripped_mixed_plan.message;
+    std::vector<std::byte> stripped_mixed_output;
+    ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(input, mixed_bundle,
+                                                        stripped_mixed_plan,
+                                                        &stripped_mixed_output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    expect_tiff_exif_aux_xmp_absent(stripped_mixed_output, true, true);
+
+    const openmeta::TiffEditPlan repeated_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(removed_output,
+                                                   removal_bundle);
+    ASSERT_EQ(repeated_plan.status, openmeta::TransferStatus::Ok)
+        << repeated_plan.message;
+    std::vector<std::byte> repeated_output;
+    ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(removed_output,
+                                                        removal_bundle,
+                                                        repeated_plan,
+                                                        &repeated_output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    const std::span<const std::byte> repeated_bytes(repeated_output.data(),
+                                                    repeated_output.size());
+    const uint32_t repeated_ifd0_off = read_u32le(repeated_bytes, 4U);
+    uint32_t repeated_exif_ifd_off   = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(repeated_bytes, repeated_ifd0_off,
+                                       0x8769U, nullptr, nullptr,
+                                       &repeated_exif_ifd_off));
+    EXPECT_FALSE(find_tiff_tag_entry_le(repeated_bytes, repeated_exif_ifd_off,
+                                        0x9003U, nullptr, nullptr, nullptr));
+    EXPECT_TRUE(find_tiff_tag_entry_le(repeated_bytes, repeated_exif_ifd_off,
+                                       0x9004U, nullptr, nullptr, nullptr));
+
+    openmeta::PreparedTransferBundle conflict_bundle = mixed_bundle;
+    conflict_bundle.tiff_exif_removals               = { 0x9004U };
+    EXPECT_EQ(
+        openmeta::plan_prepared_bundle_tiff_edit(input, conflict_bundle).status,
+        openmeta::TransferStatus::InvalidArgument);
+    std::vector<std::byte> untouched_output = {
+        std::byte { 0xA5U },
+        std::byte { 0x5AU },
+    };
+    const std::vector<std::byte> sentinel_output = untouched_output;
+    const openmeta::TiffEditPlan invalid_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(input, conflict_bundle);
+    EXPECT_NE(openmeta::apply_prepared_bundle_tiff_edit(input, conflict_bundle,
+                                                        invalid_plan,
+                                                        &untouched_output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(untouched_output, sentinel_output);
+
+    openmeta::PreparedTransferBundle malformed_bundle = removal_bundle;
+    openmeta::PreparedTransferBlock malformed_exif;
+    malformed_exif.route   = "tiff:ifd-exif-app1";
+    malformed_exif.payload = { std::byte { 'E' }, std::byte { 'x' } };
+    malformed_bundle.blocks.push_back(malformed_exif);
+    EXPECT_EQ(openmeta::plan_prepared_bundle_tiff_edit(input, malformed_bundle)
+                  .status,
+              openmeta::TransferStatus::InvalidArgument);
+
+    openmeta::PreparedTransferBundle clear_bundle;
+    clear_bundle.target_format = openmeta::TransferTargetFormat::Tiff;
+    clear_bundle.tiff_merge_existing_exif = true;
+    openmeta::PreparedTransferBlock clear_exif;
+    clear_exif.route   = "tiff:ifd-exif-app1";
+    clear_exif.payload = make_empty_source_exif_ifd_app1_payload();
+    clear_bundle.blocks.push_back(clear_exif);
+    EXPECT_EQ(
+        openmeta::plan_prepared_bundle_tiff_edit(input, clear_bundle).status,
+        openmeta::TransferStatus::InvalidArgument);
+    clear_bundle.tiff_merge_existing_exif = false;
+    const openmeta::TiffEditPlan explicit_clear_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(input, clear_bundle);
+    ASSERT_EQ(explicit_clear_plan.status, openmeta::TransferStatus::Ok)
+        << explicit_clear_plan.message;
+    std::vector<std::byte> explicit_clear_output;
+    ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(input, clear_bundle,
+                                                        explicit_clear_plan,
+                                                        &explicit_clear_output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_FALSE(find_tiff_tag_entry_le(
+        std::span<const std::byte>(explicit_clear_output.data(),
+                                   explicit_clear_output.size()),
+        read_u32le(std::span<const std::byte>(explicit_clear_output.data(),
+                                              explicit_clear_output.size()),
+                   4U),
+        0x8769U, nullptr, nullptr, nullptr));
+    clear_bundle.tiff_exif_removals = { 0x9003U };
+    EXPECT_EQ(
+        openmeta::plan_prepared_bundle_tiff_edit(input, clear_bundle).status,
+        openmeta::TransferStatus::InvalidArgument);
+
+    openmeta::PreparedTransferBundle exif_removal_bundle = removal_bundle;
+    const std::array<std::vector<uint16_t>, 3U> invalid_exif_removals = {
+        std::vector<uint16_t> { 0x9005U },
+        std::vector<uint16_t> { 0x9011U, 0x9010U },
+        std::vector<uint16_t> { 0x9003U, 0x9003U },
+    };
+    for (size_t i = 0U; i < invalid_exif_removals.size(); ++i) {
+        exif_removal_bundle.tiff_exif_removals = invalid_exif_removals[i];
+        EXPECT_EQ(openmeta::plan_prepared_bundle_tiff_edit(input,
+                                                           exif_removal_bundle)
+                      .status,
+                  openmeta::TransferStatus::InvalidArgument)
+            << "invalid-exif-removals=" << i;
+    }
+    exif_removal_bundle = removal_bundle;
+    FakeTiffEmitter fresh_emitter;
+    EXPECT_EQ(openmeta::emit_prepared_bundle_tiff(exif_removal_bundle,
+                                                  fresh_emitter)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(fresh_emitter.u32_calls.empty());
+    EXPECT_TRUE(fresh_emitter.bytes_calls.empty());
+    EXPECT_EQ(fresh_emitter.commit_calls, 0U);
+    openmeta::PreparedTiffEmitPlan fresh_plan;
+    EXPECT_EQ(openmeta::compile_prepared_bundle_tiff(exif_removal_bundle,
+                                                     &fresh_plan)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+    openmeta::PreparedTransferBundle jxl_bundle = exif_removal_bundle;
+    jxl_bundle.target_format = openmeta::TransferTargetFormat::Jxl;
+    openmeta::PreparedJxlEncoderHandoffView jxl_view;
+    EXPECT_EQ(openmeta::build_prepared_jxl_encoder_handoff_view(jxl_bundle,
+                                                                &jxl_view)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+    openmeta::PreparedTransferAdapterView adapter_view;
+    EXPECT_EQ(openmeta::build_prepared_transfer_adapter_view(exif_removal_bundle,
+                                                             &adapter_view)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+    std::vector<openmeta::PreparedTransferPayloadView> payload_views;
+    EXPECT_EQ(openmeta::collect_prepared_transfer_payload_views(
+                  exif_removal_bundle, &payload_views)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+}
+
+TEST(MetadataTransferApi,
+     NativeTimestampRemovalSnapshotPackageAndRepeatAcrossTiffVariants)
+{
+    openmeta::MetaStore source;
+    openmeta::Entry ifd0_tombstone;
+    ifd0_tombstone.key   = openmeta::make_exif_tag_key(source.arena(), "ifd0",
+                                                       0x0132U);
+    ifd0_tombstone.flags = openmeta::EntryFlags::Dirty
+                           | openmeta::EntryFlags::Deleted;
+    ASSERT_NE(source.add_entry(ifd0_tombstone), openmeta::kInvalidEntryId);
+
+    const std::array<uint16_t, 8U> timestamp_tags = {
+        0x9003U, 0x9004U, 0x9010U, 0x9011U, 0x9012U, 0x9290U, 0x9291U, 0x9292U,
+    };
+    for (uint16_t tag : timestamp_tags) {
+        openmeta::Entry tombstone;
+        tombstone.key   = openmeta::make_exif_tag_key(source.arena(), "exififd",
+                                                      tag);
+        tombstone.flags = openmeta::EntryFlags::Dirty
+                          | openmeta::EntryFlags::Deleted;
+        ASSERT_NE(source.add_entry(tombstone), openmeta::kInvalidEntryId);
+    }
+    source.finalize();
+
+    const openmeta::TransferSourceSnapshot snapshot
+        = openmeta::build_transfer_source_snapshot(source);
+    std::vector<std::byte> serialized_snapshot;
+    ASSERT_EQ(openmeta::serialize_transfer_source_snapshot(snapshot,
+                                                           &serialized_snapshot)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::TransferSourceSnapshot restored_snapshot;
+    ASSERT_EQ(openmeta::deserialize_transfer_source_snapshot(
+                  std::span<const std::byte>(serialized_snapshot.data(),
+                                             serialized_snapshot.size()),
+                  &restored_snapshot)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::PrepareTransferRequest request;
+    request.target_format      = openmeta::TransferTargetFormat::Tiff;
+    request.include_exif_app1  = true;
+    request.include_xmp_app1   = false;
+    request.include_icc_app2   = false;
+    request.include_iptc_app13 = false;
+    openmeta::PreparedTransferBundle prepared;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(restored_snapshot,
+                                                             request, &prepared)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(prepared.blocks.empty());
+    EXPECT_EQ(prepared.tiff_ifd0_removals, (std::vector<uint16_t> { 0x0132U }));
+    EXPECT_EQ(prepared.tiff_exif_removals,
+              (std::vector<uint16_t> { 0x9003U, 0x9004U, 0x9010U, 0x9011U,
+                                       0x9012U, 0x9290U, 0x9291U, 0x9292U }));
+    EXPECT_TRUE(prepared.tiff_merge_existing_exif);
+
+    openmeta::PrepareTransferRequest opt_out = request;
+    opt_out.include_exif_app1                = false;
+    openmeta::PreparedTransferBundle opt_out_bundle;
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(restored_snapshot,
+                                                             opt_out,
+                                                             &opt_out_bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(opt_out_bundle.tiff_ifd0_removals.empty());
+    EXPECT_TRUE(opt_out_bundle.tiff_exif_removals.empty());
+    EXPECT_FALSE(opt_out_bundle.tiff_merge_existing_exif);
+
+    struct Variant final {
+        bool big_tiff;
+        bool big_endian;
+        openmeta::TransferTargetFormat target;
+    };
+    const std::array<Variant, 4U> variants = {
+        Variant { false, false, openmeta::TransferTargetFormat::Tiff },
+        Variant { false, true, openmeta::TransferTargetFormat::Tiff },
+        Variant { true, false, openmeta::TransferTargetFormat::Dng },
+        Variant { true, true, openmeta::TransferTargetFormat::Dng },
+    };
+    for (size_t variant_index = 0U; variant_index < variants.size();
+         ++variant_index) {
+        const Variant& variant = variants[variant_index];
+        const std::vector<std::byte> input
+            = make_timestamp_exif_target(variant.big_tiff, variant.big_endian);
+        const size_t header_ifd0_offset = variant.big_tiff ? 8U : 4U;
+        const uint64_t input_ifd0_offset
+            = read_tiff_test_unsigned(input, header_ifd0_offset,
+                                      variant.big_tiff ? 8U : 4U,
+                                      variant.big_endian);
+        uint16_t pointer_type          = 0U;
+        uint64_t pointer_count         = 0U;
+        uint64_t input_exif_ifd_offset = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(input, input_ifd0_offset, 0x8769U,
+                                         variant.big_tiff, variant.big_endian,
+                                         &pointer_type, &pointer_count,
+                                         &input_exif_ifd_offset));
+        EXPECT_EQ(pointer_type, 4U) << "variant=" << variant_index;
+        EXPECT_EQ(pointer_count, 1U) << "variant=" << variant_index;
+        EXPECT_NE(input_exif_ifd_offset, 0U) << "variant=" << variant_index;
+
+        openmeta::PreparedTransferBundle bundle = prepared;
+        bundle.target_format                    = variant.target;
+        const openmeta::TiffEditPlan plan
+            = openmeta::plan_prepared_bundle_tiff_edit(input, bundle);
+        ASSERT_EQ(plan.status, openmeta::TransferStatus::Ok)
+            << "variant=" << variant_index << ": " << plan.message;
+        EXPECT_EQ(plan.tag_updates, 9U);
+        EXPECT_TRUE(plan.has_exif_ifd);
+
+        std::vector<std::byte> output;
+        ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(input, bundle, plan,
+                                                            &output)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        const std::span<const std::byte> output_bytes(output.data(),
+                                                      output.size());
+        const uint64_t output_ifd0_offset
+            = read_tiff_test_unsigned(output_bytes, header_ifd0_offset,
+                                      variant.big_tiff ? 8U : 4U,
+                                      variant.big_endian);
+        EXPECT_FALSE(find_tiff_test_entry(output_bytes, output_ifd0_offset,
+                                          0x0132U, variant.big_tiff,
+                                          variant.big_endian, nullptr, nullptr,
+                                          nullptr));
+        uint64_t output_exif_ifd_offset = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(output_bytes, output_ifd0_offset,
+                                         0x8769U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         &output_exif_ifd_offset));
+        for (uint16_t tag : timestamp_tags) {
+            EXPECT_FALSE(
+                find_tiff_test_entry(output_bytes, output_exif_ifd_offset, tag,
+                                     variant.big_tiff, variant.big_endian,
+                                     nullptr, nullptr, nullptr))
+                << "variant=" << variant_index << ", tag=" << tag;
+        }
+        EXPECT_TRUE(find_tiff_test_entry(output_bytes, output_exif_ifd_offset,
+                                         0x9209U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         nullptr));
+        EXPECT_TRUE(find_tiff_test_entry(output_bytes, output_exif_ifd_offset,
+                                         700U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         nullptr));
+
+        uint64_t maker_note_offset = 0U;
+        uint64_t maker_note_count  = 0U;
+        ASSERT_TRUE(
+            find_tiff_test_entry(output_bytes, output_exif_ifd_offset, 0x927CU,
+                                 variant.big_tiff, variant.big_endian, nullptr,
+                                 &maker_note_count, &maker_note_offset));
+        EXPECT_EQ(maker_note_count, kTestMakerNoteBytes.size());
+        ASSERT_LE(maker_note_offset + kTestMakerNoteBytes.size(),
+                  output_bytes.size());
+        EXPECT_EQ(std::memcmp(output_bytes.data() + maker_note_offset,
+                              kTestMakerNoteBytes.data(),
+                              kTestMakerNoteBytes.size()),
+                  0);
+
+        uint64_t interop_ifd_offset = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(output_bytes, output_exif_ifd_offset,
+                                         0xA005U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         &interop_ifd_offset));
+        EXPECT_TRUE(find_tiff_test_entry(output_bytes, interop_ifd_offset,
+                                         0x0001U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         nullptr));
+        EXPECT_TRUE(find_tiff_test_entry(output_bytes, interop_ifd_offset, 700U,
+                                         variant.big_tiff, variant.big_endian,
+                                         nullptr, nullptr, nullptr));
+
+        uint64_t strip_offset     = 0U;
+        uint64_t strip_byte_count = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(output_bytes, output_ifd0_offset,
+                                         0x0111U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         &strip_offset));
+        ASSERT_TRUE(find_tiff_test_entry(output_bytes, output_ifd0_offset,
+                                         0x0117U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         &strip_byte_count));
+        EXPECT_EQ(strip_byte_count, 4U);
+        ASSERT_LE(strip_offset + strip_byte_count, output_bytes.size());
+        EXPECT_EQ(output_bytes[strip_offset + 0U], std::byte { 0x11U });
+        EXPECT_EQ(output_bytes[strip_offset + 1U], std::byte { 0x22U });
+        EXPECT_EQ(output_bytes[strip_offset + 2U], std::byte { 0x33U });
+        EXPECT_EQ(output_bytes[strip_offset + 3U], std::byte { 0x44U });
+
+        openmeta::PreparedTransferPackagePlan package;
+        ASSERT_EQ(openmeta::build_prepared_bundle_tiff_package(input, bundle,
+                                                               plan, &package)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        BufferByteWriter writer;
+        ASSERT_EQ(openmeta::write_prepared_transfer_package(input, bundle,
+                                                            package, writer)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        EXPECT_EQ(writer.out, output);
+
+        const openmeta::TiffEditPlan repeated_plan
+            = openmeta::plan_prepared_bundle_tiff_edit(output, bundle);
+        ASSERT_EQ(repeated_plan.status, openmeta::TransferStatus::Ok)
+            << "variant=" << variant_index << ": " << repeated_plan.message;
+        std::vector<std::byte> repeated_output;
+        ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(output, bundle,
+                                                            repeated_plan,
+                                                            &repeated_output)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        const std::span<const std::byte> repeated_bytes(repeated_output.data(),
+                                                        repeated_output.size());
+        const uint64_t repeated_ifd0_offset
+            = read_tiff_test_unsigned(repeated_bytes, header_ifd0_offset,
+                                      variant.big_tiff ? 8U : 4U,
+                                      variant.big_endian);
+        uint64_t repeated_exif_ifd_offset = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(repeated_bytes, repeated_ifd0_offset,
+                                         0x8769U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         &repeated_exif_ifd_offset));
+        for (uint16_t tag : timestamp_tags) {
+            EXPECT_FALSE(
+                find_tiff_test_entry(repeated_bytes, repeated_exif_ifd_offset,
+                                     tag, variant.big_tiff, variant.big_endian,
+                                     nullptr, nullptr, nullptr))
+                << "repeated variant=" << variant_index << ", tag=" << tag;
+        }
+
+        openmeta::PlanTiffEditOptions strip_options;
+        strip_options.strip_existing_xmp = true;
+        const openmeta::TiffEditPlan strip_plan
+            = openmeta::plan_prepared_bundle_tiff_edit(input, bundle,
+                                                       strip_options);
+        ASSERT_EQ(strip_plan.status, openmeta::TransferStatus::Ok)
+            << "variant=" << variant_index << ": " << strip_plan.message;
+        std::vector<std::byte> stripped_output;
+        ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(input, bundle,
+                                                            strip_plan,
+                                                            &stripped_output)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        const std::span<const std::byte> stripped_bytes(stripped_output.data(),
+                                                        stripped_output.size());
+        const uint64_t stripped_ifd0_offset
+            = read_tiff_test_unsigned(stripped_bytes, header_ifd0_offset,
+                                      variant.big_tiff ? 8U : 4U,
+                                      variant.big_endian);
+        uint64_t stripped_exif_ifd_offset = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(stripped_bytes, stripped_ifd0_offset,
+                                         0x8769U, variant.big_tiff,
+                                         variant.big_endian, nullptr, nullptr,
+                                         &stripped_exif_ifd_offset));
+        EXPECT_FALSE(find_tiff_test_entry(stripped_bytes, stripped_ifd0_offset,
+                                          700U, variant.big_tiff,
+                                          variant.big_endian, nullptr, nullptr,
+                                          nullptr));
+        EXPECT_FALSE(find_tiff_test_entry(stripped_bytes,
+                                          stripped_exif_ifd_offset, 700U,
+                                          variant.big_tiff, variant.big_endian,
+                                          nullptr, nullptr, nullptr));
+        uint64_t stripped_interop_ifd_offset = 0U;
+        ASSERT_TRUE(find_tiff_test_entry(stripped_bytes,
+                                         stripped_exif_ifd_offset, 0xA005U,
+                                         variant.big_tiff, variant.big_endian,
+                                         nullptr, nullptr,
+                                         &stripped_interop_ifd_offset));
+        EXPECT_FALSE(find_tiff_test_entry(stripped_bytes,
+                                          stripped_interop_ifd_offset, 700U,
+                                          variant.big_tiff, variant.big_endian,
+                                          nullptr, nullptr, nullptr));
+
+        (void)input_exif_ifd_offset;
+    }
+}
+
+TEST(MetadataTransferApi, TiffMalformedTargetExifPointersFailBeforeWriterCalls)
+{
+    openmeta::MetaStore source;
+    openmeta::Entry tombstone;
+    tombstone.key   = openmeta::make_exif_tag_key(source.arena(), "exififd",
+                                                  0x9003U);
+    tombstone.flags = openmeta::EntryFlags::Dirty
+                      | openmeta::EntryFlags::Deleted;
+    ASSERT_NE(source.add_entry(tombstone), openmeta::kInvalidEntryId);
+    source.finalize();
+    openmeta::PrepareTransferRequest request;
+    request.target_format      = openmeta::TransferTargetFormat::Tiff;
+    request.include_xmp_app1   = false;
+    request.include_icc_app2   = false;
+    request.include_iptc_app13 = false;
+    openmeta::PreparedTransferBundle bundle;
+    ASSERT_EQ(
+        openmeta::prepare_metadata_for_target(source, request, &bundle).status,
+        openmeta::TransferStatus::Ok);
+
+    const std::vector<std::byte> valid = make_timestamp_exif_target(false,
+                                                                    false);
+    const size_t ifd0_offset           = 8U;
+    const size_t pointer_entry         = ifd0_offset + 2U + 3U * 12U;
+    for (uint32_t malformed_case = 0U; malformed_case < 4U; ++malformed_case) {
+        std::vector<std::byte> malformed = valid;
+        if (malformed_case == 0U) {
+            write_test_tiff_unsigned(&malformed, ifd0_offset + 2U, 2U, 0x8769U,
+                                     false);
+        } else if (malformed_case == 1U) {
+            write_test_tiff_unsigned(&malformed, pointer_entry + 4U, 4U, 2U,
+                                     false);
+        } else if (malformed_case == 2U) {
+            write_test_tiff_unsigned(&malformed, pointer_entry + 2U, 2U, 18U,
+                                     false);
+        } else {
+            write_test_tiff_unsigned(&malformed, pointer_entry + 8U, 4U,
+                                     0xFFFFFFF0U, false);
+        }
+
+        const openmeta::TiffEditPlan invalid_plan
+            = openmeta::plan_prepared_bundle_tiff_edit(malformed, bundle);
+        EXPECT_EQ(invalid_plan.status, openmeta::TransferStatus::Malformed)
+            << "malformed-case=" << malformed_case << ": "
+            << invalid_plan.message;
+        std::vector<std::byte> output         = { std::byte { 0xA5U } };
+        const std::vector<std::byte> sentinel = output;
+        EXPECT_NE(openmeta::apply_prepared_bundle_tiff_edit(malformed, bundle,
+                                                            invalid_plan,
+                                                            &output)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        EXPECT_EQ(output, sentinel);
+        BufferByteWriter writer;
+        EXPECT_NE(openmeta::write_prepared_bundle_tiff_edit(malformed, bundle,
+                                                            invalid_plan,
+                                                            writer)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        EXPECT_TRUE(writer.out.empty());
+        EXPECT_EQ(writer.writes, 0U);
+    }
+}
+
+TEST(MetadataTransferApi,
      TiffRemovalListsRejectInvalidConflictsAndUnsupportedConsumers)
 {
     const std::vector<std::byte> input = make_minimal_tiff_little_endian();
@@ -9988,7 +11114,7 @@ TEST(MetadataTransferApi,
         = openmeta::plan_prepared_bundle_tiff_edit(input, removal_bundle);
     ASSERT_EQ(valid_plan.status, openmeta::TransferStatus::Ok);
     const std::array<std::vector<uint16_t>, 4U> invalid_removal_lists = {
-        std::vector<uint16_t> { 0x0132U },
+        std::vector<uint16_t> { 0x0130U },
         std::vector<uint16_t> { 0x013BU, 0x013BU },
         std::vector<uint16_t> { 0x013BU, 0x010EU },
         std::vector<uint16_t> { 0x010EU, 0x013BU, 0x8298U, 0x8298U },

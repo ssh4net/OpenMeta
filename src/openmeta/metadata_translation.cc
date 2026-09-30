@@ -476,6 +476,48 @@ namespace {
         return entry.key.data.exif_tag.tag == tag;
     }
 
+    static bool is_exif_timestamp_field(NativeDateField field) noexcept
+    {
+        switch (field) {
+        case NativeDateField::ExifDateTimeOriginal:
+        case NativeDateField::ExifDateTimeDigitized:
+        case NativeDateField::ExifOffsetTimeOriginal:
+        case NativeDateField::ExifOffsetTimeDigitized:
+        case NativeDateField::ExifSubSecTimeOriginal:
+        case NativeDateField::ExifSubSecTimeDigitized: return true;
+        default: return false;
+        }
+    }
+
+    static bool has_native_delete_intent(const MetaStore& store,
+                                         NativeDateField field) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (any(entry.flags, EntryFlags::Dirty)
+                && any(entry.flags, EntryFlags::Deleted)
+                && native_field_matches(store, entry, field)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static EntryId
+    find_native_clean_delete_intent(const MetaStore& store,
+                                    NativeDateField field) noexcept
+    {
+        const std::span<const Entry> entries = store.entries();
+        for (EntryId id = 0U; id < entries.size(); ++id) {
+            const Entry& entry = entries[id];
+            if (any(entry.flags, EntryFlags::Deleted)
+                && !any(entry.flags, EntryFlags::Dirty)
+                && native_field_matches(store, entry, field)) {
+                return id;
+            }
+        }
+        return kInvalidEntryId;
+    }
+
     static bool entry_value_matches(const MetaStore& store, const Entry& entry,
                                     const PlannedField& field) noexcept
     {
@@ -499,6 +541,16 @@ namespace {
             }
         }
         return true;
+    }
+
+    static MetaValue copy_exact_timestamp_value(ByteArena& arena,
+                                                const MetaStore& source,
+                                                const Entry& entry) noexcept
+    {
+        MetaValue value = entry.value;
+        value.data.span = arena.append(
+            source.arena().span(entry.value.data.span));
+        return value;
     }
 
     static void analyze_group(const MetaStore& store,
@@ -534,25 +586,28 @@ namespace {
         }
     }
 
-    static uint32_t missing_present_fields(const MetaStore& store,
-                                           const PlannedGroup& group) noexcept
+    static uint32_t missing_group_additions(const MetaStore& store,
+                                            const PlannedGroup& group) noexcept
     {
         uint32_t count                       = 0U;
         const std::span<const Entry> entries = store.entries();
         for (uint8_t f = 0U; f < group.field_count; ++f) {
-            if (!group.fields[f].present) {
-                continue;
-            }
-            bool found = false;
+            const PlannedField& field = group.fields[f];
+            bool found                = false;
             for (const Entry& entry : entries) {
                 if (!any(entry.flags, EntryFlags::Deleted)
-                    && native_field_matches(store, entry,
-                                            group.fields[f].field)) {
+                    && native_field_matches(store, entry, field.field)) {
                     found = true;
                     break;
                 }
             }
-            if (!found) {
+            if (field.present && !found) {
+                ++count;
+            } else if (!field.present && !found
+                       && is_exif_timestamp_field(field.field)
+                       && !has_native_delete_intent(store, field.field)
+                       && find_native_clean_delete_intent(store, field.field)
+                              == kInvalidEntryId) {
                 ++count;
             }
         }
@@ -568,6 +623,7 @@ namespace {
             const PlannedField& field = group.fields[f];
             uint32_t active_count     = 0U;
             bool first_matches        = false;
+            bool first_dirty          = false;
             for (const Entry& entry : entries) {
                 if (any(entry.flags, EntryFlags::Deleted)
                     || !native_field_matches(store, entry, field.field)) {
@@ -576,15 +632,23 @@ namespace {
                 ++active_count;
                 if (active_count == 1U) {
                     first_matches = entry_value_matches(store, entry, field);
+                    first_dirty   = any(entry.flags, EntryFlags::Dirty);
                 }
             }
             if (!field.present) {
                 count += active_count;
+                if (active_count == 0U && is_exif_timestamp_field(field.field)
+                    && !has_native_delete_intent(store, field.field)) {
+                    ++count;
+                }
             } else if (active_count == 0U) {
                 ++count;
             } else {
                 count += active_count - 1U;
                 if (!first_matches) {
+                    ++count;
+                } else if (is_exif_timestamp_field(field.field)
+                           && !first_dirty) {
                     ++count;
                 }
             }
@@ -666,6 +730,37 @@ namespace {
         return true;
     }
 
+    static bool append_native_delete_intent(MetaEdit* edit,
+                                            const MetaStore& source,
+                                            const PlannedGroup& group,
+                                            const PlannedField& field,
+                                            uint32_t order_delta) noexcept
+    {
+        if (!edit || group.source_entry >= source.entries().size()) {
+            return false;
+        }
+        Entry entry;
+        entry.key    = make_native_key(edit->arena(), field.field);
+        entry.value  = make_native_value(edit->arena(), field);
+        entry.origin = source.entry(group.source_entry).origin;
+        if (entry.origin.wire_type_name.size > 0U) {
+            entry.origin.wire_type_name = edit->arena().append(
+                source.arena().span(entry.origin.wire_type_name));
+        }
+        if (entry.origin.order_in_block
+            <= std::numeric_limits<uint32_t>::max() - order_delta) {
+            entry.origin.order_in_block += order_delta;
+        } else {
+            entry.origin.order_in_block = std::numeric_limits<uint32_t>::max();
+        }
+        entry.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+        if (edit->arena().limit_exceeded()) {
+            return false;
+        }
+        edit->add_entry(entry);
+        return true;
+    }
+
     static void apply_group(const MetaStore& source, const PlannedGroup& group,
                             MetaEdit* edit,
                             MetadataDateTranslationResult* result)
@@ -677,12 +772,14 @@ namespace {
         for (uint8_t f = 0U; f < group.field_count; ++f) {
             const PlannedField& field = group.fields[f];
             EntryId first_active      = kInvalidEntryId;
+            bool had_active           = false;
             for (EntryId id = 0U; id < entries.size(); ++id) {
                 const Entry& entry = entries[id];
                 if (any(entry.flags, EntryFlags::Deleted)
                     || !native_field_matches(source, entry, field.field)) {
                     continue;
                 }
+                had_active = true;
                 if (!field.present || first_active != kInvalidEntryId) {
                     edit->tombstone(id);
                     ++result->entries_removed;
@@ -694,6 +791,27 @@ namespace {
                                                               field);
                     edit->set_value(id, value);
                     ++result->entries_updated;
+                } else if (is_exif_timestamp_field(field.field)
+                           && !any(entry.flags, EntryFlags::Dirty)) {
+                    edit->set_value(id,
+                                    copy_exact_timestamp_value(edit->arena(),
+                                                               source, entry));
+                    ++result->entries_updated;
+                }
+            }
+            if (!field.present && !had_active
+                && is_exif_timestamp_field(field.field)
+                && !has_native_delete_intent(source, field.field)) {
+                const EntryId clean_delete
+                    = find_native_clean_delete_intent(source, field.field);
+                if (clean_delete != kInvalidEntryId) {
+                    edit->tombstone(clean_delete);
+                    ++result->entries_updated;
+                } else if (append_native_delete_intent(edit, source, group,
+                                                       field,
+                                                       static_cast<uint32_t>(f)
+                                                           + 1U)) {
+                    ++result->entries_added;
                 }
             }
             if (field.present && first_active == kInvalidEntryId) {
@@ -968,6 +1086,46 @@ namespace {
                && arena_text(store.arena(), entry.key.data.exif_tag.ifd) == ifd;
     }
 
+    static bool is_technical_modify_date_timestamp_field(
+        const TechnicalPlannedGroup& group,
+        const TechnicalPlannedField& field) noexcept
+    {
+        return group.mapping
+                   == MetadataTechnicalTranslationMapping::XmpModifyDate
+               && (field.field == NativeTechnicalField::ExifDateTime
+                   || field.field == NativeTechnicalField::ExifOffsetTime
+                   || field.field == NativeTechnicalField::ExifSubSecTime);
+    }
+
+    static bool
+    technical_has_delete_intent(const MetaStore& store,
+                                const TechnicalPlannedField& field) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (any(entry.flags, EntryFlags::Dirty)
+                && any(entry.flags, EntryFlags::Deleted)
+                && technical_native_field_matches(store, entry, field.field)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static EntryId find_technical_clean_delete_intent(
+        const MetaStore& store, const TechnicalPlannedField& field) noexcept
+    {
+        const std::span<const Entry> entries = store.entries();
+        for (EntryId id = 0U; id < entries.size(); ++id) {
+            const Entry& entry = entries[id];
+            if (any(entry.flags, EntryFlags::Deleted)
+                && !any(entry.flags, EntryFlags::Dirty)
+                && technical_native_field_matches(store, entry, field.field)) {
+                return id;
+            }
+        }
+        return kInvalidEntryId;
+    }
+
     static bool
     technical_entry_value_matches(const MetaStore& store, const Entry& entry,
                                   const TechnicalPlannedField& field) noexcept
@@ -1035,19 +1193,21 @@ namespace {
         uint32_t count = 0U;
         for (uint8_t f = 0U; f < group.field_count; ++f) {
             const TechnicalPlannedField& field = group.fields[f];
-            if (!field.present) {
-                continue;
-            }
-            bool found = false;
+            uint32_t active_count              = 0U;
             for (const Entry& entry : store.entries()) {
                 if (!any(entry.flags, EntryFlags::Deleted)
                     && technical_native_field_matches(store, entry,
                                                       field.field)) {
-                    found = true;
-                    break;
+                    ++active_count;
                 }
             }
-            if (!found) {
+            if (field.present && active_count == 0U) {
+                ++count;
+            } else if (!field.present && active_count == 0U
+                       && is_technical_modify_date_timestamp_field(group, field)
+                       && !technical_has_delete_intent(store, field)
+                       && find_technical_clean_delete_intent(store, field)
+                              == kInvalidEntryId) {
                 ++count;
             }
         }
@@ -1063,6 +1223,7 @@ namespace {
             const TechnicalPlannedField& field = group.fields[f];
             uint32_t active_count              = 0U;
             bool first_matches                 = false;
+            bool first_dirty                   = false;
             for (const Entry& entry : store.entries()) {
                 if (any(entry.flags, EntryFlags::Deleted)
                     || !technical_native_field_matches(store, entry,
@@ -1073,15 +1234,24 @@ namespace {
                 if (active_count == 1U) {
                     first_matches = technical_entry_value_matches(store, entry,
                                                                   field);
+                    first_dirty   = any(entry.flags, EntryFlags::Dirty);
                 }
             }
             if (!field.present) {
                 count += active_count;
+                if (active_count == 0U
+                    && is_technical_modify_date_timestamp_field(group, field)
+                    && !technical_has_delete_intent(store, field)) {
+                    ++count;
+                }
             } else if (active_count == 0U) {
                 ++count;
             } else {
                 count += active_count - 1U;
                 if (!first_matches) {
+                    ++count;
+                } else if (is_technical_modify_date_timestamp_field(group, field)
+                           && !first_dirty) {
                     ++count;
                 }
             }
@@ -1152,6 +1322,37 @@ namespace {
         return true;
     }
 
+    static bool
+    append_technical_delete_intent(MetaEdit* edit, const MetaStore& source,
+                                   const TechnicalPlannedGroup& group,
+                                   const TechnicalPlannedField& field,
+                                   uint32_t order_delta) noexcept
+    {
+        if (!edit || group.source_entry >= source.entries().size()) {
+            return false;
+        }
+        Entry entry;
+        entry.key    = make_technical_native_key(edit->arena(), field.field);
+        entry.value  = make_text(edit->arena(), {}, TextEncoding::Ascii);
+        entry.origin = source.entry(group.source_entry).origin;
+        if (entry.origin.wire_type_name.size > 0U) {
+            entry.origin.wire_type_name = edit->arena().append(
+                source.arena().span(entry.origin.wire_type_name));
+        }
+        if (entry.origin.order_in_block
+            <= std::numeric_limits<uint32_t>::max() - order_delta) {
+            entry.origin.order_in_block += order_delta;
+        } else {
+            entry.origin.order_in_block = std::numeric_limits<uint32_t>::max();
+        }
+        entry.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+        if (edit->arena().limit_exceeded()) {
+            return false;
+        }
+        edit->add_entry(entry);
+        return true;
+    }
+
     static void
     apply_technical_group(const MetaStore& source,
                           const TechnicalPlannedGroup& group, MetaEdit* edit,
@@ -1164,6 +1365,7 @@ namespace {
         for (uint8_t f = 0U; f < group.field_count; ++f) {
             const TechnicalPlannedField& field = group.fields[f];
             EntryId first_active               = kInvalidEntryId;
+            bool had_active                    = false;
             for (EntryId id = 0U; id < entries.size(); ++id) {
                 const Entry& entry = entries[id];
                 if (any(entry.flags, EntryFlags::Deleted)
@@ -1171,6 +1373,7 @@ namespace {
                                                        field.field)) {
                     continue;
                 }
+                had_active = true;
                 if (!field.present || first_active != kInvalidEntryId) {
                     edit->tombstone(id);
                     ++result->entries_removed;
@@ -1182,6 +1385,26 @@ namespace {
                                                   technical_field_value(field),
                                                   TextEncoding::Ascii));
                     ++result->entries_updated;
+                } else if (is_technical_modify_date_timestamp_field(group, field)
+                           && !any(entry.flags, EntryFlags::Dirty)) {
+                    edit->set_value(id,
+                                    copy_exact_timestamp_value(edit->arena(),
+                                                               source, entry));
+                    ++result->entries_updated;
+                }
+            }
+            if (!field.present && !had_active
+                && is_technical_modify_date_timestamp_field(group, field)
+                && !technical_has_delete_intent(source, field)) {
+                const EntryId clean_delete
+                    = find_technical_clean_delete_intent(source, field);
+                if (clean_delete != kInvalidEntryId) {
+                    edit->tombstone(clean_delete);
+                    ++result->entries_updated;
+                } else if (append_technical_delete_intent(
+                               edit, source, group, field,
+                               static_cast<uint32_t>(f) + 1U)) {
+                    ++result->entries_added;
                 }
             }
             if (field.present && first_active == kInvalidEntryId
@@ -1292,6 +1515,9 @@ namespace {
         for (uint8_t i = 0U; i < groups.size(); ++i) {
             TechnicalPlannedGroup& group = groups[i];
             analyze_technical_group(source, &group);
+            const uint32_t group_operations
+                = required_technical_operations(source, group);
+            const bool unchanged = group.exact_match && group_operations == 0U;
             switch (conflict_policy) {
             case MetadataTechnicalTranslationConflictPolicy::PreserveExisting:
                 if (group.existing_any) {
@@ -1308,14 +1534,14 @@ namespace {
                     result.failed_source_entry = group.source_entry;
                     return result;
                 }
-                if (group.exact_match) {
+                if (unchanged) {
                     ++result.groups_unchanged;
                 } else {
                     group.apply = true;
                 }
                 break;
             case MetadataTechnicalTranslationConflictPolicy::ReplaceExisting:
-                if (group.exact_match) {
+                if (unchanged) {
                     ++result.groups_unchanged;
                 } else {
                     group.apply = true;
@@ -1324,7 +1550,7 @@ namespace {
             }
             if (group.apply) {
                 added_entries += missing_technical_fields(source, group);
-                operation_count += required_technical_operations(source, group);
+                operation_count += group_operations;
             }
         }
         if (added_entries > max_added_entries
@@ -1425,6 +1651,9 @@ translate_xmp_creation_dates(const MetaStore& source,
     for (uint8_t i = 0U; i < group_count; ++i) {
         PlannedGroup& group = groups[i];
         analyze_group(source, &group);
+        const uint32_t group_operations = required_group_operations(source,
+                                                                    group);
+        const bool unchanged = group.exact_match && group_operations == 0U;
         switch (options.conflict_policy) {
         case MetadataDateTranslationConflictPolicy::PreserveExisting:
             if (group.existing_any) {
@@ -1440,14 +1669,14 @@ translate_xmp_creation_dates(const MetaStore& source,
                 result.failed_source_entry = group.source_entry;
                 return result;
             }
-            if (group.exact_match) {
+            if (unchanged) {
                 ++result.groups_unchanged;
             } else {
                 group.apply = true;
             }
             break;
         case MetadataDateTranslationConflictPolicy::ReplaceExisting:
-            if (group.exact_match) {
+            if (unchanged) {
                 ++result.groups_unchanged;
             } else {
                 group.apply = true;
@@ -1455,8 +1684,8 @@ translate_xmp_creation_dates(const MetaStore& source,
             break;
         }
         if (group.apply) {
-            added_entries += missing_present_fields(source, group);
-            operation_count += required_group_operations(source, group);
+            added_entries += missing_group_additions(source, group);
+            operation_count += group_operations;
         }
     }
     if (added_entries > options.max_added_entries

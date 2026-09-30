@@ -29,7 +29,7 @@ option(OPENMETA_BUILD_STATIC "Build libopenmeta.a" ON)
 option(OPENMETA_BUILD_SHARED "Build libopenmeta.so/.dylib/.dll" ON)
 # The ABI belongs to the release, not to a consumer cache override.
 unset(OPENMETA_ABI_VERSION CACHE)
-set(OPENMETA_ABI_VERSION "4")
+set(OPENMETA_ABI_VERSION "5")
 option(OPENMETA_BUILD_TOOLS "Build OpenMeta CLI tools" ON)
 option(OPENMETA_BUILD_TESTS "Build OpenMeta unit tests" OFF)
 option(OPENMETA_BUILD_BENCHMARKS "Build OpenMeta benchmark executables" OFF)

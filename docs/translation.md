@@ -8,8 +8,8 @@ image geometry into native TIFF/EXIF groups, and exact descriptive, flat
 location, and editorial XMP properties into native IPTC-IIM datasets before writing.
 
 The APIs are experimental and versioned by
-`kMetadataDateTranslationContractVersion == 1` and
-`kMetadataTechnicalTranslationContractVersion == 1` and
+`kMetadataDateTranslationContractVersion == 2` and
+`kMetadataTechnicalTranslationContractVersion == 2` and
 `kMetadataCaptureTranslationContractVersion == 1` and
 `kMetadataGeometryTranslationContractVersion == 1` and
 `kMetadataDescriptiveTranslationContractVersion == 1` and
@@ -84,9 +84,28 @@ reconcile independently, so a conflict in `Make` does not silently change
 Since 0.6.2, `ReplaceExisting` translation of dirty tombstones for `tiff:Make`,
 `tiff:Model` and `xmp:CreatorTool` can remove their existing native IFD0 tags in
 TIFF/BigTIFF files. Preparation carries the explicit native removal list;
-source omission still preserves the destination. DateTime/OffsetTime/SubSecTime
-deletion needs a separate multi-IFD contract. See
+source omission still preserves the destination. Version 0.7.0 adds the grouped
+DateTime/OffsetTime/SubSecTime deletion contract. See
 [technical identity deletion](editing.md#technical-identity-deletion-062).
+
+## Grouped EXIF timestamp synchronization (0.7.0)
+
+An accepted date owner controls its base timestamp, offset and subseconds.
+Timezone and fractional digits in the lexical XMP value are the only authority
+for companion presence. Missing companions produce native dirty tombstones
+also when absent from the source store, so destination-only stale values can
+be removed. A dirty owner tombstone produces all three removal intents.
+Omitted or ineligible owners preserve destination values. Existing group
+conflict policies remain. Accepted clean, exact timestamp members are marked
+dirty to retain merge authority and count as updates against the operation
+limit. Synthesized intents count against added-entry and
+operation limits, and repeat calls reuse them. IPTC behavior is unchanged.
+
+TIFF preparation enables explicit ExifIFD merging for dirty timestamp members,
+retains both native removal lists through snapshots, and preserves unselected
+destination records during edits. Each translator is a separate transaction;
+hosts stage multiple calls before publishing the result. See the
+[0.7 migration guide](migration_0_7.md) for supported tags, ABI 5 and exclusions.
 
 ## Capture EXIF Mappings
 

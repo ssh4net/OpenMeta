@@ -10,8 +10,8 @@ flat location, and editorial XMP properties into native IPTC-IIM datasets before
 transfer or writing.
 
 The APIs are experimental and versioned by
-``kMetadataDateTranslationContractVersion == 1`` and
-``kMetadataTechnicalTranslationContractVersion == 1`` and
+``kMetadataDateTranslationContractVersion == 2`` and
+``kMetadataTechnicalTranslationContractVersion == 2`` and
 ``kMetadataCaptureTranslationContractVersion == 1`` and
 ``kMetadataGeometryTranslationContractVersion == 1`` and
 ``kMetadataDescriptiveTranslationContractVersion == 1`` and
@@ -105,8 +105,14 @@ In 0.6.2, dirty tombstones for ``tiff:Make``, ``tiff:Model`` and
 ``xmp:CreatorTool`` translated with ``ReplaceExisting`` can remove the existing
 native IFD0 tags through TIFF/BigTIFF edit writers. Preparation preserves the
 explicit removal requests through snapshots. Source omission preserves the
-destination. DateTime and its ExifIFD companions remain a separate deletion
-contract; see :doc:`editing`.
+destination. In 0.7.0 all three timestamp owners control the base, offset and
+subsecond family. Missing companions produce explicit native dirty tombstones
+even when absent from the source store. Dirty owner deletion removes all three
+members; omission preserves values. Synthesized intents count against added
+entry and operation limits and are reused on repeat calls. TIFF edits merge
+unspecified destination entries for dirty timestamps, preserving other groups
+and native records. Date and technical calls remain separate transactions.
+See :doc:`migration_0_7` for contract version 2 and ABI 5.
 
 .. list-table::
    :header-rows: 1

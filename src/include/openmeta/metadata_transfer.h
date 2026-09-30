@@ -696,14 +696,27 @@ struct PreparedTransferBundle final {
     std::vector<PreparedTransferBlock> blocks;
     /// Sorted native TIFF IFD0 tags to remove during TIFF/DNG editing.
     /// Preparation emits only ImageDescription (0x010E), Make (0x010F),
-    /// Model (0x0110), Software (0x0131), Artist (0x013B), and Copyright
-    /// (0x8298), from dirty native tombstones with
+    /// Model (0x0110), Software (0x0131), DateTime (0x0132), Artist (0x013B),
+    /// and Copyright (0x8298), from dirty native tombstones with
     /// EXIF output enabled. TIFF edit APIs consume this list. Fresh TIFF emit,
     /// adapter, payload, and codec handoff APIs reject non-empty lists because
     /// their operation schemas cannot represent deletion. Keep this list empty
     /// for other consumers. Source snapshots retain the tombstone flags used
     /// to derive this list during preparation.
     std::vector<uint16_t> tiff_ifd0_removals;
+    /// Sorted native EXIF IFD tags to remove during TIFF/DNG editing:
+    /// DateTimeOriginal (0x9003), DateTimeDigitized (0x9004), the matching
+    /// OffsetTime tags (0x9010-0x9012), and SubSecTime tags (0x9290-0x9292).
+    /// Explicit per-tag removals preserve unspecified destination ExifIFD
+    /// entries. Fresh emit, adapter, payload, and codec handoff APIs reject
+    /// non-empty removal lists because their operation schemas cannot express
+    /// deletion. Source snapshots retain the tombstone flags used to derive
+    /// this list during preparation.
+    std::vector<uint16_t> tiff_exif_removals;
+    /// Preserve missing destination ExifIFD entries when applying mixed
+    /// native timestamp updates to TIFF/DNG. This mode is opt-in and defaults
+    /// to the existing whole-ExifIFD replacement behavior.
+    bool tiff_merge_existing_exif = false;
     std::vector<TimePatchSlot> time_patch_map;
     std::vector<std::byte> generated_xmp_sidecar;
 };

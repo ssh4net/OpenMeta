@@ -222,17 +222,24 @@ TEST(DngSdkAdapter, ReportsAvailabilityFlag)
 
 TEST(DngSdkAdapter, RejectsNativeRemovalBeforeAccessingSdkObjects)
 {
-    openmeta::PreparedTransferBundle bundle;
-    bundle.target_format = openmeta::TransferTargetFormat::Dng;
-    bundle.tiff_ifd0_removals = { 0x010EU, 0x013BU, 0x8298U };
-    const openmeta::DngSdkAdapterResult result
-        = openmeta::apply_prepared_dng_sdk_metadata(bundle, nullptr, nullptr);
-    EXPECT_EQ(result.status, openmeta::DngSdkAdapterStatus::Unsupported);
-    EXPECT_NE(result.message.find("native TIFF IFD0 removals"),
-              std::string::npos);
-    EXPECT_EQ(result.applied_blocks, 0U);
-    EXPECT_FALSE(result.synchronized_metadata);
-    EXPECT_FALSE(result.updated_stream);
+    for (bool nested : { false, true }) {
+        openmeta::PreparedTransferBundle bundle;
+        bundle.target_format = openmeta::TransferTargetFormat::Dng;
+        if (nested) {
+            bundle.tiff_exif_removals = { 0x9003U };
+        } else {
+            bundle.tiff_ifd0_removals = { 0x010EU, 0x013BU, 0x8298U };
+        }
+        const openmeta::DngSdkAdapterResult result
+            = openmeta::apply_prepared_dng_sdk_metadata(bundle, nullptr,
+                                                        nullptr);
+        EXPECT_EQ(result.status, openmeta::DngSdkAdapterStatus::Unsupported);
+        EXPECT_NE(result.message.find("native TIFF removals"),
+                  std::string::npos);
+        EXPECT_EQ(result.applied_blocks, 0U);
+        EXPECT_FALSE(result.synchronized_metadata);
+        EXPECT_FALSE(result.updated_stream);
+    }
 }
 
 TEST(DngSdkAdapter, ReturnsUnsupportedWhenSdkUnavailable)

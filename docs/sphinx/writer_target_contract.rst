@@ -624,3 +624,14 @@ The writer contract does not promise:
 - file-level EXR metadata rewrite
 - signed C2PA rewrite or trust-policy parity beyond the bounded staged
   handoff paths
+
+Grouped timestamp editing in 0.7.0
+----------------------------------
+
+TIFF/BigTIFF editing consumes bounded primary IFD0 and ExifIFD timestamp
+removal lists. An explicit ExifIFD merge mode preserves unspecified destination
+records during dirty timestamp edits. Accepted date owners control companion
+absence even when native source keys were missing. Invalid manual lists and
+replacement/removal conflicts reject before output. Fresh emit/codec consumers
+reject removal-bearing bundles. ABI 5 requires a rebuild; snapshot v1 remains
+unchanged. See :doc:`migration_0_7` for authority and scope.

@@ -19,7 +19,7 @@ namespace openmeta {
 struct TransferTargetImageSpec;
 
 /// Experimental XMP creation-date translation contract version.
-inline constexpr uint32_t kMetadataDateTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataDateTranslationContractVersion = 2U;
 
 /// Hard limit for native entries added by one date-translation call.
 inline constexpr uint32_t kMetadataDateTranslationMaxAddedEntries = 16U;
@@ -112,10 +112,16 @@ struct MetadataDateTranslationResult final {
  * up to nine fractional digits, and `Z` or `+/-HH:MM` timezone.
  *
  * EXIF projection requires a time and preserves fractions and timezone through
- * SubSecTime* and OffsetTime* companion tags. IPTC projection supports date
- * only or whole seconds with an optional timezone; fractional seconds return
- * UnsupportedPrecision rather than being truncated. Exact source-property
- * namespaces are required, and duplicate eligible sources are ambiguous.
+ * SubSecTime* and OffsetTime* companion tags. It emits Dirty|Deleted intents
+ * for absent timestamp companions, including when the native key is missing;
+ * the lexical fraction and timezone control companion presence. An accepted
+ * exact EXIF timestamp group also marks clean active members Dirty to carry the
+ * projection authority. Those SetValue operations count as entries_updated and
+ * against max_operations. PreserveExisting leaves an active group untouched.
+ * IPTC projection supports date only or whole seconds with an optional
+ * timezone; fractional seconds return UnsupportedPrecision rather than being
+ * truncated. Exact source-property namespaces are required, and duplicate
+ * eligible sources are ambiguous.
  *
  * Calls keep no global state and are safe when each call owns its output store.
  */
@@ -133,7 +139,7 @@ metadata_date_translation_mapping_name(
     MetadataDateTranslationMapping mapping) noexcept;
 
 /// Experimental reverse technical-EXIF translation contract version.
-inline constexpr uint32_t kMetadataTechnicalTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataTechnicalTranslationContractVersion = 2U;
 
 inline constexpr uint32_t kMetadataTechnicalTranslationMaxAddedEntries = 6U;
 inline constexpr uint32_t kMetadataTechnicalTranslationMaxOperations   = 1024U;
@@ -236,8 +242,13 @@ struct MetadataTechnicalTranslationResult final {
  *
  * Supported mappings are xmp:ModifyDate, tiff:Make, tiff:Model, and
  * xmp:CreatorTool. ModifyDate requires a full time and preserves up to nine
- * fractional digits and a timezone through SubSecTime and OffsetTime. Text
- * mappings require non-empty 7-bit ASCII without embedded NUL bytes.
+ * fractional digits and a timezone through SubSecTime and OffsetTime. It emits
+ * Dirty|Deleted intents for absent timestamp companions, including when the
+ * native key is missing; lexical fraction and timezone control companion
+ * presence. An accepted exact ModifyDate EXIF group also marks clean active
+ * timestamp members Dirty to carry the projection authority. Those SetValue
+ * operations count as entries_updated and against max_operations.
+ * Text mappings require non-empty 7-bit ASCII without embedded NUL bytes.
  *
  * Each mapping reconciles independently. The source store is immutable and
  * the output is replaced only after every selected mapping and resource limit

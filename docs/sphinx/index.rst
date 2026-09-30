@@ -59,6 +59,7 @@ and must not be used as an asset-authenticity or trust gate.
    build
    shared_library
    migration_0_6
+   migration_0_7
    development
    interop_api
    exr_metadata_contract

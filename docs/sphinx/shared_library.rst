@@ -29,13 +29,13 @@ linkage should select the explicit target:
 ABI and Runtime
 ---------------
 
-The package publishes ``OpenMeta_ABI_VERSION``, currently ``4``. The ABI major
+The package publishes ``OpenMeta_ABI_VERSION``, currently ``5``. The ABI major
 changes only for an incompatible public C++ ABI change. On ELF platforms, the
 installed shared object has the matching SONAME major. A package patch or minor
-version can retain ABI ``4``.
+version can retain ABI ``5``.
 
-The 0.6.0 prepared-bundle layout change requires a consumer rebuild. CMake
-rejects 0.5 version requests. See :doc:`migration_0_6`.
+The 0.7.0 prepared-bundle layout change requires a consumer rebuild. CMake
+rejects 0.6 version requests. See :doc:`migration_0_7`.
 
 When OpenMeta is built with ``OPENMETA_USE_LIBCXX=ON``, the package requires a
 Clang consumer and propagates ``-stdlib=libc++`` for compilation and linking.
@@ -60,7 +60,7 @@ shared build because it could otherwise become a public dylib symbol; provide a
 dynamic dependency package or disable that optional feature.
 
 On Windows, the static archive is ``openmeta_static.lib``, the shared import
-archive is ``openmeta_shared.lib``, and the runtime DLL is ``openmeta-4.dll``.
+archive is ``openmeta_shared.lib``, and the runtime DLL is ``openmeta-5.dll``.
 Deploy that DLL next to the application or follow the normal Windows DLL search
 policy. Unix shared builds hide implementation symbols. Windows uses CMake's
 generated DLL export table until the C++ API has a separately frozen per-symbol
