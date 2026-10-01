@@ -13,7 +13,7 @@ endif()
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
 
-set(_gtest_filter
+string(CONCAT _gtest_filter
   "BmffDerivedFieldsDecode.*:"
   "C2paContainers.*:"
   "CcmQuery.*:"

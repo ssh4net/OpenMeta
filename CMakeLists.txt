@@ -1114,6 +1114,8 @@ if(OPENMETA_BUILD_TESTS)
     target_compile_definitions(openmeta_tests PRIVATE OPENMETA_HAS_BROTLI_ENCODER=1)
   endif()
 
+  # CTest runs each primitive check once. Aggregate gate targets are for
+  # focused runs and must not repeat these checks during a full CTest run.
   add_test(NAME openmeta_tests COMMAND openmeta_tests)
   if(TARGET openmeta_static)
     add_executable(openmeta_patch_allocation_test tests/metadata_patch_allocation_test.cc)
@@ -1142,12 +1144,6 @@ if(OPENMETA_BUILD_TESTS)
       COMMENT "Running fuzzy-search release gate"
       VERBATIM
     )
-    add_test(
-      NAME openmeta_fuzzy_search_release_gate
-      COMMAND ${CMAKE_COMMAND}
-        "-DOPENMETA_TESTS_BIN=$<TARGET_FILE:openmeta_tests>"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzzy_search_release_gate.cmake"
-    )
   endif()
 
   add_custom_target(openmeta_gate_read_release
@@ -1158,13 +1154,6 @@ if(OPENMETA_BUILD_TESTS)
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/read_release_gate.cmake"
     COMMENT "Running read release gate"
     VERBATIM
-  )
-  add_test(
-    NAME openmeta_read_release_gate
-    COMMAND ${CMAKE_COMMAND}
-      "-DOPENMETA_TESTS_BIN=$<TARGET_FILE:openmeta_tests>"
-      "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_read_release_gate"
-      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/read_release_gate.cmake"
   )
 
   if(TARGET metatransfer AND TARGET openmeta_python)
@@ -1184,20 +1173,6 @@ if(OPENMETA_BUILD_TESTS)
       COMMENT "Running transfer release gate"
       VERBATIM
     )
-    add_test(
-      NAME openmeta_transfer_release_gate
-      COMMAND ${CMAKE_COMMAND}
-        "-DOPENMETA_TESTS_BIN=$<TARGET_FILE:openmeta_tests>"
-        "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
-        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_transfer_release_gate"
-        "-DOPENMETA_PYTHON_EXECUTABLE=${Python_EXECUTABLE}"
-        "-DOPENMETA_PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python"
-        "-DOIIOTOOL_BIN=${OPENMETA_OIIOTOOL_EXECUTABLE}"
-        "-DEXIFTOOL_BIN=${OPENMETA_EXIFTOOL_EXECUTABLE}"
-        "-DFFMPEG_BIN=${OPENMETA_FFMPEG_EXECUTABLE}"
-        ${_openmeta_bmff_test_target_args}
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/transfer_release_gate.cmake"
-    )
   elseif(TARGET metatransfer)
     add_custom_target(openmeta_gate_transfer_release
       DEPENDS openmeta_tests metatransfer
@@ -1213,19 +1188,6 @@ if(OPENMETA_BUILD_TESTS)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/transfer_release_gate.cmake"
       COMMENT "Running transfer release gate"
       VERBATIM
-    )
-    add_test(
-      NAME openmeta_transfer_release_gate
-      COMMAND ${CMAKE_COMMAND}
-        "-DOPENMETA_TESTS_BIN=$<TARGET_FILE:openmeta_tests>"
-        "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
-        "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
-        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_transfer_release_gate"
-        "-DOIIOTOOL_BIN=${OPENMETA_OIIOTOOL_EXECUTABLE}"
-        "-DEXIFTOOL_BIN=${OPENMETA_EXIFTOOL_EXECUTABLE}"
-        "-DFFMPEG_BIN=${OPENMETA_FFMPEG_EXECUTABLE}"
-        ${_openmeta_bmff_test_target_args}
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/transfer_release_gate.cmake"
     )
   endif()
 
@@ -1317,18 +1279,6 @@ if(OPENMETA_BUILD_TESTS)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_release_gate.cmake"
       COMMENT "Running CLI release gate"
       VERBATIM
-    )
-    add_test(
-      NAME openmeta_cli_release_gate
-      COMMAND ${CMAKE_COMMAND}
-        "-DMETAREAD_BIN=$<TARGET_FILE:metaread>"
-        "-DMETADUMP_BIN=$<TARGET_FILE:metadump>"
-        "-DTHUMDUMP_BIN=$<TARGET_FILE:thumdump>"
-        "-DMETAVALIDATE_BIN=$<TARGET_FILE:metavalidate>"
-        "-DMETATRANSFER_BIN=$<TARGET_FILE:metatransfer>"
-        "-DOPENMETA_PYTHON_EXECUTABLE=${OPENMETA_PYTHON_EXECUTABLE}"
-        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/_cli_release_gate"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_release_gate.cmake"
     )
 
     add_test(

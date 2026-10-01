@@ -4073,6 +4073,43 @@ namespace {
         return nullptr;
     }
 
+    static void expect_native_delete_intent(const MetaStore& store,
+                                            uint16_t tag)
+    {
+        const auto ids = settings_native_history_ids(store, tag);
+        ASSERT_EQ(ids.size(), 1U);
+        const Entry& entry = store.entry(ids.front());
+        EXPECT_TRUE(any(entry.flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(entry.flags, EntryFlags::Deleted));
+    }
+
+    static void expect_native_authority(const MetaStore& store, uint16_t tag,
+                                        uint16_t wire_code, uint64_t wire_count,
+                                        std::string_view wire_name)
+    {
+        const Entry* entry = settings_find(store, tag);
+        ASSERT_NE(entry, nullptr);
+        EXPECT_TRUE(any(entry->flags, EntryFlags::Dirty));
+        EXPECT_FALSE(any(entry->flags, EntryFlags::Deleted));
+        EXPECT_EQ(entry->origin.wire_type.family, WireFamily::Tiff);
+        EXPECT_EQ(entry->origin.wire_type.code, wire_code);
+        EXPECT_EQ(entry->origin.wire_count, wire_count);
+        EXPECT_EQ(entry->origin.order_in_block, 17U);
+        const auto bytes = store.arena().span(entry->origin.wire_type_name);
+        EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(bytes.data()),
+                                   bytes.size()),
+                  wire_name);
+    }
+
+    static void expect_lifecycle_repeat(uint32_t groups_unchanged,
+                                        uint32_t entries_added,
+                                        uint32_t entries_updated)
+    {
+        EXPECT_EQ(groups_unchanged, 1U);
+        EXPECT_EQ(entries_added, 0U);
+        EXPECT_EQ(entries_updated, 0U);
+    }
+
     static size_t settings_active_count(const MetaStore& store, uint16_t tag)
     {
         size_t count = 0U;
@@ -4175,6 +4212,7 @@ namespace {
                    5U },
         };
         for (const Case& item : cases) {
+            SCOPED_TRACE(item.path);
             MetadataCaptureTranslationOptions options;
             options.exposure_time_to_exif = false;
             options.f_number_to_exif      = false;
@@ -4193,17 +4231,13 @@ namespace {
             EXPECT_EQ(removed.entries_added, 1U) << item.path;
             EXPECT_EQ(removed.entries_updated, 0U) << item.path;
             EXPECT_EQ(removed.entries_removed, 0U) << item.path;
-            const auto deletion_ids = settings_native_history_ids(deletion,
-                                                                  item.tag);
-            ASSERT_EQ(deletion_ids.size(), 1U) << item.path;
-            const Entry& intent = deletion.entry(deletion_ids.front());
-            EXPECT_TRUE(any(intent.flags, EntryFlags::Dirty)) << item.path;
-            EXPECT_TRUE(any(intent.flags, EntryFlags::Deleted)) << item.path;
+            ASSERT_NO_FATAL_FAILURE(
+                expect_native_delete_intent(deletion, item.tag));
             const auto repeated
                 = translate_xmp_capture_metadata(deletion, options, &deletion);
-            EXPECT_EQ(repeated.groups_unchanged, 1U) << item.path;
-            EXPECT_EQ(repeated.entries_added, 0U) << item.path;
-            EXPECT_EQ(repeated.entries_updated, 0U) << item.path;
+            expect_lifecycle_repeat(repeated.groups_unchanged,
+                                    repeated.entries_added,
+                                    repeated.entries_updated);
 
             MetaStore exact;
             settings_xmp(exact, item.path, item.value);
@@ -4218,8 +4252,6 @@ namespace {
             EXPECT_EQ(authority.entries_updated, 1U) << item.path;
             const Entry* native = settings_find(exact, item.tag);
             ASSERT_NE(native, nullptr) << item.path;
-            EXPECT_TRUE(any(native->flags, EntryFlags::Dirty)) << item.path;
-            EXPECT_FALSE(any(native->flags, EntryFlags::Deleted)) << item.path;
             EXPECT_EQ(native->value.elem_type, item.value.elem_type)
                 << item.path;
             if (item.value.elem_type == MetaElementType::URational) {
@@ -4231,21 +4263,14 @@ namespace {
                 EXPECT_EQ(native->value.data.u64, item.value.data.u64)
                     << item.path;
             }
-            EXPECT_EQ(native->origin.wire_type.family, WireFamily::Tiff)
-                << item.path;
-            EXPECT_EQ(native->origin.wire_type.code, item.wire_code)
-                << item.path;
-            EXPECT_EQ(native->origin.wire_count, item.value.count) << item.path;
-            EXPECT_EQ(native->origin.order_in_block, 17U) << item.path;
-            const auto wire = exact.arena().span(native->origin.wire_type_name);
-            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
-                                           wire.data()),
-                                       wire.size()),
-                      "native-capture-wire")
-                << item.path;
+            ASSERT_NO_FATAL_FAILURE(
+                expect_native_authority(exact, item.tag, item.wire_code,
+                                        item.value.count,
+                                        "native-capture-wire"));
             const auto same = translate_xmp_capture_metadata(exact, options,
                                                              &exact);
-            EXPECT_EQ(same.groups_unchanged, 1U) << item.path;
+            expect_lifecycle_repeat(same.groups_unchanged, same.entries_added,
+                                    same.entries_updated);
 
             MetaStore omitted;
             settings_native(omitted, item.tag, item.value);
@@ -5228,14 +5253,12 @@ namespace {
         ASSERT_EQ(intent.status, SettingsStatus::Ok);
         EXPECT_EQ(intent.entries_added, 1U);
         EXPECT_EQ(intent.entries_updated, 0U);
-        const auto ids = settings_native_history_ids(deleted, 0x9209U);
-        ASSERT_EQ(ids.size(), 1U);
-        EXPECT_TRUE(any(deleted.entry(ids.front()).flags, EntryFlags::Dirty));
-        EXPECT_TRUE(any(deleted.entry(ids.front()).flags, EntryFlags::Deleted));
+        ASSERT_NO_FATAL_FAILURE(expect_native_delete_intent(deleted, 0x9209U));
         const auto repeated = translate_xmp_flash_metadata(deleted, {},
                                                            &deleted);
-        EXPECT_EQ(repeated.groups_unchanged, 1U);
-        EXPECT_EQ(repeated.entries_added, 0U);
+        expect_lifecycle_repeat(repeated.groups_unchanged,
+                                repeated.entries_added,
+                                repeated.entries_updated);
 
         MetaStore structured
             = flash_source(25U, false, EntryFlags::Dirty | EntryFlags::Deleted);
@@ -5244,13 +5267,8 @@ namespace {
             = translate_xmp_flash_metadata(structured, {}, &structured);
         ASSERT_EQ(structured_intent.status, SettingsStatus::Ok);
         EXPECT_EQ(structured_intent.entries_added, 1U);
-        const auto structured_ids = settings_native_history_ids(structured,
-                                                                0x9209U);
-        ASSERT_EQ(structured_ids.size(), 1U);
-        EXPECT_TRUE(any(structured.entry(structured_ids.front()).flags,
-                        EntryFlags::Dirty));
-        EXPECT_TRUE(any(structured.entry(structured_ids.front()).flags,
-                        EntryFlags::Deleted));
+        ASSERT_NO_FATAL_FAILURE(
+            expect_native_delete_intent(structured, 0x9209U));
 
         MetaStore exact;
         settings_xmp(exact, "Flash", make_u16(25U));
@@ -5266,17 +5284,11 @@ namespace {
         const Entry* native = settings_find(exact, 0x9209U);
         ASSERT_NE(native, nullptr);
         EXPECT_EQ(native->value.data.u64, 25U);
-        EXPECT_TRUE(any(native->flags, EntryFlags::Dirty));
-        EXPECT_EQ(native->origin.wire_type.family, WireFamily::Tiff);
-        EXPECT_EQ(native->origin.wire_type.code, 3U);
-        EXPECT_EQ(native->origin.order_in_block, 17U);
-        const auto wire = exact.arena().span(native->origin.wire_type_name);
-        EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(wire.data()),
-                                   wire.size()),
-                  "native-flash-wire");
-        EXPECT_EQ(
-            translate_xmp_flash_metadata(exact, {}, &exact).groups_unchanged,
-            1U);
+        ASSERT_NO_FATAL_FAILURE(expect_native_authority(exact, 0x9209U, 3U, 1U,
+                                                        "native-flash-wire"));
+        const auto same = translate_xmp_flash_metadata(exact, {}, &exact);
+        expect_lifecycle_repeat(same.groups_unchanged, same.entries_added,
+                                same.entries_updated);
 
         MetaStore omitted;
         settings_native(omitted, 0x9209U, make_u16(1U));
@@ -6649,6 +6661,7 @@ namespace {
     TEST(MetadataCameraText, LensOwnerLifecyclePreservesTextAndWireProvenance)
     {
         for (size_t field = 3U; field < kCameraTextNames.size(); ++field) {
+            SCOPED_TRACE(kCameraTextNames[field]);
             CameraTextOptions options;
             options.spectral_sensitivity_to_exif = false;
             options.camera_owner_name_to_exif    = false;
@@ -6672,19 +6685,14 @@ namespace {
                 << kCameraTextNames[field];
             EXPECT_EQ(removed.entries_added, 1U) << kCameraTextNames[field];
             EXPECT_EQ(removed.entries_updated, 0U) << kCameraTextNames[field];
-            const auto ids
-                = settings_native_history_ids(deleted, kCameraTextTags[field]);
-            ASSERT_EQ(ids.size(), 1U) << kCameraTextNames[field];
-            EXPECT_TRUE(any(deleted.entry(ids.front()).flags, EntryFlags::Dirty))
-                << kCameraTextNames[field];
-            EXPECT_TRUE(
-                any(deleted.entry(ids.front()).flags, EntryFlags::Deleted))
-                << kCameraTextNames[field];
+            ASSERT_NO_FATAL_FAILURE(
+                expect_native_delete_intent(deleted, kCameraTextTags[field]));
             const auto repeated = translate_xmp_camera_text_metadata(deleted,
                                                                      options,
                                                                      &deleted);
-            EXPECT_EQ(repeated.groups_unchanged, 1U) << kCameraTextNames[field];
-            EXPECT_EQ(repeated.entries_added, 0U) << kCameraTextNames[field];
+            expect_lifecycle_repeat(repeated.groups_unchanged,
+                                    repeated.entries_added,
+                                    repeated.entries_updated);
 
             MetaStore exact;
             settings_xmp(exact, kCameraTextNames[field],
@@ -6705,27 +6713,18 @@ namespace {
             EXPECT_EQ(authority.entries_updated, 1U) << kCameraTextNames[field];
             const Entry* native = settings_find(exact, kCameraTextTags[field]);
             ASSERT_NE(native, nullptr) << kCameraTextNames[field];
-            EXPECT_TRUE(any(native->flags, EntryFlags::Dirty))
-                << kCameraTextNames[field];
             EXPECT_EQ(native->value.text_encoding, TextEncoding::Ascii)
                 << kCameraTextNames[field];
             EXPECT_EQ(camera_text_value(exact, kCameraTextTags[field]),
                       std::string_view("Lens Value\0\0", 12U))
                 << kCameraTextNames[field];
-            EXPECT_EQ(native->origin.wire_type.code, 2U)
-                << kCameraTextNames[field];
-            EXPECT_EQ(native->origin.order_in_block, 17U)
-                << kCameraTextNames[field];
-            const auto wire = exact.arena().span(native->origin.wire_type_name);
-            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
-                                           wire.data()),
-                                       wire.size()),
-                      "native-lens-wire")
-                << kCameraTextNames[field];
-            EXPECT_EQ(translate_xmp_camera_text_metadata(exact, options, &exact)
-                          .groups_unchanged,
-                      1U)
-                << kCameraTextNames[field];
+            ASSERT_NO_FATAL_FAILURE(
+                expect_native_authority(exact, kCameraTextTags[field], 2U, 12U,
+                                        "native-lens-wire"));
+            const auto same = translate_xmp_camera_text_metadata(exact, options,
+                                                                 &exact);
+            expect_lifecycle_repeat(same.groups_unchanged, same.entries_added,
+                                    same.entries_updated);
 
             MetaStore omitted;
             settings_native(omitted, kCameraTextTags[field],

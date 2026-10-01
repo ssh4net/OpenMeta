@@ -1120,6 +1120,14 @@ cmake --build build-tests
 ctest --test-dir build-tests --output-on-failure
 ```
 
+A full CTest run executes the complete unit suite once and each registered
+CLI, allocation, package, install, and enabled Python check once. Aggregate
+read, transfer, CLI, and fuzzy release gates are focused custom targets, not
+CTest tests. Building an `openmeta_gate_*` target executes its checks. Choose a
+focused target or the full CTest run for a validation batch; running both repeats
+coverage. Individual smoke checks remain available through `ctest -R` after
+building their binaries.
+
 The CLI smoke and release gates use Python to create deterministic fixtures.
 Set `OPENMETA_PYTHON_EXECUTABLE` when the intended interpreter is not named
 `python3` or is outside `PATH`.
@@ -1148,7 +1156,6 @@ If `OPENMETA_MULTI_PREVIEW_SAMPLE` is not set (or the file is missing),
 Fast public smoke gate for `metavalidate` (self-contained, no corpus needed):
 ```bash
 cmake --build build-tests --target openmeta_gate_metavalidate_smoke
-ctest --test-dir build-tests -R openmeta_cli_metavalidate_smoke --output-on-failure
 ```
 
 Fast public smoke gate for `metaread` safe-text placeholder behavior:
@@ -1159,27 +1166,23 @@ cmake --build build-tests --target openmeta_gate_metaread_safe_text_smoke
 Fast public smoke gate for `metaread` Photoshop IRB field visibility:
 ```bash
 cmake --build build-tests --target openmeta_gate_metaread_photoshop_irb_smoke
-ctest --test-dir build-tests -R openmeta_cli_metaread_photoshop_irb_smoke --output-on-failure
 ```
 
 Fast public smoke gate for `metatransfer` thin wrapper behavior:
 ```bash
 cmake --build build-tests --target openmeta_gate_metatransfer_smoke
-ctest --test-dir build-tests -R openmeta_cli_metatransfer_smoke --output-on-failure
 ```
 
 Fast public smoke gate for Python `openmeta.transfer_probe` thin wrapper
 behavior (requires `-DOPENMETA_BUILD_PYTHON=ON`):
 ```bash
 cmake --build build-tests --target openmeta_gate_python_transfer_probe_smoke
-ctest --test-dir build-tests -R openmeta_python_transfer_probe_smoke --output-on-failure
 ```
 
 Fast public smoke gate for Python `openmeta.python.metatransfer` edit mode
 behavior (requires `-DOPENMETA_BUILD_PYTHON=ON`):
 ```bash
 cmake --build build-tests --target openmeta_gate_python_metatransfer_edit_smoke
-ctest --test-dir build-tests -R openmeta_python_metatransfer_edit_smoke --output-on-failure
 ```
 
 Stronger transfer release gate:
@@ -1189,6 +1192,7 @@ Stronger transfer release gate:
   - `ExrAdapter.*`
   - `DngSdkAdapter.*`
   - `openmeta_cli_metatransfer_smoke`
+  - `openmeta_cli_metatransfer_image_usability`
 - in a Python-enabled test tree it also runs:
   - `openmeta_python_transfer_probe_smoke`
   - `openmeta_python_metatransfer_edit_smoke`
@@ -1196,7 +1200,6 @@ Stronger transfer release gate:
 Build + run:
 ```bash
 cmake --build build-tests --target openmeta_gate_transfer_release
-ctest --test-dir build-tests -R openmeta_transfer_release_gate --output-on-failure
 ```
 
 The external image-usability gate can also use existing BMFF target files when
@@ -1221,7 +1224,8 @@ releases have had metadata-write command-injection issues in their own
 platform-specific tooling.
 
 The public GitHub Actions workflow `.github/workflows/ci.yml` runs two Linux
-variants of these public release gates:
+variants of the full CTest suite, building binaries before running each
+registered check once:
 - self-contained non-Python, non-DNG-SDK
 - Python-enabled, non-DNG-SDK, with `nanobind` installed into the CI
   interpreter via `pip`
@@ -1241,7 +1245,6 @@ Read release gate:
 Build + run:
 ```bash
 cmake --build build-tests --target openmeta_gate_read_release
-ctest --test-dir build-tests -R openmeta_read_release_gate --output-on-failure
 ```
 
 CLI release gate:
@@ -1254,7 +1257,6 @@ CLI release gate:
 Build + run:
 ```bash
 cmake --build build-tests --target openmeta_gate_cli_release
-ctest --test-dir build-tests -R openmeta_cli_release_gate --output-on-failure
 ```
 
 Coverage note:

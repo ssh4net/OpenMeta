@@ -75,6 +75,14 @@ FuzzTest targets (when available):
    cmake --build build-fuzztest
    ASAN_OPTIONS=detect_leaks=0 ./build-fuzztest/openmeta_fuzztest_metastore --fuzz_for=10s
 
+Full CTest runs execute the complete unit suite once and each registered
+CLI, allocation, package, install, and enabled Python check once. Aggregate
+read, transfer, CLI, and fuzzy release gates are focused custom targets, not
+CTest tests. Building an ``openmeta_gate_*`` target executes its checks. Choose a
+focused target or the full CTest run for a validation batch; running both repeats
+coverage. Individual smoke checks remain available through ``ctest -R`` after
+building their binaries.
+
 CLI smoke gates
 ---------------
 
@@ -83,7 +91,6 @@ Public-tree smoke targets (self-contained, no external corpus required):
 .. code-block:: bash
 
    cmake --build build-tests --target openmeta_gate_metavalidate_smoke
-   ctest --test-dir build-tests -R openmeta_cli_metavalidate_smoke --output-on-failure
 
 .. code-block:: bash
 
@@ -106,6 +113,7 @@ suite and the public transfer smoke coverage into one named check.
   - ``ExrAdapter.*``
   - ``DngSdkAdapter.*``
   - ``openmeta_cli_metatransfer_smoke``
+  - ``openmeta_cli_metatransfer_image_usability``
 
 - In a Python-enabled test tree it also runs:
 
@@ -115,7 +123,6 @@ suite and the public transfer smoke coverage into one named check.
 .. code-block:: bash
 
    cmake --build build-tests --target openmeta_gate_transfer_release
-   ctest --test-dir build-tests -R openmeta_transfer_release_gate --output-on-failure
 
 The external image-usability gate can also use existing BMFF target files when
 local tools cannot create them: ``OPENMETA_BMFF_HEIF_TEST_TARGET``,
@@ -153,7 +160,8 @@ releases have had metadata-write command-injection issues in their own
 platform-specific tooling.
 
 The public GitHub Actions workflow ``.github/workflows/ci.yml`` runs two Linux
-variants of these public release gates:
+variants of the full CTest suite, building binaries before running each
+registered check once:
 
 - self-contained non-Python, non-DNG-SDK
 - Python-enabled, non-DNG-SDK, with ``nanobind`` installed into the CI
@@ -177,7 +185,6 @@ interop-adapter suites into one named check. It includes coverage such as:
 .. code-block:: bash
 
    cmake --build build-tests --target openmeta_gate_read_release
-   ctest --test-dir build-tests -R openmeta_read_release_gate --output-on-failure
 
 CLI release gate
 ----------------
@@ -193,7 +200,6 @@ not already part of the transfer gate:
 .. code-block:: bash
 
    cmake --build build-tests --target openmeta_gate_cli_release
-   ctest --test-dir build-tests -R openmeta_cli_release_gate --output-on-failure
 
 Interop adapter tests
 ---------------------

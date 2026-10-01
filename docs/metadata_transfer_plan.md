@@ -147,9 +147,10 @@ Additional compatibility-dump gates cover sidecar-only writeback with explicit
 sidecar-base overrides and embedded-only writeback with destination-sidecar
 cleanup through persisted output.
 
-There is now also a named in-tree transfer release gate:
-- `openmeta_gate_transfer_release`
-- `openmeta_transfer_release_gate`
+The focused in-tree transfer release gate is the custom target
+`openmeta_gate_transfer_release`. Building it executes the selected unit and
+smoke checks. Full CTest runs cover these checks once through the complete unit
+suite and individual smoke registrations; aggregate gates are not CTest tests.
 
 In a non-Python test tree it runs:
 - `MetadataTransferApi.*`
@@ -157,6 +158,7 @@ In a non-Python test tree it runs:
 - `ExrAdapter.*`
 - `DngSdkAdapter.*`
 - `openmeta_cli_metatransfer_smoke`
+- `openmeta_cli_metatransfer_image_usability`
 
 In a Python-enabled test tree it also runs:
 - `openmeta_python_transfer_probe_smoke`
