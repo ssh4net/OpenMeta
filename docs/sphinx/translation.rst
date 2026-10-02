@@ -2248,3 +2248,14 @@ TIFF/BigTIFF uses the existing removal list and merge flag for the added tags:
 records, opaque MakerNote bytes/original offsets, standard pointers and media
 remain preserved. Snapshot v1, bundle/API layouts, ABI 4, package-minor policy
 and unsupported-consumer rejection remain unchanged.
+
+GPS destination lifecycle (0.8.0)
+---------------------------------
+
+All five GPS translators use contract version 2. Accepted dirty deletion carries
+native intent even for absent members; accepted exact clean members gain Dirty
+without changing native encoding. Omitted sources preserve the destination.
+Intent and authority updates consume existing transactional limits; repeated
+calls reuse them. Bounded TIFF/BigTIFF merges retain unselected destination GPS.
+Version cleanup depends on surviving destination values, and conflicting active
+versions fail before output. See :doc:`migration_0_8` for ownership and rebuilds.

@@ -3345,25 +3345,6 @@ namespace {
         return count;
     }
 
-    static bool gps_ifd_is_explicitly_removed(const MetaStore& store) noexcept
-    {
-        bool removed_value = false;
-        for (const Entry& entry : store.entries()) {
-            if (entry.key.kind != MetaKeyKind::ExifTag
-                || arena_string(store.arena(), entry.key.data.exif_tag.ifd)
-                       != "gpsifd") {
-                continue;
-            }
-            if (!any(entry.flags, EntryFlags::Deleted)) {
-                return false;
-            }
-            removed_value = removed_value
-                            || (entry.key.data.exif_tag.tag != 0U
-                                && any(entry.flags, EntryFlags::Dirty));
-        }
-        return removed_value;
-    }
-
     static bool exif_ifd_is_explicitly_removed(const MetaStore& store) noexcept
     {
         bool removed_value = false;
@@ -7246,7 +7227,9 @@ namespace {
         bool include_subifds, bool inject_minimal_dng_version,
         bool honor_wire_type_hints, uint64_t max_output_bytes,
         bool collect_patch_source_slots, bool explicit_empty_gps_ifd = false,
-        bool explicit_empty_exif_ifd = false) noexcept
+        bool explicit_empty_exif_ifd        = false,
+        bool dirty_supported_gps_only       = false,
+        bool include_gps_version_for_update = false) noexcept
     {
         ExifPackBuild out;
 
@@ -7283,6 +7266,18 @@ namespace {
             }
 
             const uint16_t tag = e.key.data.exif_tag.tag;
+            if (dirty_supported_gps_only
+                && ifd_ref.slot == ExifIfdSlot::GpsIfd) {
+                if (tag == 0U) {
+                    if (!include_gps_version_for_update) {
+                        out.source_count -= 1U;
+                        continue;
+                    }
+                } else if (tag > 31U || !any(e.flags, EntryFlags::Dirty)) {
+                    out.source_count -= 1U;
+                    continue;
+                }
+            }
             if (!ifd_ref.is_page && !ifd_ref.is_subifd
                 && ifd_ref.slot == ExifIfdSlot::Ifd0 && tag == 0xC612U) {
                 saw_dng_version = true;
@@ -8525,7 +8520,7 @@ namespace {
         uint16_t tag   = 0U;
         uint16_t type  = 0U;
         uint64_t count = 0U;
-        // Retained target MakerNotes refer to the immutable source prefix.
+        // Retained target external values refer to the immutable source prefix.
         // New transferred entries own payload bytes and leave this zero.
         uint64_t retained_value_offset = 0U;
         std::vector<std::byte> payload;
@@ -9284,11 +9279,10 @@ namespace {
         return true;
     }
 
-    static bool parse_target_tiff_ifd(std::span<const std::byte> input,
-                                      uint64_t ifd_off_u64, TiffEndian endian,
-                                      const TiffLayout& layout,
-                                      ParsedTiffIfd* out,
-                                      std::string* err) noexcept
+    static bool parse_target_tiff_ifd(
+        std::span<const std::byte> input, uint64_t ifd_off_u64,
+        TiffEndian endian, const TiffLayout& layout, ParsedTiffIfd* out,
+        std::string* err, bool preserve_external_values = false) noexcept
     {
         if (!out) {
             return false;
@@ -9387,11 +9381,13 @@ namespace {
                     }
                     return false;
                 }
-                if (tag == 0x927CU) {
+                if (tag == 0x927CU || preserve_external_values) {
                     if (value_off_u64 < (layout.bigtiff ? 16U : 8U)) {
                         if (err) {
                             *err
-                                = "target MakerNote payload overlaps TIFF header";
+                                = tag == 0x927CU
+                                      ? "target MakerNote payload overlaps TIFF header"
+                                      : "retained TIFF payload overlaps TIFF header";
                         }
                         return false;
                     }
@@ -9457,6 +9453,54 @@ namespace {
         }
         ifd->entries.resize(write);
         return removed;
+    }
+
+    static size_t ifd_entry_tag_count(const ParsedTiffIfd& ifd,
+                                      uint16_t tag) noexcept
+    {
+        size_t count = 0U;
+        for (const ParsedTiffIfdEntry& entry : ifd.entries) {
+            if (entry.tag == tag) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    static bool
+    parsed_gps_ifd_has_supported_value(const ParsedTiffIfd& ifd) noexcept
+    {
+        for (const ParsedTiffIfdEntry& entry : ifd.entries) {
+            if (entry.tag >= 1U && entry.tag <= 31U) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool
+    parsed_gps_ifd_has_nonversion_value(const ParsedTiffIfd& ifd) noexcept
+    {
+        for (const ParsedTiffIfdEntry& entry : ifd.entries) {
+            if (entry.tag != 0U) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool
+    gps_version_entry_is_valid(const ParsedTiffIfdEntry& entry) noexcept
+    {
+        return entry.type == 1U && entry.count == 4U
+               && entry.payload.size() == 4U;
+    }
+
+    static void upsert_parsed_ifd_entry(ParsedTiffIfd* ifd,
+                                        const ParsedTiffIfdEntry& entry)
+    {
+        (void)remove_ifd_entry_tag(ifd, entry.tag);
+        ifd->entries.push_back(entry);
     }
 
     static bool payload_to_tiff_offset(const ParsedTiffIfdEntry& e,
@@ -11096,9 +11140,26 @@ namespace {
                 return false;
             }
         }
+        if (bundle.tiff_gps_removals.size() > 31U) {
+            return false;
+        }
+        for (size_t i = 0U; i < bundle.tiff_gps_removals.size(); ++i) {
+            const uint16_t tag = bundle.tiff_gps_removals[i];
+            if (tag == 0U || tag > 31U
+                || (i > 0U && bundle.tiff_gps_removals[i - 1U] >= tag)) {
+                return false;
+            }
+        }
+        const bool gps_edit_requested = bundle.tiff_merge_existing_gps
+                                        || !bundle.tiff_gps_removals.empty();
+        if (gps_edit_requested
+            && !transfer_target_is_tiff_family(bundle.target_format)) {
+            return false;
+        }
         if (bundle.tiff_ifd0_removals.empty()
             && bundle.tiff_exif_removals.empty()
-            && !bundle.tiff_merge_existing_exif) {
+            && bundle.tiff_gps_removals.empty()
+            && !bundle.tiff_merge_existing_exif && !gps_edit_requested) {
             return true;
         }
 
@@ -11119,9 +11180,16 @@ namespace {
                     || !bundle.tiff_exif_removals.empty())) {
                 return false;
             }
+            if (parsed.gps_ifd.present && parsed.gps_ifd.entries.empty()
+                && gps_edit_requested) {
+                return false;
+            }
             for (size_t update_index = 0U;
                  update_index < parsed.ifd0_updates.size(); ++update_index) {
                 const uint16_t tag = parsed.ifd0_updates[update_index].tag;
+                if (gps_edit_requested && tag == 0x8825U) {
+                    return false;
+                }
                 for (size_t j = 0U; j < bundle.tiff_ifd0_removals.size(); ++j) {
                     if (bundle.tiff_ifd0_removals[j] == tag) {
                         return false;
@@ -11133,6 +11201,18 @@ namespace {
                 const uint16_t tag = parsed.exif_ifd.entries[entry_index].tag;
                 for (size_t j = 0U; j < bundle.tiff_exif_removals.size(); ++j) {
                     if (bundle.tiff_exif_removals[j] == tag) {
+                        return false;
+                    }
+                }
+            }
+            for (size_t entry_index = 0U;
+                 entry_index < parsed.gps_ifd.entries.size(); ++entry_index) {
+                const uint16_t tag = parsed.gps_ifd.entries[entry_index].tag;
+                if (gps_edit_requested && tag > 31U) {
+                    return false;
+                }
+                for (size_t j = 0U; j < bundle.tiff_gps_removals.size(); ++j) {
+                    if (bundle.tiff_gps_removals[j] == tag) {
                         return false;
                     }
                 }
@@ -11157,7 +11237,22 @@ namespace {
     bundle_has_tiff_removals(const PreparedTransferBundle& bundle) noexcept
     {
         return !bundle.tiff_ifd0_removals.empty()
-               || !bundle.tiff_exif_removals.empty();
+               || !bundle.tiff_exif_removals.empty()
+               || !bundle.tiff_gps_removals.empty();
+    }
+
+    static bool bundle_has_tiff_gps_destination_intent(
+        const PreparedTransferBundle& bundle) noexcept
+    {
+        return bundle.tiff_merge_existing_gps
+               || !bundle.tiff_gps_removals.empty();
+    }
+
+    static bool bundle_has_tiff_destination_edit_intent(
+        const PreparedTransferBundle& bundle) noexcept
+    {
+        return bundle_has_tiff_removals(bundle)
+               || bundle.tiff_merge_existing_gps;
     }
 
     static bool has_update_for_tag(const std::vector<TiffTagUpdate>& updates,
@@ -11417,8 +11512,7 @@ namespace {
                     || static_cast<uint64_t>(e.payload.size())
                            > base_offset - e.retained_value_offset) {
                     if (err) {
-                        *err
-                            = "retained MakerNote payload exceeds source prefix";
+                        *err = "retained TIFF payload exceeds source prefix";
                     }
                     return false;
                 }
@@ -11512,13 +11606,13 @@ namespace {
         return true;
     }
 
-    static bool
-    build_tiff_rewrite_tail(std::span<const std::byte> input,
-                            const std::vector<TiffTagUpdate>& updates,
-                            std::span<const std::byte> exif_app1_payload,
-                            const std::vector<uint16_t>& exif_removals,
-                            bool merge_existing_exif, TiffRewriteTail* out,
-                            std::string* err) noexcept
+    static bool build_tiff_rewrite_tail(
+        std::span<const std::byte> input,
+        const std::vector<TiffTagUpdate>& updates,
+        std::span<const std::byte> exif_app1_payload,
+        const std::vector<uint16_t>& exif_removals, bool merge_existing_exif,
+        const std::vector<uint16_t>& gps_removals, bool merge_existing_gps,
+        TiffRewriteTail* out, std::string* err) noexcept
     {
         if (!out) {
             return false;
@@ -11528,7 +11622,7 @@ namespace {
         out->layout       = TiffLayout {};
 
         if (updates.empty() && exif_app1_payload.empty()
-            && exif_removals.empty()) {
+            && exif_removals.empty() && gps_removals.empty()) {
             if (err) {
                 *err = "no tiff updates";
             }
@@ -11612,6 +11706,21 @@ namespace {
         }
         remove_target_local_tiff_storage_updates(&parsed_exif.ifd0_updates);
 
+        const bool gps_destination_merge = merge_existing_gps
+                                           || !gps_removals.empty();
+        const bool merge_gps_directory = gps_destination_merge;
+        if (gps_destination_merge) {
+            for (const TiffTagUpdate& update : parsed_exif.ifd0_updates) {
+                if (update.tag == 0x8825U) {
+                    if (err) {
+                        *err
+                            = "unsupported manual GPS pointer update with destination merge";
+                    }
+                    return false;
+                }
+            }
+        }
+
         std::vector<TiffTagUpdate> merged_updates = updates;
         const bool clear_exif_ifd                 = parsed_exif.exif_ifd.present
                                     && parsed_exif.exif_ifd.entries.empty();
@@ -11632,6 +11741,13 @@ namespace {
         const bool clear_gps_ifd                  = parsed_exif.gps_ifd.present
                                    && parsed_exif.gps_ifd.entries.empty();
         if (clear_gps_ifd) {
+            if (merge_existing_gps || !gps_removals.empty()) {
+                if (err) {
+                    *err
+                        = "unsupported explicit GPS IFD clear with destination merge or removals";
+                }
+                return false;
+            }
             parsed_exif.gps_ifd.present = false;
             TiffTagUpdate removal;
             removal.tag    = 0x8825U;
@@ -11662,7 +11778,7 @@ namespace {
         const bool preserve_missing_exif_entries = merge_existing_exif
                                                    || !exif_removals.empty();
         bool need_exif_ptr            = parsed_exif.exif_ifd.present;
-        bool need_gps_ptr             = parsed_exif.gps_ifd.present;
+        bool need_gps_ptr = parsed_exif.gps_ifd.present || merge_gps_directory;
         const bool need_subifd_ptr    = !parsed_exif.subifds.empty();
         const bool inspect_existing_exif_ifd
             = !clear_exif_ifd
@@ -11676,6 +11792,7 @@ namespace {
         uint64_t existing_gps_ifd_off  = 0U;
         std::vector<uint64_t> existing_subifd_offsets;
         bool saw_existing_exif_ifd_pointer = false;
+        bool saw_existing_gps_ifd_pointer  = false;
 
         std::vector<TiffIfdEntry> final_entries;
         final_entries.reserve(count + merged_updates.size() + 3U);
@@ -11709,9 +11826,22 @@ namespace {
                 }
                 saw_existing_exif_ifd_pointer = true;
             }
-            if (inspect_existing_gps_ifd && tag == 0x8825U && count_value == 1U
-                && (type == 4U || type == 13U || type == 18U)) {
-                existing_gps_ifd_off = value_or_off;
+            if (inspect_existing_gps_ifd && tag == 0x8825U) {
+                if (merge_gps_directory) {
+                    if (saw_existing_gps_ifd_pointer
+                        || !read_target_tiff_ifd_pointer(
+                            input, p, type, count_value, endian, layout,
+                            &existing_gps_ifd_off)) {
+                        if (err) {
+                            *err = "target TIFF GPSIFD pointer is malformed";
+                        }
+                        return false;
+                    }
+                    saw_existing_gps_ifd_pointer = true;
+                } else if (count_value == 1U
+                           && (type == 4U || type == 13U || type == 18U)) {
+                    existing_gps_ifd_off = value_or_off;
+                }
             }
             if (inspect_existing_subifds && tag == 0x014AU
                 && !parse_tiff_offset_array_entry(input, type, count_value,
@@ -11784,10 +11914,12 @@ namespace {
                 }
             }
 
-            if (existing_gps_ifd_off != 0U && !parsed_exif.gps_ifd.present) {
+            if (existing_gps_ifd_off != 0U && !parsed_exif.gps_ifd.present
+                && !merge_gps_directory) {
                 ParsedTiffIfd existing_gps_ifd;
                 if (!parse_target_tiff_ifd(input, existing_gps_ifd_off, endian,
-                                           layout, &existing_gps_ifd, err)) {
+                                           layout, &existing_gps_ifd, err,
+                                           true)) {
                     return false;
                 }
                 if (remove_ifd_entry_tag(&existing_gps_ifd, 700U)) {
@@ -11796,6 +11928,129 @@ namespace {
                     (void)remove_tiff_ifd_entry_tag(&final_entries, 0x8825U);
                 }
             }
+        }
+
+        if (merge_gps_directory) {
+            const ParsedTiffIfd incoming_gps_ifd = parsed_exif.gps_ifd;
+            const bool incoming_has_updates
+                = parsed_gps_ifd_has_supported_value(incoming_gps_ifd);
+            for (size_t i = 0U; i < incoming_gps_ifd.entries.size(); ++i) {
+                const ParsedTiffIfdEntry& entry = incoming_gps_ifd.entries[i];
+                if (entry.tag > 31U) {
+                    if (err) {
+                        *err
+                            = "unsupported GPS IFD tag in destination merge payload";
+                    }
+                    return false;
+                }
+                for (size_t j = i + 1U; j < incoming_gps_ifd.entries.size();
+                     ++j) {
+                    if (incoming_gps_ifd.entries[j].tag == entry.tag) {
+                        if (err) {
+                            *err = "malformed duplicate GPS IFD update tag";
+                        }
+                        return false;
+                    }
+                }
+            }
+
+            ParsedTiffIfd existing_gps_ifd;
+            if (existing_gps_ifd_off != 0U
+                && !parse_target_tiff_ifd(input, existing_gps_ifd_off, endian,
+                                          layout, &existing_gps_ifd, err,
+                                          true)) {
+                return false;
+            }
+            parsed_exif.gps_ifd         = std::move(existing_gps_ifd);
+            parsed_exif.gps_ifd.present = true;
+
+            const size_t incoming_version_count
+                = ifd_entry_tag_count(incoming_gps_ifd, 0U);
+            const size_t existing_version_count
+                = ifd_entry_tag_count(parsed_exif.gps_ifd, 0U);
+            if (incoming_version_count > 1U) {
+                if (err) {
+                    *err = "malformed duplicate supplied GPSVersionID";
+                }
+                return false;
+            }
+            const ParsedTiffIfdEntry* incoming_version = nullptr;
+            const ParsedTiffIfdEntry* existing_version = nullptr;
+            for (const ParsedTiffIfdEntry& entry : incoming_gps_ifd.entries) {
+                if (entry.tag == 0U) {
+                    incoming_version = &entry;
+                    break;
+                }
+            }
+            for (const ParsedTiffIfdEntry& entry :
+                 parsed_exif.gps_ifd.entries) {
+                if (entry.tag == 0U) {
+                    existing_version = &entry;
+                    break;
+                }
+            }
+            if (incoming_version
+                && !gps_version_entry_is_valid(*incoming_version)) {
+                if (err) {
+                    *err = "malformed supplied GPSVersionID";
+                }
+                return false;
+            }
+            if (incoming_has_updates && !incoming_version) {
+                if (err) {
+                    *err
+                        = "active GPS destination updates require a supplied GPSVersionID";
+                }
+                return false;
+            }
+            if (incoming_has_updates && existing_version_count > 1U) {
+                if (err) {
+                    *err = "malformed target GPSVersionID duplicates";
+                }
+                return false;
+            }
+            if (incoming_has_updates && existing_version) {
+                if (!gps_version_entry_is_valid(*existing_version)) {
+                    if (err) {
+                        *err = "malformed target GPSVersionID";
+                    }
+                    return false;
+                }
+                for (size_t i = 0U; i < 4U; ++i) {
+                    if (incoming_version->payload[i]
+                        != existing_version->payload[i]) {
+                        if (err) {
+                            *err
+                                = "unsupported supplied GPSVersionID differs from target";
+                        }
+                        return false;
+                    }
+                }
+            }
+            if (incoming_has_updates && !existing_version) {
+                upsert_parsed_ifd_entry(&parsed_exif.gps_ifd,
+                                        *incoming_version);
+            }
+            for (const ParsedTiffIfdEntry& entry : incoming_gps_ifd.entries) {
+                if (entry.tag >= 1U && entry.tag <= 31U) {
+                    upsert_parsed_ifd_entry(&parsed_exif.gps_ifd, entry);
+                }
+            }
+            for (uint16_t tag : gps_removals) {
+                (void)remove_ifd_entry_tag(&parsed_exif.gps_ifd, tag);
+            }
+            if (strip_existing_xmp) {
+                (void)remove_ifd_entry_tag(&parsed_exif.gps_ifd, 700U);
+            }
+            if (!parsed_gps_ifd_has_nonversion_value(parsed_exif.gps_ifd)) {
+                (void)remove_ifd_entry_tag(&parsed_exif.gps_ifd, 0U);
+                parsed_exif.gps_ifd.present = false;
+            } else {
+                std::stable_sort(parsed_exif.gps_ifd.entries.begin(),
+                                 parsed_exif.gps_ifd.entries.end(),
+                                 ParsedTiffIfdEntryLess {});
+            }
+            need_gps_ptr = parsed_exif.gps_ifd.present;
         }
 
         for (size_t u = 0; u < merged_updates.size(); ++u) {
@@ -12369,6 +12624,7 @@ namespace {
         const std::vector<TiffTagUpdate>& updates,
         std::span<const std::byte> exif_app1_payload,
         const std::vector<uint16_t>& exif_removals, bool merge_existing_exif,
+        const std::vector<uint16_t>& gps_removals, bool merge_existing_gps,
         std::vector<std::byte>* out, std::string* err) noexcept
     {
         if (!out) {
@@ -12379,7 +12635,8 @@ namespace {
         TiffRewriteTail rewrite;
         if (!build_tiff_rewrite_tail(input, updates, exif_app1_payload,
                                      exif_removals, merge_existing_exif,
-                                     &rewrite, err)) {
+                                     gps_removals, merge_existing_gps, &rewrite,
+                                     err)) {
             return false;
         }
 
@@ -12717,6 +12974,84 @@ collect_tiff_exif_profile_removals(const MetaStore& store, bool enabled,
     }
 }
 
+static void
+collect_tiff_gps_profile_removals(const MetaStore& store, bool enabled,
+                                  std::vector<uint16_t>* out_removals) noexcept
+{
+    if (!out_removals) {
+        return;
+    }
+    out_removals->clear();
+    if (!enabled) {
+        return;
+    }
+
+    std::array<bool, 32U> has_dirty_tombstone {};
+    std::array<bool, 32U> has_live_entry {};
+    for (const Entry& entry : store.entries()) {
+        if (entry.key.kind != MetaKeyKind::ExifTag
+            || arena_string(store.arena(), entry.key.data.exif_tag.ifd)
+                   != "gpsifd") {
+            continue;
+        }
+        const uint16_t tag = entry.key.data.exif_tag.tag;
+        if (tag == 0U || tag > 31U) {
+            continue;
+        }
+        if (any(entry.flags, EntryFlags::Deleted)) {
+            if (any(entry.flags, EntryFlags::Dirty)) {
+                has_dirty_tombstone[tag] = true;
+            }
+        } else {
+            has_live_entry[tag] = true;
+        }
+    }
+
+    out_removals->reserve(31U);
+    for (uint16_t tag = 1U; tag <= 31U; ++tag) {
+        if (has_dirty_tombstone[tag] && !has_live_entry[tag]) {
+            out_removals->push_back(tag);
+        }
+    }
+}
+
+static bool
+has_dirty_tiff_native_gps_edit(const MetaStore& store) noexcept
+{
+    for (const Entry& entry : store.entries()) {
+        if (entry.key.kind != MetaKeyKind::ExifTag
+            || !any(entry.flags, EntryFlags::Dirty)) {
+            continue;
+        }
+        const std::string_view ifd = arena_string(store.arena(),
+                                                  entry.key.data.exif_tag.ifd);
+        const uint16_t tag         = entry.key.data.exif_tag.tag;
+        if (ifd == "gpsifd" && tag >= 1U && tag <= 31U) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool
+has_dirty_tiff_native_gps_update(const MetaStore& store) noexcept
+{
+    for (const Entry& entry : store.entries()) {
+        if (entry.key.kind != MetaKeyKind::ExifTag
+            || any(entry.flags, EntryFlags::Deleted)
+            || !any(entry.flags, EntryFlags::Dirty)) {
+            continue;
+        }
+        const std::string_view ifd = arena_string(store.arena(),
+                                                  entry.key.data.exif_tag.ifd);
+        const uint16_t tag         = entry.key.data.exif_tag.tag;
+        if (ifd == "gpsifd" && tag >= 1U && tag <= 31U) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool
 has_dirty_tiff_native_edit(const MetaStore& store) noexcept
 {
@@ -12801,8 +13136,12 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                                        &bundle.tiff_ifd0_removals);
     collect_tiff_exif_profile_removals(store, native_tiff_exif_enabled,
                                        &bundle.tiff_exif_removals);
+    collect_tiff_gps_profile_removals(store, native_tiff_exif_enabled,
+                                      &bundle.tiff_gps_removals);
     bundle.tiff_merge_existing_exif = native_tiff_exif_enabled
                                       && has_dirty_tiff_native_edit(store);
+    bundle.tiff_merge_existing_gps = native_tiff_exif_enabled
+                                     && has_dirty_tiff_native_gps_edit(store);
 
     MetaStore target_safe_store;
     const MetaStore* prepared_store_ptr = &store;
@@ -12889,9 +13228,6 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                                                          MetaKeyKind::ExifTag);
     const uint32_t iptc_dataset_count
         = count_kind_entries(prepared_store, MetaKeyKind::IptcDataset);
-    const bool explicit_empty_gps_ifd = transfer_target_is_tiff_family(
-                                            request.target_format)
-                                        && gps_ifd_is_explicitly_removed(store);
     // Timestamp intents address individual tags, even when every source
     // ExifIFD member is deleted. Do not also request a whole-directory clear.
     const bool explicit_empty_exif_ifd
@@ -12899,8 +13235,7 @@ prepare_metadata_for_target_impl(const MetaStore& store,
           && !bundle.tiff_merge_existing_exif
           && bundle.tiff_exif_removals.empty()
           && exif_ifd_is_explicitly_removed(store);
-    const bool has_exif = exif_entry_count > 0U || explicit_empty_gps_ifd
-                          || explicit_empty_exif_ifd
+    const bool has_exif = exif_entry_count > 0U || explicit_empty_exif_ifd
                           || request.target_format == TransferTargetFormat::Dng;
     const bool has_iptc = iptc_dataset_count > 0U
                           || has_kind(prepared_store,
@@ -13385,8 +13720,9 @@ prepare_metadata_for_target_impl(const MetaStore& store,
             prepared_store, effective_makernote,
             transfer_target_is_tiff_family(request.target_format),
             request.target_format == TransferTargetFormat::Dng, true,
-            kMaxJpegExifTiffBytes, false, explicit_empty_gps_ifd,
-            explicit_empty_exif_ifd);
+            kMaxJpegExifTiffBytes, false, false, explicit_empty_exif_ifd,
+            bundle.tiff_merge_existing_gps,
+            has_dirty_tiff_native_gps_update(store));
         if (exif_build.produced && !exif_build.tiff_payload.empty()) {
             const uint32_t block_index = static_cast<uint32_t>(
                 bundle.blocks.size());
@@ -13477,7 +13813,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                                    + std::to_string(generic_skipped_count)
                                    + " unsupported exif entries");
             }
-        } else {
+        } else if (exif_build.source_count > 0U || explicit_empty_exif_ifd
+                   || request.target_format == TransferTargetFormat::Dng) {
             requested_present_but_unpacked = true;
             if (exif_build.decoded_only_makernote_skipped_count > 0U) {
                 if (r.code == PrepareTransferCode::None) {
@@ -18038,7 +18375,8 @@ emit_prepared_bundle_tiff(const PreparedTransferBundle& bundle,
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
         r.errors  = 1U;
-        r.message = "fresh TIFF/DNG emit cannot represent native TIFF removals";
+        r.message
+            = "fresh TIFF/DNG emit cannot represent native TIFF destination edits";
         return r;
     }
 
@@ -18122,7 +18460,8 @@ compile_prepared_bundle_tiff(const PreparedTransferBundle& bundle,
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
         r.errors  = 1U;
-        r.message = "fresh TIFF/DNG emit cannot represent native TIFF removals";
+        r.message
+            = "fresh TIFF/DNG emit cannot represent native TIFF destination edits";
         return r;
     }
     out_plan->contract_version = bundle.contract_version;
@@ -18197,7 +18536,8 @@ emit_prepared_bundle_tiff_compiled(const PreparedTransferBundle& bundle,
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
         r.errors  = 1U;
-        r.message = "fresh TIFF/DNG emit cannot represent native TIFF removals";
+        r.message
+            = "fresh TIFF/DNG emit cannot represent native TIFF destination edits";
         return r;
     }
     if (plan.contract_version != bundle.contract_version) {
@@ -18612,7 +18952,8 @@ build_prepared_jxl_encoder_handoff_view(
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
         r.errors  = 1U;
-        r.message = "JXL encoder handoff cannot represent native TIFF removals";
+        r.message
+            = "JXL encoder handoff cannot represent native TIFF destination edits";
         return r;
     }
 
@@ -20448,14 +20789,17 @@ plan_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         = collect_tiff_tag_updates(bundle, options.strip_existing_xmp);
     const std::vector<std::byte> exif_app1_payload
         = first_tiff_exif_app1_payload(bundle);
-    plan.tag_updates = static_cast<uint32_t>(
-        updates.size() + bundle.tiff_exif_removals.size());
+    const uint32_t removal_count = static_cast<uint32_t>(
+        bundle.tiff_exif_removals.size() + bundle.tiff_gps_removals.size());
+    plan.tag_updates  = static_cast<uint32_t>(updates.size() + removal_count);
     plan.has_exif_ifd = !exif_app1_payload.empty()
-                        || !bundle.tiff_exif_removals.empty();
+                        || !bundle.tiff_exif_removals.empty()
+                        || !bundle.tiff_gps_removals.empty();
     plan.strip_existing_xmp = options.strip_existing_xmp;
 
     if (options.require_updates && updates.empty() && exif_app1_payload.empty()
-        && bundle.tiff_exif_removals.empty()) {
+        && bundle.tiff_exif_removals.empty()
+        && bundle.tiff_gps_removals.empty()) {
         plan.status  = TransferStatus::Unsupported;
         plan.message = "no tiff updates";
         return plan;
@@ -20468,7 +20812,8 @@ plan_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
             std::span<const std::byte>(exif_app1_payload.data(),
                                        exif_app1_payload.size()),
             bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
-            &rewrite, &err)) {
+            bundle.tiff_gps_removals, bundle.tiff_merge_existing_gps, &rewrite,
+            &err)) {
         plan.status  = tiff_edit_status_from_error(err);
         plan.message = err;
         return plan;
@@ -20519,10 +20864,13 @@ apply_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         = collect_tiff_tag_updates(bundle, plan.strip_existing_xmp);
     const std::vector<std::byte> exif_app1_payload
         = first_tiff_exif_app1_payload(bundle);
+    const uint32_t removal_count = static_cast<uint32_t>(
+        bundle.tiff_exif_removals.size() + bundle.tiff_gps_removals.size());
     const uint32_t expected_tag_updates = static_cast<uint32_t>(
-        updates.size() + bundle.tiff_exif_removals.size());
+        updates.size() + removal_count);
     const bool expected_has_exif_ifd = !exif_app1_payload.empty()
-                                       || !bundle.tiff_exif_removals.empty();
+                                       || !bundle.tiff_exif_removals.empty()
+                                       || !bundle.tiff_gps_removals.empty();
     if (plan.tag_updates != expected_tag_updates
         || plan.has_exif_ifd != expected_has_exif_ifd) {
         out.status  = TransferStatus::InvalidArgument;
@@ -20537,7 +20885,8 @@ apply_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         input_tiff, updates,
         std::span<const std::byte>(exif_app1_payload.data(),
                                    exif_app1_payload.size()),
-        bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif, out_tiff,
+        bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
+        bundle.tiff_gps_removals, bundle.tiff_merge_existing_gps, out_tiff,
         &err);
     if (!rewritten) {
         out.status  = tiff_edit_status_from_error(err);
@@ -20612,7 +20961,8 @@ build_prepared_transfer_emit_package(const PreparedTransferBundle& bundle,
         out.status = TransferStatus::Unsupported;
         out.code   = EmitTransferCode::InvalidArgument;
         out.errors = 1U;
-        out.message = "fresh emit package cannot represent native TIFF removals";
+        out.message
+            = "fresh emit package cannot represent native TIFF destination edits";
         return out;
     }
 
@@ -21087,10 +21437,13 @@ build_prepared_bundle_tiff_package(
         = collect_tiff_tag_updates(bundle, plan.strip_existing_xmp);
     const std::vector<std::byte> exif_app1_payload
         = first_tiff_exif_app1_payload(bundle);
+    const uint32_t removal_count = static_cast<uint32_t>(
+        bundle.tiff_exif_removals.size() + bundle.tiff_gps_removals.size());
     const uint32_t expected_tag_updates = static_cast<uint32_t>(
-        updates.size() + bundle.tiff_exif_removals.size());
+        updates.size() + removal_count);
     const bool expected_has_exif_ifd = !exif_app1_payload.empty()
-                                       || !bundle.tiff_exif_removals.empty();
+                                       || !bundle.tiff_exif_removals.empty()
+                                       || !bundle.tiff_gps_removals.empty();
     if (plan.tag_updates != expected_tag_updates
         || plan.has_exif_ifd != expected_has_exif_ifd) {
         out.status  = TransferStatus::InvalidArgument;
@@ -21107,7 +21460,8 @@ build_prepared_bundle_tiff_package(
             std::span<const std::byte>(exif_app1_payload.data(),
                                        exif_app1_payload.size()),
             bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
-            &rewrite, &err)) {
+            bundle.tiff_gps_removals, bundle.tiff_merge_existing_gps, &rewrite,
+            &err)) {
         out.status  = tiff_edit_status_from_error(err);
         out.code    = EmitTransferCode::PlanMismatch;
         out.errors  = 1U;
@@ -31305,7 +31659,7 @@ namespace {
                 out.code   = EmitTransferCode::InvalidArgument;
                 out.errors = 1U;
                 out.message
-                    = "native TIFF removals require a final-output TIFF edit package";
+                    = "native TIFF destination edits require a final-output TIFF edit package";
                 return out;
             }
         }
@@ -32164,7 +32518,7 @@ namespace {
             out.code   = EmitTransferCode::InvalidArgument;
             out.errors = 1U;
             out.message
-                = "compiled emit plan cannot represent native TIFF removals";
+                = "compiled emit plan cannot represent native TIFF destination edits";
             return out;
         }
         if (plan.contract_version != bundle.contract_version) {
@@ -32308,7 +32662,8 @@ namespace {
             return out;
         }
 
-        const bool has_tiff_removals = bundle_has_tiff_removals(*bundle);
+        const bool has_tiff_edit_only_intent
+            = bundle_has_tiff_destination_edit_intent(*bundle);
         if (!prepared_tiff_removals_are_valid(*bundle)) {
             out.compile.status = TransferStatus::InvalidArgument;
             out.compile.code   = EmitTransferCode::InvalidArgument;
@@ -32326,14 +32681,14 @@ namespace {
             }
             return out;
         }
-        if (has_tiff_removals && options.edit_requested
+        if (has_tiff_edit_only_intent && options.edit_requested
             && (!transfer_target_is_tiff_family(bundle->target_format)
                 || options.emit_output_writer || compiled_plan)) {
             out.compile.status = TransferStatus::Unsupported;
             out.compile.code   = EmitTransferCode::InvalidArgument;
             out.compile.errors = 1U;
             out.compile.message
-                = "native TIFF removal editing cannot be combined with a fresh emit request";
+                = "native TIFF destination editing cannot be combined with a fresh emit request";
             out.emit               = out.compile;
             out.edit_plan_status   = TransferStatus::Unsupported;
             out.edit_plan_message  = out.compile.message;
@@ -32369,13 +32724,13 @@ namespace {
 
         PreparedTransferExecutionPlan local_plan;
         const PreparedTransferExecutionPlan* effective_plan = compiled_plan;
-        const bool tiff_removal_edit_only                   = has_tiff_removals
-                                            && options.edit_requested;
-        if (tiff_removal_edit_only) {
+        const bool tiff_destination_edit_only = has_tiff_edit_only_intent
+                                                && options.edit_requested;
+        if (tiff_destination_edit_only) {
             out.compile.status = TransferStatus::Ok;
             out.compile.code   = EmitTransferCode::None;
             out.compile.message
-                = "fresh TIFF emit skipped for native TIFF removal edit execution";
+                = "fresh TIFF emit skipped for native TIFF destination edit execution";
             out.emit         = out.compile;
             effective_plan   = nullptr;
             out.compiled_ops = 0U;
@@ -32859,7 +33214,7 @@ namespace {
                     "unsupported target format for emit");
                 break;
             }
-        } else if (!tiff_removal_edit_only) {
+        } else if (!tiff_destination_edit_only) {
             out.emit = skipped_emit_result(
                 "skipped emit due to compile failure");
         }
@@ -34228,7 +34583,7 @@ compile_prepared_transfer_execution(
         out.code   = EmitTransferCode::InvalidArgument;
         out.errors = 1U;
         out.message
-            = "fresh emit execution plan cannot represent native TIFF removals";
+            = "fresh emit execution plan cannot represent native TIFF destination edits";
         return out;
     }
 
@@ -34300,6 +34655,14 @@ build_prepared_transfer_adapter_view(const PreparedTransferBundle& bundle,
         out.code    = EmitTransferCode::InvalidArgument;
         out.errors  = 1U;
         out.message = "out_view is null";
+        return out;
+    }
+    if (bundle_has_tiff_gps_destination_intent(bundle)) {
+        out.status = TransferStatus::Unsupported;
+        out.code   = EmitTransferCode::InvalidArgument;
+        out.errors = 1U;
+        out.message
+            = "adapter view cannot represent destination GPS merge or removal semantics";
         return out;
     }
 
@@ -34551,7 +34914,8 @@ get_prepared_transfer_adapter_exr_attribute_view(
         out.status = TransferStatus::Unsupported;
         out.code   = EmitTransferCode::InvalidArgument;
         out.errors = 1U;
-        out.message = "EXR adapter view cannot represent native TIFF removals";
+        out.message
+            = "EXR adapter view cannot represent native TIFF destination edits";
         return out;
     }
     if (bundle.target_format != TransferTargetFormat::Exr

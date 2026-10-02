@@ -5,11 +5,11 @@ This page defines the adoption status for public OpenMeta APIs.
 Python bindings mirror these labels unless a Python wrapper documents a
 different status.
 
-OpenMeta 0.7.1 retains the unfrozen development ABI label 4. C++ layouts and
+OpenMeta 0.8.0 retains the unfrozen development ABI label 4. C++ layouts and
 APIs may change without advancing this label; consumers rebuild against matching
-release headers and libraries. Package discovery still separates 0.6 and 0.7.
+release headers and libraries. Package discovery still separates 0.7 and 0.8.
 Existing patch/handoff and snapshot v1 contracts retain their versioned guarantees.
-See :doc:`migration_0_7`.
+See :doc:`migration_0_8`.
 
 Stability levels
 ----------------

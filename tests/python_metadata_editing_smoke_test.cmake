@@ -431,7 +431,7 @@ with tempfile.TemporaryDirectory() as temporary:
         (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
     gps = openmeta.read(str(gps_path))
     count = gps.entry_count
-    assert openmeta.METADATA_GPS_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_GPS_TRANSLATION_CONTRACT_VERSION == 2
     assert openmeta.METADATA_GPS_TRANSLATION_MAX_ADDED_ENTRIES == 7
     assert gps.translate_gps_metadata().entry_count == count
     translated = gps.translate_gps_metadata(source_mode=openmeta.MetadataGpsTranslationSourceMode.All)
@@ -524,7 +524,7 @@ with tempfile.TemporaryDirectory() as temporary:
     path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
     document = openmeta.read(str(path))
     count = document.entry_count
-    assert openmeta.METADATA_GPS_NAVIGATION_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_GPS_NAVIGATION_TRANSLATION_CONTRACT_VERSION == 2
     assert openmeta.METADATA_GPS_NAVIGATION_TRANSLATION_MAX_ADDED_ENTRIES == 9
     assert openmeta.METADATA_GPS_NAVIGATION_TRANSLATION_MAX_TOTAL_TEXT_BYTES == 896
     assert document.translate_gps_navigation_metadata().entry_count == count
@@ -559,7 +559,7 @@ with tempfile.TemporaryDirectory() as temporary:
     path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
     document = openmeta.read(str(path))
     count = document.entry_count
-    assert openmeta.METADATA_GPS_DESTINATION_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_GPS_DESTINATION_TRANSLATION_CONTRACT_VERSION == 2
     assert openmeta.METADATA_GPS_DESTINATION_TRANSLATION_MAX_ADDED_ENTRIES == 9
     assert openmeta.METADATA_GPS_DESTINATION_TRANSLATION_MAX_TOTAL_TEXT_BYTES == 768
     assert document.translate_gps_destination_metadata().entry_count == count
@@ -592,7 +592,7 @@ with tempfile.TemporaryDirectory() as temporary:
     path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
     document = openmeta.read(str(path))
     count = document.entry_count
-    assert openmeta.METADATA_GPS_QUALITY_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_GPS_QUALITY_TRANSLATION_CONTRACT_VERSION == 2
     assert openmeta.METADATA_GPS_QUALITY_TRANSLATION_MAX_ADDED_ENTRIES == 6
     assert openmeta.METADATA_GPS_QUALITY_TRANSLATION_MAX_TOTAL_TEXT_BYTES == 640
     assert document.translate_gps_quality_metadata().entry_count == count
@@ -625,7 +625,7 @@ with tempfile.TemporaryDirectory() as temporary:
     path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
     document = openmeta.read(str(path))
     count = document.entry_count
-    assert openmeta.METADATA_GPS_TEXT_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_GPS_TEXT_TRANSLATION_CONTRACT_VERSION == 2
     assert openmeta.METADATA_GPS_TEXT_TRANSLATION_MAX_ADDED_ENTRIES == 5
     assert openmeta.METADATA_GPS_TEXT_TRANSLATION_MAX_TOTAL_TEXT_BYTES == 16384
     assert document.translate_gps_text_metadata().entry_count == count
@@ -1226,6 +1226,66 @@ with tempfile.TemporaryDirectory() as temporary:
     again, _ = restored.dump_xmp_portable(include_existing_xmp=False)
     assert again == payload
     assert document.entry_count == count
+
+with tempfile.TemporaryDirectory() as temporary:
+    import struct
+    path = Path(temporary) / 'gps_combined.jpg'
+    fields = [('GPSLatitude', '35,48.125N'), ('GPSLongitude', '139,34,55.25W'), ('GPSAltitudeRef', '1'), ('GPSAltitude', '2469/20'), ('GPSTimeStamp', '2024-03-01T00:30:12.125+01:00'), ('GPSSpeedRef', 'knots'), ('GPSSpeed', '12345/100'), ('GPSTrackRef', 'True North'), ('GPSTrack', '359.99'), ('GPSImgDirectionRef', 'M'), ('GPSImgDirection', '45.5'), ('GPSDestLatitude', '35,48.125S'), ('GPSDestLongitude', '139,34,55.25E'), ('GPSDestBearingRef', 'T'), ('GPSDestBearing', '359.99'), ('GPSDestDistanceRef', 'Nautical miles'), ('GPSDestDistance', '12345/100'), ('GPSStatus', 'A'), ('GPSMeasureMode', '3'), ('GPSDOP', '3/2'), ('GPSDifferential', '1'), ('GPSHPositioningError', '5/2'), ('GPSSatellites', '04 07 12'), ('GPSMapDatum', 'WGS-84'), ('GPSProcessingMethod', 'GPS WLAN'), ('GPSAreaInformation', 'Tokyo')]
+    xml = (\"<r:RDF xmlns:r='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><r:Description xmlns:e='http://ns.adobe.com/exif/1.0/' \" +
+           ' '.join(\"e:\" + name + \"='\" + value + \"'\" for name, value in fields) + \"/></r:RDF>\").encode()
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    original = openmeta.read(str(path))
+    gps_source_count = original.entry_count
+    mode = openmeta.MetadataGpsTranslationSourceMode.All
+    translated = original
+    for method in ('translate_gps_metadata', 'translate_gps_navigation_metadata',
+                   'translate_gps_destination_metadata', 'translate_gps_quality_metadata',
+                   'translate_gps_text_metadata'):
+        translated = getattr(translated, method)(source_mode=mode)
+    assert translated.entry_count == original.entry_count + 32
+    probe = openmeta.unsafe_transfer_snapshot_probe(
+        translated.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='memory_gps.tiff',
+        target_bytes=bytes.fromhex('49492a0008000000000000000000'),
+        include_edited_bytes=True)
+    assert probe['overall_status'] == openmeta.TransferStatus.Ok, probe
+    assert probe['tiff_merge_existing_gps'] is True and probe['tiff_gps_removals'] == [], probe
+    assert probe['edit_apply_status'] == openmeta.TransferStatus.Ok, probe
+    def gps_entries(data):
+        offset = struct.unpack_from('<I', data, 4)[0]
+        size = struct.unpack_from('<H', data, offset)[0]
+        gps_offset = next(struct.unpack_from('<I', data, offset + 2 + 12 * i + 8)[0]
+                          for i in range(size) if struct.unpack_from('<H', data, offset + 2 + 12 * i)[0] == 0x8825)
+        size = struct.unpack_from('<H', data, gps_offset)[0]
+        result = {}
+        widths = {1: 1, 2: 1, 3: 2, 5: 8, 7: 1}
+        for i in range(size):
+            entry = gps_offset + 2 + 12 * i
+            tag, kind, count, position = struct.unpack_from('<HHII', data, entry)
+            length = widths[kind] * count
+            if length <= 4:
+                position = entry + 8
+            result[tag] = (kind, count, data[position:position + length])
+        return result
+    before = gps_entries(bytes(probe['edited_bytes']))
+    assert set(before) == set(range(32))
+    partial_xml = b\"<r:RDF xmlns:r='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><r:Description xmlns:e='http://ns.adobe.com/exif/1.0/' e:GPSLatitude='36,1N'/></r:RDF>\"
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + partial_xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    partial = openmeta.read(str(path)).translate_gps_metadata(source_mode=mode)
+    changed = openmeta.unsafe_transfer_snapshot_probe(
+        partial.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='memory_gps.tiff', target_bytes=bytes(probe['edited_bytes']),
+        include_edited_bytes=True)
+    assert changed['overall_status'] == openmeta.TransferStatus.Ok, changed
+    assert changed['edit_apply_status'] == openmeta.TransferStatus.Ok, changed
+    after = gps_entries(bytes(changed['edited_bytes']))
+    assert set(after) == set(range(32)) and after[2] != before[2]
+    assert all(after[tag] == value for tag, value in before.items() if tag not in (1, 2))
+    assert original.entry_count == gps_source_count
 
 print('openmeta metadata editing smoke ok')
 ")

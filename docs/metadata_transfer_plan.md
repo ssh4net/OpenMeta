@@ -1304,3 +1304,14 @@ the existing bounded lifecycle. The complete allowlist grows from 22 to 39 tags;
 no new bundle layout or snapshot format is needed. Capture contract 3 and
 APEX/settings contracts 2 describe the changes. ABI 4 and package-minor policy
 remain. See [migration](migration_0_7.md) for exact tags and exclusions.
+
+## GPS destination editing (0.8.0)
+
+All five GPS translators now carry absent-native deletion and exact clean Dirty
+ownership into bounded GPS IFD merges. Prepared bundles add sorted GPS value-tag
+removals and an opt-in merge flag; source snapshot v1 is unchanged. Native tags
+1 through 31 are bounded owners, with tag 0 maintained structurally. Unselected
+and unknown destination GPS fields survive; version cleanup is destination-aware.
+Conflicting versions/clear/manual edits fail before output. The public layout
+requires rebuilding matching consumers, with package minor 0.8 and unfrozen ABI4.
+See [migration](migration_0_8.md) for the exact contract and consumer limits.

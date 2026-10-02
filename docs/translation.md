@@ -739,6 +739,20 @@ checked on 2026-09-09. This is a field inventory, not semantic or behavioral
 parity: the two commented taxonomy mappings, Photoshop IPTCDigest, arbitrary
 IPTC datasets, and ExifTool's conversion/overwrite conventions are excluded.
 
+## GPS destination lifecycle (0.8.0)
+
+All five GPS translators use contract version 2. Accepted dirty deletion owns
+all native group members even when absent from the source store; accepted exact
+clean members gain Dirty authority without changing their actual native encoding.
+Omission preserves the destination. Intent additions and authority updates count
+against the existing preflight limits, and repeated calls reuse history.
+
+Prepared TIFF/BigTIFF merges preserve unselected destination GPS fields. Version
+cleanup depends on the final destination directory: unrelated values retain it.
+Active source/destination version conflicts fail before output instead of
+upgrading or reinterpreting altitude. Hosts stage the five separate transactions.
+See [the 0.8 migration guide](migration_0_8.md) for bundle changes and rebuild rules.
+
 ## Primary GPS Writeback
 
 `translate_xmp_gps_metadata(...)` accepts `MetadataGpsTranslationOptions`

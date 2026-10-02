@@ -206,7 +206,7 @@ main()
         &gps_translated);
     const bool gps_contract_matches
         = gps_authored.ok()
-          && openmeta::kMetadataGpsTranslationContractVersion == 1U
+          && openmeta::kMetadataGpsTranslationContractVersion == 2U
           && gps_translation.status
                  == openmeta::MetadataGpsTranslationStatus::Ok
           && gps_translation.entries_added == 3U
@@ -255,7 +255,7 @@ main()
             &navigation_translated);
     const bool navigation_contract_matches
         = navigation_authored.ok()
-          && openmeta::kMetadataGpsNavigationTranslationContractVersion == 1U
+          && openmeta::kMetadataGpsNavigationTranslationContractVersion == 2U
           && navigation_result.status
                  == openmeta::MetadataGpsTranslationStatus::Ok
           && navigation_result.entries_added == 3U
@@ -279,7 +279,7 @@ main()
             &destination_translated);
     const bool destination_contract_matches
         = destination_authored.ok()
-          && openmeta::kMetadataGpsDestinationTranslationContractVersion == 1U
+          && openmeta::kMetadataGpsDestinationTranslationContractVersion == 2U
           && destination_result.status
                  == openmeta::MetadataGpsTranslationStatus::Ok
           && destination_result.entries_added == 3U
@@ -299,7 +299,7 @@ main()
         &quality_translated);
     const bool quality_contract_matches
         = quality_authored.ok()
-          && openmeta::kMetadataGpsQualityTranslationContractVersion == 1U
+          && openmeta::kMetadataGpsQualityTranslationContractVersion == 2U
           && quality_result.status == openmeta::MetadataGpsTranslationStatus::Ok
           && quality_result.entries_added == 2U
           && quality_translated.is_finalized();
@@ -318,7 +318,7 @@ main()
         &gps_text_translated);
     const bool gps_text_contract_matches
         = gps_text_authored.ok()
-          && openmeta::kMetadataGpsTextTranslationContractVersion == 1U
+          && openmeta::kMetadataGpsTextTranslationContractVersion == 2U
           && gps_text_result.status
                  == openmeta::MetadataGpsTranslationStatus::Ok
           && gps_text_result.entries_added == 2U

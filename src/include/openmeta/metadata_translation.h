@@ -1846,7 +1846,7 @@ translate_xmp_iptc_metadata(const MetaStore& source,
                             MetaStore* out_store);
 
 /// Experimental primary GPS position/altitude writeback contract.
-inline constexpr uint32_t kMetadataGpsTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataGpsTranslationContractVersion         = 2U;
 inline constexpr uint32_t kMetadataGpsTranslationMaxAddedEntries = 7U;
 inline constexpr uint32_t kMetadataGpsTranslationMaxOperations   = 1024U;
 inline constexpr uint32_t kMetadataGpsTranslationMaxTextBytesPerProperty = 128U;
@@ -1947,6 +1947,13 @@ struct MetadataGpsTranslationResult final {
  * when selected active output needs it. Removing the last GPS value also
  * removes its version tag; unrelated GPS fields prevent that cleanup.
  *
+ * Contract 2 carries Dirty+Deleted intent for accepted absent native members.
+ * Accepted exact clean values gain Dirty without changing their native encoding.
+ * These additions and same-value updates consume the existing resource limits;
+ * repeated calls reuse intent. Omitted source groups preserve destination fields.
+ * All five GPS translators share these ownership rules. TIFF destination merges
+ * retain GPSVersionID while any destination GPS value remains.
+ *
  * Failure leaves source and output unchanged. Preparation may allocate.
  */
 MetadataGpsTranslationResult
@@ -1954,7 +1961,7 @@ translate_xmp_gps_metadata(const MetaStore& source,
                            const MetadataGpsTranslationOptions& options,
                            MetaStore* out_store);
 
-inline constexpr uint32_t kMetadataGpsNavigationTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataGpsNavigationTranslationContractVersion = 2U;
 inline constexpr uint32_t kMetadataGpsNavigationTranslationMaxAddedEntries = 9U;
 inline constexpr uint64_t kMetadataGpsNavigationTranslationMaxTotalTextBytes
     = 896U;
@@ -2002,7 +2009,7 @@ translate_xmp_gps_navigation_metadata(
     const MetadataGpsNavigationTranslationOptions& options,
     MetaStore* out_store);
 
-inline constexpr uint32_t kMetadataGpsDestinationTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataGpsDestinationTranslationContractVersion = 2U;
 inline constexpr uint32_t kMetadataGpsDestinationTranslationMaxAddedEntries = 9U;
 inline constexpr uint64_t kMetadataGpsDestinationTranslationMaxTotalTextBytes
     = 768U;
@@ -2047,7 +2054,7 @@ translate_xmp_gps_destination_metadata(
     const MetadataGpsDestinationTranslationOptions& options,
     MetaStore* out_store);
 
-inline constexpr uint32_t kMetadataGpsQualityTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataGpsQualityTranslationContractVersion   = 2U;
 inline constexpr uint32_t kMetadataGpsQualityTranslationMaxAddedEntries = 6U;
 inline constexpr uint64_t kMetadataGpsQualityTranslationMaxTotalTextBytes = 640U;
 
@@ -2089,7 +2096,7 @@ translate_xmp_gps_quality_metadata(
     const MetaStore& source,
     const MetadataGpsQualityTranslationOptions& options, MetaStore* out_store);
 
-inline constexpr uint32_t kMetadataGpsTextTranslationContractVersion   = 1U;
+inline constexpr uint32_t kMetadataGpsTextTranslationContractVersion   = 2U;
 inline constexpr uint32_t kMetadataGpsTextTranslationMaxAddedEntries   = 5U;
 inline constexpr uint64_t kMetadataGpsTextTranslationMaxTotalTextBytes = 16384U;
 

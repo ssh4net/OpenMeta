@@ -646,3 +646,11 @@ fields. Basic ISO owns only its base tag; full sensitivity owns the validated
 seven-tag group. Omission preserves values. Retained external MakerNotes keep
 their original bytes and offsets. No MakerNote interpretation or private offset
 repair is added. See :doc:`migration_0_7`.
+
+GPS destination editing (0.8.0)
+-------------------------------
+
+Prepared bundles carry bounded GPS value removals and merge authority through
+TIFF/BigTIFF edit, stream and package paths. Omitted destination fields survive;
+GPSVersionID cleanup depends on final destination contents. Active version
+conflicts fail before output. See :doc:`migration_0_8` for scope and rebuild rules.

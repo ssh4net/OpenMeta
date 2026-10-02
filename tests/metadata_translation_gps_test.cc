@@ -415,9 +415,13 @@ TEST(MetadataGpsTranslation, EquivalentTypedRationalComponentsAreIdempotent)
     MetaStore output;
     const auto result = translate_xmp_gps_metadata(source, {}, &output);
     ASSERT_EQ(result.status, Status::Ok);
-    EXPECT_EQ(result.groups_unchanged, 1U);
+    EXPECT_EQ(result.groups_translated, 1U);
     EXPECT_EQ(result.entries_added, 1U);
-    EXPECT_EQ(result.entries_updated, 0U);
+    EXPECT_EQ(result.entries_updated, 2U);
+    ASSERT_NE(gps(output, 1U), nullptr);
+    ASSERT_NE(gps(output, 2U), nullptr);
+    EXPECT_TRUE(any(gps(output, 1U)->flags, EntryFlags::Dirty));
+    EXPECT_TRUE(any(gps(output, 2U)->flags, EntryFlags::Dirty));
     expect_coordinate(output, 2U, coordinate);
 }
 
@@ -913,8 +917,13 @@ TEST(MetadataGpsNavigation,
     const auto same = translate_xmp_gps_navigation_metadata(source, {},
                                                             &output);
     ASSERT_EQ(same.status, Status::Ok);
-    EXPECT_EQ(same.groups_unchanged, 1U);
+    EXPECT_EQ(same.groups_translated, 1U);
     EXPECT_EQ(same.entries_added, 1U);
+    EXPECT_EQ(same.entries_updated, 2U);
+    ASSERT_NE(gps(output, 12U), nullptr);
+    ASSERT_NE(gps(output, 13U), nullptr);
+    EXPECT_TRUE(any(gps(output, 12U)->flags, EntryFlags::Dirty));
+    EXPECT_TRUE(any(gps(output, 13U)->flags, EntryFlags::Dirty));
     source = MetaStore {};
     xmp_text(source, "GPSSpeedRef", "K");
     xmp_text(source, "GPSSpeed", "1.5");
@@ -1361,8 +1370,13 @@ TEST(MetadataGpsDestination,
     const auto same = translate_xmp_gps_destination_metadata(source, {},
                                                              &output);
     ASSERT_EQ(same.status, Status::Ok);
-    EXPECT_EQ(same.groups_unchanged, 1U);
+    EXPECT_EQ(same.groups_translated, 1U);
     EXPECT_EQ(same.entries_added, 1U);
+    EXPECT_EQ(same.entries_updated, 2U);
+    ASSERT_NE(gps(output, 25U), nullptr);
+    ASSERT_NE(gps(output, 26U), nullptr);
+    EXPECT_TRUE(any(gps(output, 25U)->flags, EntryFlags::Dirty));
+    EXPECT_TRUE(any(gps(output, 26U)->flags, EntryFlags::Dirty));
     source = MetaStore {};
     xmp_text(source, "GPSDestDistanceRef", "K");
     xmp_text(source, "GPSDestDistance", "1.5");
@@ -1763,7 +1777,13 @@ TEST(MetadataGpsQuality, EquivalentTypedValuesRetainRepresentation)
     MetaStore output;
     const auto same = translate_xmp_gps_quality_metadata(source, {}, &output);
     ASSERT_EQ(same.status, Status::Ok);
-    EXPECT_EQ(same.groups_unchanged, 2U);
+    EXPECT_EQ(same.groups_translated, 2U);
+    EXPECT_EQ(same.entries_added, 1U);
+    EXPECT_EQ(same.entries_updated, 2U);
+    ASSERT_NE(gps(output, 9U), nullptr);
+    ASSERT_NE(gps(output, 11U), nullptr);
+    EXPECT_TRUE(any(gps(output, 9U)->flags, EntryFlags::Dirty));
+    EXPECT_TRUE(any(gps(output, 11U)->flags, EntryFlags::Dirty));
     EXPECT_EQ(gps(output, 11U)->value.data.ur.numer, 6U);
 }
 TEST(MetadataGpsQuality, RemovalCleansVersionAndPreservesUnrelatedGps)
@@ -1921,7 +1941,11 @@ TEST(MetadataGpsText, RecognizesEquivalentAsciiAndBothUnicodeByteOrders)
         const auto result = translate_xmp_gps_text_metadata(source, {},
                                                             &output);
         ASSERT_EQ(result.status, Status::Ok);
-        EXPECT_EQ(result.groups_unchanged, 1U);
+        EXPECT_EQ(result.groups_translated, 1U);
+        EXPECT_EQ(result.entries_added, 1U);
+        EXPECT_EQ(result.entries_updated, 1U);
+        ASSERT_NE(gps(output, 27U), nullptr);
+        EXPECT_TRUE(any(gps(output, 27U)->flags, EntryFlags::Dirty));
         EXPECT_EQ(view(output, gps(output, 27U)->value.data.span), bytes);
     }
 }

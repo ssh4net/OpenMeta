@@ -222,11 +222,15 @@ TEST(DngSdkAdapter, ReportsAvailabilityFlag)
 
 TEST(DngSdkAdapter, RejectsNativeRemovalBeforeAccessingSdkObjects)
 {
-    for (bool nested : { false, true }) {
+    for (uint32_t kind = 0U; kind < 4U; ++kind) {
         openmeta::PreparedTransferBundle bundle;
         bundle.target_format = openmeta::TransferTargetFormat::Dng;
-        if (nested) {
+        if (kind == 1U) {
             bundle.tiff_exif_removals = { 0x9003U };
+        } else if (kind == 2U) {
+            bundle.tiff_gps_removals = { 1U, 2U };
+        } else if (kind == 3U) {
+            bundle.tiff_merge_existing_gps = true;
         } else {
             bundle.tiff_ifd0_removals = { 0x010EU, 0x013BU, 0x8298U };
         }

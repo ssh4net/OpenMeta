@@ -726,6 +726,18 @@ struct PreparedTransferBundle final {
     /// TIFF/DNG. This mode is opt-in and defaults to whole-ExifIFD replacement
     /// behavior.
     bool tiff_merge_existing_exif = false;
+    /// Sorted native GPS IFD tags 1..31 to remove during TIFF/DNG editing.
+    /// GPSVersionID (tag 0) is structural and is never removed directly.
+    /// A nonempty list implies destination merge, even when
+    /// tiff_merge_existing_gps is false. The edit preserves other destination
+    /// GPS values. Fresh emit and non-edit consumers reject GPS removals.
+    std::vector<uint16_t> tiff_gps_removals;
+    /// Preserve unspecified destination GPS IFD entries when applying dirty
+    /// supported GPS edits to TIFF/DNG. GPS removals imply this behavior even
+    /// when this flag is false. Fresh emit may use a merge-only bundle, but
+    /// adapter views reject it because they cannot express destination state.
+    /// With no merge intent, GPS payloads retain whole-IFD replacement behavior.
+    bool tiff_merge_existing_gps = false;
     std::vector<TimePatchSlot> time_patch_map;
     std::vector<std::byte> generated_xmp_sidecar;
 };

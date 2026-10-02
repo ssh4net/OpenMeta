@@ -4045,6 +4045,426 @@ namespace {
         settings_native_entry(store, tag, value);
     }
 
+    static EntryId gps_lifecycle_native(MetaStore& store, uint16_t tag,
+                                        MetaValue value, EntryFlags flags,
+                                        uint16_t wire_code,
+                                        std::string_view wire_name)
+    {
+        Entry entry;
+        entry.key   = make_exif_tag_key(store.arena(), "gpsifd", tag);
+        entry.value = value;
+        entry.flags = flags;
+        entry.origin.wire_type      = { WireFamily::Tiff, wire_code };
+        entry.origin.wire_count     = value.count;
+        entry.origin.order_in_block = 19U;
+        entry.origin.wire_type_name = store.arena().append_string(wire_name);
+        return store.add_entry(entry);
+    }
+
+    static const Entry* gps_lifecycle_find(const MetaStore& store,
+                                           uint16_t tag) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != tag) {
+                continue;
+            }
+            const std::span<const std::byte> ifd = store.arena().span(
+                entry.key.data.exif_tag.ifd);
+            const std::string_view ifd_name {
+                reinterpret_cast<const char*>(ifd.data()), ifd.size()
+            };
+            if (!any(entry.flags, EntryFlags::Deleted)
+                && ifd_name == "gpsifd") {
+                return &entry;
+            }
+        }
+        return nullptr;
+    }
+
+    static const Entry* gps_lifecycle_find_any(const MetaStore& store,
+                                               uint16_t tag) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != tag) {
+                continue;
+            }
+            const std::span<const std::byte> ifd = store.arena().span(
+                entry.key.data.exif_tag.ifd);
+            if (std::string_view(reinterpret_cast<const char*>(ifd.data()),
+                                 ifd.size())
+                == "gpsifd") {
+                return &entry;
+            }
+        }
+        return nullptr;
+    }
+
+    static std::string_view gps_lifecycle_text(const MetaStore& store,
+                                               ByteSpan span) noexcept
+    {
+        const std::span<const std::byte> bytes = store.arena().span(span);
+        return { reinterpret_cast<const char*>(bytes.data()), bytes.size() };
+    }
+
+    enum class GpsLifecycleApi : uint8_t {
+        Primary,
+        Navigation,
+        Destination,
+        Quality,
+        Text,
+    };
+
+    struct GpsLifecycleGroupCase final {
+        GpsLifecycleApi api;
+        std::array<std::string_view, 2> source_paths;
+        uint8_t source_count;
+        std::array<uint16_t, 2> native_tags;
+        std::array<uint8_t, 2> native_source_indices;
+        uint8_t native_count;
+    };
+
+    static constexpr std::array<GpsLifecycleGroupCase, 20U> kGpsLifecycleGroups {
+        {
+            { GpsLifecycleApi::Primary,
+              { "GPSLatitude", {} },
+              1U,
+              { 1U, 2U },
+              { 0U, 0U },
+              2U },
+            { GpsLifecycleApi::Primary,
+              { "GPSLongitude", {} },
+              1U,
+              { 3U, 4U },
+              { 0U, 0U },
+              2U },
+            { GpsLifecycleApi::Primary,
+              { "GPSAltitude", "GPSAltitudeRef" },
+              2U,
+              { 5U, 6U },
+              { 1U, 0U },
+              2U },
+            { GpsLifecycleApi::Navigation,
+              { "GPSTimeStamp", {} },
+              1U,
+              { 7U, 29U },
+              { 0U, 0U },
+              2U },
+            { GpsLifecycleApi::Navigation,
+              { "GPSSpeedRef", "GPSSpeed" },
+              2U,
+              { 12U, 13U },
+              { 0U, 1U },
+              2U },
+            { GpsLifecycleApi::Navigation,
+              { "GPSTrackRef", "GPSTrack" },
+              2U,
+              { 14U, 15U },
+              { 0U, 1U },
+              2U },
+            { GpsLifecycleApi::Navigation,
+              { "GPSImgDirectionRef", "GPSImgDirection" },
+              2U,
+              { 16U, 17U },
+              { 0U, 1U },
+              2U },
+            { GpsLifecycleApi::Destination,
+              { "GPSDestLatitude", {} },
+              1U,
+              { 19U, 20U },
+              { 0U, 0U },
+              2U },
+            { GpsLifecycleApi::Destination,
+              { "GPSDestLongitude", {} },
+              1U,
+              { 21U, 22U },
+              { 0U, 0U },
+              2U },
+            { GpsLifecycleApi::Destination,
+              { "GPSDestBearingRef", "GPSDestBearing" },
+              2U,
+              { 23U, 24U },
+              { 0U, 1U },
+              2U },
+            { GpsLifecycleApi::Destination,
+              { "GPSDestDistanceRef", "GPSDestDistance" },
+              2U,
+              { 25U, 26U },
+              { 0U, 1U },
+              2U },
+            { GpsLifecycleApi::Quality,
+              { "GPSStatus", {} },
+              1U,
+              { 9U, 0U },
+              { 0U, 0U },
+              1U },
+            { GpsLifecycleApi::Quality,
+              { "GPSMeasureMode", {} },
+              1U,
+              { 10U, 0U },
+              { 0U, 0U },
+              1U },
+            { GpsLifecycleApi::Quality,
+              { "GPSDOP", {} },
+              1U,
+              { 11U, 0U },
+              { 0U, 0U },
+              1U },
+            { GpsLifecycleApi::Quality,
+              { "GPSDifferential", {} },
+              1U,
+              { 30U, 0U },
+              { 0U, 0U },
+              1U },
+            { GpsLifecycleApi::Quality,
+              { "GPSHPositioningError", {} },
+              1U,
+              { 31U, 0U },
+              { 0U, 0U },
+              1U },
+            { GpsLifecycleApi::Text,
+              { "GPSSatellites", {} },
+              1U,
+              { 8U, 0U },
+              { 0U, 0U },
+              1U },
+            { GpsLifecycleApi::Text,
+              { "GPSMapDatum", {} },
+              1U,
+              { 18U, 0U },
+              { 0U, 0U },
+              1U },
+            { GpsLifecycleApi::Text,
+              { "GPSProcessingMethod", {} },
+              1U,
+              { 27U, 0U },
+              { 0U, 0U },
+              1U },
+            { GpsLifecycleApi::Text,
+              { "GPSAreaInformation", {} },
+              1U,
+              { 28U, 0U },
+              { 0U, 0U },
+              1U },
+        }
+    };
+
+    static MetadataGpsTranslationResult gps_lifecycle_translate(
+        GpsLifecycleApi api, const MetaStore& source, MetaStore* output,
+        MetadataGpsTranslationSourceMode source_mode
+        = MetadataGpsTranslationSourceMode::DirtyOnly,
+        MetadataGpsTranslationConflictPolicy policy
+        = MetadataGpsTranslationConflictPolicy::ReplaceExisting,
+        uint32_t max_added_entries = 0U, uint32_t max_operations = 0U)
+    {
+        switch (api) {
+        case GpsLifecycleApi::Primary: {
+            MetadataGpsTranslationOptions options;
+            options.source_mode     = source_mode;
+            options.conflict_policy = policy;
+            if (max_added_entries != 0U)
+                options.max_added_entries = max_added_entries;
+            if (max_operations != 0U)
+                options.max_operations = max_operations;
+            return translate_xmp_gps_metadata(source, options, output);
+        }
+        case GpsLifecycleApi::Navigation: {
+            MetadataGpsNavigationTranslationOptions options;
+            options.source_mode     = source_mode;
+            options.conflict_policy = policy;
+            if (max_added_entries != 0U)
+                options.max_added_entries = max_added_entries;
+            if (max_operations != 0U)
+                options.max_operations = max_operations;
+            return translate_xmp_gps_navigation_metadata(source, options,
+                                                         output);
+        }
+        case GpsLifecycleApi::Destination: {
+            MetadataGpsDestinationTranslationOptions options;
+            options.source_mode     = source_mode;
+            options.conflict_policy = policy;
+            if (max_added_entries != 0U)
+                options.max_added_entries = max_added_entries;
+            if (max_operations != 0U)
+                options.max_operations = max_operations;
+            return translate_xmp_gps_destination_metadata(source, options,
+                                                          output);
+        }
+        case GpsLifecycleApi::Quality: {
+            MetadataGpsQualityTranslationOptions options;
+            options.source_mode     = source_mode;
+            options.conflict_policy = policy;
+            if (max_added_entries != 0U)
+                options.max_added_entries = max_added_entries;
+            if (max_operations != 0U)
+                options.max_operations = max_operations;
+            return translate_xmp_gps_quality_metadata(source, options, output);
+        }
+        case GpsLifecycleApi::Text: {
+            MetadataGpsTextTranslationOptions options;
+            options.source_mode     = source_mode;
+            options.conflict_policy = policy;
+            if (max_added_entries != 0U)
+                options.max_added_entries = max_added_entries;
+            if (max_operations != 0U)
+                options.max_operations = max_operations;
+            return translate_xmp_gps_text_metadata(source, options, output);
+        }
+        }
+        MetadataGpsTranslationResult result;
+        result.status = MetadataGpsTranslationStatus::InternalError;
+        return result;
+    }
+
+    static MetaStore
+    gps_lifecycle_deleted_source(const GpsLifecycleGroupCase& group,
+                                 EntryFlags flags = EntryFlags::Dirty
+                                                    | EntryFlags::Deleted,
+                                 std::string_view schema_ns = kSettingsNs)
+    {
+        MetaStore store;
+        const BlockId block = store.add_block(BlockInfo {});
+        for (size_t i = 0U; i < group.source_count; ++i) {
+            add_xmp_text(&store, block, schema_ns, group.source_paths[i], "",
+                         flags, static_cast<uint32_t>(i),
+                         i == 0U ? "gps-lifecycle-source-a"
+                                 : "gps-lifecycle-source-b");
+        }
+        return store;
+    }
+
+    static MetaStore gps_lifecycle_exact_fixture(GpsLifecycleApi api)
+    {
+        MetaStore store;
+        const std::array<uint8_t, 4> version { 2U, 3U, 0U, 0U };
+        gps_lifecycle_native(store, 0U, make_u8_array(store.arena(), version),
+                             EntryFlags::None, 1U, "gps-exact-version-wire");
+        if (api == GpsLifecycleApi::Primary) {
+            settings_xmp(store, "GPSLatitude",
+                         make_text(store.arena(), "35,48.125N",
+                                   TextEncoding::Utf8));
+            gps_lifecycle_native(store, 1U,
+                                 make_text(store.arena(),
+                                           std::string_view("N\0", 2U),
+                                           TextEncoding::Ascii),
+                                 EntryFlags::None, 2U,
+                                 "gps-exact-reference-wire");
+            const std::array<URational, 3> coordinate { URational { 35U, 1U },
+                                                        URational { 48U, 1U },
+                                                        URational { 30U, 4U } };
+            gps_lifecycle_native(
+                store, 2U, make_urational_array(store.arena(), coordinate),
+                EntryFlags::None, 5U, "gps-exact-coordinate-wire");
+        } else if (api == GpsLifecycleApi::Navigation) {
+            settings_xmp(store, "GPSSpeedRef",
+                         make_text(store.arena(), "K", TextEncoding::Utf8));
+            settings_xmp(store, "GPSSpeed",
+                         make_text(store.arena(), "1.5", TextEncoding::Utf8));
+            gps_lifecycle_native(store, 12U,
+                                 make_text(store.arena(),
+                                           std::string_view("K\0", 2U),
+                                           TextEncoding::Ascii),
+                                 EntryFlags::None, 2U,
+                                 "gps-exact-speed-ref-wire");
+            gps_lifecycle_native(store, 13U, make_urational(6U, 4U),
+                                 EntryFlags::None, 5U, "gps-exact-speed-wire");
+        } else if (api == GpsLifecycleApi::Destination) {
+            settings_xmp(store, "GPSDestBearingRef",
+                         make_text(store.arena(), "True North",
+                                   TextEncoding::Utf8));
+            settings_xmp(store, "GPSDestBearing",
+                         make_text(store.arena(), "1.5", TextEncoding::Utf8));
+            gps_lifecycle_native(store, 23U,
+                                 make_text(store.arena(),
+                                           std::string_view("T\0", 2U),
+                                           TextEncoding::Ascii),
+                                 EntryFlags::None, 2U,
+                                 "gps-exact-bearing-ref-wire");
+            gps_lifecycle_native(store, 24U, make_urational(3U, 2U),
+                                 EntryFlags::None, 5U,
+                                 "gps-exact-bearing-wire");
+        } else if (api == GpsLifecycleApi::Quality) {
+            settings_xmp(store, "GPSDOP",
+                         make_text(store.arena(), "1.25", TextEncoding::Utf8));
+            gps_lifecycle_native(store, 11U, make_urational(10U, 8U),
+                                 EntryFlags::None, 5U, "gps-exact-dop-wire");
+        } else {
+            settings_xmp(store, "GPSProcessingMethod",
+                         make_text(store.arena(), "GPS WLAN",
+                                   TextEncoding::Utf8));
+            const std::string_view encoded("ASCII\0\0\0GPS WLAN", 16U);
+            gps_lifecycle_native(store, 27U,
+                                 make_bytes(store.arena(),
+                                            std::as_bytes(
+                                                std::span(encoded.data(),
+                                                          encoded.size()))),
+                                 EntryFlags::None, 7U, "gps-exact-method-wire");
+        }
+        store.finalize();
+        return store;
+    }
+
+    static void gps_lifecycle_add_selection_fixture(
+        MetaStore& store, GpsLifecycleApi api, EntryFlags flags,
+        std::string_view schema_ns = kSettingsNs)
+    {
+        const BlockId block = store.add_block(BlockInfo {});
+        if (api == GpsLifecycleApi::Primary) {
+            add_xmp_text(&store, block, schema_ns, "GPSLatitude", "35,48.125N",
+                         flags, 0U, "gps-selection-source");
+        } else if (api == GpsLifecycleApi::Navigation) {
+            add_xmp_text(&store, block, schema_ns, "GPSSpeedRef", "K", flags,
+                         0U, "gps-selection-source-a");
+            add_xmp_text(&store, block, schema_ns, "GPSSpeed", "1.5", flags, 1U,
+                         "gps-selection-source-b");
+        } else if (api == GpsLifecycleApi::Destination) {
+            add_xmp_text(&store, block, schema_ns, "GPSDestBearingRef", "T",
+                         flags, 0U, "gps-selection-source-a");
+            add_xmp_text(&store, block, schema_ns, "GPSDestBearing", "1.5",
+                         flags, 1U, "gps-selection-source-b");
+        } else if (api == GpsLifecycleApi::Quality) {
+            add_xmp_text(&store, block, schema_ns, "GPSStatus", "A", flags, 0U,
+                         "gps-selection-source");
+        } else {
+            add_xmp_text(&store, block, schema_ns, "GPSMapDatum", "WGS-84",
+                         flags, 0U, "gps-selection-source");
+        }
+    }
+
+    static void gps_lifecycle_check_group_flags(
+        const MetaStore& store, const GpsLifecycleGroupCase& group, bool dirty)
+    {
+        for (size_t i = 0U; i < group.native_count; ++i) {
+            const Entry* entry = gps_lifecycle_find(store,
+                                                    group.native_tags[i]);
+            ASSERT_NE(entry, nullptr) << group.native_tags[i];
+            EXPECT_EQ(any(entry->flags, EntryFlags::Dirty), dirty)
+                << group.native_tags[i];
+        }
+    }
+
+    static bool gps_lifecycle_has_delete_intent(const MetaStore& store,
+                                                uint16_t tag) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != tag
+                || !any(entry.flags, EntryFlags::Dirty)
+                || !any(entry.flags, EntryFlags::Deleted)) {
+                continue;
+            }
+            const std::span<const std::byte> ifd = store.arena().span(
+                entry.key.data.exif_tag.ifd);
+            if (std::string_view(reinterpret_cast<const char*>(ifd.data()),
+                                 ifd.size())
+                == "gpsifd") {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static std::vector<EntryId>
     settings_native_history_ids(const MetaStore& store, uint16_t tag)
     {
@@ -8346,6 +8766,602 @@ namespace {
         EXPECT_EQ(translate_xmp_capture_metadata(source, {}, &source)
                       .groups_unchanged,
                   1U);
+    }
+
+    TEST(MetadataGpsLifecycle,
+         ExactNativeGroupPromotesAndDeletedGroupCreatesMemberIntents)
+    {
+        MetaStore exact;
+        settings_xmp(exact, "GPSLatitude",
+                     make_text(exact.arena(), "35,48.125N", TextEncoding::Utf8));
+        gps_lifecycle_native(exact, 1U,
+                             make_text(exact.arena(),
+                                       std::string_view("N\0", 2U),
+                                       TextEncoding::Ascii),
+                             EntryFlags::None, 2U, "gps-clean-reference-wire");
+        const std::array<URational, 3> exact_coordinate {
+            URational { 35U, 1U }, URational { 48U, 1U }, URational { 30U, 4U }
+        };
+        gps_lifecycle_native(exact, 2U,
+                             make_urational_array(exact.arena(),
+                                                  exact_coordinate),
+                             EntryFlags::None, 5U, "gps-clean-coordinate-wire");
+        const std::array<uint8_t, 4> gps_version { 2U, 3U, 0U, 0U };
+        gps_lifecycle_native(exact, 0U,
+                             make_u8_array(exact.arena(), gps_version),
+                             EntryFlags::None, 1U, "gps-clean-version-wire");
+        exact.finalize();
+
+        MetadataGpsTranslationOptions exact_options;
+        exact_options.conflict_policy
+            = MetadataGpsTranslationConflictPolicy::ReplaceExisting;
+        const MetadataGpsTranslationResult promoted
+            = translate_xmp_gps_metadata(exact, exact_options, &exact);
+        ASSERT_EQ(promoted.status, MetadataGpsTranslationStatus::Ok);
+        EXPECT_EQ(promoted.groups_translated, 1U);
+        EXPECT_EQ(promoted.entries_updated, 2U);
+        EXPECT_EQ(promoted.entries_added, 0U);
+        const Entry* reference  = gps_lifecycle_find(exact, 1U);
+        const Entry* coordinate = gps_lifecycle_find(exact, 2U);
+        ASSERT_NE(reference, nullptr);
+        ASSERT_NE(coordinate, nullptr);
+        EXPECT_TRUE(any(reference->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(coordinate->flags, EntryFlags::Dirty));
+        EXPECT_EQ(gps_lifecycle_text(exact, reference->value.data.span),
+                  std::string_view("N\0", 2U));
+        EXPECT_EQ(reference->origin.wire_type.family, WireFamily::Tiff);
+        EXPECT_EQ(reference->origin.wire_type.code, 2U);
+        EXPECT_EQ(gps_lifecycle_text(exact, reference->origin.wire_type_name),
+                  "gps-clean-reference-wire");
+        EXPECT_EQ(coordinate->origin.wire_type.family, WireFamily::Tiff);
+        EXPECT_EQ(coordinate->origin.wire_type.code, 5U);
+        EXPECT_EQ(gps_lifecycle_text(exact, coordinate->origin.wire_type_name),
+                  "gps-clean-coordinate-wire");
+        const Entry* version = gps_lifecycle_find(exact, 0U);
+        ASSERT_NE(version, nullptr);
+        EXPECT_FALSE(any(version->flags, EntryFlags::Dirty));
+        EXPECT_EQ(gps_lifecycle_text(exact, version->origin.wire_type_name),
+                  "gps-clean-version-wire");
+        const std::span<const std::byte> coordinate_bytes = exact.arena().span(
+            coordinate->value.data.span);
+        ASSERT_EQ(coordinate_bytes.size(), sizeof(exact_coordinate));
+        EXPECT_EQ(std::memcmp(coordinate_bytes.data(), exact_coordinate.data(),
+                              sizeof(exact_coordinate)),
+                  0);
+        const MetadataGpsTranslationResult promoted_repeat
+            = translate_xmp_gps_metadata(exact, exact_options, &exact);
+        ASSERT_EQ(promoted_repeat.status, MetadataGpsTranslationStatus::Ok);
+        EXPECT_EQ(promoted_repeat.groups_unchanged, 1U);
+        EXPECT_EQ(promoted_repeat.entries_updated, 0U);
+
+        MetaStore deleted;
+        const EntryFlags deleted_flags = EntryFlags::Dirty
+                                         | EntryFlags::Deleted;
+        add_xmp_text(&deleted, 0U, kSettingsNs, "GPSAltitude", "",
+                     deleted_flags, 3U, "gps-altitude-source-wire");
+        add_xmp_text(&deleted, 0U, kSettingsNs, "GPSAltitudeRef", "",
+                     deleted_flags, 4U, "gps-reference-source-wire");
+        deleted.finalize();
+        const MetadataGpsTranslationResult synthesized
+            = translate_xmp_gps_metadata(deleted, {}, &deleted);
+        ASSERT_EQ(synthesized.status, MetadataGpsTranslationStatus::Ok);
+        EXPECT_EQ(synthesized.groups_translated, 1U);
+        EXPECT_EQ(synthesized.entries_added, 2U);
+        for (uint16_t tag : { 5U, 6U }) {
+            bool found = false;
+            for (const Entry& entry : deleted.entries()) {
+                if (entry.key.kind != MetaKeyKind::ExifTag
+                    || entry.key.data.exif_tag.tag != tag) {
+                    continue;
+                }
+                const std::span<const std::byte> ifd = deleted.arena().span(
+                    entry.key.data.exif_tag.ifd);
+                const std::string_view ifd_name {
+                    reinterpret_cast<const char*>(ifd.data()), ifd.size()
+                };
+                if (ifd_name != "gpsifd") {
+                    continue;
+                }
+                ASSERT_TRUE(any(entry.flags, EntryFlags::Deleted));
+                ASSERT_TRUE(any(entry.flags, EntryFlags::Dirty));
+                const std::string_view expected_wire_name
+                    = tag == 5U ? "gps-reference-source-wire"
+                                : "gps-altitude-source-wire";
+                EXPECT_EQ(gps_lifecycle_text(deleted,
+                                             entry.origin.wire_type_name),
+                          expected_wire_name);
+                found = true;
+            }
+            EXPECT_TRUE(found) << tag;
+        }
+        const size_t deleted_size = deleted.entries().size();
+        const MetadataGpsTranslationResult synthesized_repeat
+            = translate_xmp_gps_metadata(deleted, {}, &deleted);
+        ASSERT_EQ(synthesized_repeat.status, MetadataGpsTranslationStatus::Ok);
+        EXPECT_EQ(synthesized_repeat.groups_unchanged, 1U);
+        EXPECT_EQ(synthesized_repeat.entries_added, 0U);
+        EXPECT_EQ(deleted.entries().size(), deleted_size);
+    }
+
+    TEST(MetadataGpsLifecycle,
+         DeletedGroupsCoverAllValueTagsAndReuseCleanMemberHistory)
+    {
+        for (const GpsLifecycleGroupCase& group : kGpsLifecycleGroups) {
+            SCOPED_TRACE(group.source_paths[0]);
+            MetaStore missing = gps_lifecycle_deleted_source(group);
+            missing.finalize();
+            const MetadataGpsTranslationResult synthesized
+                = gps_lifecycle_translate(group.api, missing, &missing);
+            ASSERT_EQ(synthesized.status, MetadataGpsTranslationStatus::Ok);
+            EXPECT_EQ(synthesized.source_properties, group.source_count);
+            EXPECT_EQ(synthesized.groups_translated, 1U);
+            EXPECT_EQ(synthesized.entries_added, group.native_count);
+            for (size_t i = 0U; i < group.native_count; ++i) {
+                const Entry* intent
+                    = gps_lifecycle_find_any(missing, group.native_tags[i]);
+                ASSERT_NE(intent, nullptr) << group.native_tags[i];
+                EXPECT_TRUE(any(intent->flags, EntryFlags::Dirty));
+                EXPECT_TRUE(any(intent->flags, EntryFlags::Deleted));
+                EXPECT_TRUE(
+                    gps_lifecycle_has_delete_intent(missing,
+                                                    group.native_tags[i]));
+                const size_t source_index = group.native_source_indices[i];
+                const std::string_view expected_source_wire
+                    = source_index == 0U ? "gps-lifecycle-source-a"
+                                         : "gps-lifecycle-source-b";
+                EXPECT_EQ(gps_lifecycle_text(missing,
+                                             intent->origin.wire_type_name),
+                          expected_source_wire);
+            }
+            const size_t missing_size = missing.entries().size();
+            const MetadataGpsTranslationResult missing_repeat
+                = gps_lifecycle_translate(group.api, missing, &missing);
+            ASSERT_EQ(missing_repeat.status, MetadataGpsTranslationStatus::Ok);
+            EXPECT_EQ(missing_repeat.groups_unchanged, 1U);
+            EXPECT_EQ(missing_repeat.entries_added, 0U);
+            EXPECT_EQ(missing.entries().size(), missing_size);
+
+            MetaStore clean_history = gps_lifecycle_deleted_source(group);
+            gps_lifecycle_native(clean_history, group.native_tags[0],
+                                 make_u8(0U), EntryFlags::Deleted, 7U,
+                                 "gps-clean-delete-history-wire");
+            clean_history.finalize();
+            const MetadataGpsTranslationResult reused
+                = gps_lifecycle_translate(group.api, clean_history,
+                                          &clean_history);
+            ASSERT_EQ(reused.status, MetadataGpsTranslationStatus::Ok);
+            EXPECT_EQ(reused.groups_translated, 1U);
+            EXPECT_EQ(reused.entries_updated, 1U);
+            EXPECT_EQ(reused.entries_added, group.native_count - 1U);
+            const Entry* reused_marker
+                = gps_lifecycle_find_any(clean_history, group.native_tags[0]);
+            ASSERT_NE(reused_marker, nullptr);
+            EXPECT_TRUE(any(reused_marker->flags, EntryFlags::Dirty));
+            EXPECT_TRUE(any(reused_marker->flags, EntryFlags::Deleted));
+            EXPECT_EQ(gps_lifecycle_text(clean_history,
+                                         reused_marker->origin.wire_type_name),
+                      "gps-clean-delete-history-wire");
+            for (size_t i = 1U; i < group.native_count; ++i) {
+                const Entry* intent
+                    = gps_lifecycle_find_any(clean_history,
+                                             group.native_tags[i]);
+                ASSERT_NE(intent, nullptr) << group.native_tags[i];
+                EXPECT_TRUE(any(intent->flags, EntryFlags::Dirty));
+                EXPECT_TRUE(any(intent->flags, EntryFlags::Deleted));
+                EXPECT_TRUE(
+                    gps_lifecycle_has_delete_intent(clean_history,
+                                                    group.native_tags[i]));
+            }
+            const size_t history_size = clean_history.entries().size();
+            const MetadataGpsTranslationResult history_repeat
+                = gps_lifecycle_translate(group.api, clean_history,
+                                          &clean_history);
+            ASSERT_EQ(history_repeat.status, MetadataGpsTranslationStatus::Ok);
+            EXPECT_EQ(history_repeat.groups_unchanged, 1U);
+            EXPECT_EQ(history_repeat.entries_added, 0U);
+            EXPECT_EQ(history_repeat.entries_updated, 0U);
+            EXPECT_EQ(clean_history.entries().size(), history_size);
+        }
+    }
+
+    TEST(MetadataGpsLifecycle, VersionCleanupRetainsOtherLiveGpsValues)
+    {
+        const std::array<uint8_t, 4> version { 2U, 3U, 0U, 0U };
+        MetaStore last_group = gps_lifecycle_deleted_source(
+            kGpsLifecycleGroups[0]);
+        gps_lifecycle_native(last_group, 0U,
+                             make_u8_array(last_group.arena(), version),
+                             EntryFlags::None, 1U, "gps-clean-version-wire");
+        last_group.finalize();
+        const MetadataGpsTranslationResult cleaned
+            = gps_lifecycle_translate(GpsLifecycleApi::Primary, last_group,
+                                      &last_group);
+        ASSERT_EQ(cleaned.status, MetadataGpsTranslationStatus::Ok);
+        EXPECT_EQ(cleaned.entries_added, 2U);
+        EXPECT_EQ(cleaned.entries_removed, 1U);
+        EXPECT_EQ(gps_lifecycle_find(last_group, 0U), nullptr);
+        EXPECT_TRUE(gps_lifecycle_has_delete_intent(last_group, 1U));
+        EXPECT_TRUE(gps_lifecycle_has_delete_intent(last_group, 2U));
+
+        MetaStore unrelated_live = gps_lifecycle_deleted_source(
+            kGpsLifecycleGroups[0]);
+        gps_lifecycle_native(unrelated_live, 0U,
+                             make_u8_array(unrelated_live.arena(), version),
+                             EntryFlags::None, 1U, "gps-retained-version-wire");
+        gps_lifecycle_native(unrelated_live, 18U,
+                             make_text(unrelated_live.arena(), "WGS-84",
+                                       TextEncoding::Ascii),
+                             EntryFlags::None, 2U, "gps-unselected-datum-wire");
+        unrelated_live.finalize();
+        const MetadataGpsTranslationResult retained
+            = gps_lifecycle_translate(GpsLifecycleApi::Primary, unrelated_live,
+                                      &unrelated_live);
+        ASSERT_EQ(retained.status, MetadataGpsTranslationStatus::Ok);
+        EXPECT_EQ(retained.entries_removed, 0U);
+        const Entry* retained_version = gps_lifecycle_find(unrelated_live, 0U);
+        ASSERT_NE(retained_version, nullptr);
+        EXPECT_FALSE(any(retained_version->flags, EntryFlags::Dirty));
+        EXPECT_NE(gps_lifecycle_find(unrelated_live, 18U), nullptr);
+    }
+
+    TEST(MetadataGpsLifecycle,
+         ExactCleanValuesPromoteAcrossApisAndPreserveExistingSkipsGroups)
+    {
+        const std::array<GpsLifecycleApi, 5U> apis {
+            GpsLifecycleApi::Primary, GpsLifecycleApi::Navigation,
+            GpsLifecycleApi::Destination, GpsLifecycleApi::Quality,
+            GpsLifecycleApi::Text
+        };
+        const std::array<size_t, 5U> group_indices { 0U, 4U, 9U, 13U, 18U };
+        const std::array<std::array<std::string_view, 2U>, 5U> wire_names { {
+            { "gps-exact-reference-wire", "gps-exact-coordinate-wire" },
+            { "gps-exact-speed-ref-wire", "gps-exact-speed-wire" },
+            { "gps-exact-bearing-ref-wire", "gps-exact-bearing-wire" },
+            { "gps-exact-dop-wire", {} },
+            { "gps-exact-method-wire", {} },
+        } };
+        const std::array<std::array<uint16_t, 2U>, 5U> wire_codes {
+            { { 2U, 5U }, { 2U, 5U }, { 2U, 5U }, { 5U, 0U }, { 7U, 0U } }
+        };
+        for (size_t i = 0U; i < apis.size(); ++i) {
+            const GpsLifecycleGroupCase& group
+                = kGpsLifecycleGroups[group_indices[i]];
+            SCOPED_TRACE(group.source_paths[0]);
+            MetaStore exact = gps_lifecycle_exact_fixture(apis[i]);
+            const MetadataGpsTranslationResult promoted
+                = gps_lifecycle_translate(
+                    apis[i], exact, &exact,
+                    MetadataGpsTranslationSourceMode::DirtyOnly,
+                    MetadataGpsTranslationConflictPolicy::FailOnConflict);
+            ASSERT_EQ(promoted.status, MetadataGpsTranslationStatus::Ok);
+            EXPECT_EQ(promoted.groups_translated, 1U);
+            EXPECT_EQ(promoted.entries_updated, group.native_count);
+            EXPECT_EQ(promoted.entries_added, 0U);
+            gps_lifecycle_check_group_flags(exact, group, true);
+            for (size_t member = 0U; member < group.native_count; ++member) {
+                const Entry* entry
+                    = gps_lifecycle_find(exact, group.native_tags[member]);
+                ASSERT_NE(entry, nullptr);
+                EXPECT_EQ(entry->origin.wire_type.family, WireFamily::Tiff);
+                EXPECT_EQ(entry->origin.wire_type.code, wire_codes[i][member]);
+                EXPECT_EQ(entry->origin.order_in_block, 19U);
+                EXPECT_EQ(gps_lifecycle_text(exact,
+                                             entry->origin.wire_type_name),
+                          wire_names[i][member]);
+            }
+            if (apis[i] == GpsLifecycleApi::Navigation) {
+                const Entry* speed = gps_lifecycle_find(exact, 13U);
+                ASSERT_NE(speed, nullptr);
+                EXPECT_EQ(speed->value.data.ur.numer, 6U);
+                EXPECT_EQ(speed->value.data.ur.denom, 4U);
+            } else if (apis[i] == GpsLifecycleApi::Destination) {
+                const Entry* bearing = gps_lifecycle_find(exact, 24U);
+                ASSERT_NE(bearing, nullptr);
+                EXPECT_EQ(bearing->value.data.ur.numer, 3U);
+                EXPECT_EQ(bearing->value.data.ur.denom, 2U);
+            } else if (apis[i] == GpsLifecycleApi::Quality) {
+                const Entry* dop = gps_lifecycle_find(exact, 11U);
+                ASSERT_NE(dop, nullptr);
+                EXPECT_EQ(dop->value.data.ur.numer, 10U);
+                EXPECT_EQ(dop->value.data.ur.denom, 8U);
+            }
+            const MetadataGpsTranslationResult repeat = gps_lifecycle_translate(
+                apis[i], exact, &exact,
+                MetadataGpsTranslationSourceMode::DirtyOnly,
+                MetadataGpsTranslationConflictPolicy::FailOnConflict);
+            ASSERT_EQ(repeat.status, MetadataGpsTranslationStatus::Ok);
+            EXPECT_EQ(repeat.groups_unchanged, 1U);
+            EXPECT_EQ(repeat.entries_updated, 0U);
+
+            MetaStore preserved = gps_lifecycle_exact_fixture(apis[i]);
+            const MetadataGpsTranslationResult keep = gps_lifecycle_translate(
+                apis[i], preserved, &preserved,
+                MetadataGpsTranslationSourceMode::DirtyOnly,
+                MetadataGpsTranslationConflictPolicy::PreserveExisting);
+            ASSERT_EQ(keep.status, MetadataGpsTranslationStatus::Ok);
+            EXPECT_EQ(keep.groups_preserved, 1U);
+            EXPECT_EQ(keep.entries_updated, 0U);
+            EXPECT_EQ(keep.entries_added, 0U);
+            gps_lifecycle_check_group_flags(preserved, group, false);
+        }
+
+        MetaStore partial;
+        settings_xmp(partial, "GPSLatitude",
+                     make_text(partial.arena(), "35,48.125N",
+                               TextEncoding::Utf8));
+        gps_lifecycle_native(
+            partial, 1U, make_text(partial.arena(), "N", TextEncoding::Ascii),
+            EntryFlags::None, 2U, "gps-partial-reference-wire");
+        partial.finalize();
+        const MetadataGpsTranslationResult partial_kept
+            = gps_lifecycle_translate(
+                GpsLifecycleApi::Primary, partial, &partial,
+                MetadataGpsTranslationSourceMode::DirtyOnly,
+                MetadataGpsTranslationConflictPolicy::PreserveExisting);
+        ASSERT_EQ(partial_kept.status, MetadataGpsTranslationStatus::Ok);
+        EXPECT_EQ(partial_kept.groups_preserved, 1U);
+        EXPECT_EQ(partial_kept.entries_updated, 0U);
+        EXPECT_EQ(partial_kept.entries_added, 0U);
+        const Entry* partial_reference = gps_lifecycle_find(partial, 1U);
+        ASSERT_NE(partial_reference, nullptr);
+        EXPECT_FALSE(any(partial_reference->flags, EntryFlags::Dirty));
+        EXPECT_EQ(gps_lifecycle_find(partial, 2U), nullptr);
+        EXPECT_EQ(gps_lifecycle_find(partial, 0U), nullptr);
+    }
+
+    TEST(MetadataGpsLifecycle, DirtyOnlyAllAndNamespaceSelectionAcrossApis)
+    {
+        const std::array<GpsLifecycleApi, 5U> apis {
+            GpsLifecycleApi::Primary, GpsLifecycleApi::Navigation,
+            GpsLifecycleApi::Destination, GpsLifecycleApi::Quality,
+            GpsLifecycleApi::Text
+        };
+        for (const GpsLifecycleApi api : apis) {
+            MetaStore clean;
+            gps_lifecycle_add_selection_fixture(clean, api, EntryFlags::None);
+            clean.finalize();
+            const MetadataGpsTranslationResult omitted
+                = gps_lifecycle_translate(api, clean, &clean);
+            ASSERT_EQ(omitted.status, MetadataGpsTranslationStatus::Ok);
+            EXPECT_EQ(omitted.source_properties, 0U);
+            EXPECT_EQ(omitted.entries_added, 0U);
+            EXPECT_EQ(omitted.groups_translated, 0U);
+
+            const MetadataGpsTranslationResult all = gps_lifecycle_translate(
+                api, clean, &clean, MetadataGpsTranslationSourceMode::All);
+            ASSERT_EQ(all.status, MetadataGpsTranslationStatus::Ok);
+            EXPECT_EQ(all.groups_translated, 1U);
+            EXPECT_GT(all.entries_added, 0U);
+
+            MetaStore foreign;
+            gps_lifecycle_add_selection_fixture(
+                foreign, api, EntryFlags::Dirty,
+                "http://example.test/foreign-gps/");
+            foreign.finalize();
+            const MetadataGpsTranslationResult wrong_namespace
+                = gps_lifecycle_translate(api, foreign, &foreign);
+            ASSERT_EQ(wrong_namespace.status, MetadataGpsTranslationStatus::Ok);
+            EXPECT_EQ(wrong_namespace.source_properties, 0U);
+            EXPECT_EQ(wrong_namespace.entries_added, 0U);
+            EXPECT_EQ(wrong_namespace.groups_translated, 0U);
+        }
+
+        MetaStore clean_delete
+            = gps_lifecycle_deleted_source(kGpsLifecycleGroups[0],
+                                           EntryFlags::Deleted);
+        clean_delete.finalize();
+        const MetadataGpsTranslationResult clean_tombstone
+            = gps_lifecycle_translate(GpsLifecycleApi::Primary, clean_delete,
+                                      &clean_delete,
+                                      MetadataGpsTranslationSourceMode::All);
+        ASSERT_EQ(clean_tombstone.status, MetadataGpsTranslationStatus::Ok);
+        EXPECT_EQ(clean_tombstone.source_properties, 0U);
+        EXPECT_EQ(clean_tombstone.entries_added, 0U);
+        EXPECT_EQ(clean_tombstone.groups_translated, 0U);
+    }
+
+    TEST(MetadataGpsLifecycle, SameValuePromotionKeepsPlainAndEncodedTextBytes)
+    {
+        MetaStore source;
+        settings_xmp(source, "GPSMapDatum",
+                     make_text(source.arena(), "WGS-84", TextEncoding::Utf8));
+        settings_xmp(source, "GPSProcessingMethod",
+                     make_text(source.arena(), "GPS WLAN", TextEncoding::Utf8));
+        gps_lifecycle_native(source, 18U,
+                             make_text(source.arena(),
+                                       std::string_view("WGS-84\0", 7U),
+                                       TextEncoding::Ascii),
+                             EntryFlags::None, 2U, "gps-plain-text-wire");
+        const std::string_view encoded("ASCII\0\0\0GPS WLAN", 16U);
+        gps_lifecycle_native(source, 27U,
+                             make_bytes(source.arena(),
+                                        std::as_bytes(std::span(
+                                            encoded.data(), encoded.size()))),
+                             EntryFlags::None, 7U, "gps-encoded-text-wire");
+        const std::array<uint8_t, 4> version { 2U, 3U, 0U, 0U };
+        gps_lifecycle_native(source, 0U, make_u8_array(source.arena(), version),
+                             EntryFlags::None, 1U, "gps-text-version-wire");
+        source.finalize();
+
+        const MetadataGpsTranslationResult promoted = gps_lifecycle_translate(
+            GpsLifecycleApi::Text, source, &source,
+            MetadataGpsTranslationSourceMode::DirtyOnly,
+            MetadataGpsTranslationConflictPolicy::FailOnConflict);
+        ASSERT_EQ(promoted.status, MetadataGpsTranslationStatus::Ok);
+        EXPECT_EQ(promoted.groups_translated, 2U);
+        EXPECT_EQ(promoted.entries_updated, 2U);
+        EXPECT_EQ(promoted.entries_added, 0U);
+        const Entry* datum  = gps_lifecycle_find(source, 18U);
+        const Entry* method = gps_lifecycle_find(source, 27U);
+        ASSERT_NE(datum, nullptr);
+        ASSERT_NE(method, nullptr);
+        EXPECT_TRUE(any(datum->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(method->flags, EntryFlags::Dirty));
+        EXPECT_EQ(gps_lifecycle_text(source, datum->value.data.span),
+                  std::string_view("WGS-84\0", 7U));
+        EXPECT_EQ(gps_lifecycle_text(source, method->value.data.span), encoded);
+        EXPECT_EQ(gps_lifecycle_text(source, datum->origin.wire_type_name),
+                  "gps-plain-text-wire");
+        EXPECT_EQ(gps_lifecycle_text(source, method->origin.wire_type_name),
+                  "gps-encoded-text-wire");
+        const MetadataGpsTranslationResult repeated = gps_lifecycle_translate(
+            GpsLifecycleApi::Text, source, &source,
+            MetadataGpsTranslationSourceMode::DirtyOnly,
+            MetadataGpsTranslationConflictPolicy::FailOnConflict);
+        ASSERT_EQ(repeated.status, MetadataGpsTranslationStatus::Ok);
+        EXPECT_EQ(repeated.groups_unchanged, 2U);
+        EXPECT_EQ(repeated.entries_updated, 0U);
+    }
+
+    TEST(MetadataGpsLifecycle, ReplaceRepairsNativeDuplicatesAsOneGroup)
+    {
+        MetaStore source;
+        settings_xmp(source, "GPSLatitude",
+                     make_text(source.arena(), "1,2N", TextEncoding::Utf8));
+        gps_lifecycle_native(
+            source, 1U, make_text(source.arena(), "N", TextEncoding::Ascii),
+            EntryFlags::None, 2U, "gps-duplicate-reference-wire");
+        const std::array<URational, 3> exact { URational { 1U, 1U },
+                                               URational { 2U, 1U },
+                                               URational { 0U, 1U } };
+        gps_lifecycle_native(source, 2U,
+                             make_urational_array(source.arena(), exact),
+                             EntryFlags::None, 5U,
+                             "gps-duplicate-exact-coordinate-wire");
+        const std::array<URational, 3> duplicate { URational { 1U, 1U },
+                                                   URational { 3U, 1U },
+                                                   URational { 0U, 1U } };
+        const EntryId duplicate_id = gps_lifecycle_native(
+            source, 2U, make_urational_array(source.arena(), duplicate),
+            EntryFlags::None, 5U, "gps-duplicate-extra-coordinate-wire");
+        source.finalize();
+
+        const std::vector<std::byte> source_before = apex_snapshot(source);
+        const MetadataGpsTranslationResult limited = gps_lifecycle_translate(
+            GpsLifecycleApi::Primary, source, &source,
+            MetadataGpsTranslationSourceMode::DirtyOnly,
+            MetadataGpsTranslationConflictPolicy::ReplaceExisting, 0U, 3U);
+        EXPECT_EQ(limited.status,
+                  MetadataGpsTranslationStatus::OperationLimitExceeded);
+        EXPECT_EQ(apex_snapshot(source), source_before);
+
+        const MetadataGpsTranslationResult repaired
+            = gps_lifecycle_translate(GpsLifecycleApi::Primary, source,
+                                      &source);
+        ASSERT_EQ(repaired.status, MetadataGpsTranslationStatus::Ok);
+        EXPECT_EQ(repaired.groups_translated, 1U);
+        EXPECT_EQ(repaired.entries_updated, 2U);
+        EXPECT_EQ(repaired.entries_removed, 1U);
+        EXPECT_EQ(repaired.entries_added, 1U);
+        ASSERT_LT(duplicate_id, source.entries().size());
+        EXPECT_TRUE(any(source.entry(duplicate_id).flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(source.entry(duplicate_id).flags, EntryFlags::Deleted));
+        gps_lifecycle_check_group_flags(source, kGpsLifecycleGroups[0], true);
+        ASSERT_NE(gps_lifecycle_find(source, 0U), nullptr);
+    }
+
+    TEST(MetadataGpsLifecycle, ExactPromotionsCountTowardOperationLimit)
+    {
+        MetaStore source = gps_lifecycle_exact_fixture(
+            GpsLifecycleApi::Primary);
+        const std::vector<std::byte> source_before = apex_snapshot(source);
+        const MetadataGpsTranslationResult alias_failure
+            = gps_lifecycle_translate(
+                GpsLifecycleApi::Primary, source, &source,
+                MetadataGpsTranslationSourceMode::DirtyOnly,
+                MetadataGpsTranslationConflictPolicy::FailOnConflict, 0U, 1U);
+        EXPECT_EQ(alias_failure.status,
+                  MetadataGpsTranslationStatus::OperationLimitExceeded);
+        EXPECT_EQ(apex_snapshot(source), source_before);
+
+        MetaStore output;
+        settings_native(output, 0x9201U, make_srational(7, 3));
+        output.finalize();
+        const std::vector<std::byte> output_before = apex_snapshot(output);
+        const MetadataGpsTranslationResult separate_failure
+            = gps_lifecycle_translate(
+                GpsLifecycleApi::Primary, source, &output,
+                MetadataGpsTranslationSourceMode::DirtyOnly,
+                MetadataGpsTranslationConflictPolicy::FailOnConflict, 0U, 1U);
+        EXPECT_EQ(separate_failure.status,
+                  MetadataGpsTranslationStatus::OperationLimitExceeded);
+        EXPECT_EQ(apex_snapshot(source), source_before);
+        EXPECT_EQ(apex_snapshot(output), output_before);
+    }
+
+    TEST(MetadataGpsLifecycle,
+         LimitsRollbackAliasedAndSeparateOutputsForAllApis)
+    {
+        const std::array<GpsLifecycleApi, 5U> apis {
+            GpsLifecycleApi::Primary, GpsLifecycleApi::Navigation,
+            GpsLifecycleApi::Destination, GpsLifecycleApi::Quality,
+            GpsLifecycleApi::Text
+        };
+        const std::array<size_t, 3U> deleted_group_indices { 0U, 3U, 7U };
+        for (size_t i = 0U; i < apis.size(); ++i) {
+            SCOPED_TRACE(static_cast<uint32_t>(i));
+            MetaStore source;
+            if (i < deleted_group_indices.size()) {
+                source = gps_lifecycle_deleted_source(
+                    kGpsLifecycleGroups[deleted_group_indices[i]]);
+            } else {
+                gps_lifecycle_add_selection_fixture(source, apis[i],
+                                                    EntryFlags::Dirty);
+            }
+            source.finalize();
+            const std::vector<std::byte> source_before = apex_snapshot(source);
+            const MetadataGpsTranslationResult entry_limit_alias
+                = gps_lifecycle_translate(
+                    apis[i], source, &source,
+                    MetadataGpsTranslationSourceMode::DirtyOnly,
+                    MetadataGpsTranslationConflictPolicy::ReplaceExisting, 1U);
+            EXPECT_EQ(entry_limit_alias.status,
+                      MetadataGpsTranslationStatus::EntryLimitExceeded);
+            EXPECT_EQ(apex_snapshot(source), source_before);
+
+            MetaStore entry_limit_output;
+            settings_native(entry_limit_output, 0x9201U, make_srational(7, 3));
+            entry_limit_output.finalize();
+            const std::vector<std::byte> entry_output_before = apex_snapshot(
+                entry_limit_output);
+            const MetadataGpsTranslationResult entry_limit_separate
+                = gps_lifecycle_translate(
+                    apis[i], source, &entry_limit_output,
+                    MetadataGpsTranslationSourceMode::DirtyOnly,
+                    MetadataGpsTranslationConflictPolicy::ReplaceExisting, 1U);
+            EXPECT_EQ(entry_limit_separate.status,
+                      MetadataGpsTranslationStatus::EntryLimitExceeded);
+            EXPECT_EQ(apex_snapshot(source), source_before);
+            EXPECT_EQ(apex_snapshot(entry_limit_output), entry_output_before);
+
+            const MetadataGpsTranslationResult operation_limit_alias
+                = gps_lifecycle_translate(
+                    apis[i], source, &source,
+                    MetadataGpsTranslationSourceMode::DirtyOnly,
+                    MetadataGpsTranslationConflictPolicy::ReplaceExisting, 0U,
+                    1U);
+            EXPECT_EQ(operation_limit_alias.status,
+                      MetadataGpsTranslationStatus::OperationLimitExceeded);
+            EXPECT_EQ(apex_snapshot(source), source_before);
+
+            MetaStore operation_limit_output;
+            settings_native(operation_limit_output, 0x9201U,
+                            make_srational(7, 3));
+            operation_limit_output.finalize();
+            const std::vector<std::byte> operation_output_before
+                = apex_snapshot(operation_limit_output);
+            const MetadataGpsTranslationResult operation_limit_separate
+                = gps_lifecycle_translate(
+                    apis[i], source, &operation_limit_output,
+                    MetadataGpsTranslationSourceMode::DirtyOnly,
+                    MetadataGpsTranslationConflictPolicy::ReplaceExisting, 0U,
+                    1U);
+            EXPECT_EQ(operation_limit_separate.status,
+                      MetadataGpsTranslationStatus::OperationLimitExceeded);
+            EXPECT_EQ(apex_snapshot(source), source_before);
+            EXPECT_EQ(apex_snapshot(operation_limit_output),
+                      operation_output_before);
+        }
     }
 
     TEST(MetadataCaptureLifecycle,

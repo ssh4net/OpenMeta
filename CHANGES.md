@@ -1,5 +1,18 @@
 # OpenMeta Changes
 
+## 0.8.0 - 2026-10-02
+
+- Complete selected GPS update/deletion ownership across all five translators,
+  including absent-native deletion intent and exact clean native Dirty authority.
+  Preserve pair, version, precision, conflict and transactional budget rules.
+- Add bounded GPS removals and merge mode to prepared TIFF/BigTIFF editing,
+  preserving unselected GPS fields and destination-aware version cleanup.
+  Carry source intent through snapshot v1, stream and package paths; reject
+  conflicting versions and unrepresentable removal/merge consumers before output.
+- Advance all five GPS translation contracts to version 2. Keep development ABI
+  4, but require matching consumer rebuilds for the new prepared-bundle layout.
+  The package minor boundary advances to 0.8; host synchronization remains.
+
 ## 0.7.2 - 2026-10-02
 
 - Carry native deletion intent and same-value Dirty authority through the five

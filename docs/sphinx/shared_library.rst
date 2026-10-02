@@ -36,8 +36,8 @@ change; the label does not guarantee binary compatibility across snapshots.
 ELF/macOS use ABI major 4; Windows uses ``openmeta-4.dll``. The initial local
 0.7.0 build used label 5; 0.7.1 returns to 4 by project policy.
 
-``SameMinorVersion`` still rejects 0.6 requests for the 0.7 SDK. Package discovery
-is separate from binary compatibility. See :doc:`migration_0_7`.
+``SameMinorVersion`` still rejects 0.7 requests for the 0.8 SDK. Package discovery
+is separate from binary compatibility. See :doc:`migration_0_8`.
 
 When OpenMeta is built with ``OPENMETA_USE_LIBCXX=ON``, the package requires a
 Clang consumer and propagates ``-stdlib=libc++`` for compilation and linking.

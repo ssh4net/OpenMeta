@@ -3236,6 +3236,13 @@ namespace {
         out["tiff_merge_existing_exif"]
             = prepared.bundle.tiff_merge_existing_exif;
 
+        nb::list tiff_gps_removals;
+        for (uint16_t tag : prepared.bundle.tiff_gps_removals) {
+            tiff_gps_removals.append(nb::int_(tag));
+        }
+        out["tiff_gps_removals"] = std::move(tiff_gps_removals);
+        out["tiff_merge_existing_gps"] = prepared.bundle.tiff_merge_existing_gps;
+
         nb::list policy_decisions;
         for (size_t i = 0; i < prepared.bundle.policy_decisions.size(); ++i) {
             const PreparedTransferPolicyDecision& decision

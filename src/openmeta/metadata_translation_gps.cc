@@ -53,7 +53,11 @@ namespace {
                                                 kInvalidEntryId };
         std::array<EntryId, 2> native_entries { kInvalidEntryId,
                                                 kInvalidEntryId };
+        std::array<EntryId, 2> clean_delete_entries { kInvalidEntryId,
+                                                      kInvalidEntryId };
         std::array<uint32_t, 2> native_counts {};
+        std::array<bool, 2> native_dirty {};
+        std::array<bool, 2> dirty_delete_intents {};
         std::array<bool, 2> matches {};
         std::array<URational, 3> components {};
         std::array<char, 10> date {};
@@ -669,6 +673,36 @@ namespace {
         edit->add_entry(entry);
     }
 
+    static MetaValue copy_value_to_edit(ByteArena& arena,
+                                        const MetaStore& source,
+                                        const MetaValue& value)
+    {
+        MetaValue copy = value;
+        if (value.kind == MetaValueKind::Bytes
+            || value.kind == MetaValueKind::Text
+            || value.kind == MetaValueKind::Array) {
+            copy.data.span = arena.append(source.arena().span(value.data.span));
+        }
+        return copy;
+    }
+
+    static void append_delete_intent(const MetaStore& source,
+                                     const GpsGroup& group, size_t member,
+                                     MetaEdit* edit)
+    {
+        Entry entry;
+        entry.key    = make_exif_tag_key(edit->arena(), "gpsifd",
+                                         group.tags[member]);
+        entry.value  = native_value(edit->arena(), group, member);
+        entry.origin = source.entry(group.source_entries[member]).origin;
+        if (entry.origin.wire_type_name.size != 0U) {
+            entry.origin.wire_type_name = edit->arena().append(
+                source.arena().span(entry.origin.wire_type_name));
+        }
+        entry.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+        edit->add_entry(entry);
+    }
+
     static MetadataGpsTranslationResult
     error(Status status, Mapping mapping = Mapping::None,
           EntryId entry = kInvalidEntryId) noexcept
@@ -753,11 +787,17 @@ namespace {
                 continue;
             }
             for (EntryId id = 0U; id < entries.size(); ++id) {
-                if (any(entries[id].flags, EntryFlags::Deleted)) {
-                    continue;
-                }
                 for (size_t j = 0U; j < group.native_count; ++j) {
                     if (!gps_tag(source, entries[id], group.tags[j])) {
+                        continue;
+                    }
+                    if (any(entries[id].flags, EntryFlags::Deleted)) {
+                        if (any(entries[id].flags, EntryFlags::Dirty)) {
+                            group.dirty_delete_intents[j] = true;
+                        } else if (group.clean_delete_entries[j]
+                                   == kInvalidEntryId) {
+                            group.clean_delete_entries[j] = id;
+                        }
                         continue;
                     }
                     if (group.native_counts[j] >= max_operations) {
@@ -770,18 +810,30 @@ namespace {
                                            && field_matches(source,
                                                             entries[id].value,
                                                             group, j);
+                        group.native_dirty[j] = any(entries[id].flags,
+                                                    EntryFlags::Dirty);
                     }
                 }
             }
             const bool existing = group.native_counts[0] != 0U
                                   || group.native_counts[1] != 0U;
-            const bool exact = group.present
-                                   ? group.native_counts[0] == 1U
-                                         && group.matches[0]
-                                         && (group.native_count == 1U
-                                             || (group.native_counts[1] == 1U
-                                                 && group.matches[1]))
-                                   : !existing;
+            bool exact = group.present
+                             ? group.native_counts[0] == 1U && group.matches[0]
+                                   && (group.native_count == 1U
+                                       || (group.native_counts[1] == 1U
+                                           && group.matches[1]))
+                             : !existing;
+            if (!group.present && exact) {
+                for (size_t j = 0U; j < group.native_count; ++j) {
+                    exact = exact && group.dirty_delete_intents[j];
+                }
+            }
+            bool promote_exact = false;
+            if (group.present && exact) {
+                for (size_t j = 0U; j < group.native_count; ++j) {
+                    promote_exact = promote_exact || !group.native_dirty[j];
+                }
+            }
             if (policy == Policy::PreserveExisting && existing) {
                 ++result.groups_preserved;
                 continue;
@@ -790,7 +842,7 @@ namespace {
                 return error(Status::NativeConflict, group.mapping,
                              group.source_entries[0]);
             }
-            if (exact) {
+            if (exact && !promote_exact) {
                 ++result.groups_unchanged;
             } else {
                 group.apply = true;
@@ -806,13 +858,25 @@ namespace {
             }
             for (size_t j = 0U; j < group.native_count; ++j) {
                 if (!group.present) {
-                    operations += group.native_counts[j];
+                    if (group.native_counts[j] != 0U) {
+                        operations += group.native_counts[j];
+                    } else if (!group.dirty_delete_intents[j]) {
+                        if (group.clean_delete_entries[j] != kInvalidEntryId) {
+                            ++operations;
+                        } else {
+                            ++added;
+                            ++operations;
+                        }
+                    }
                 } else if (group.native_counts[j] == 0U) {
                     ++added;
                     ++operations;
                 } else {
                     operations += group.native_counts[j] - 1U
-                                  + (group.matches[j] ? 0U : 1U);
+                                  + (group.matches[j] ? 0U : 1U)
+                                  + (group.matches[j] && !group.native_dirty[j]
+                                         ? 1U
+                                         : 0U);
                 }
             }
         }
@@ -872,6 +936,29 @@ namespace {
             }
             for (size_t j = 0U; j < group.native_count; ++j) {
                 const uint16_t tag = group.tags[j];
+                if (!group.present) {
+                    bool active_found = false;
+                    for (EntryId id = 0U; id < entries.size(); ++id) {
+                        if (any(entries[id].flags, EntryFlags::Deleted)
+                            || !gps_tag(source, entries[id], tag)) {
+                            continue;
+                        }
+                        edit.tombstone(id);
+                        ++result.entries_removed;
+                        active_found = true;
+                    }
+                    if (active_found || group.dirty_delete_intents[j]) {
+                        continue;
+                    }
+                    if (group.clean_delete_entries[j] != kInvalidEntryId) {
+                        edit.tombstone(group.clean_delete_entries[j]);
+                        ++result.entries_updated;
+                    } else {
+                        append_delete_intent(source, group, j, &edit);
+                        ++result.entries_added;
+                    }
+                    continue;
+                }
                 for (EntryId id = 0U; id < entries.size(); ++id) {
                     if (any(entries[id].flags, EntryFlags::Deleted)
                         || !gps_tag(source, entries[id], tag)) {
@@ -883,6 +970,11 @@ namespace {
                     } else if (!group.matches[j]) {
                         edit.set_value(id,
                                        native_value(edit.arena(), group, j));
+                        ++result.entries_updated;
+                    } else if (!any(entries[id].flags, EntryFlags::Dirty)) {
+                        edit.set_value(id,
+                                       copy_value_to_edit(edit.arena(), source,
+                                                          entries[id].value));
                         ++result.entries_updated;
                     }
                 }
@@ -1044,6 +1136,9 @@ translate_xmp_gps_metadata(const MetaStore& source,
             group.source_entries[1] = group.source_entries[0];
         }
         if (!group.present) {
+            if (i == 2U) {
+                std::swap(group.source_entries[0], group.source_entries[1]);
+            }
             continue;
         }
         Status status;

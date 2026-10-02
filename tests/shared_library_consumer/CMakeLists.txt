@@ -2,10 +2,10 @@ cmake_minimum_required(VERSION 3.20)
 
 project(OpenMetaSharedLibraryConsumer LANGUAGES CXX)
 
-find_package(OpenMeta 0.7 CONFIG REQUIRED)
+find_package(OpenMeta 0.8 CONFIG REQUIRED)
 
 if(NOT OpenMeta_ABI_VERSION STREQUAL "4")
-  message(FATAL_ERROR "OpenMeta 0.7 must publish development ABI 4")
+  message(FATAL_ERROR "OpenMeta 0.8 must publish development ABI 4")
 endif()
 
 if(NOT TARGET OpenMeta::openmeta_shared)

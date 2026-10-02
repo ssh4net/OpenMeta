@@ -8341,6 +8341,189 @@ make_minimal_gpsifd_tiff_little_endian()
 }
 
 static std::vector<std::byte>
+make_gps_merge_tiff_with_opaque_external_value()
+{
+    std::vector<std::byte> tiff;
+    append_bytes(&tiff, "II");
+    append_u16le(&tiff, 42U);
+    append_u32le(&tiff, 8U);
+
+    append_u16le(&tiff, 1U);
+    append_u16le(&tiff, 0x8825U);
+    append_u16le(&tiff, 4U);
+    append_u32le(&tiff, 1U);
+    append_u32le(&tiff, 26U);
+    append_u32le(&tiff, 0U);
+
+    append_u16le(&tiff, 4U);
+    append_u16le(&tiff, 0U);
+    append_u16le(&tiff, 1U);
+    append_u32le(&tiff, 4U);
+    append_u32le(&tiff, 0x00000302U);
+    append_u16le(&tiff, 1U);
+    append_u16le(&tiff, 2U);
+    append_u32le(&tiff, 2U);
+    append_u32le(&tiff, static_cast<uint32_t>('N'));
+    append_u16le(&tiff, 5U);
+    append_u16le(&tiff, 1U);
+    append_u32le(&tiff, 1U);
+    append_u32le(&tiff, 0U);
+    append_u16le(&tiff, 65000U);
+    append_u16le(&tiff, 7U);
+    append_u32le(&tiff, 8U);
+    append_u32le(&tiff, 80U);
+    append_u32le(&tiff, 0U);
+    append_bytes(&tiff, "OPAQUE!!");
+    return tiff;
+}
+
+static std::vector<std::byte>
+make_gps_version_latitude_ref_tiff()
+{
+    std::vector<std::byte> tiff;
+    append_bytes(&tiff, "II");
+    append_u16le(&tiff, 42U);
+    append_u32le(&tiff, 8U);
+
+    append_u16le(&tiff, 1U);
+    append_u16le(&tiff, 0x8825U);
+    append_u16le(&tiff, 4U);
+    append_u32le(&tiff, 1U);
+    append_u32le(&tiff, 26U);
+    append_u32le(&tiff, 0U);
+
+    append_u16le(&tiff, 2U);
+    append_u16le(&tiff, 0U);
+    append_u16le(&tiff, 1U);
+    append_u32le(&tiff, 4U);
+    append_u32le(&tiff, 0x00000302U);
+    append_u16le(&tiff, 1U);
+    append_u16le(&tiff, 2U);
+    append_u32le(&tiff, 2U);
+    append_u32le(&tiff, static_cast<uint32_t>('N'));
+    append_u32le(&tiff, 0U);
+    return tiff;
+}
+
+static std::vector<std::byte>
+make_manual_gps_app1_payload(uint16_t tag, uint16_t type, uint32_t count,
+                             uint32_t value)
+{
+    std::vector<std::byte> payload;
+    append_bytes(&payload, "Exif");
+    payload.push_back(std::byte { 0x00 });
+    payload.push_back(std::byte { 0x00 });
+    append_bytes(&payload, "II");
+    append_u16le(&payload, 42U);
+    append_u32le(&payload, 8U);
+
+    append_u16le(&payload, 1U);
+    append_u16le(&payload, 0x8825U);
+    append_u16le(&payload, 4U);
+    append_u32le(&payload, 1U);
+    append_u32le(&payload, 26U);
+    append_u32le(&payload, 0U);
+
+    append_u16le(&payload, 1U);
+    append_u16le(&payload, tag);
+    append_u16le(&payload, type);
+    append_u32le(&payload, count);
+    append_u32le(&payload, value);
+    append_u32le(&payload, 0U);
+    return payload;
+}
+
+static std::vector<std::byte>
+make_manual_two_entry_gps_app1_payload(
+    uint16_t first_tag, uint16_t first_type, uint32_t first_count,
+    uint32_t first_value, uint16_t second_tag, uint16_t second_type,
+    uint32_t second_count, uint32_t second_value)
+{
+    std::vector<std::byte> payload;
+    append_bytes(&payload, "Exif");
+    payload.push_back(std::byte { 0x00 });
+    payload.push_back(std::byte { 0x00 });
+    append_bytes(&payload, "II");
+    append_u16le(&payload, 42U);
+    append_u32le(&payload, 8U);
+
+    append_u16le(&payload, 1U);
+    append_u16le(&payload, 0x8825U);
+    append_u16le(&payload, 4U);
+    append_u32le(&payload, 1U);
+    append_u32le(&payload, 26U);
+    append_u32le(&payload, 0U);
+
+    append_u16le(&payload, 2U);
+    append_u16le(&payload, first_tag);
+    append_u16le(&payload, first_type);
+    append_u32le(&payload, first_count);
+    append_u32le(&payload, first_value);
+    append_u16le(&payload, second_tag);
+    append_u16le(&payload, second_type);
+    append_u32le(&payload, second_count);
+    append_u32le(&payload, second_value);
+    append_u32le(&payload, 0U);
+    return payload;
+}
+
+static std::vector<std::byte>
+make_manual_empty_gps_app1_payload()
+{
+    std::vector<std::byte> payload;
+    append_bytes(&payload, "Exif");
+    payload.push_back(std::byte { 0x00 });
+    payload.push_back(std::byte { 0x00 });
+    append_bytes(&payload, "II");
+    append_u16le(&payload, 42U);
+    append_u32le(&payload, 8U);
+
+    append_u16le(&payload, 1U);
+    append_u16le(&payload, 0x8825U);
+    append_u16le(&payload, 4U);
+    append_u32le(&payload, 1U);
+    append_u32le(&payload, 26U);
+    append_u32le(&payload, 0U);
+    append_u16le(&payload, 0U);
+    append_u32le(&payload, 0U);
+    return payload;
+}
+
+static std::vector<std::byte>
+make_manual_malformed_gps_pointer_app1_payload()
+{
+    std::vector<std::byte> payload;
+    append_bytes(&payload, "Exif");
+    payload.push_back(std::byte { 0x00 });
+    payload.push_back(std::byte { 0x00 });
+    append_bytes(&payload, "II");
+    append_u16le(&payload, 42U);
+    append_u32le(&payload, 8U);
+
+    append_u16le(&payload, 1U);
+    append_u16le(&payload, 0x8825U);
+    append_u16le(&payload, 1U);
+    append_u32le(&payload, 1U);
+    append_u32le(&payload, 26U);
+    append_u32le(&payload, 0U);
+    return payload;
+}
+
+static openmeta::PreparedTransferBundle
+make_manual_gps_merge_bundle(std::vector<std::byte> payload)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format           = openmeta::TransferTargetFormat::Tiff;
+    bundle.tiff_merge_existing_gps = true;
+    openmeta::PreparedTransferBlock exif;
+    exif.kind    = openmeta::TransferBlockKind::Exif;
+    exif.route   = "tiff:ifd-exif-app1";
+    exif.payload = std::move(payload);
+    bundle.blocks.push_back(std::move(exif));
+    return bundle;
+}
+
+static std::vector<std::byte>
 make_minimal_multipage_bigtiff_little_endian()
 {
     std::vector<std::byte> tiff;
@@ -18386,7 +18569,8 @@ TEST(MetadataTransferApi, TiffGpsOmissionAndExplicitRemovalAreDistinct)
             SCOPED_TRACE(bigtiff);
             SCOPED_TRACE(mode);
             openmeta::MetaStore source;
-            // Omission and clean tombstones preserve target GPS; dirty values clear it.
+            // Omission and clean tombstones preserve target GPS; dirty tag edits
+            // affect only their selected destination entries.
             if (mode != 2U) {
                 openmeta::Entry camera;
                 camera.key = openmeta::make_exif_tag_key(source.arena(), "ifd0",
@@ -18439,11 +18623,11 @@ TEST(MetadataTransferApi, TiffGpsOmissionAndExplicitRemovalAreDistinct)
             ASSERT_TRUE(decode_transfer_roundtrip_store(result.edited_output,
                                                         &decoded));
             if (mode == 2U) {
-                EXPECT_TRUE(
+                EXPECT_FALSE(
                     decoded.find_all(exif_key_view("ifd0", 0x8825U)).empty());
                 EXPECT_TRUE(
                     decoded.find_all(exif_key_view("gpsifd", 1U)).empty());
-                EXPECT_TRUE(
+                EXPECT_FALSE(
                     decoded.find_all(exif_key_view("gpsifd", 5U)).empty());
             } else {
                 EXPECT_FALSE(
@@ -18452,9 +18636,7 @@ TEST(MetadataTransferApi, TiffGpsOmissionAndExplicitRemovalAreDistinct)
                     decoded, exif_key_view("ifd0", 0x010fU), "Kept camera"));
                 if (mode == 4U) {
                     EXPECT_TRUE(
-                        store_has_any_text_entry(decoded,
-                                                 exif_key_view("gpsifd", 8U),
-                                                 "Retained satellites"));
+                        decoded.find_all(exif_key_view("gpsifd", 8U)).empty());
                     EXPECT_TRUE(
                         decoded.find_all(exif_key_view("gpsifd", 1U)).empty());
                 } else {
@@ -18464,6 +18646,497 @@ TEST(MetadataTransferApi, TiffGpsOmissionAndExplicitRemovalAreDistinct)
             }
         }
     }
+}
+
+TEST(MetadataTransferApi, TiffGpsRemovalOnlyPreservesUnselectedDestinationTags)
+{
+    for (unsigned retained = 0U; retained < 4U; ++retained) {
+        SCOPED_TRACE(retained);
+        const std::vector<std::byte> input
+            = make_minimal_gpsifd_tiff_little_endian();
+        openmeta::MetaStore source;
+        openmeta::Entry latitude_ref_removal;
+        latitude_ref_removal.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                                 "gpsifd", 1U);
+        latitude_ref_removal.flags = openmeta::EntryFlags::Dirty
+                                     | openmeta::EntryFlags::Deleted;
+        ASSERT_NE(source.add_entry(latitude_ref_removal),
+                  openmeta::kInvalidEntryId);
+        if ((retained & 1U) != 0U) {
+            openmeta::Entry version;
+            version.key = openmeta::make_exif_tag_key(source.arena(), "gpsifd",
+                                                      0U);
+            const std::array<uint8_t, 4> bytes { 2U, 3U, 0U, 0U };
+            version.value = openmeta::make_u8_array(source.arena(), bytes);
+            ASSERT_NE(source.add_entry(version), openmeta::kInvalidEntryId);
+        }
+        if ((retained & 2U) != 0U) {
+            openmeta::Entry altitude_ref;
+            altitude_ref.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                             "gpsifd", 5U);
+            altitude_ref.value = openmeta::make_u8(1U);
+            ASSERT_NE(source.add_entry(altitude_ref),
+                      openmeta::kInvalidEntryId);
+        }
+        source.finalize();
+
+        openmeta::PrepareTransferRequest request;
+        request.target_format      = openmeta::TransferTargetFormat::Tiff;
+        request.include_exif_app1  = true;
+        request.include_xmp_app1   = false;
+        request.include_icc_app2   = false;
+        request.include_iptc_app13 = false;
+        openmeta::PreparedTransferBundle bundle;
+        openmeta::TransferSourceSnapshot snapshot;
+        ASSERT_NO_FATAL_FAILURE(persist_transfer_snapshot(source, &snapshot));
+        ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(snapshot,
+                                                                 request,
+                                                                 &bundle)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        EXPECT_EQ(bundle.tiff_gps_removals, (std::vector<uint16_t> { 1U }));
+        EXPECT_TRUE(bundle.tiff_merge_existing_gps);
+        for (const openmeta::PreparedTransferBlock& block : bundle.blocks) {
+            EXPECT_NE(block.route, "tiff:ifd-exif-app1");
+        }
+        // A valid removal list implies merge even for manually constructed bundles.
+        bundle.tiff_merge_existing_gps = false;
+
+        const openmeta::TiffEditPlan plan
+            = openmeta::plan_prepared_bundle_tiff_edit(input, bundle);
+        ASSERT_EQ(plan.status, openmeta::TransferStatus::Ok) << plan.message;
+        EXPECT_EQ(plan.tag_updates, 1U);
+        std::vector<std::byte> output;
+        ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(input, bundle, plan,
+                                                            &output)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+
+        const std::span<const std::byte> output_bytes(output.data(),
+                                                      output.size());
+        const uint32_t ifd0_off = read_u32le(output_bytes, 4U);
+        uint32_t gps_ifd_off    = 0U;
+        ASSERT_TRUE(find_tiff_tag_entry_le(output_bytes, ifd0_off, 0x8825U,
+                                           nullptr, nullptr, &gps_ifd_off));
+        EXPECT_FALSE(find_tiff_tag_entry_le(output_bytes, gps_ifd_off, 1U,
+                                            nullptr, nullptr, nullptr));
+        uint32_t altitude_ref = 1U;
+        ASSERT_TRUE(find_tiff_tag_entry_le(output_bytes, gps_ifd_off, 5U,
+                                           nullptr, nullptr, &altitude_ref));
+        EXPECT_EQ(altitude_ref & 0xFFU, 0U);
+        EXPECT_FALSE(find_tiff_tag_entry_le(output_bytes, gps_ifd_off, 0U,
+                                            nullptr, nullptr, nullptr));
+    }
+}
+
+TEST(MetadataTransferApi,
+     TiffGpsMergeAppliesDirtyValuesAndPreservesCleanOpaqueValues)
+{
+    openmeta::MetaStore source;
+    const std::array<uint8_t, 4> version { 2U, 3U, 0U, 0U };
+    openmeta::Entry gps_version;
+    gps_version.key = openmeta::make_exif_tag_key(source.arena(), "gpsifd", 0U);
+    gps_version.value = openmeta::make_u8_array(source.arena(), version);
+    ASSERT_NE(source.add_entry(gps_version), openmeta::kInvalidEntryId);
+
+    openmeta::Entry dirty_latitude_ref;
+    dirty_latitude_ref.key = openmeta::make_exif_tag_key(source.arena(),
+                                                         "gpsifd", 1U);
+    dirty_latitude_ref.value
+        = openmeta::make_text(source.arena(), "S",
+                              openmeta::TextEncoding::Ascii);
+    dirty_latitude_ref.flags = openmeta::EntryFlags::Dirty;
+    ASSERT_NE(source.add_entry(dirty_latitude_ref), openmeta::kInvalidEntryId);
+
+    openmeta::Entry clean_altitude_ref;
+    clean_altitude_ref.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                           "gpsifd", 5U);
+    clean_altitude_ref.value = openmeta::make_u8(1U);
+    ASSERT_NE(source.add_entry(clean_altitude_ref), openmeta::kInvalidEntryId);
+    source.finalize();
+
+    openmeta::PrepareTransferRequest request;
+    request.target_format      = openmeta::TransferTargetFormat::Tiff;
+    request.include_exif_app1  = true;
+    request.include_xmp_app1   = false;
+    request.include_icc_app2   = false;
+    request.include_iptc_app13 = false;
+    openmeta::PreparedTransferBundle bundle;
+    openmeta::TransferSourceSnapshot snapshot;
+    ASSERT_NO_FATAL_FAILURE(persist_transfer_snapshot(source, &snapshot));
+    ASSERT_EQ(openmeta::prepare_metadata_for_target_snapshot(snapshot, request,
+                                                             &bundle)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(bundle.tiff_merge_existing_gps);
+    EXPECT_TRUE(bundle.tiff_gps_removals.empty());
+
+    const std::vector<std::byte> input
+        = make_gps_merge_tiff_with_opaque_external_value();
+    openmeta::PreparedTiffEmitPlan fresh_plan;
+    EXPECT_EQ(openmeta::compile_prepared_bundle_tiff(bundle, &fresh_plan).status,
+              openmeta::TransferStatus::Ok);
+    openmeta::PreparedTransferAdapterView adapter_view;
+    EXPECT_EQ(openmeta::build_prepared_transfer_adapter_view(bundle,
+                                                             &adapter_view)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+
+    const openmeta::TiffEditPlan plan
+        = openmeta::plan_prepared_bundle_tiff_edit(input, bundle);
+    ASSERT_EQ(plan.status, openmeta::TransferStatus::Ok) << plan.message;
+    std::vector<std::byte> output;
+    ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(input, bundle, plan,
+                                                        &output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    BufferByteWriter stream_writer;
+    ASSERT_EQ(openmeta::write_prepared_bundle_tiff_edit(input, bundle, plan,
+                                                        stream_writer)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(stream_writer.out, output);
+    openmeta::PreparedTransferPackagePlan edit_package;
+    ASSERT_EQ(openmeta::build_prepared_bundle_tiff_package(input, bundle, plan,
+                                                           &edit_package)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::PreparedTransferPackageBatch edit_batch;
+    ASSERT_EQ(openmeta::build_prepared_transfer_package_batch(input, bundle,
+                                                              edit_package,
+                                                              &edit_batch)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    BufferByteWriter package_writer;
+    ASSERT_EQ(openmeta::write_prepared_transfer_package_batch(edit_batch,
+                                                              package_writer)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(package_writer.out, output);
+
+    const std::span<const std::byte> input_bytes(input.data(), input.size());
+    const std::span<const std::byte> output_bytes(output.data(), output.size());
+    uint16_t gps_type    = 0U;
+    uint32_t gps_count   = 0U;
+    uint32_t gps_ifd_off = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(output_bytes,
+                                       read_u32le(output_bytes, 4U), 0x8825U,
+                                       &gps_type, &gps_count, &gps_ifd_off));
+    EXPECT_EQ(gps_type, 4U);
+    EXPECT_EQ(gps_count, 1U);
+
+    uint32_t updated_latitude_ref = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(output_bytes, gps_ifd_off, 1U, nullptr,
+                                       nullptr, &updated_latitude_ref));
+    EXPECT_EQ(updated_latitude_ref & 0xFFU, static_cast<uint32_t>('S'));
+    uint32_t retained_altitude_ref = 1U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(output_bytes, gps_ifd_off, 5U, nullptr,
+                                       nullptr, &retained_altitude_ref));
+    EXPECT_EQ(retained_altitude_ref & 0xFFU, 0U);
+
+    uint32_t input_opaque_offset  = 0U;
+    uint32_t output_opaque_offset = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(input_bytes, 26U, 65000U, nullptr,
+                                       nullptr, &input_opaque_offset));
+    ASSERT_TRUE(find_tiff_tag_entry_le(output_bytes, gps_ifd_off, 65000U,
+                                       nullptr, nullptr,
+                                       &output_opaque_offset));
+    EXPECT_EQ(output_opaque_offset, input_opaque_offset);
+    ASSERT_LE(static_cast<size_t>(output_opaque_offset) + 8U,
+              output_bytes.size());
+    ASSERT_LE(static_cast<size_t>(input_opaque_offset) + 8U,
+              input_bytes.size());
+    EXPECT_EQ(std::memcmp(output_bytes.data() + output_opaque_offset,
+                          input_bytes.data() + input_opaque_offset, 8U),
+              0);
+}
+
+TEST(MetadataTransferApi, TiffGpsVersionOnlyMergePreservesTargetDirectory)
+{
+    const std::vector<std::byte> input
+        = make_gps_merge_tiff_with_opaque_external_value();
+    openmeta::PreparedTransferBundle bundle = make_manual_gps_merge_bundle(
+        make_manual_gps_app1_payload(0U, 1U, 4U, 0x00000302U));
+    const openmeta::TiffEditPlan plan
+        = openmeta::plan_prepared_bundle_tiff_edit(input, bundle);
+    ASSERT_EQ(plan.status, openmeta::TransferStatus::Ok) << plan.message;
+    std::vector<std::byte> output;
+    ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(input, bundle, plan,
+                                                        &output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+
+    const std::span<const std::byte> output_bytes(output.data(), output.size());
+    uint32_t gps_ifd_off = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(output_bytes,
+                                       read_u32le(output_bytes, 4U), 0x8825U,
+                                       nullptr, nullptr, &gps_ifd_off));
+    EXPECT_TRUE(find_tiff_tag_entry_le(output_bytes, gps_ifd_off, 1U, nullptr,
+                                       nullptr, nullptr));
+    EXPECT_TRUE(find_tiff_tag_entry_le(output_bytes, gps_ifd_off, 5U, nullptr,
+                                       nullptr, nullptr));
+    EXPECT_TRUE(find_tiff_tag_entry_le(output_bytes, gps_ifd_off, 65000U,
+                                       nullptr, nullptr, nullptr));
+}
+
+TEST(MetadataTransferApi, TiffGpsVersionAndPointerFollowFinalNonversionValues)
+{
+    const std::vector<std::byte> last_standard_value_input
+        = make_gps_version_latitude_ref_tiff();
+    openmeta::PreparedTransferBundle remove_last_standard;
+    remove_last_standard.target_format = openmeta::TransferTargetFormat::Tiff;
+    remove_last_standard.tiff_gps_removals = { 1U };
+    const openmeta::TiffEditPlan final_removal_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(last_standard_value_input,
+                                                   remove_last_standard);
+    ASSERT_EQ(final_removal_plan.status, openmeta::TransferStatus::Ok)
+        << final_removal_plan.message;
+    std::vector<std::byte> final_removal_output;
+    ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(
+                  last_standard_value_input, remove_last_standard,
+                  final_removal_plan, &final_removal_output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    const std::span<const std::byte> final_removal_bytes(
+        final_removal_output.data(), final_removal_output.size());
+    EXPECT_FALSE(find_tiff_tag_entry_le(final_removal_bytes,
+                                        read_u32le(final_removal_bytes, 4U),
+                                        0x8825U, nullptr, nullptr, nullptr));
+    openmeta::MetaStore final_removal_decoded;
+    ASSERT_TRUE(decode_transfer_roundtrip_store(final_removal_output,
+                                                &final_removal_decoded));
+    EXPECT_TRUE(
+        final_removal_decoded.find_all(exif_key_view("gpsifd", 0U)).empty());
+
+    const std::vector<std::byte> unknown_remains_input
+        = make_gps_merge_tiff_with_opaque_external_value();
+    openmeta::PreparedTransferBundle remove_standard_values;
+    remove_standard_values.target_format = openmeta::TransferTargetFormat::Tiff;
+    remove_standard_values.tiff_gps_removals = { 1U, 5U };
+    const openmeta::TiffEditPlan unknown_remains_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(unknown_remains_input,
+                                                   remove_standard_values);
+    ASSERT_EQ(unknown_remains_plan.status, openmeta::TransferStatus::Ok)
+        << unknown_remains_plan.message;
+    std::vector<std::byte> unknown_remains_output;
+    ASSERT_EQ(openmeta::apply_prepared_bundle_tiff_edit(unknown_remains_input,
+                                                        remove_standard_values,
+                                                        unknown_remains_plan,
+                                                        &unknown_remains_output)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    const std::span<const std::byte> unknown_remains_bytes(
+        unknown_remains_output.data(), unknown_remains_output.size());
+    uint32_t remaining_gps_ifd_off = 0U;
+    ASSERT_TRUE(find_tiff_tag_entry_le(unknown_remains_bytes,
+                                       read_u32le(unknown_remains_bytes, 4U),
+                                       0x8825U, nullptr, nullptr,
+                                       &remaining_gps_ifd_off));
+    EXPECT_TRUE(find_tiff_tag_entry_le(unknown_remains_bytes,
+                                       remaining_gps_ifd_off, 0U, nullptr,
+                                       nullptr, nullptr));
+    EXPECT_TRUE(find_tiff_tag_entry_le(unknown_remains_bytes,
+                                       remaining_gps_ifd_off, 65000U, nullptr,
+                                       nullptr, nullptr));
+}
+
+TEST(MetadataTransferApi, TiffGpsMergeRequiresSuppliedMatchingVersion)
+{
+    const std::vector<std::byte> input
+        = make_gps_merge_tiff_with_opaque_external_value();
+    for (const unsigned mode : { 0U, 1U }) {
+        SCOPED_TRACE(mode);
+        openmeta::MetaStore source;
+        if (mode == 1U) {
+            const std::array<uint8_t, 4> mismatched_version { 2U, 4U, 0U, 0U };
+            openmeta::Entry gps_version;
+            gps_version.key   = openmeta::make_exif_tag_key(source.arena(),
+                                                            "gpsifd", 0U);
+            gps_version.value = openmeta::make_u8_array(source.arena(),
+                                                        mismatched_version);
+            ASSERT_NE(source.add_entry(gps_version), openmeta::kInvalidEntryId);
+        }
+        openmeta::Entry dirty_latitude_ref;
+        dirty_latitude_ref.key = openmeta::make_exif_tag_key(source.arena(),
+                                                             "gpsifd", 1U);
+        dirty_latitude_ref.value
+            = openmeta::make_text(source.arena(), "S",
+                                  openmeta::TextEncoding::Ascii);
+        dirty_latitude_ref.flags = openmeta::EntryFlags::Dirty;
+        ASSERT_NE(source.add_entry(dirty_latitude_ref),
+                  openmeta::kInvalidEntryId);
+        source.finalize();
+
+        openmeta::PrepareTransferRequest request;
+        request.target_format      = openmeta::TransferTargetFormat::Tiff;
+        request.include_exif_app1  = true;
+        request.include_xmp_app1   = false;
+        request.include_icc_app2   = false;
+        request.include_iptc_app13 = false;
+        openmeta::PreparedTransferBundle bundle;
+        ASSERT_EQ(openmeta::prepare_metadata_for_target(source, request, &bundle)
+                      .status,
+                  openmeta::TransferStatus::Ok);
+        const openmeta::TiffEditPlan plan
+            = openmeta::plan_prepared_bundle_tiff_edit(input, bundle);
+        EXPECT_NE(plan.status, openmeta::TransferStatus::Ok);
+        if (mode == 0U) {
+            EXPECT_NE(plan.message.find("require a supplied GPSVersionID"),
+                      std::string::npos);
+        } else {
+            EXPECT_NE(plan.message.find("differs from target"),
+                      std::string::npos);
+        }
+    }
+}
+
+TEST(MetadataTransferApi,
+     TiffGpsMergeRejectsDuplicateMalformedVersionsAndBadTargetPointers)
+{
+    const std::vector<std::byte> target
+        = make_gps_merge_tiff_with_opaque_external_value();
+    const openmeta::PreparedTransferBundle duplicate_source_version
+        = make_manual_gps_merge_bundle(
+            make_manual_two_entry_gps_app1_payload(0U, 1U, 4U, 0x00000302U, 0U,
+                                                   1U, 4U, 0x00000302U));
+    const openmeta::TiffEditPlan duplicate_source_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(target,
+                                                   duplicate_source_version);
+    EXPECT_NE(duplicate_source_plan.status, openmeta::TransferStatus::Ok);
+    EXPECT_NE(duplicate_source_plan.message.find("duplicate GPS"),
+              std::string::npos);
+
+    const openmeta::PreparedTransferBundle malformed_source_version
+        = make_manual_gps_merge_bundle(make_manual_two_entry_gps_app1_payload(
+            0U, 1U, 3U, 0x00000302U, 1U, 2U, 2U, static_cast<uint32_t>('S')));
+    const openmeta::TiffEditPlan malformed_source_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(target,
+                                                   malformed_source_version);
+    EXPECT_NE(malformed_source_plan.status, openmeta::TransferStatus::Ok);
+    EXPECT_NE(malformed_source_plan.message.find(
+                  "malformed supplied GPSVersionID"),
+              std::string::npos);
+
+    const openmeta::PreparedTransferBundle active_update
+        = make_manual_gps_merge_bundle(make_manual_two_entry_gps_app1_payload(
+            0U, 1U, 4U, 0x00000302U, 1U, 2U, 2U, static_cast<uint32_t>('S')));
+    std::vector<std::byte> duplicate_target_version = target;
+    write_u16le(&duplicate_target_version, 52U, 0U);
+    const openmeta::TiffEditPlan duplicate_target_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(duplicate_target_version,
+                                                   active_update);
+    EXPECT_NE(duplicate_target_plan.status, openmeta::TransferStatus::Ok);
+    EXPECT_NE(duplicate_target_plan.message.find(
+                  "target GPSVersionID duplicates"),
+              std::string::npos);
+
+    std::vector<std::byte> malformed_target_version = target;
+    write_u32le(&malformed_target_version, 32U, 3U);
+    const openmeta::TiffEditPlan malformed_target_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(malformed_target_version,
+                                                   active_update);
+    EXPECT_NE(malformed_target_plan.status, openmeta::TransferStatus::Ok);
+    EXPECT_NE(malformed_target_plan.message.find(
+                  "malformed target GPSVersionID"),
+              std::string::npos);
+
+    std::vector<std::byte> malformed_target_pointer = target;
+    write_u16le(&malformed_target_pointer, 12U, 1U);
+    const openmeta::TiffEditPlan malformed_pointer_plan
+        = openmeta::plan_prepared_bundle_tiff_edit(malformed_target_pointer,
+                                                   active_update);
+    EXPECT_NE(malformed_pointer_plan.status, openmeta::TransferStatus::Ok);
+    EXPECT_NE(malformed_pointer_plan.message.find("GPSIFD pointer"),
+              std::string::npos);
+}
+
+TEST(MetadataTransferApi,
+     TiffGpsRemovalsAreRejectedByFreshConsumersBeforeOutput)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format     = openmeta::TransferTargetFormat::Tiff;
+    bundle.tiff_gps_removals = { 1U };
+
+    FakeTiffEmitter emitter;
+    EXPECT_EQ(openmeta::emit_prepared_bundle_tiff(bundle, emitter).status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(emitter.u32_calls.empty());
+    EXPECT_TRUE(emitter.bytes_calls.empty());
+
+    openmeta::PreparedTiffEmitPlan tiff_plan;
+    EXPECT_EQ(openmeta::compile_prepared_bundle_tiff(bundle, &tiff_plan).status,
+              openmeta::TransferStatus::Unsupported);
+    tiff_plan.contract_version = bundle.contract_version;
+    EXPECT_EQ(openmeta::emit_prepared_bundle_tiff_compiled(bundle, tiff_plan,
+                                                           emitter)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(emitter.u32_calls.empty());
+    EXPECT_TRUE(emitter.bytes_calls.empty());
+
+    openmeta::PreparedTransferExecutionPlan execution_plan;
+    EXPECT_EQ(openmeta::compile_prepared_transfer_execution(
+                  bundle, openmeta::EmitTransferOptions {}, &execution_plan)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+    openmeta::PreparedTransferPackagePlan emit_package;
+    EXPECT_EQ(openmeta::build_prepared_transfer_emit_package(bundle,
+                                                             &emit_package)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(emit_package.chunks.empty());
+    openmeta::PreparedTransferAdapterView adapter_view;
+    EXPECT_EQ(openmeta::build_prepared_transfer_adapter_view(bundle,
+                                                             &adapter_view)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_TRUE(adapter_view.ops.empty());
+}
+
+TEST(MetadataTransferApi, TiffGpsMergeRejectsMalformedBundleIntent)
+{
+    const std::vector<std::byte> input
+        = make_gps_merge_tiff_with_opaque_external_value();
+    const std::array<std::vector<uint16_t>, 3> malformed_removals {
+        std::vector<uint16_t> { 5U, 1U }, std::vector<uint16_t> { 0U },
+        std::vector<uint16_t> { 32U }
+    };
+    for (const std::vector<uint16_t>& removals : malformed_removals) {
+        openmeta::PreparedTransferBundle bundle;
+        bundle.target_format     = openmeta::TransferTargetFormat::Tiff;
+        bundle.tiff_gps_removals = removals;
+        EXPECT_EQ(openmeta::plan_prepared_bundle_tiff_edit(input, bundle).status,
+                  openmeta::TransferStatus::InvalidArgument);
+    }
+
+    openmeta::PreparedTransferBundle pointer_bundle
+        = make_manual_gps_merge_bundle(
+            make_manual_malformed_gps_pointer_app1_payload());
+    EXPECT_EQ(
+        openmeta::plan_prepared_bundle_tiff_edit(input, pointer_bundle).status,
+        openmeta::TransferStatus::InvalidArgument);
+
+    openmeta::PreparedTransferBundle clear_bundle
+        = make_manual_gps_merge_bundle(make_manual_empty_gps_app1_payload());
+    EXPECT_EQ(
+        openmeta::plan_prepared_bundle_tiff_edit(input, clear_bundle).status,
+        openmeta::TransferStatus::InvalidArgument);
+
+    openmeta::PreparedTransferBundle unsupported_bundle
+        = make_manual_gps_merge_bundle(
+            make_manual_gps_app1_payload(65000U, 1U, 1U, 0x55U));
+    EXPECT_EQ(openmeta::plan_prepared_bundle_tiff_edit(input, unsupported_bundle)
+                  .status,
+              openmeta::TransferStatus::InvalidArgument);
+
+    openmeta::PreparedTransferBundle overlap_bundle
+        = make_manual_gps_merge_bundle(
+            make_manual_gps_app1_payload(1U, 2U, 2U,
+                                         static_cast<uint32_t>('N')));
+    overlap_bundle.tiff_gps_removals = { 1U };
+    EXPECT_EQ(
+        openmeta::plan_prepared_bundle_tiff_edit(input, overlap_bundle).status,
+        openmeta::TransferStatus::InvalidArgument);
 }
 
 TEST(MetadataTransferApi,
