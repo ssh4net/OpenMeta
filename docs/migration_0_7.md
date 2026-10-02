@@ -1,5 +1,8 @@
 # Migrating to OpenMeta 0.7
 
+This guide describes the 0.7 release. For the current minimum-version
+package policy, see [Shared Library Contract](shared_library.md).
+
 OpenMeta 0.7.2 retains the **unfrozen development ABI label 4**. Public C++
 layouts and APIs may change while that label stays 4. Rebuild applications and
 plugins against matching release headers and library whenever they change;

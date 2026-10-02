@@ -1,5 +1,8 @@
 # Migrating to OpenMeta 0.6.0
 
+This guide describes the 0.6 release. For the current minimum-version
+package policy, see [Shared Library Contract](shared_library.md).
+
 This guide describes the 0.6 release boundary. Current 0.7 builds also use
 the unfrozen development ABI label 4; matching numbers do not establish
 binary compatibility. Rebuild against matching release headers/libraries.

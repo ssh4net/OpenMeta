@@ -1,5 +1,8 @@
 # Migrating to OpenMeta 0.5.0
 
+This guide describes the 0.5 release. For the current minimum-version
+package policy, see [Shared Library Contract](shared_library.md).
+
 Version 0.5.0 introduces a breaking prepared-patch API. Applications using the
 old interface must use an earlier release or migrate and rebuild. No legacy
 header aliases, old patch symbols or compatibility wrappers are provided.

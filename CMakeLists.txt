@@ -1132,6 +1132,7 @@ if(OPENMETA_BUILD_TESTS)
   add_test(NAME openmeta_patch_release_boundary
     COMMAND ${CMAKE_COMMAND}
       "-DOPENMETA_VERSION_FILE=${CMAKE_CURRENT_BINARY_DIR}/OpenMetaConfigVersion.cmake"
+      "-DOPENMETA_VERSION=${PROJECT_VERSION}"
       "-DOPENMETA_ABI=${OPENMETA_ABI_VERSION}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/patch_release_boundary.cmake")
 
@@ -1698,10 +1699,11 @@ configure_package_config_file(
   INSTALL_DESTINATION "${_openmeta_pkg_dir}"
 )
 
+# Minimum feature requests can span minor releases; this is not an ABI guarantee.
 write_basic_package_version_file(
   "${CMAKE_CURRENT_BINARY_DIR}/OpenMetaConfigVersion.cmake"
   VERSION "${PROJECT_VERSION}"
-  COMPATIBILITY SameMinorVersion
+  COMPATIBILITY SameMajorVersion
 )
 
 install(

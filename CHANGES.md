@@ -11,7 +11,10 @@
   conflicting versions and unrepresentable removal/merge consumers before output.
 - Advance all five GPS translation contracts to version 2. Keep development ABI
   4, but require matching consumer rebuilds for the new prepared-bundle layout.
-  The package minor boundary advances to 0.8; host synchronization remains.
+  The project version advances to 0.8; host synchronization remains.
+- Use same-major CMake minimum-version discovery: 0.8 can satisfy a 0.7 request.
+  Retain exact-version and range constraints. This selects packages for source
+  rebuilds and does not guarantee unchanged experimental APIs or binary layouts.
 
 ## 0.7.2 - 2026-10-02
 

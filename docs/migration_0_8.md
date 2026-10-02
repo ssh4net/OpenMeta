@@ -3,8 +3,12 @@
 OpenMeta 0.8.0 retains the **unfrozen development ABI label 4**. The public
 `PreparedTransferBundle` layout changes: rebuild applications and plugins against
 matching headers and libraries. Request `find_package(OpenMeta 0.8 CONFIG REQUIRED)`.
-The installed `SameMinorVersion` policy rejects 0.7 package requests. ABI label 4
-alone does not establish compatibility with older binaries.
+The installed `SameMajorVersion` policy accepts older 0.x minimum requests,
+such as `find_package(OpenMeta 0.7 CONFIG REQUIRED)`. Higher minimums and
+mismatched `EXACT` requests are rejected; version ranges retain their bounds.
+Package selection does not guarantee unchanged experimental APIs or binary
+compatibility. ABI label 4 alone does not establish compatibility with older
+binaries.
 
 ## GPS edit ownership
 
