@@ -193,7 +193,7 @@ capture = openmeta.create_metadata([
     openmeta.metadata_creation_urational(K.FocalLength, 50, 1),
 ])
 translated_capture = capture.translate_capture_metadata()
-assert openmeta.METADATA_CAPTURE_TRANSLATION_CONTRACT_VERSION == 2
+assert openmeta.METADATA_CAPTURE_TRANSLATION_CONTRACT_VERSION == 3
 assert translated_capture.entry_count == capture.entry_count + 4
 assert capture.entry_count == 4
 
@@ -657,7 +657,7 @@ with tempfile.TemporaryDirectory() as temporary:
     path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
     document = openmeta.read(str(path))
     count = document.entry_count
-    assert openmeta.METADATA_CAPTURE_SETTINGS_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_CAPTURE_SETTINGS_TRANSLATION_CONTRACT_VERSION == 2
     assert document.translate_capture_settings_metadata().entry_count == count
     translated = document.translate_capture_settings_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
     assert translated.entry_count == count + 12
@@ -875,7 +875,7 @@ with tempfile.TemporaryDirectory() as temporary:
         path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
         document = openmeta.read(str(path))
         count = document.entry_count
-        assert openmeta.METADATA_APEX_TRANSLATION_CONTRACT_VERSION == 1
+        assert openmeta.METADATA_APEX_TRANSLATION_CONTRACT_VERSION == 2
         assert document.translate_apex_metadata().entry_count == count
         translated = document.translate_apex_metadata(source_mode=mode)
         assert translated.entry_count == count + 5
@@ -898,6 +898,34 @@ with tempfile.TemporaryDirectory() as temporary:
         restored = openmeta.read(str(path))
         assert restored.translate_apex_metadata(source_mode=mode).entry_count == restored.entry_count + 5
         assert document.entry_count == count
+
+with tempfile.TemporaryDirectory() as temporary:
+    path = Path(temporary) / 'apex_settings.jpg'
+    mode = openmeta.MetadataCaptureTranslationSourceMode.All
+    fields = (('ShutterSpeedValue', '6/1'), ('ApertureValue', '3/1'),
+              ('BrightnessValue', '-2/4'), ('ExposureBiasValue', '-1/3'),
+              ('MaxApertureValue', '2/1'), ('ExposureProgram', '3'),
+              ('MeteringMode', '5'), ('SensingMethod', '2'),
+              ('CustomRendered', '1'), ('ExposureMode', '2'),
+              ('WhiteBalance', '1'), ('SceneCaptureType', '3'),
+              ('GainControl', '4'), ('Contrast', '2'), ('Saturation', '1'),
+              ('Sharpness', '2'), ('SubjectDistanceRange', '3'))
+    attrs = ' '.join(\"e:\" + name + \"='\" + value + \"'\" for name, value in fields)
+    xml = (\"<r:RDF xmlns:r='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><r:Description xmlns:e='http://ns.adobe.com/exif/1.0/' \" + attrs + \"/></r:RDF>\").encode()
+    packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + xml
+    path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    document = openmeta.read(str(path))
+    apex = document.translate_apex_metadata(source_mode=mode)
+    translated = apex.translate_capture_settings_metadata(source_mode=mode)
+    assert translated.entry_count == document.entry_count + 17
+    assert translated.translate_apex_metadata(source_mode=mode).translate_capture_settings_metadata(source_mode=mode).entry_count == translated.entry_count
+    try:
+        apex.translate_capture_settings_metadata(source_mode=mode, max_added_entries=11)
+    except ValueError as error:
+        assert 'entry_limit_exceeded' in str(error)
+    else:
+        raise AssertionError('combined settings budget ignored')
+    assert apex.entry_count == document.entry_count + 5
 
 with tempfile.TemporaryDirectory() as temporary:
     path = Path(temporary) / 'capture_spatial.jpg'

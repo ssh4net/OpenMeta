@@ -1292,3 +1292,15 @@ EXIF opt-out and unsupported-consumer rejection stay unchanged. Full sensitivity
 owns seven members; basic ISO owns its base tag only. See
 [migration](migration_0_7.md) for the 22-tag allowlist, contract versions, unfrozen
 ABI-4 policy and exclusions.
+
+## APEX and capture-settings destination editing (0.7.2)
+
+The bounded ExifIFD removal and merge mode now covers all five APEX singleton
+fields and twelve closed-enum capture settings. General capture and APEX share
+ExposureBias ownership; hosts disable one overlap when composing and stage the
+separate transactions before publication. Deletion intent for missing keys,
+clean-exact Dirty authority, omission/conflict rules and preflight budgets match
+the existing bounded lifecycle. The complete allowlist grows from 22 to 39 tags;
+no new bundle layout or snapshot format is needed. Capture contract 3 and
+APEX/settings contracts 2 describe the changes. ABI 4 and package-minor policy
+remain. See [migration](migration_0_7.md) for exact tags and exclusions.

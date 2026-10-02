@@ -1,6 +1,6 @@
 # Migrating to OpenMeta 0.7
 
-OpenMeta 0.7.1 retains the **unfrozen development ABI label 4**. Public C++
+OpenMeta 0.7.2 retains the **unfrozen development ABI label 4**. Public C++
 layouts and APIs may change while that label stays 4. Rebuild applications and
 plugins against matching release headers and library whenever they change;
 the label alone does not establish compatibility with older ABI-4 binaries.
@@ -40,7 +40,8 @@ call succeeds. Fractional dates still require disabling lossy IPTC mappings.
 
 ## Capture and lens authority
 
-Capture, Flash, sensitivity and camera-text translation contracts are version 2.
+In 0.7.1 capture, Flash, sensitivity and camera-text translation contracts became
+version 2; 0.7.2 advances capture to version 3 for ExposureBias ownership.
 Accepted ExposureTime, FNumber, base ISO, Flash, FocalLength and lens make/model/
 serial owners carry native deletion intent even when their source native keys
 are missing. Accepted clean exact native values gain Dirty with a same-value
@@ -52,9 +53,10 @@ Full sensitivity owns PhotographicSensitivity and tags `8830`–`8835` as one
 validated group. Optional absent members carry deletion intent only after the
 complete source passes validation. Basic ISO owns only `8827` and preserves
 sensitivity companions; disable its mapping when the full group owns that source.
-Lens make/model/serial are independent singletons. ExposureBiasValue,
-LensSpecification, camera-owner/body-serial and other capture translators retain
-their existing behavior. Hosts stage the separate translator calls before
+Lens make/model/serial are independent singletons. LensSpecification,
+camera-owner/body-serial and other capture translators retain their existing
+behavior; 0.7.2 adds the APEX and settings lifecycle described below. Hosts stage
+the separate translator calls before
 publishing an aggregate result.
 
 TIFF preparation enables preservation of unspecified destination ExifIFD fields
@@ -64,11 +66,37 @@ removal accepts ExposureTime `829A`, FNumber `829D`, PhotographicSensitivity
 FocalLength `920A`, LensMake `A433`, LensModel `A434` and LensSerialNumber `A435`.
 Snapshot v1 remains unchanged.
 
+## APEX and capture-settings authority (0.7.2)
+
+APEX and capture-settings translation contracts are version 2. General capture
+is version 3 because its ExposureCompensation mapping shares the APEX bias
+owner. Each of the five APEX fields and twelve closed capture settings is an
+independent singleton. Accepted dirty owner deletion carries exact native
+Dirty+Deleted intent even when the source native key is missing. Accepted clean
+exact values gain Dirty without changing their scalar, rational encoding or
+wire provenance. Omitted or ineligible owners preserve destination values.
+
+Existing conflict policies, exact APEX units, brightness unknown sentinel,
+accepted enum codes, alias and source-shape validation remain. Intent additions,
+clean-marker promotion and same-value authority updates consume preflight
+entry/operation budgets. Repeated calls reuse intent; each translator commits
+once or leaves the output unchanged. Hosts stage separate calls before publishing
+an aggregate result and disable one overlapping ExposureBias mapping when both
+APEX and general capture are used. No exposure or camera-state inference occurs.
+
+TIFF/BigTIFF edits use the existing removal list and ExifIFD merge flag for the
+17 additional tags: `8822`, `9201`–`9205`, `9207`, `A217`, `A401`–`A403`,
+`A406`–`A40A` and `A40C`. The complete allowlist has 39 tags. Unselected native
+records, opaque MakerNote bytes and original offsets, standard pointers and
+media remain preserved. Snapshot v1, bundle/API layouts, development ABI 4,
+package-minor policy and unsupported-consumer rejection are unchanged.
+
 ## TIFF edit requests
 
 The sorted unique `tiff_ifd0_removals` list adds DateTime `0x0132` to the six
 previously supported root tags. The new sorted unique `tiff_exif_removals`
-list accepts the capture/lens tags above and these primary ExifIFD timestamps:
+list accepts the capture/lens/APEX/settings tags above and these primary ExifIFD
+timestamps:
 
 | Family | Base timestamp | Offset | Subsecond |
 | --- | --- | --- | --- |

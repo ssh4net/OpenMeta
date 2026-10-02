@@ -7505,6 +7505,228 @@ namespace {
         EXPECT_EQ(apex_snapshot(source), before);
     }
 
+    enum class LifecycleTranslator : uint8_t {
+        Apex,
+        Settings,
+        Capture,
+    };
+
+    struct LifecycleOwnerCase final {
+        LifecycleTranslator translator;
+        std::string_view path;
+        uint16_t tag;
+        MetaValue source_value;
+        MetaValue native_value;
+        uint16_t wire_code;
+    };
+
+    static std::array<LifecycleOwnerCase, 17U> lifecycle_owner_cases()
+    {
+        return { { { LifecycleTranslator::Apex, "ShutterSpeedValue", 0x9201U,
+                     make_srational(-7, 3), make_srational(-14, 6), 10U },
+                   { LifecycleTranslator::Apex, "ApertureValue", 0x9202U,
+                     make_urational(3U, 2U), make_urational(6U, 4U), 5U },
+                   { LifecycleTranslator::Apex, "BrightnessValue", 0x9203U,
+                     make_srational(-2, 3), make_srational(-4, 6), 10U },
+                   { LifecycleTranslator::Apex, "ExposureBiasValue", 0x9204U,
+                     make_srational(-1, 2), make_srational(-2, 4), 10U },
+                   { LifecycleTranslator::Apex, "MaxApertureValue", 0x9205U,
+                     make_urational(5U, 2U), make_urational(10U, 4U), 5U },
+                   { LifecycleTranslator::Settings, kSettingsPaths[0],
+                     kSettingsTags[0], make_u16(kSettingsValues[0]),
+                     make_u16(kSettingsValues[0]), 3U },
+                   { LifecycleTranslator::Settings, kSettingsPaths[1],
+                     kSettingsTags[1], make_u16(kSettingsValues[1]),
+                     make_u16(kSettingsValues[1]), 3U },
+                   { LifecycleTranslator::Settings, kSettingsPaths[2],
+                     kSettingsTags[2], make_u16(kSettingsValues[2]),
+                     make_u16(kSettingsValues[2]), 3U },
+                   { LifecycleTranslator::Settings, kSettingsPaths[3],
+                     kSettingsTags[3], make_u16(kSettingsValues[3]),
+                     make_u16(kSettingsValues[3]), 3U },
+                   { LifecycleTranslator::Settings, kSettingsPaths[4],
+                     kSettingsTags[4], make_u16(kSettingsValues[4]),
+                     make_u16(kSettingsValues[4]), 3U },
+                   { LifecycleTranslator::Settings, kSettingsPaths[5],
+                     kSettingsTags[5], make_u16(kSettingsValues[5]),
+                     make_u16(kSettingsValues[5]), 3U },
+                   { LifecycleTranslator::Settings, kSettingsPaths[6],
+                     kSettingsTags[6], make_u16(kSettingsValues[6]),
+                     make_u16(kSettingsValues[6]), 3U },
+                   { LifecycleTranslator::Settings, kSettingsPaths[7],
+                     kSettingsTags[7], make_u16(kSettingsValues[7]),
+                     make_u16(kSettingsValues[7]), 3U },
+                   { LifecycleTranslator::Settings, kSettingsPaths[8],
+                     kSettingsTags[8], make_u16(kSettingsValues[8]),
+                     make_u16(kSettingsValues[8]), 3U },
+                   { LifecycleTranslator::Settings, kSettingsPaths[9],
+                     kSettingsTags[9], make_u16(kSettingsValues[9]),
+                     make_u16(kSettingsValues[9]), 3U },
+                   { LifecycleTranslator::Settings, kSettingsPaths[10],
+                     kSettingsTags[10], make_u16(kSettingsValues[10]),
+                     make_u16(kSettingsValues[10]), 3U },
+                   { LifecycleTranslator::Settings, kSettingsPaths[11],
+                     kSettingsTags[11], make_u16(kSettingsValues[11]),
+                     make_u16(kSettingsValues[11]), 3U } } };
+    }
+
+    static MetadataCaptureTranslationResult lifecycle_translate(
+        const LifecycleOwnerCase& owner, const MetaStore& source,
+        MetaStore* output,
+        MetadataCaptureTranslationSourceMode source_mode
+        = MetadataCaptureTranslationSourceMode::DirtyOnly,
+        MetadataCaptureTranslationConflictPolicy conflict_policy
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+        uint32_t max_added_entries = 0U, uint32_t max_operations = 0U)
+    {
+        if (owner.translator == LifecycleTranslator::Apex) {
+            ApexOptions options;
+            options.source_mode     = source_mode;
+            options.conflict_policy = conflict_policy;
+            if (max_added_entries != 0U)
+                options.max_added_entries = max_added_entries;
+            if (max_operations != 0U)
+                options.max_operations = max_operations;
+            return translate_xmp_apex_metadata(source, options, output);
+        }
+        if (owner.translator == LifecycleTranslator::Settings) {
+            MetadataCaptureSettingsTranslationOptions options;
+            options.source_mode     = source_mode;
+            options.conflict_policy = conflict_policy;
+            if (max_added_entries != 0U)
+                options.max_added_entries = max_added_entries;
+            if (max_operations != 0U)
+                options.max_operations = max_operations;
+            return translate_xmp_capture_settings_metadata(source, options,
+                                                           output);
+        }
+        MetadataCaptureTranslationOptions options;
+        options.source_mode                   = source_mode;
+        options.conflict_policy               = conflict_policy;
+        options.exposure_time_to_exif         = false;
+        options.f_number_to_exif              = false;
+        options.iso_to_exif                   = false;
+        options.focal_length_to_exif          = false;
+        options.exposure_compensation_to_exif = true;
+        if (max_added_entries != 0U)
+            options.max_added_entries = max_added_entries;
+        if (max_operations != 0U)
+            options.max_operations = max_operations;
+        return translate_xmp_capture_metadata(source, options, output);
+    }
+
+    static void lifecycle_add_xmp(MetaStore& store,
+                                  const LifecycleOwnerCase& owner,
+                                  EntryFlags flags = EntryFlags::Dirty)
+    {
+        settings_xmp(store, owner.path, owner.source_value, flags);
+    }
+
+    static void
+    lifecycle_add_native(MetaStore& store, const LifecycleOwnerCase& owner,
+                         MetaValue value, EntryFlags flags,
+                         std::string_view wire_name = "native-lifecycle-wire")
+    {
+        settings_native_entry(store, owner.tag, value, flags, owner.wire_code,
+                              wire_name);
+    }
+
+    static MetaValue
+    lifecycle_conflict_value(const LifecycleOwnerCase& owner) noexcept
+    {
+        if (owner.native_value.elem_type == MetaElementType::SRational)
+            return make_srational(owner.native_value.data.sr.numer + 1,
+                                  owner.native_value.data.sr.denom);
+        if (owner.native_value.elem_type == MetaElementType::URational)
+            return make_urational(owner.native_value.data.ur.numer + 1U,
+                                  owner.native_value.data.ur.denom);
+        return make_u16(
+            static_cast<uint16_t>(owner.native_value.data.u64 + 1U));
+    }
+
+    static void lifecycle_expect_value(const MetaStore& store,
+                                       const LifecycleOwnerCase& owner,
+                                       const MetaValue& expected)
+    {
+        const Entry* entry = settings_find(store, owner.tag);
+        ASSERT_NE(entry, nullptr);
+        ASSERT_EQ(entry->value.kind, MetaValueKind::Scalar);
+        ASSERT_EQ(entry->value.elem_type, expected.elem_type);
+        ASSERT_EQ(entry->value.count, expected.count);
+        if (expected.elem_type == MetaElementType::SRational) {
+            EXPECT_EQ(entry->value.data.sr.numer, expected.data.sr.numer);
+            EXPECT_EQ(entry->value.data.sr.denom, expected.data.sr.denom);
+        } else if (expected.elem_type == MetaElementType::URational) {
+            EXPECT_EQ(entry->value.data.ur.numer, expected.data.ur.numer);
+            EXPECT_EQ(entry->value.data.ur.denom, expected.data.ur.denom);
+        } else {
+            EXPECT_EQ(entry->value.data.u64, expected.data.u64);
+        }
+    }
+
+    static MetaStore
+    lifecycle_mixed_source(const std::array<LifecycleOwnerCase, 17U>& owners,
+                           LifecycleTranslator translator)
+    {
+        MetaStore source;
+        size_t field_index = 0U;
+        for (const LifecycleOwnerCase& owner : owners) {
+            if (owner.translator != translator)
+                continue;
+            const size_t state     = field_index++ % 4U;
+            const EntryFlags flags = state >= 2U ? EntryFlags::Dirty
+                                                       | EntryFlags::Deleted
+                                                 : EntryFlags::Dirty;
+            lifecycle_add_xmp(source, owner, flags);
+            if (state == 1U || state == 3U)
+                lifecycle_add_native(source, owner,
+                                     lifecycle_conflict_value(owner),
+                                     EntryFlags::None, "native-mismatch");
+        }
+        return source;
+    }
+
+    static MetaStore
+    lifecycle_uniform_source(const std::array<LifecycleOwnerCase, 17U>& owners,
+                             LifecycleTranslator translator, bool deleted,
+                             bool with_native,
+                             EntryFlags native_flags = EntryFlags::None)
+    {
+        MetaStore source;
+        for (const LifecycleOwnerCase& owner : owners) {
+            if (owner.translator != translator)
+                continue;
+            lifecycle_add_xmp(source, owner,
+                              deleted ? EntryFlags::Dirty | EntryFlags::Deleted
+                                      : EntryFlags::Dirty);
+            if (with_native)
+                lifecycle_add_native(source, owner, owner.native_value,
+                                     native_flags);
+        }
+        return source;
+    }
+
+    static void lifecycle_budget_failure(
+        LifecycleTranslator translator, MetaStore& source,
+        MetadataCaptureTranslationStatus expected,
+        MetadataCaptureTranslationConflictPolicy conflict_policy,
+        uint32_t max_added_entries, uint32_t max_operations)
+    {
+        if (translator == LifecycleTranslator::Apex) {
+            ApexOptions options;
+            options.conflict_policy   = conflict_policy;
+            options.max_added_entries = max_added_entries;
+            options.max_operations    = max_operations;
+            apex_failure(source, expected, options);
+            return;
+        }
+        MetadataCaptureSettingsTranslationOptions options;
+        options.conflict_policy   = conflict_policy;
+        options.max_added_entries = max_added_entries;
+        options.max_operations    = max_operations;
+        settings_failure(source, expected, options);
+    }
+
     using SpatialOptions = MetadataCaptureSpatialTranslationOptions;
     using SpatialStatus  = MetadataCaptureTranslationStatus;
     using SpatialPolicy  = MetadataCaptureTranslationConflictPolicy;
@@ -8126,6 +8348,474 @@ namespace {
                   1U);
     }
 
+    TEST(MetadataCaptureLifecycle,
+         ApexSettingsAndExposureBiasPromoteNativeLifecycleAuthority)
+    {
+        const std::array<LifecycleOwnerCase, 17U> owners
+            = lifecycle_owner_cases();
+        for (const LifecycleOwnerCase& owner : owners) {
+            SCOPED_TRACE(owner.path);
+
+            MetaStore deleted;
+            lifecycle_add_xmp(deleted, owner,
+                              EntryFlags::Dirty | EntryFlags::Deleted);
+            deleted.finalize();
+            auto removed = lifecycle_translate(
+                owner, deleted, &deleted,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict, 1U,
+                1U);
+            ASSERT_EQ(removed.status, MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(removed.entries_added, 1U);
+            EXPECT_EQ(removed.entries_updated, 0U);
+            EXPECT_EQ(removed.entries_removed, 0U);
+            ASSERT_NO_FATAL_FAILURE(
+                expect_native_delete_intent(deleted, owner.tag));
+            const auto deleted_ids = settings_native_history_ids(deleted,
+                                                                 owner.tag);
+            ASSERT_EQ(deleted_ids.size(), 1U);
+            const Entry& delete_intent = deleted.entry(deleted_ids.front());
+            EXPECT_EQ(delete_intent.value.kind, MetaValueKind::Scalar);
+            EXPECT_EQ(delete_intent.value.elem_type,
+                      owner.source_value.elem_type);
+            EXPECT_EQ(delete_intent.value.count, 1U);
+            removed = lifecycle_translate(
+                owner, deleted, &deleted,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict, 1U,
+                1U);
+            expect_lifecycle_repeat(removed.groups_unchanged,
+                                    removed.entries_added,
+                                    removed.entries_updated);
+
+            MetaStore exact;
+            lifecycle_add_xmp(exact, owner);
+            lifecycle_add_native(exact, owner, owner.native_value,
+                                 EntryFlags::None);
+            exact.finalize();
+            const auto authority = lifecycle_translate(
+                owner, exact, &exact,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict, 1U,
+                1U);
+            ASSERT_EQ(authority.status, MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(authority.entries_added, 0U);
+            EXPECT_EQ(authority.entries_updated, 1U);
+            ASSERT_NO_FATAL_FAILURE(
+                expect_native_authority(exact, owner.tag, owner.wire_code, 1U,
+                                        "native-lifecycle-wire"));
+            lifecycle_expect_value(exact, owner, owner.native_value);
+            const auto exact_repeat = lifecycle_translate(owner, exact, &exact);
+            expect_lifecycle_repeat(exact_repeat.groups_unchanged,
+                                    exact_repeat.entries_added,
+                                    exact_repeat.entries_updated);
+
+            MetaStore clean_history;
+            lifecycle_add_xmp(clean_history, owner,
+                              EntryFlags::Dirty | EntryFlags::Deleted);
+            lifecycle_add_native(clean_history, owner, owner.native_value,
+                                 EntryFlags::Deleted);
+            lifecycle_add_native(clean_history, owner, owner.native_value,
+                                 EntryFlags::Deleted,
+                                 "unrelated-clean-history");
+            clean_history.finalize();
+            const auto reused = lifecycle_translate(
+                owner, clean_history, &clean_history,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict, 1U,
+                1U);
+            ASSERT_EQ(reused.status, MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(reused.entries_updated, 1U);
+            EXPECT_EQ(reused.entries_added, 0U);
+            auto history_ids = settings_native_history_ids(clean_history,
+                                                           owner.tag);
+            ASSERT_EQ(history_ids.size(), 2U);
+            EXPECT_TRUE(any(clean_history.entry(history_ids[0]).flags,
+                            EntryFlags::Dirty));
+            EXPECT_TRUE(any(clean_history.entry(history_ids[0]).flags,
+                            EntryFlags::Deleted));
+            const Entry& reused_marker = clean_history.entry(history_ids[0]);
+            EXPECT_EQ(reused_marker.value.elem_type,
+                      owner.native_value.elem_type);
+            EXPECT_EQ(reused_marker.value.count, owner.native_value.count);
+            EXPECT_EQ(reused_marker.origin.wire_type.family, WireFamily::Tiff);
+            EXPECT_EQ(reused_marker.origin.wire_type.code, owner.wire_code);
+            EXPECT_EQ(reused_marker.origin.wire_count, 1U);
+            EXPECT_EQ(reused_marker.origin.order_in_block, 17U);
+            const auto reused_marker_wire = clean_history.arena().span(
+                reused_marker.origin.wire_type_name);
+            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                           reused_marker_wire.data()),
+                                       reused_marker_wire.size()),
+                      "native-lifecycle-wire");
+            EXPECT_FALSE(any(clean_history.entry(history_ids[1]).flags,
+                             EntryFlags::Dirty));
+            const auto retained_history_wire = clean_history.arena().span(
+                clean_history.entry(history_ids[1]).origin.wire_type_name);
+            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                           retained_history_wire.data()),
+                                       retained_history_wire.size()),
+                      "unrelated-clean-history");
+            const auto history_repeat
+                = lifecycle_translate(owner, clean_history, &clean_history);
+            expect_lifecycle_repeat(history_repeat.groups_unchanged,
+                                    history_repeat.entries_added,
+                                    history_repeat.entries_updated);
+
+            MetaStore existing_intent;
+            lifecycle_add_xmp(existing_intent, owner,
+                              EntryFlags::Dirty | EntryFlags::Deleted);
+            lifecycle_add_native(existing_intent, owner, owner.native_value,
+                                 EntryFlags::Dirty | EntryFlags::Deleted);
+            lifecycle_add_native(existing_intent, owner, owner.native_value,
+                                 EntryFlags::Deleted,
+                                 "preserved-clean-history");
+            existing_intent.finalize();
+            const auto intent_repeat = lifecycle_translate(
+                owner, existing_intent, &existing_intent,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict, 1U,
+                1U);
+            expect_lifecycle_repeat(intent_repeat.groups_unchanged,
+                                    intent_repeat.entries_added,
+                                    intent_repeat.entries_updated);
+            history_ids = settings_native_history_ids(existing_intent,
+                                                      owner.tag);
+            ASSERT_EQ(history_ids.size(), 2U);
+            EXPECT_TRUE(any(existing_intent.entry(history_ids[0]).flags,
+                            EntryFlags::Dirty));
+            EXPECT_FALSE(any(existing_intent.entry(history_ids[1]).flags,
+                             EntryFlags::Dirty));
+            const auto preserved_history_wire = existing_intent.arena().span(
+                existing_intent.entry(history_ids[1]).origin.wire_type_name);
+            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                           preserved_history_wire.data()),
+                                       preserved_history_wire.size()),
+                      "preserved-clean-history");
+
+            MetaStore omitted;
+            lifecycle_add_native(omitted, owner, owner.native_value,
+                                 EntryFlags::None);
+            omitted.finalize();
+            const auto omitted_result = lifecycle_translate(owner, omitted,
+                                                            &omitted);
+            EXPECT_EQ(omitted_result.status,
+                      MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(omitted_result.entries_added, 0U);
+            EXPECT_EQ(omitted_result.entries_updated, 0U);
+            EXPECT_EQ(omitted_result.entries_removed, 0U);
+            EXPECT_EQ(settings_active_count(omitted, owner.tag), 1U);
+            lifecycle_expect_value(omitted, owner, owner.native_value);
+
+            MetaStore clean_source;
+            lifecycle_add_xmp(clean_source, owner, EntryFlags::None);
+            clean_source.finalize();
+            const auto dirty_only = lifecycle_translate(owner, clean_source,
+                                                        &clean_source);
+            EXPECT_EQ(dirty_only.source_properties, 0U);
+            EXPECT_EQ(dirty_only.entries_added, 0U);
+            const auto all_source
+                = lifecycle_translate(owner, clean_source, &clean_source,
+                                      MetadataCaptureTranslationSourceMode::All);
+            EXPECT_EQ(all_source.status, MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(all_source.entries_added, 1U);
+            EXPECT_NE(settings_find(clean_source, owner.tag), nullptr);
+        }
+
+        LifecycleOwnerCase capture_bias = owners[3U];
+        capture_bias.translator         = LifecycleTranslator::Capture;
+        capture_bias.path               = "ExposureCompensation";
+        MetaStore bias_deleted;
+        lifecycle_add_xmp(bias_deleted, capture_bias,
+                          EntryFlags::Dirty | EntryFlags::Deleted);
+        bias_deleted.finalize();
+        auto bias_removed = lifecycle_translate(
+            capture_bias, bias_deleted, &bias_deleted,
+            MetadataCaptureTranslationSourceMode::DirtyOnly,
+            MetadataCaptureTranslationConflictPolicy::FailOnConflict, 1U, 1U);
+        ASSERT_EQ(bias_removed.status, MetadataCaptureTranslationStatus::Ok);
+        EXPECT_EQ(bias_removed.entries_added, 1U);
+        ASSERT_NO_FATAL_FAILURE(
+            expect_native_delete_intent(bias_deleted, capture_bias.tag));
+
+        MetaStore bias_exact;
+        lifecycle_add_xmp(bias_exact, capture_bias);
+        lifecycle_add_native(bias_exact, capture_bias,
+                             capture_bias.native_value, EntryFlags::None,
+                             "native-capture-bias-wire");
+        bias_exact.finalize();
+        const auto bias_authority = lifecycle_translate(
+            capture_bias, bias_exact, &bias_exact,
+            MetadataCaptureTranslationSourceMode::DirtyOnly,
+            MetadataCaptureTranslationConflictPolicy::FailOnConflict, 1U, 1U);
+        ASSERT_EQ(bias_authority.status, MetadataCaptureTranslationStatus::Ok);
+        EXPECT_EQ(bias_authority.entries_updated, 1U);
+        lifecycle_expect_value(bias_exact, capture_bias, make_srational(-2, 4));
+        ASSERT_NO_FATAL_FAILURE(
+            expect_native_authority(bias_exact, capture_bias.tag,
+                                    capture_bias.wire_code, 1U,
+                                    "native-capture-bias-wire"));
+        const auto bias_repeat = lifecycle_translate(capture_bias, bias_exact,
+                                                     &bias_exact);
+        expect_lifecycle_repeat(bias_repeat.groups_unchanged,
+                                bias_repeat.entries_added,
+                                bias_repeat.entries_updated);
+
+        MetaStore duplicate_bias;
+        lifecycle_add_xmp(duplicate_bias, capture_bias);
+        settings_xmp(duplicate_bias, "ExposureBiasValue",
+                     capture_bias.source_value);
+        duplicate_bias.finalize();
+        const std::vector<std::byte> duplicate_before = apex_snapshot(
+            duplicate_bias);
+        const auto ambiguous = lifecycle_translate(
+            capture_bias, duplicate_bias, &duplicate_bias,
+            MetadataCaptureTranslationSourceMode::DirtyOnly,
+            MetadataCaptureTranslationConflictPolicy::FailOnConflict);
+        EXPECT_EQ(ambiguous.status,
+                  MetadataCaptureTranslationStatus::AmbiguousSource);
+        EXPECT_EQ(apex_snapshot(duplicate_bias), duplicate_before);
+    }
+
+    TEST(MetadataCaptureLifecycle,
+         AllOwnersHonorPoliciesAndMixedPreflightBudgets)
+    {
+        const std::array<LifecycleOwnerCase, 17U> owners
+            = lifecycle_owner_cases();
+        for (const LifecycleOwnerCase& owner : owners) {
+            SCOPED_TRACE(owner.path);
+            const MetaValue mismatch = lifecycle_conflict_value(owner);
+
+            MetaStore conflict;
+            lifecycle_add_xmp(conflict, owner);
+            lifecycle_add_native(conflict, owner, mismatch, EntryFlags::None);
+            conflict.finalize();
+            const auto preserved = lifecycle_translate(
+                owner, conflict, &conflict,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::PreserveExisting);
+            ASSERT_EQ(preserved.status, MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(preserved.groups_preserved, 1U);
+            EXPECT_EQ(preserved.entries_updated, 0U);
+            lifecycle_expect_value(conflict, owner, mismatch);
+            const Entry* retained = settings_find(conflict, owner.tag);
+            ASSERT_NE(retained, nullptr);
+            EXPECT_FALSE(any(retained->flags, EntryFlags::Dirty));
+
+            const std::vector<std::byte> before_conflict = apex_snapshot(
+                conflict);
+            const auto failed = lifecycle_translate(
+                owner, conflict, &conflict,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict);
+            EXPECT_EQ(failed.status,
+                      MetadataCaptureTranslationStatus::NativeConflict);
+            EXPECT_EQ(apex_snapshot(conflict), before_conflict);
+
+            const auto replaced = lifecycle_translate(
+                owner, conflict, &conflict,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::ReplaceExisting);
+            ASSERT_EQ(replaced.status, MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(replaced.entries_updated, 1U);
+            lifecycle_expect_value(conflict, owner, owner.source_value);
+            retained = settings_find(conflict, owner.tag);
+            ASSERT_NE(retained, nullptr);
+            EXPECT_TRUE(any(retained->flags, EntryFlags::Dirty));
+
+            MetaStore exact_preserved;
+            lifecycle_add_xmp(exact_preserved, owner);
+            lifecycle_add_native(exact_preserved, owner, owner.native_value,
+                                 EntryFlags::None);
+            exact_preserved.finalize();
+            const auto exact_kept = lifecycle_translate(
+                owner, exact_preserved, &exact_preserved,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::PreserveExisting);
+            ASSERT_EQ(exact_kept.status, MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(exact_kept.groups_preserved, 1U);
+            EXPECT_EQ(exact_kept.entries_updated, 0U);
+            lifecycle_expect_value(exact_preserved, owner, owner.native_value);
+            retained = settings_find(exact_preserved, owner.tag);
+            ASSERT_NE(retained, nullptr);
+            EXPECT_FALSE(any(retained->flags, EntryFlags::Dirty));
+        }
+
+        for (const LifecycleTranslator translator :
+             { LifecycleTranslator::Apex, LifecycleTranslator::Settings }) {
+            SCOPED_TRACE(translator == LifecycleTranslator::Apex ? "APEX"
+                                                                 : "settings");
+            LifecycleOwnerCase selector {};
+            selector.translator        = translator;
+            const uint32_t owner_count = translator == LifecycleTranslator::Apex
+                                             ? 5U
+                                             : 12U;
+
+            MetaStore partial_dirty;
+            size_t field_index = 0U;
+            for (const LifecycleOwnerCase& owner : owners) {
+                if (owner.translator != translator)
+                    continue;
+                const EntryFlags flags = field_index % 2U == 0U
+                                             ? EntryFlags::Dirty
+                                             : EntryFlags::None;
+                lifecycle_add_xmp(partial_dirty, owner, flags);
+                ++field_index;
+            }
+            partial_dirty.finalize();
+            const auto dirty_selection = lifecycle_translate(
+                selector, partial_dirty, &partial_dirty,
+                MetadataCaptureTranslationSourceMode::DirtyOnly);
+            ASSERT_EQ(dirty_selection.status,
+                      MetadataCaptureTranslationStatus::Ok);
+            const uint32_t expected_dirty_count = (owner_count + 1U) / 2U;
+            EXPECT_EQ(dirty_selection.entries_added, expected_dirty_count);
+            const auto all_selection
+                = lifecycle_translate(selector, partial_dirty, &partial_dirty,
+                                      MetadataCaptureTranslationSourceMode::All);
+            ASSERT_EQ(all_selection.status,
+                      MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(all_selection.entries_added,
+                      owner_count - expected_dirty_count);
+            EXPECT_EQ(all_selection.groups_unchanged, expected_dirty_count);
+
+            MetaStore added = lifecycle_uniform_source(owners, translator,
+                                                       false, false);
+            added.finalize();
+            const auto added_result = lifecycle_translate(
+                selector, added, &added,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+                owner_count, owner_count);
+            ASSERT_EQ(added_result.status,
+                      MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(added_result.entries_added, owner_count);
+            EXPECT_EQ(added_result.groups_translated, owner_count);
+
+            MetaStore add_entry_short
+                = lifecycle_uniform_source(owners, translator, false, false);
+            lifecycle_budget_failure(
+                translator, add_entry_short,
+                MetadataCaptureTranslationStatus::EntryLimitExceeded,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+                owner_count - 1U, owner_count);
+            MetaStore add_operation_short
+                = lifecycle_uniform_source(owners, translator, false, false);
+            lifecycle_budget_failure(
+                translator, add_operation_short,
+                MetadataCaptureTranslationStatus::OperationLimitExceeded,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+                owner_count, owner_count - 1U);
+
+            MetaStore deleted = lifecycle_uniform_source(owners, translator,
+                                                         true, false);
+            deleted.finalize();
+            const auto deleted_result = lifecycle_translate(
+                selector, deleted, &deleted,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+                owner_count, owner_count);
+            ASSERT_EQ(deleted_result.status,
+                      MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(deleted_result.entries_added, owner_count);
+            EXPECT_EQ(deleted_result.entries_updated, 0U);
+            MetaStore deleted_entry_short
+                = lifecycle_uniform_source(owners, translator, true, false);
+            lifecycle_budget_failure(
+                translator, deleted_entry_short,
+                MetadataCaptureTranslationStatus::EntryLimitExceeded,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+                owner_count - 1U, owner_count);
+            MetaStore deleted_operation_short
+                = lifecycle_uniform_source(owners, translator, true, false);
+            lifecycle_budget_failure(
+                translator, deleted_operation_short,
+                MetadataCaptureTranslationStatus::OperationLimitExceeded,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict,
+                owner_count, owner_count - 1U);
+
+            MetaStore exact_values
+                = lifecycle_uniform_source(owners, translator, false, true,
+                                           EntryFlags::None);
+            exact_values.finalize();
+            const auto exact_result = lifecycle_translate(
+                selector, exact_values, &exact_values,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict, 1U,
+                owner_count);
+            ASSERT_EQ(exact_result.status,
+                      MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(exact_result.entries_updated, owner_count);
+            EXPECT_EQ(exact_result.entries_added, 0U);
+            MetaStore exact_operation_short
+                = lifecycle_uniform_source(owners, translator, false, true,
+                                           EntryFlags::None);
+            lifecycle_budget_failure(
+                translator, exact_operation_short,
+                MetadataCaptureTranslationStatus::OperationLimitExceeded,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict, 1U,
+                owner_count - 1U);
+
+            MetaStore clean_markers
+                = lifecycle_uniform_source(owners, translator, true, true,
+                                           EntryFlags::Deleted);
+            clean_markers.finalize();
+            const auto markers_promoted = lifecycle_translate(
+                selector, clean_markers, &clean_markers,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict, 1U,
+                owner_count);
+            ASSERT_EQ(markers_promoted.status,
+                      MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(markers_promoted.entries_updated, owner_count);
+            EXPECT_EQ(markers_promoted.entries_added, 0U);
+            MetaStore marker_operation_short
+                = lifecycle_uniform_source(owners, translator, true, true,
+                                           EntryFlags::Deleted);
+            lifecycle_budget_failure(
+                translator, marker_operation_short,
+                MetadataCaptureTranslationStatus::OperationLimitExceeded,
+                MetadataCaptureTranslationConflictPolicy::FailOnConflict, 1U,
+                owner_count - 1U);
+
+            MetaStore mixed = lifecycle_mixed_source(owners, translator);
+            mixed.finalize();
+            const uint32_t mixed_added = translator == LifecycleTranslator::Apex
+                                             ? 3U
+                                             : 6U;
+            const uint32_t mixed_updated
+                = translator == LifecycleTranslator::Apex ? 1U : 3U;
+            const uint32_t mixed_removed
+                = translator == LifecycleTranslator::Apex ? 1U : 3U;
+            const auto mixed_result = lifecycle_translate(
+                selector, mixed, &mixed,
+                MetadataCaptureTranslationSourceMode::DirtyOnly,
+                MetadataCaptureTranslationConflictPolicy::ReplaceExisting,
+                mixed_added, owner_count);
+            ASSERT_EQ(mixed_result.status,
+                      MetadataCaptureTranslationStatus::Ok);
+            EXPECT_EQ(mixed_result.entries_added, mixed_added);
+            EXPECT_EQ(mixed_result.entries_updated, mixed_updated);
+            EXPECT_EQ(mixed_result.entries_removed, mixed_removed);
+            EXPECT_EQ(mixed_result.groups_translated, owner_count);
+
+            MetaStore mixed_entry_short = lifecycle_mixed_source(owners,
+                                                                 translator);
+            lifecycle_budget_failure(
+                translator, mixed_entry_short,
+                MetadataCaptureTranslationStatus::EntryLimitExceeded,
+                MetadataCaptureTranslationConflictPolicy::ReplaceExisting,
+                mixed_added - 1U, owner_count);
+            MetaStore mixed_operation_short
+                = lifecycle_mixed_source(owners, translator);
+            lifecycle_budget_failure(
+                translator, mixed_operation_short,
+                MetadataCaptureTranslationStatus::OperationLimitExceeded,
+                MetadataCaptureTranslationConflictPolicy::ReplaceExisting,
+                mixed_added, owner_count - 1U);
+        }
+    }
+
     TEST(MetadataApex, ExactTypedDecimalScientificAndBoundaryValues)
     {
         struct Case {
@@ -8333,9 +9023,23 @@ namespace {
                      make_text(source.arena(), "Unknown", TextEncoding::Ascii));
         settings_native(source, kApexTags[2], make_srational(-1, INT32_MAX));
         source.finalize();
-        EXPECT_EQ(
-            translate_xmp_apex_metadata(source, {}, &source).groups_unchanged,
-            1U);
+        const auto unknown_authority = translate_xmp_apex_metadata(source, {},
+                                                                   &source);
+        ASSERT_EQ(unknown_authority.status, ApexStatus::Ok);
+        EXPECT_EQ(unknown_authority.groups_unchanged, 0U);
+        EXPECT_EQ(unknown_authority.entries_updated, 1U);
+        const Entry* unknown_native = settings_find(source, kApexTags[2]);
+        ASSERT_NE(unknown_native, nullptr);
+        EXPECT_TRUE(any(unknown_native->flags, EntryFlags::Dirty));
+        EXPECT_EQ(unknown_native->value.elem_type, MetaElementType::SRational);
+        EXPECT_EQ(unknown_native->value.count, 1U);
+        EXPECT_EQ(unknown_native->value.data.sr.numer, -1);
+        EXPECT_EQ(unknown_native->value.data.sr.denom, INT32_MAX);
+        const auto unknown_repeat = translate_xmp_apex_metadata(source, {},
+                                                                &source);
+        ASSERT_EQ(unknown_repeat.status, ApexStatus::Ok);
+        EXPECT_EQ(unknown_repeat.groups_unchanged, 1U);
+        EXPECT_EQ(unknown_repeat.entries_updated, 0U);
     }
 
     TEST(MetadataApex,

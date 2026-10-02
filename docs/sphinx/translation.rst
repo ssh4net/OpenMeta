@@ -193,7 +193,7 @@ Capture settings writeback
 ``translate_xmp_capture_settings_metadata(...)`` and Python
 ``Document.translate_capture_settings_metadata(...)`` add twelve independent
 SHORT singleton mappings with ``MetadataCaptureSettingsTranslationOptions``,
-contract version 1. Exact unindexed paths use ``http://ns.adobe.com/exif/1.0/``.
+contract version 2. Exact unindexed paths use ``http://ns.adobe.com/exif/1.0/``.
 
 .. list-table::
    :header-rows: 1
@@ -1676,7 +1676,7 @@ focal-plane/subject batch below. Combined C++, Python, shared
 consumer and JPEG/Classic TIFF/BigTIFF snapshot checks cover both fields.
 
 
-APEX writeback (contract version 1)
+APEX writeback (contract version 2)
 -----------------------------------
 
 ``translate_xmp_apex_metadata`` and Python
@@ -1725,14 +1725,18 @@ brightness/bias range of -99.99 to 99.99 is not a hard limit.
 
 A brightness wire numerator of -1 denotes unknown before reduction. Typed
 ``SRational{-1,n}``, explicit fraction text ``-1/n`` or exact text ``Unknown``
-writes ``-1/1``; the positive denominator must fit INT32_MAX. Integer or
+creates or replaces the value with ``-1/1``; the positive denominator must fit
+INT32_MAX. Equivalent native unknown scalars retain their original encoding
+when gaining Dirty authority. Integer or
 single-number text inputs are finite: ``-1`` and ``-1.0`` write ``-2/2``;
 ``-0.5`` and ``-2/4`` write ``-2/4``. Finite reduced fractions with numerator -1
 use ``-2/(2n)`` or fail with ValueOutOfRange if the doubled denominator cannot
 fit. Conflict comparison keeps unknown and finite values distinct.
 
-Missing sources retain native fields; dirty tombstones remove them under
-ReplaceExisting. Duplicate eligible aliases fail. Native equivalence requires
+Missing sources retain native fields. Since 0.7.2, accepted dirty tombstones
+carry native removal intent even for absent keys; accepted exact clean native
+values gain Dirty while retaining scalar and wire provenance.
+Duplicate eligible aliases fail. Native equivalence requires
 the correct scalar type/count and rational value, with sentinel handling.
 Replacement repairs wrong types and duplicate entries. Parsing, conflicts and
 budgets finish before one commit, including aliased output. Preparation may
@@ -1741,8 +1745,8 @@ allocate; the host synchronizes conflicting access to shared objects.
 Default/hard bounds are five added entries, 1024 operations, 128 text bytes per
 property and 640 total text bytes. Positive lower limits are supported.
 Exposure bias reuses the existing capture mapping and
-``XmpExposureCompensation`` diagnostic; older capture option layouts and input
-behavior remain unchanged.
+``XmpExposureCompensation`` diagnostic. Option layouts and parsing stay the same;
+0.7.2 extends native lifecycle authority in both bias entry points.
 
 In 0.5.3 generated portable XMP emits exact APEX fractions for all five tags.
 Native shutter ``6/1`` now emits ``6/1``; earlier output emitted seconds
@@ -2210,11 +2214,37 @@ intents. Hosts stage the separate calls before publishing an aggregate result.
 Full sensitivity owns ``8827`` and ``8830``--``8835`` as one validated group;
 optional absence becomes removal intent after complete validation. Basic ISO
 owns only ``8827`` and preserves companions; disable it when full sensitivity
-owns the source. Lens fields are independent. ExposureBiasValue,
-LensSpecification, camera-owner/body-serial and other capture paths are unchanged.
+owns the source. Lens fields are independent. In 0.7.1, ExposureBiasValue,
+LensSpecification and camera-owner/body-serial paths retained their prior behavior.
+The 0.7.2 section below extends ExposureBiasValue.
 
 TIFF preparation merges unspecified destination ExifIFD records for these dirty
 edits. Bounded removal also accepts ``829A``, ``829D``, ``8827``, ``8830``--``8835``,
 ``9209``, ``920A`` and ``A433``--``A435``. MakerNote bytes and standard pointers
 are preserved as opaque records; private relocation or checksum repair is not
 provided. See :doc:`migration_0_7` for the unfrozen development ABI-4 policy.
+
+APEX and capture-settings lifecycle (0.7.2)
+-------------------------------------------
+
+APEX and capture-settings contracts are version 2; general capture is version 3
+because its ExposureCompensation mapping shares the APEX bias owner. Each of
+five APEX fields and twelve closed settings is independent. Accepted dirty
+owner deletion carries exact native Dirty+Deleted intent even when native keys
+are missing. Accepted clean exact values gain Dirty with original scalar and
+wire provenance. Omitted or ineligible owners preserve destination values.
+
+Existing conflict policies, exact APEX units, brightness unknown sentinel,
+accepted enum codes, aliases and source shapes remain. Added intent, clean-marker
+promotion and same-value authority updates consume preflight budgets. Repeat
+calls reuse intent; each translator publishes once or leaves output unchanged.
+Hosts stage separate calls before aggregate publication and disable one shared
+ExposureBias mapping when composing APEX and general capture. No inference is
+performed.
+
+TIFF/BigTIFF uses the existing removal list and merge flag for the added tags:
+``8822``, ``9201``--``9205``, ``9207``, ``A217``, ``A401``--``A403``,
+``A406``--``A40A`` and ``A40C``. The allowlist now has 39 tags. Unselected native
+records, opaque MakerNote bytes/original offsets, standard pointers and media
+remain preserved. Snapshot v1, bundle/API layouts, ABI 4, package-minor policy
+and unsupported-consumer rejection remain unchanged.

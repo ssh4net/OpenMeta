@@ -1,5 +1,19 @@
 # OpenMeta Changes
 
+## 0.7.2 - 2026-10-02
+
+- Carry native deletion intent and same-value Dirty authority through the five
+  APEX and twelve closed capture-setting mappings. Apply the same bias ownership
+  to the overlapping general-capture entry point. Keep exact rational/sentinel,
+  enum, alias, omission, conflict and transactional resource-limit contracts.
+- Extend bounded TIFF/BigTIFF ExifIFD removal and merge authority from 22 to 39
+  tags. Reuse existing prepared-bundle fields, source snapshot v1, stream and
+  package paths while preserving unselected records, opaque MakerNote bytes and
+  original offsets, standard pointers and media.
+- Capture translation contract becomes version 3; APEX and capture settings
+  become version 2. Keep API signatures/layouts, development ABI 4, the 0.7
+  package boundary and host-owned synchronization unchanged.
+
 ## 0.7.1 - 2026-09-30
 
 - Keep the unfrozen development ABI label at 4. Public layouts may change under

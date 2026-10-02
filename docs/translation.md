@@ -109,7 +109,8 @@ hosts stage multiple calls before publishing the result. See the
 
 ## Grouped capture and lens lifecycle (0.7.1)
 
-Capture, Flash, sensitivity and camera-text translation contracts are version 2.
+In 0.7.1, capture, Flash, sensitivity and camera-text contracts became version 2.
+In 0.7.2, capture advances to version 3 for the bias lifecycle described below.
 Accepted ExposureTime, FNumber, base ISO, Flash, FocalLength and lens make/model/
 serial owners carry native deletion intent even when their source native keys
 are missing. Accepted clean exact native values gain Dirty with a same-value
@@ -121,9 +122,9 @@ Full sensitivity owns PhotographicSensitivity and tags `8830`–`8835` as one
 validated group. Optional absent members carry deletion intent only after the
 complete source passes validation. Basic ISO owns only `8827` and preserves
 sensitivity companions; disable its mapping when the full group owns that source.
-Lens make/model/serial are independent singletons. ExposureBiasValue,
-LensSpecification, camera-owner/body-serial and other capture translators retain
-their existing behavior. Hosts stage the separate translator calls before
+Lens make/model/serial are independent singletons. In 0.7.1 ExposureBiasValue,
+LensSpecification, camera-owner/body-serial and other capture translators retained
+their earlier behavior; 0.7.2 extends the bias and settings owners below. Hosts stage the separate translator calls before
 publishing an aggregate result.
 
 TIFF preparation enables preservation of unspecified destination ExifIFD fields
@@ -132,6 +133,31 @@ removal accepts ExposureTime `829A`, FNumber `829D`, PhotographicSensitivity
 `8827`, SensitivityType and extended sensitivity `8830`–`8835`, Flash `9209`,
 FocalLength `920A`, LensMake `A433`, LensModel `A434` and LensSerialNumber `A435`.
 See [migration and exclusions](migration_0_7.md).
+
+## APEX and capture-settings lifecycle (0.7.2)
+
+APEX and capture-settings translation contracts are version 2. General capture
+is version 3 because its ExposureCompensation mapping shares the APEX bias
+owner. Each of the five APEX fields and twelve closed capture settings is an
+independent singleton. Accepted dirty owner deletion carries exact native
+Dirty+Deleted intent even when the source native key is missing. Accepted clean
+exact values gain Dirty without changing their scalar, rational encoding or
+wire provenance. Omitted or ineligible owners preserve destination values.
+
+Existing conflict policies, exact APEX units, brightness unknown sentinel,
+accepted enum codes, alias and source-shape validation remain. Intent additions,
+clean-marker promotion and same-value authority updates consume preflight
+entry/operation budgets. Repeated calls reuse intent; each translator commits
+once or leaves the output unchanged. Hosts stage separate calls before publishing
+an aggregate result and disable one overlapping ExposureBias mapping when both
+APEX and general capture are used. No exposure or camera-state inference occurs.
+
+TIFF/BigTIFF edits use the existing removal list and ExifIFD merge flag for the
+17 additional tags: `8822`, `9201`–`9205`, `9207`, `A217`, `A401`–`A403`,
+`A406`–`A40A` and `A40C`. The complete allowlist has 39 tags. Unselected native
+records, opaque MakerNote bytes and original offsets, standard pointers and
+media remain preserved. Snapshot v1, bundle/API layouts, development ABI 4,
+package-minor policy and unsupported-consumer rejection are unchanged.
 
 ## Capture EXIF Mappings
 
@@ -174,7 +200,7 @@ original precision. Reader and host display mappings remain unchanged.
 `translate_xmp_capture_settings_metadata(...)` and Python
 `Document.translate_capture_settings_metadata(...)` add twelve independent
 SHORT singleton mappings with `MetadataCaptureSettingsTranslationOptions`,
-contract version 1. Exact unindexed paths use `http://ns.adobe.com/exif/1.0/`.
+contract version 2. Exact unindexed paths use `http://ns.adobe.com/exif/1.0/`.
 
 | XMP path | ExifIFD tag | Accepted codes | Flag |
 | --- | --- | --- | --- |
@@ -1435,7 +1461,7 @@ Combined tests cover C++, Python, installed shared consumers, exact portable
 round trips, and serialized snapshots through JPEG, Classic TIFF and BigTIFF.
 The APEX and focal-plane/subject batches below extend this coverage.
 
-## APEX writeback (contract version 1)
+## APEX writeback (contract version 2)
 
 `translate_xmp_apex_metadata(source, MetadataApexTranslationOptions{}, &output)`
 writes five scalar properties in one transaction. Python exposes the same
@@ -1479,7 +1505,9 @@ or `UINT32_MAX` for unsigned fields.
 Brightness reserves a **wire numerator of -1** (`0xffffffff`) for unknown,
 regardless of its positive denominator. Explicit fraction text `-1/n`, a typed
 `SRational{-1, n}`, or exact text `Unknown` selects this sentinel before
-reduction and writes `-1/1`. Sentinel fraction denominators must fit `INT32_MAX`.
+reduction and creates or replaces the value with `-1/1`. Equivalent native
+unknown scalars retain their original encoding when gaining Dirty authority.
+Sentinel fraction denominators must fit `INT32_MAX`.
 Integer and decimal/scientific inputs are finite: `-1`, `-1.0` and a signed
 integer -1 write `-2/2`. A finite `-0.5` or explicit `-2/4` writes `-2/4`.
 Reduced finite fractions with numerator -1 use `-2/(2n)`; if the doubled
@@ -1500,7 +1528,9 @@ Unrelated names, namespaces and disabled mappings are ignored.
 Native equivalence requires the correct scalar type/count and equal rational
 value, with the brightness sentinel rule above. ReplaceExisting repairs wrong
 types and duplicate native entries. A dirty tombstone removes all native
-instances under ReplaceExisting. Parsing, conflicts and shared limits complete
+instances under ReplaceExisting, including explicit intent for an absent key
+since 0.7.2. Accepted exact clean native values gain Dirty authority while
+retaining scalar and wire provenance. Parsing, conflicts and shared limits complete
 before one commit. Failure preserves both separate and aliased output; success
 owns its values and provenance. Preparation may allocate. The host synchronizes
 conflicting access to shared stores.
@@ -1509,8 +1539,8 @@ Default and hard maximum budgets are five added entries, 1024 edit operations,
 128 bytes per text property and 640 total text bytes. Duplicate repair and
 removal consume the operation budget. Lower positive caller limits are allowed.
 The exposure-bias mapping and its diagnostic `XmpExposureCompensation` are
-shared with the older capture API; that API's options and input behavior remain
-unchanged.
+shared with the general capture API. Options and parsing stay the same;
+0.7.2 extends native lifecycle authority in both bias entry points.
 
 ### Portable output change in 0.5.3
 

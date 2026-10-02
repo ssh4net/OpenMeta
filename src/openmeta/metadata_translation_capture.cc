@@ -1082,6 +1082,40 @@ namespace {
             return group.field == NativeCaptureField::FocalLength;
         case MetadataCaptureTranslationMapping::XmpFlash:
             return group.field == NativeCaptureField::Flash;
+        case MetadataCaptureTranslationMapping::XmpExposureCompensation:
+            return group.field == NativeCaptureField::ExposureBias;
+        case MetadataCaptureTranslationMapping::XmpShutterSpeedValue:
+            return group.field == NativeCaptureField::ShutterSpeedValue;
+        case MetadataCaptureTranslationMapping::XmpApertureValue:
+            return group.field == NativeCaptureField::ApertureValue;
+        case MetadataCaptureTranslationMapping::XmpBrightnessValue:
+            return group.field == NativeCaptureField::BrightnessValue;
+        case MetadataCaptureTranslationMapping::XmpMaxApertureValue:
+            return group.field == NativeCaptureField::MaxApertureValue;
+        case MetadataCaptureTranslationMapping::XmpExposureProgram:
+            return group.field == NativeCaptureField::ExposureProgram;
+        case MetadataCaptureTranslationMapping::XmpMeteringMode:
+            return group.field == NativeCaptureField::MeteringMode;
+        case MetadataCaptureTranslationMapping::XmpSensingMethod:
+            return group.field == NativeCaptureField::SensingMethod;
+        case MetadataCaptureTranslationMapping::XmpCustomRendered:
+            return group.field == NativeCaptureField::CustomRendered;
+        case MetadataCaptureTranslationMapping::XmpExposureMode:
+            return group.field == NativeCaptureField::ExposureMode;
+        case MetadataCaptureTranslationMapping::XmpWhiteBalance:
+            return group.field == NativeCaptureField::WhiteBalance;
+        case MetadataCaptureTranslationMapping::XmpSceneCaptureType:
+            return group.field == NativeCaptureField::SceneCaptureType;
+        case MetadataCaptureTranslationMapping::XmpGainControl:
+            return group.field == NativeCaptureField::GainControl;
+        case MetadataCaptureTranslationMapping::XmpContrast:
+            return group.field == NativeCaptureField::Contrast;
+        case MetadataCaptureTranslationMapping::XmpSaturation:
+            return group.field == NativeCaptureField::Saturation;
+        case MetadataCaptureTranslationMapping::XmpSharpness:
+            return group.field == NativeCaptureField::Sharpness;
+        case MetadataCaptureTranslationMapping::XmpSubjectDistanceRange:
+            return group.field == NativeCaptureField::SubjectDistanceRange;
         case MetadataCaptureTranslationMapping::XmpSensitivity:
             return group.field == NativeCaptureField::Iso
                    || group.field == NativeCaptureField::SensitivityType
@@ -1148,6 +1182,24 @@ namespace {
         case NativeCaptureField::Iso:
         case NativeCaptureField::Flash:
         case NativeCaptureField::SensitivityType: return make_u16(0U);
+        case NativeCaptureField::ExposureProgram:
+        case NativeCaptureField::MeteringMode:
+        case NativeCaptureField::SensingMethod:
+        case NativeCaptureField::CustomRendered:
+        case NativeCaptureField::ExposureMode:
+        case NativeCaptureField::WhiteBalance:
+        case NativeCaptureField::SceneCaptureType:
+        case NativeCaptureField::GainControl:
+        case NativeCaptureField::Contrast:
+        case NativeCaptureField::Saturation:
+        case NativeCaptureField::Sharpness:
+        case NativeCaptureField::SubjectDistanceRange: return make_u16(0U);
+        case NativeCaptureField::ShutterSpeedValue:
+        case NativeCaptureField::BrightnessValue:
+        case NativeCaptureField::ExposureBias: return make_srational(0, 1);
+        case NativeCaptureField::ApertureValue:
+        case NativeCaptureField::MaxApertureValue:
+            return make_urational(0U, 1U);
         case NativeCaptureField::StandardOutputSensitivity:
         case NativeCaptureField::RecommendedExposureIndex:
         case NativeCaptureField::ISOSpeed:
@@ -3489,6 +3541,7 @@ translate_xmp_capture_settings_metadata(
         group.mapping      = setting.mapping;
         group.field        = setting.field;
         group.source_entry = property.entry_id;
+        group.synthesize_delete_intent = property.deleted;
         if (status == Status::Ok && !property.deleted) {
             const MetaValue& value = *property.value;
             uint64_t code          = 0U;
@@ -4225,6 +4278,7 @@ translate_xmp_apex_metadata(const MetaStore& source,
         group.mapping      = mapping.mapping;
         group.field        = mapping.field;
         group.source_entry = property.entry_id;
+        group.synthesize_delete_intent = property.deleted;
         if (status == Status::Ok && !property.deleted) {
             const MetaValue& value = *property.value;
             if (value.kind == MetaValueKind::Text) {

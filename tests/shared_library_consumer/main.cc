@@ -512,7 +512,7 @@ main()
         = openmeta::translate_xmp_apex_metadata(apex_source, {}, &apex_source);
     const bool apex_contract_matches
         = apex_authored.ok()
-          && openmeta::kMetadataApexTranslationContractVersion == 1U
+          && openmeta::kMetadataApexTranslationContractVersion == 2U
           && apex_result.status
                  == openmeta::MetadataCaptureTranslationStatus::Ok
           && apex_result.entries_added == 5U

@@ -708,8 +708,13 @@ struct PreparedTransferBundle final {
     /// editing: ExposureTime (0x829A), FNumber (0x829D), PhotographicSensitivity
     /// (0x8827), ISO speed companions (0x8830-0x8835), DateTimeOriginal
     /// (0x9003), DateTimeDigitized (0x9004), OffsetTime tags (0x9010-0x9012),
-    /// Flash (0x9209), FocalLength (0x920A), SubSecTime tags (0x9290-0x9292),
-    /// and LensMake/LensModel/LensSerialNumber (0xA433-0xA435).
+    /// APEX fields (0x9201-0x9205), Flash (0x9209), FocalLength (0x920A),
+    /// SubSecTime tags (0x9290-0x9292), LensMake/LensModel/LensSerialNumber
+    /// (0xA433-0xA435), and closed capture settings: ExposureProgram (0x8822),
+    /// MeteringMode (0x9207), SensingMethod (0xA217), CustomRendered (0xA401),
+    /// ExposureMode (0xA402), WhiteBalance (0xA403), SceneCaptureType (0xA406),
+    /// GainControl (0xA407), Contrast (0xA408), Saturation (0xA409), Sharpness
+    /// (0xA40A), and SubjectDistanceRange (0xA40C).
     /// Explicit per-tag removals preserve unspecified destination ExifIFD
     /// entries. Fresh emit, adapter, payload, and codec handoff APIs reject
     /// non-empty removal lists because their operation schemas cannot express
@@ -717,8 +722,8 @@ struct PreparedTransferBundle final {
     /// this list during preparation.
     std::vector<uint16_t> tiff_exif_removals;
     /// Preserve unspecified destination ExifIFD entries when applying dirty
-    /// allowlisted native timestamp, capture, or lens edits to TIFF/DNG. This
-    /// mode is opt-in and defaults to the existing whole-ExifIFD replacement
+    /// allowlisted native timestamp, capture, APEX, setting, or lens edits to
+    /// TIFF/DNG. This mode is opt-in and defaults to whole-ExifIFD replacement
     /// behavior.
     bool tiff_merge_existing_exif = false;
     std::vector<TimePatchSlot> time_patch_map;

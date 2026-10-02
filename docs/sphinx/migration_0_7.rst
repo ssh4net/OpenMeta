@@ -1,7 +1,7 @@
 Migrating to OpenMeta 0.7
 =========================
 
-OpenMeta 0.7.1 retains the **unfrozen development ABI label 4**. Public C++
+OpenMeta 0.7.2 retains the **unfrozen development ABI label 4**. Public C++
 layouts and APIs may change while the label stays 4. Rebuild applications and
 plugins against matching release headers and library when they change; the
 label alone does not establish compatibility with older ABI-4 binaries.
@@ -46,8 +46,9 @@ intents. Hosts stage the separate calls before publishing an aggregate result.
 Full sensitivity owns ``8827`` and ``8830``--``8835`` as one validated group;
 optional absence becomes removal intent after complete validation. Basic ISO
 owns only ``8827`` and preserves companions; disable it when full sensitivity
-owns the source. Lens fields are independent. ExposureBiasValue,
-LensSpecification, camera-owner/body-serial and other capture paths are unchanged.
+owns the source. Lens fields are independent. In 0.7.1, ExposureBiasValue,
+LensSpecification and camera-owner/body-serial paths retained their prior behavior.
+The 0.7.2 section below extends ExposureBiasValue.
 
 TIFF preparation merges unspecified destination ExifIFD records for these dirty
 edits. Bounded removal also accepts ``829A``, ``829D``, ``8827``, ``8830``--``8835``,
@@ -84,3 +85,28 @@ following changes. Python's path-based probe reports both lists and the flag.
 Host-owned synchronization, existing patch/handoff contracts and snapshot
 encoding stay unchanged. No general multi-page deletion, complete-file profile
 or codec conformance is implied. See :doc:`editing` and :doc:`translation`.
+
+APEX and capture-settings authority (0.7.2)
+-------------------------------------------
+
+APEX and capture-settings contracts are version 2; general capture is version 3
+because its ExposureCompensation mapping shares the APEX bias owner. Each of
+five APEX fields and twelve closed settings is independent. Accepted dirty
+owner deletion carries exact native Dirty+Deleted intent even when native keys
+are missing. Accepted clean exact values gain Dirty with original scalar and
+wire provenance. Omitted or ineligible owners preserve destination values.
+
+Existing conflict policies, exact APEX units, brightness unknown sentinel,
+accepted enum codes, aliases and source shapes remain. Added intent, clean-marker
+promotion and same-value authority updates consume preflight budgets. Repeat
+calls reuse intent; each translator publishes once or leaves output unchanged.
+Hosts stage separate calls before aggregate publication and disable one shared
+ExposureBias mapping when composing APEX and general capture. No inference is
+performed.
+
+TIFF/BigTIFF uses the existing removal list and merge flag for the added tags:
+``8822``, ``9201``--``9205``, ``9207``, ``A217``, ``A401``--``A403``,
+``A406``--``A40A`` and ``A40C``. The allowlist now has 39 tags. Unselected native
+records, opaque MakerNote bytes/original offsets, standard pointers and media
+remain preserved. Snapshot v1, bundle/API layouts, ABI 4, package-minor policy
+and unsupported-consumer rejection remain unchanged.

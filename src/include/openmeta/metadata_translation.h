@@ -319,7 +319,7 @@ translate_xmp_camera_text_metadata(
     const MetadataCameraTextTranslationOptions& options, MetaStore* out_store);
 
 /// Experimental reverse capture-EXIF translation contract version.
-inline constexpr uint32_t kMetadataCaptureTranslationContractVersion = 2U;
+inline constexpr uint32_t kMetadataCaptureTranslationContractVersion = 3U;
 
 inline constexpr uint32_t kMetadataCaptureTranslationMaxAddedEntries = 5U;
 inline constexpr uint32_t kMetadataCaptureTranslationMaxOperations   = 1024U;
@@ -911,7 +911,7 @@ translate_xmp_profile_metadata(const MetaStore& source,
                                const MetadataProfileTranslationOptions& options,
                                MetaStore* out_store);
 
-inline constexpr uint32_t kMetadataApexTranslationContractVersion   = 1U;
+inline constexpr uint32_t kMetadataApexTranslationContractVersion   = 2U;
 inline constexpr uint32_t kMetadataApexTranslationMaxAddedEntries   = 5U;
 inline constexpr uint64_t kMetadataApexTranslationMaxTotalTextBytes = 640U;
 
@@ -946,12 +946,19 @@ struct MetadataApexTranslationOptions final {
  * "Unknown" or an explicit signed fraction with numerator -1 denotes unknown,
  * as does a typed SRational with numerator -1. Other brightness inputs are
  * finite; a reduced -1/n is encoded as -2/(2n), or rejected if it cannot fit.
- * Unknown is canonicalized to -1/1. No floating-point approximation is used.
+ * New/replaced unknown values use -1/1; equivalent native scalars retain their
+ * encoding. No floating-point approximation is used.
  *
  * Each enabled field reconciles independently. Duplicate eligible aliases and
- * indexed/structured source shapes fail. Dirty tombstones remove native fields
- * under ReplaceExisting. Limits and conflicts precede all mutation, including
- * aliased output. Preparation may allocate; shared-object access is host-owned.
+ * indexed/structured source shapes fail. Accepted dirty tombstones carry native
+ * Dirty+Deleted intent even when the source native key is absent. Omission
+ * preserves the destination. Accepted clean exact native values gain Dirty
+ * without changing their scalar or wire provenance. Added intents and same-value
+ * updates count against budgets before publication; repeat calls reuse them.
+ * The capture ExposureCompensation mapping owns the same bias singleton; disable
+ * one bias mapping when composing these calls. Limits and conflicts precede all
+ * mutation, including aliased output. Preparation may allocate; shared-object
+ * access and aggregate publication are host-owned.
  */
 MetadataCaptureTranslationResult
 translate_xmp_apex_metadata(const MetaStore& source,
@@ -1064,12 +1071,13 @@ translate_xmp_identity_metadata(
  * `ISOSpeedRatings` and `ExposureBiasValue` paths target the same singleton;
  * multiple eligible aliases are ambiguous. Each mapping reconciles
  * independently and the output is replaced only after every selected mapping
- * and resource limit succeeds. For ExposureTime, FNumber, base ISO, and
- * FocalLength, an accepted owner deletion records Dirty|Deleted intent even
+ * and resource limit succeeds. For ExposureTime, FNumber, base ISO, FocalLength
+ * and exposure compensation, accepted deletion records Dirty|Deleted intent even
  * when the native key is absent. Accepted exact clean native scalars are marked
  * Dirty without changing their value or wire provenance. These updates and
- * intents count against the call budgets. ExposureCompensation retains its
- * existing lifecycle behavior.
+ * intents count against the call budgets. ExposureCompensation and
+ * ExposureBiasValue share this singleton lifecycle with the APEX bias mapping;
+ * disable one bias mapping when composing the two translators.
  */
 MetadataCaptureTranslationResult
 translate_xmp_capture_metadata(const MetaStore& source,
@@ -1086,7 +1094,7 @@ metadata_capture_translation_mapping_name(
 
 /// Experimental closed-enum capture-settings translation contract.
 inline constexpr uint32_t kMetadataCaptureSettingsTranslationContractVersion
-    = 1U;
+    = 2U;
 inline constexpr uint32_t kMetadataCaptureSettingsTranslationMaxAddedEntries
     = 12U;
 inline constexpr uint64_t kMetadataCaptureSettingsTranslationMaxTotalTextBytes
@@ -1140,7 +1148,11 @@ struct MetadataCaptureSettingsTranslationOptions final {
  * rational/array values, qualifiers, and coercion are excluded. ExposureProgram
  * is limited to 0..8; the read-only Bulb extension is not a writeback code.
  * No exposure, white-balance, rendering, or sensor-state inference is performed.
- * Existing capture option layouts and five numeric mappings are unchanged.
+ * Each enabled setting owns one independent native field. Accepted dirty
+ * tombstones carry native Dirty+Deleted intent even when the source native key
+ * is absent; omission preserves the destination. Accepted clean exact native
+ * values gain Dirty while retaining scalar and wire provenance. Intent and
+ * same-value update costs precede publication; repeat calls reuse them.
  * Preparation may allocate. Failure leaves source and output unchanged.
  */
 MetadataCaptureTranslationResult
