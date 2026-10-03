@@ -29,6 +29,8 @@ namespace {
         EXPECT_EQ(policy.jumbf_limits.max_entries, 200000U);
         EXPECT_EQ(policy.jumbf_limits.max_cbor_depth, 64U);
         EXPECT_EQ(policy.jumbf_limits.max_cbor_items, 200000U);
+        EXPECT_EQ(policy.jumbf_limits.max_semantic_work,
+                  JumbfDecodeLimits::kDefaultMaxSemanticWork);
 
         EXPECT_EQ(policy.iptc_limits.max_datasets, 200000U);
         EXPECT_EQ(policy.photoshop_irb_limits.max_resources, (1U << 16));
@@ -51,6 +53,7 @@ namespace {
         policy.jumbf_limits.max_box_depth            = 0U;
         policy.jumbf_limits.max_boxes                = 0U;
         policy.jumbf_limits.max_entries              = 0U;
+        policy.jumbf_limits.max_semantic_work        = 0U;
         policy.jumbf_limits.max_cbor_depth           = 0U;
         policy.jumbf_limits.max_cbor_items           = 0U;
         policy.iptc_limits.max_datasets              = 0U;
@@ -81,6 +84,8 @@ namespace {
         EXPECT_EQ(jumbf.limits.max_box_depth, 32U);
         EXPECT_EQ(jumbf.limits.max_boxes, (1U << 16));
         EXPECT_EQ(jumbf.limits.max_entries, 200000U);
+        EXPECT_EQ(jumbf.limits.max_semantic_work,
+                  JumbfDecodeLimits::kDefaultMaxSemanticWork);
         EXPECT_EQ(jumbf.limits.max_cbor_depth, 64U);
         EXPECT_EQ(jumbf.limits.max_cbor_items, 200000U);
         EXPECT_EQ(iptc.limits.max_datasets, 200000U);
@@ -110,6 +115,7 @@ namespace {
         policy.jumbf_limits.max_box_depth            = 5U;
         policy.jumbf_limits.max_boxes                = 66U;
         policy.jumbf_limits.max_entries              = 77U;
+        policy.jumbf_limits.max_semantic_work        = 4321U;
         policy.jumbf_limits.max_cbor_depth           = 7U;
         policy.jumbf_limits.max_cbor_items           = 44U;
         policy.iptc_limits.max_datasets              = 101U;
@@ -141,6 +147,7 @@ namespace {
         EXPECT_EQ(jumbf.limits.max_box_depth, 5U);
         EXPECT_EQ(jumbf.limits.max_boxes, 66U);
         EXPECT_EQ(jumbf.limits.max_entries, 77U);
+        EXPECT_EQ(jumbf.limits.max_semantic_work, 4321U);
         EXPECT_EQ(jumbf.limits.max_cbor_depth, 7U);
         EXPECT_EQ(jumbf.limits.max_cbor_items, 44U);
         EXPECT_EQ(iptc.limits.max_datasets, 101U);

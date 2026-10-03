@@ -257,6 +257,50 @@ namespace {
     }
 
     static std::vector<std::byte>
+    make_c2pa_many_reference_payload(uint32_t reference_count)
+    {
+        std::vector<std::byte> cbor_payload;
+        append_cbor_map(&cbor_payload, 1U);
+        append_cbor_text(&cbor_payload, "manifests");
+        append_cbor_map(&cbor_payload, 1U);
+        append_cbor_text(&cbor_payload, "active_manifest");
+        append_cbor_map(&cbor_payload, 2U);
+        append_cbor_text(&cbor_payload, "claims");
+        append_cbor_array(&cbor_payload, 1U);
+        append_cbor_i64(&cbor_payload, 0);
+        append_cbor_text(&cbor_payload, "signatures");
+        append_cbor_array(&cbor_payload, 1U);
+        append_cbor_map(&cbor_payload, 1U);
+        append_cbor_text(&cbor_payload, "references");
+        append_cbor_array(&cbor_payload, reference_count);
+        for (uint32_t i = 0U; i < reference_count; ++i) {
+            append_cbor_i64(&cbor_payload, static_cast<int64_t>(i));
+        }
+        return make_jumbf_payload_with_cbor(cbor_payload);
+    }
+
+    static std::vector<std::byte>
+    make_c2pa_text_reference_payload(std::string_view reference)
+    {
+        std::vector<std::byte> cbor_payload;
+        append_cbor_map(&cbor_payload, 1U);
+        append_cbor_text(&cbor_payload, "manifests");
+        append_cbor_map(&cbor_payload, 1U);
+        append_cbor_text(&cbor_payload, "active_manifest");
+        append_cbor_map(&cbor_payload, 2U);
+        append_cbor_text(&cbor_payload, "claims");
+        append_cbor_array(&cbor_payload, 1U);
+        append_cbor_i64(&cbor_payload, 0);
+        append_cbor_text(&cbor_payload, "signatures");
+        append_cbor_array(&cbor_payload, 1U);
+        append_cbor_map(&cbor_payload, 1U);
+        append_cbor_text(&cbor_payload, "references");
+        append_cbor_array(&cbor_payload, 1U);
+        append_cbor_text(&cbor_payload, reference);
+        return make_jumbf_payload_with_cbor(cbor_payload);
+    }
+
+    static std::vector<std::byte>
     make_jumb_box_with_label(std::string_view label,
                              std::span<const std::byte> payload_boxes)
     {
@@ -866,6 +910,90 @@ TEST(JumbfDecode, DecodesStructureAndCborMap)
     ASSERT_EQ(cbor_entry.value.kind, MetaValueKind::Scalar);
     EXPECT_EQ(cbor_entry.value.elem_type, MetaElementType::U64);
     EXPECT_EQ(cbor_entry.value.data.u64, 1U);
+}
+
+TEST(JumbfDecode, SemanticWorkBudgetBoundsHighCardinalityReferences)
+{
+    const std::vector<std::byte> adversarial = make_c2pa_many_reference_payload(
+        4096U);
+
+    MetaStore default_store;
+    const JumbfDecodeResult default_result
+        = decode_jumbf_payload(adversarial, default_store);
+    EXPECT_EQ(default_result.status, JumbfDecodeStatus::LimitExceeded);
+
+    JumbfDecodeOptions tiny_options;
+    tiny_options.limits.max_semantic_work = 8U;
+    MetaStore tiny_store;
+    const JumbfDecodeResult tiny_result
+        = decode_jumbf_payload(adversarial, tiny_store, EntryFlags::None,
+                               tiny_options);
+    EXPECT_EQ(tiny_result.status, JumbfDecodeStatus::LimitExceeded);
+
+    JumbfDecodeOptions zero_options;
+    zero_options.limits.max_semantic_work = 0U;
+    MetaStore zero_store;
+    const JumbfDecodeResult zero_result
+        = decode_jumbf_payload(adversarial, zero_store, EntryFlags::None,
+                               zero_options);
+    EXPECT_EQ(zero_result.status, JumbfDecodeStatus::LimitExceeded);
+
+    const std::vector<std::byte> ordinary = make_c2pa_many_reference_payload(
+        3U);
+    JumbfDecodeOptions high_options;
+    high_options.limits.max_semantic_work
+        = 16U * JumbfDecodeLimits::kDefaultMaxSemanticWork;
+    MetaStore high_store;
+    const JumbfDecodeResult high_result
+        = decode_jumbf_payload(ordinary, high_store, EntryFlags::None,
+                               high_options);
+    ASSERT_EQ(high_result.status, JumbfDecodeStatus::Ok);
+    high_store.finalize();
+    EXPECT_EQ(read_jumbf_field_u64(high_store, "c2pa.semantic.claim_count"),
+              1U);
+    EXPECT_EQ(read_jumbf_field_u64(high_store, "c2pa.semantic.signature_count"),
+              1U);
+    EXPECT_EQ(read_jumbf_field_u64(
+                  high_store, "c2pa.semantic.signature.0.reference_key_hits"),
+              3U);
+}
+
+TEST(JumbfDecode, SemanticWorkBudgetChargesLongTextReferences)
+{
+    const std::string unmatched_reference(4096U, 'x');
+    const std::vector<std::byte> payload = make_c2pa_text_reference_payload(
+        unmatched_reference);
+
+    JumbfDecodeOptions bounded_options;
+    bounded_options.limits.max_semantic_work = 16'384U;
+    const uint64_t old_text_estimate
+        = 4U
+          * (static_cast<uint64_t>(unmatched_reference.size()) / 256U
+             + static_cast<uint64_t>(unmatched_reference.size() % 256U != 0U));
+    EXPECT_GT(bounded_options.limits.max_semantic_work, old_text_estimate);
+
+    MetaStore bounded_store;
+    const JumbfDecodeResult bounded_result
+        = decode_jumbf_payload(payload, bounded_store, EntryFlags::None,
+                               bounded_options);
+    EXPECT_EQ(bounded_result.status, JumbfDecodeStatus::LimitExceeded);
+
+    JumbfDecodeOptions high_options;
+    high_options.limits.max_semantic_work
+        = 16U * JumbfDecodeLimits::kDefaultMaxSemanticWork;
+    MetaStore high_store;
+    const JumbfDecodeResult high_result
+        = decode_jumbf_payload(payload, high_store, EntryFlags::None,
+                               high_options);
+    ASSERT_EQ(high_result.status, JumbfDecodeStatus::Ok);
+    high_store.finalize();
+    EXPECT_EQ(read_jumbf_field_u64(high_store, "c2pa.semantic.claim_count"),
+              1U);
+    EXPECT_EQ(read_jumbf_field_u64(high_store, "c2pa.semantic.signature_count"),
+              1U);
+    EXPECT_EQ(read_jumbf_field_u64(
+                  high_store, "c2pa.semantic.signature.0.reference_key_hits"),
+              1U);
 }
 
 TEST(JumbfDecode, IntegratedViaSimpleMetaRead)

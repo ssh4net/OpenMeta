@@ -1,5 +1,18 @@
 # OpenMeta Changes
 
+## 0.8.2 - 2026-10-03
+
+- Bound total JUMBF/C2PA semantic projection and verification-candidate work.
+  Add `JumbfDecodeLimits::max_semantic_work`, normalize zero to a finite
+  default, and return `LimitExceeded` before attacker-controlled scans, links,
+  comparisons or sorts exceed that budget.
+- Enforce zlib and Brotli `max_output_bytes` before each decoder call. Preserve
+  exact-limit success and unlimited zero while preventing writes beyond the
+  configured limit even when the caller supplies a larger output span.
+- Retain the unfrozen development ABI label 4. The public experimental
+  `JumbfDecodeLimits` layout changes, so rebuild applications and plugins
+  against matching 0.8.2 headers and libraries.
+
 ## 0.8.1 - 2026-10-03
 
 - Preserve every ordered `dimg` target occurrence during bounded BMFF metadata

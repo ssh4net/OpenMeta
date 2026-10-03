@@ -56,8 +56,23 @@ enum class C2paVerifyStatus : uint8_t {
 
 /// Resource limits for JUMBF/C2PA decode.
 struct JumbfDecodeLimits final {
+    /// Default ceiling for semantic projection and verification work.
+    /// One unit is one iteration over an attacker-controlled semantic entry,
+    /// projection, reference, link, or box. Variable-length comparisons charge
+    /// one additional unit per 256 bytes; substring searches charge per 256
+    /// worst-case compared bytes. Each semantic-key visit reserves 256 marker
+    /// bytes for its bounded classifiers. Sorting charges a conservative
+    /// comparison bound, including key lengths, plus its output pass. CBOR
+    /// item parsing charges one unit per item; byte and text copies charge
+    /// copied bytes in 256-byte units. COSE candidate parse, copy, and
+    /// verification work charges its input bytes to bound token-level scans.
+    /// 0 is normalized to this default.
+    static constexpr uint64_t kDefaultMaxSemanticWork = 1ULL << 20;
+
     /// Maximum input bytes to accept (0 = unlimited).
     uint64_t max_input_bytes = 64ULL * 1024ULL * 1024ULL;
+    /// Maximum semantic work units. 0 is normalized to the finite default.
+    uint64_t max_semantic_work = kDefaultMaxSemanticWork;
     /// Maximum BMFF box depth.
     /// 0 is normalized to a safe default (32).
     uint32_t max_box_depth = 32;

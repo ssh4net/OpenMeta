@@ -27,7 +27,9 @@ metadata block family:
   ``xmp_limits.max_depth <= 128``, ``xmp_limits.max_properties <= 200000``.
 - JUMBF/C2PA (BMFF + CBOR nesting):
   ``jumbf_limits.max_box_depth <= 32``, ``max_boxes <= 65536``,
-  ``max_cbor_depth <= 64``, ``max_cbor_items <= 200000``.
+  ``max_cbor_depth <= 64``, ``max_cbor_items <= 200000``. Keep
+  ``max_semantic_work`` finite; zero selects the library's finite default
+  rather than disabling this budget.
 - BMFF metadata discovery (HEIF/AVIF/CR3/JP2/JXL): internal depth and box-count
   caps are enforced per path (no unlimited traversal).
 - CR3 preview UUID walk: internal caps ``depth <= 16`` and ``boxes <= 65536``.

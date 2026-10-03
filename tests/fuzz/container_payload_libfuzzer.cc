@@ -53,7 +53,9 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     uint32_t scratch_buf[256]  = {};
 
     PayloadOptions opts;
-    opts.decompress = false;
+    opts.decompress                  = true;
+    opts.limits.max_parts            = 64U;
+    opts.limits.max_output_bytes     = sizeof(out_buf);
     PayloadFuzzCallback callback { bytes };
     const RandomAccessSource source
         = make_callback_random_access_source(bytes.size(), &callback,

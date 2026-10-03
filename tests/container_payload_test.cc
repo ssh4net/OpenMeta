@@ -15,6 +15,11 @@
 #    include <zlib.h>
 #endif
 
+#if defined(OPENMETA_HAS_BROTLI) && OPENMETA_HAS_BROTLI \
+    && defined(OPENMETA_HAS_BROTLI_ENCODER) && OPENMETA_HAS_BROTLI_ENCODER
+#    include <brotli/encode.h>
+#endif
+
 namespace openmeta {
 namespace {
 
@@ -58,6 +63,101 @@ namespace {
         }
         return RandomAccessIoResult { state->code, count };
     }
+
+#if (defined(OPENMETA_HAS_ZLIB) && OPENMETA_HAS_ZLIB)       \
+    || (defined(OPENMETA_HAS_BROTLI) && OPENMETA_HAS_BROTLI \
+        && defined(OPENMETA_HAS_BROTLI_ENCODER)             \
+        && OPENMETA_HAS_BROTLI_ENCODER)
+    static void
+    expect_decompression_output_cap(std::span<const std::byte> compressed,
+                                    BlockCompression compression)
+    {
+        constexpr std::string_view xml = "<xmp/>";
+        constexpr std::byte canary { 0xA5 };
+        const std::array<ContainerBlockRef, 1U> blocks = {
+            ContainerBlockRef { .compression = compression,
+                                .data_size   = compressed.size() },
+        };
+        std::array<uint32_t, 1U> scratch_indices {};
+
+        PayloadOptions options;
+        options.limits.max_output_bytes = xml.size();
+        std::array<std::byte, 16U> output;
+        output.fill(canary);
+        const PayloadResult exact = extract_payload(compressed, blocks, 0U,
+                                                    output, scratch_indices,
+                                                    options);
+        EXPECT_EQ(exact.status, PayloadStatus::Ok);
+        EXPECT_EQ(exact.written, xml.size());
+        EXPECT_EQ(exact.needed, xml.size());
+        EXPECT_EQ(std::memcmp(output.data(), xml.data(), xml.size()), 0);
+        for (size_t i = xml.size(); i < output.size(); ++i) {
+            EXPECT_EQ(output[i], canary);
+        }
+
+        options.limits.max_output_bytes = xml.size() - 1U;
+        output.fill(canary);
+        const PayloadResult over_cap = extract_payload(compressed, blocks, 0U,
+                                                       output, scratch_indices,
+                                                       options);
+        EXPECT_EQ(over_cap.status, PayloadStatus::LimitExceeded);
+        EXPECT_EQ(over_cap.written, xml.size() - 1U);
+        EXPECT_EQ(over_cap.needed, xml.size());
+        EXPECT_EQ(std::memcmp(output.data(), xml.data(), xml.size() - 1U), 0);
+        for (size_t i = xml.size() - 1U; i < output.size(); ++i) {
+            EXPECT_EQ(output[i], canary);
+        }
+
+        options.limits.max_output_bytes = xml.size();
+        output.fill(canary);
+        const PayloadResult short_output
+            = extract_payload(compressed, blocks, 0U,
+                              std::span<std::byte>(output.data(), 3U),
+                              scratch_indices, options);
+        EXPECT_EQ(short_output.status, PayloadStatus::OutputTruncated);
+        EXPECT_EQ(short_output.written, 3U);
+        EXPECT_EQ(short_output.needed, xml.size());
+        EXPECT_EQ(std::memcmp(output.data(), xml.data(), 3U), 0);
+        for (size_t i = 3U; i < output.size(); ++i) {
+            EXPECT_EQ(output[i], canary);
+        }
+
+        options.limits.max_output_bytes = 0U;
+        output.fill(canary);
+        const PayloadResult unlimited = extract_payload(compressed, blocks, 0U,
+                                                        output, scratch_indices,
+                                                        options);
+        EXPECT_EQ(unlimited.status, PayloadStatus::Ok);
+        EXPECT_EQ(unlimited.written, xml.size());
+        EXPECT_EQ(unlimited.needed, xml.size());
+        EXPECT_EQ(std::memcmp(output.data(), xml.data(), xml.size()), 0);
+
+        PayloadCallbackState callback { compressed };
+        const RandomAccessSource source
+            = make_callback_random_access_source(compressed.size(), &callback,
+                                                 payload_read_at, true);
+        const RandomAccessSourceRange range = make_random_access_source_range(
+            source);
+        std::array<std::byte, 8U> read_window {};
+        std::vector<std::byte> compressed_scratch(compressed.size());
+        PayloadRandomAccessScratch random_scratch;
+        random_scratch.read_window      = read_window;
+        random_scratch.compressed       = compressed_scratch;
+        options.limits.max_output_bytes = xml.size() - 1U;
+        output.fill(canary);
+        const PayloadRandomAccessResult callback_result
+            = extract_payload_random_access(range, blocks, 0U, output,
+                                            scratch_indices, random_scratch,
+                                            options);
+        EXPECT_TRUE(callback_result.input.ok());
+        EXPECT_EQ(callback_result.payload.status, PayloadStatus::LimitExceeded);
+        EXPECT_EQ(callback_result.payload.written, xml.size() - 1U);
+        EXPECT_EQ(callback_result.payload.needed, xml.size());
+        for (size_t i = xml.size() - 1U; i < output.size(); ++i) {
+            EXPECT_EQ(output[i], canary);
+        }
+    }
+#endif
 
     static void append_u16be(std::vector<std::byte>* out, uint16_t v)
     {
@@ -1019,6 +1119,43 @@ namespace {
         EXPECT_EQ(random_result.payload.status, PayloadStatus::Ok);
         EXPECT_EQ(random_result.payload.written, xml.size());
         EXPECT_EQ(std::memcmp(out.data(), xml.data(), xml.size()), 0);
+    }
+
+    TEST(ContainerPayload, DeflateOutputCap)
+    {
+        constexpr std::string_view xml = "<xmp/>";
+        uLongf compressed_size = compressBound(static_cast<uLong>(xml.size()));
+        std::vector<std::byte> compressed(static_cast<size_t>(compressed_size));
+        const int status
+            = compress2(reinterpret_cast<Bytef*>(compressed.data()),
+                        &compressed_size,
+                        reinterpret_cast<const Bytef*>(xml.data()),
+                        static_cast<uLong>(xml.size()), Z_BEST_COMPRESSION);
+        ASSERT_EQ(status, Z_OK);
+        compressed.resize(static_cast<size_t>(compressed_size));
+        expect_decompression_output_cap(compressed, BlockCompression::Deflate);
+    }
+#endif
+
+#if defined(OPENMETA_HAS_BROTLI) && OPENMETA_HAS_BROTLI \
+    && defined(OPENMETA_HAS_BROTLI_ENCODER) && OPENMETA_HAS_BROTLI_ENCODER
+    TEST(ContainerPayload, BrotliOutputCap)
+    {
+        constexpr std::string_view xml = "<xmp/>";
+        std::vector<uint8_t> encoded(
+            BrotliEncoderMaxCompressedSize(xml.size()));
+        size_t encoded_size = encoded.size();
+        const bool ok       = BrotliEncoderCompress(4, 22, BROTLI_MODE_GENERIC,
+                                                    xml.size(),
+                                                    reinterpret_cast<const uint8_t*>(
+                                                  xml.data()),
+                                                    &encoded_size, encoded.data());
+        ASSERT_TRUE(ok);
+        std::vector<std::byte> compressed(encoded_size);
+        for (size_t i = 0U; i < encoded_size; ++i) {
+            compressed[i] = std::byte { encoded[i] };
+        }
+        expect_decompression_output_cap(compressed, BlockCompression::Brotli);
     }
 #endif
 

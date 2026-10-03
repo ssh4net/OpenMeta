@@ -174,14 +174,7 @@ namespace {
         const uint64_t max_out = options.limits.max_output_bytes;
 
         for (;;) {
-            if (strm.avail_in == 0) {
-                if (in_off >= in.size()) {
-                    (void)inflateEnd(&strm);
-                    res.status  = PayloadStatus::Malformed;
-                    res.written = written;
-                    res.needed  = produced;
-                    return res;
-                }
+            if (strm.avail_in == 0 && in_off < in.size()) {
                 const uint64_t remaining = static_cast<uint64_t>(in.size())
                                            - in_off;
                 const uint64_t chunk64
@@ -196,13 +189,24 @@ namespace {
             }
 
             std::byte* out_ptr = nullptr;
-            uint64_t out_room  = 0;
-            if (written < out.size()) {
+            uint64_t out_room      = 0U;
+            bool writing_to_caller = false;
+            if (written < out.size() && (max_out == 0U || produced < max_out)) {
                 out_ptr  = out.data() + static_cast<size_t>(written);
                 out_room = static_cast<uint64_t>(out.size()) - written;
+                writing_to_caller = true;
+                if (max_out != 0U && out_room > max_out - produced) {
+                    out_room = max_out - produced;
+                }
+            } else if (max_out != 0U && produced >= max_out) {
+                out_ptr  = discard.data();
+                out_room = 1U;
             } else {
                 out_ptr  = discard.data();
                 out_room = discard.size();
+                if (max_out != 0U && out_room > max_out - produced) {
+                    out_room = max_out - produced;
+                }
             }
             const uint64_t out_chunk64
                 = (out_room < static_cast<uint64_t>(0xFFFFFFFFU))
@@ -217,15 +221,16 @@ namespace {
             ret                     = inflate(&strm, Z_NO_FLUSH);
             const uInt used_out     = avail_before - strm.avail_out;
 
-            produced += used_out;
-            if (written < out.size()) {
+            const bool produced_overflow = static_cast<uint64_t>(used_out)
+                                           > UINT64_MAX - produced;
+            produced = produced_overflow
+                           ? UINT64_MAX
+                           : produced + static_cast<uint64_t>(used_out);
+            if (writing_to_caller) {
                 written += used_out;
-                if (written > out.size()) {
-                    written = out.size();
-                }
             }
 
-            if (max_out != 0U && produced > max_out) {
+            if (max_out != 0U && (produced_overflow || produced > max_out)) {
                 (void)inflateEnd(&strm);
                 res.status  = PayloadStatus::LimitExceeded;
                 res.written = written;
@@ -282,28 +287,42 @@ namespace {
         for (;;) {
             uint8_t* next_out = nullptr;
             size_t avail_out  = 0;
-            if (written < out.size()) {
+            bool writing_to_caller = false;
+            if (written < out.size() && (max_out == 0U || produced < max_out)) {
                 next_out = reinterpret_cast<uint8_t*>(
                     out.data() + static_cast<size_t>(written));
                 avail_out = out.size() - static_cast<size_t>(written);
+                writing_to_caller = true;
+                if (max_out != 0U
+                    && static_cast<uint64_t>(avail_out) > max_out - produced) {
+                    avail_out = static_cast<size_t>(max_out - produced);
+                }
+            } else if (max_out != 0U && produced >= max_out) {
+                next_out  = reinterpret_cast<uint8_t*>(discard.data());
+                avail_out = 1U;
             } else {
                 next_out  = reinterpret_cast<uint8_t*>(discard.data());
                 avail_out = discard.size();
+                if (max_out != 0U
+                    && static_cast<uint64_t>(avail_out) > max_out - produced) {
+                    avail_out = static_cast<size_t>(max_out - produced);
+                }
             }
             const size_t avail_before = avail_out;
             const BrotliDecoderResult r
                 = BrotliDecoderDecompressStream(st, &avail_in, &next_in,
                                                 &avail_out, &next_out, nullptr);
             const size_t used_out = avail_before - avail_out;
-            produced += used_out;
-            if (written < out.size()) {
+            const bool produced_overflow = static_cast<uint64_t>(used_out)
+                                           > UINT64_MAX - produced;
+            produced = produced_overflow
+                           ? UINT64_MAX
+                           : produced + static_cast<uint64_t>(used_out);
+            if (writing_to_caller) {
                 written += used_out;
-                if (written > out.size()) {
-                    written = out.size();
-                }
             }
 
-            if (max_out != 0U && produced > max_out) {
+            if (max_out != 0U && (produced_overflow || produced > max_out)) {
                 BrotliDecoderDestroyInstance(st);
                 res.status  = PayloadStatus::LimitExceeded;
                 res.written = written;

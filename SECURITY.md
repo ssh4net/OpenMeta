@@ -39,7 +39,8 @@ Recommended limits by block family:
   `xmp_limits.max_properties <= 200000`.
 - JUMBF/C2PA (nested BMFF + CBOR): keep `jumbf_limits.max_box_depth <= 32`,
   `max_boxes <= 65536`, `max_cbor_depth <= 64`, and
-  `max_cbor_items <= 200000`.
+  `max_cbor_items <= 200000`. Keep `max_semantic_work` finite; zero selects
+  the library's finite default rather than disabling this budget.
 - BMFF metadata discovery (HEIF/AVIF/CR3/JP2/JXL): uses internal hard caps for
   nested box scans (depth-capped and box-count-capped by decoder path).
 - CR3 preview UUID scan: internal hard caps

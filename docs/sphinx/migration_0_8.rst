@@ -11,6 +11,26 @@ Package selection does not guarantee unchanged experimental APIs or binary
 compatibility. ABI label 4 alone does not establish compatibility with older
 binaries.
 
+Bounded metadata work
+---------------------
+
+Patch 0.8.2 adds ``JumbfDecodeLimits::max_semantic_work``. It bounds aggregate
+JUMBF/C2PA box, projection, reference, link, comparison and sorting work that
+can otherwise multiply independently bounded collection sizes. Zero selects the
+finite default; it does not disable this limit. Exhaustion returns
+``JumbfDecodeStatus::LimitExceeded``. Increase the value explicitly only for a
+trusted workload that needs more semantic projection work.
+
+The zlib and Brotli payload paths now enforce ``PayloadLimits::max_output_bytes``
+before each decoder call. An output that ends exactly at the limit still
+succeeds. Output that requires another byte returns
+``PayloadStatus::LimitExceeded`` without writing beyond the configured limit.
+Zero retains its documented unlimited meaning for this payload limit.
+
+``JumbfDecodeLimits`` is an experimental public layout. OpenMeta keeps
+development ABI label 4 for this patch, but applications and plugins must
+rebuild against matching 0.8.2 headers and libraries.
+
 Bounded BMFF edits
 ------------------
 

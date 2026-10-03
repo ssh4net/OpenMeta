@@ -127,6 +127,10 @@ normalize_resource_policy(OpenMetaResourcePolicy* policy) noexcept
     if (policy->jumbf_limits.max_entries == 0U) {
         policy->jumbf_limits.max_entries = 200000U;
     }
+    if (policy->jumbf_limits.max_semantic_work == 0U) {
+        policy->jumbf_limits.max_semantic_work
+            = JumbfDecodeLimits::kDefaultMaxSemanticWork;
+    }
     if (policy->jumbf_limits.max_cbor_depth == 0U) {
         policy->jumbf_limits.max_cbor_depth = 64U;
     }
