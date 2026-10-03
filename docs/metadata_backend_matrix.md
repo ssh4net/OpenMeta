@@ -170,12 +170,21 @@ For the public per-target preserve/replace guarantees, see
   way, the rebuilt `iloc` also compacts the base-offset field width to zero.
   Retained foreign item locations are supported for construction method 0
   file-offset extents and construction method 1 extents into an existing
-  `idat`, with data reference index 0. Construction method 2 is supported only
+  `idat`, with data reference index 0 or a validated self-contained data
+  reference. Construction method 2 is supported only
   when the retained item has parseable `iref` `iloc` references, using explicit
   extent indexes or reference order, and every referenced item is also retained
   with a supported local location. External data references, missing method-2
   references, removed referenced items, and other construction methods fail
-  safely.
+  safely. One nested method-2 level ending at method 0 or 1 is also supported,
+  with explicit nonzero lengths, checked logical/physical slices and a shared
+  work bound; deeper chains and cycles reject before output.
+- Since 0.8.1, retained `dimg` lists preserve every target occurrence in source
+  order after managed endpoint remapping, including repeated grid/overlay inputs.
+  Removing an input of a retained source rejects before output; removing the
+  source drops its whole relation. Existing ordered `iloc` references and
+  deduplication of other relation types remain unchanged. This does not enable
+  arbitrary scene editing or change the CR3 source-offset preservation guard.
 - Foreign-`meta` ICC property merge is bounded to
   `bmff:property-colr-icc`. OpenMeta removes prior ICC `colr/prof` and
   `colr/rICC` properties from `iprp/ipco`, compacts/remaps existing `ipma`

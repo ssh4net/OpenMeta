@@ -29653,7 +29653,8 @@ namespace {
 
             const size_t input_id_width = input_version == 0U ? 2U : 4U;
             uint64_t child_off          = payload_begin + 4U;
-            while (child_off + 8U <= payload_end) {
+            while (child_off <= payload_end
+                   && payload_end - child_off >= 8U) {
                 TransferBmffBox child;
                 if (!parse_transfer_bmff_box(bytes, child_off, payload_end,
                                              &child)) {
@@ -29666,12 +29667,23 @@ namespace {
                 const uint64_t child_payload_begin = child.offset
                                                      + child.header_size;
                 const uint64_t child_payload_end = child.offset + child.size;
+                if (child_payload_begin > child_payload_end
+                    || child_payload_end > payload_end
+                    || child_payload_end > bytes.size()) {
+                    return fail_bmff_foreign_meta_merge(
+                        out, TransferStatus::Malformed,
+                        EmitTransferCode::InvalidPayload,
+                        "iref child payload is malformed");
+                }
                 size_t cursor = static_cast<size_t>(child_payload_begin);
                 std::vector<std::byte> child_payload;
                 while (cursor < child_payload_end) {
                     uint64_t from_id64 = 0U;
-                    if (!read_bmff_u_nbe(bytes, cursor, input_id_width,
-                                         &from_id64)
+                    if (static_cast<uint64_t>(cursor) > child_payload_end
+                        || child_payload_end - static_cast<uint64_t>(cursor)
+                               < input_id_width
+                        || !read_bmff_u_nbe(bytes, cursor, input_id_width,
+                                            &from_id64)
                         || from_id64 > std::numeric_limits<uint32_t>::max()) {
                         return fail_bmff_foreign_meta_merge(
                             out, TransferStatus::Malformed,
@@ -29679,7 +29691,9 @@ namespace {
                             "iref from_item_id is not supported");
                     }
                     cursor += input_id_width;
-                    if (cursor + 2U > child_payload_end) {
+                    if (static_cast<uint64_t>(cursor) > child_payload_end
+                        || child_payload_end - static_cast<uint64_t>(cursor)
+                               < 2U) {
                         return fail_bmff_foreign_meta_merge(
                             out, TransferStatus::Malformed,
                             EmitTransferCode::InvalidPayload,
@@ -29691,6 +29705,17 @@ namespace {
                         removed_item_ids, replacements, input_from_id);
                     const uint16_t ref_count = read_u16be(bytes, cursor);
                     cursor += 2U;
+
+                    const uint64_t target_bytes
+                        = static_cast<uint64_t>(ref_count)
+                          * static_cast<uint64_t>(input_id_width);
+                    if (target_bytes
+                        > child_payload_end - static_cast<uint64_t>(cursor)) {
+                        return fail_bmff_foreign_meta_merge(
+                            out, TransferStatus::Malformed,
+                            EmitTransferCode::InvalidPayload,
+                            "iref reference targets are truncated");
+                    }
 
                     std::vector<uint32_t> kept_to_ids;
                     kept_to_ids.reserve(ref_count);
@@ -29709,8 +29734,17 @@ namespace {
                             to_id64);
                         const uint32_t to_id = bmff_remap_managed_item_id(
                             removed_item_ids, replacements, input_to_id);
+                        if (child.type == fourcc('d', 'i', 'm', 'g')
+                            && from_id != 0U && input_to_id != 0U
+                            && to_id == 0U) {
+                            return fail_bmff_foreign_meta_merge(
+                                out, TransferStatus::Unsupported,
+                                EmitTransferCode::InvalidArgument,
+                                "dimg target would be removed");
+                        }
                         if (to_id != 0U
                             && (child.type == fourcc('i', 'l', 'o', 'c')
+                                || child.type == fourcc('d', 'i', 'm', 'g')
                                 || !bmff_u32_vector_contains(kept_to_ids,
                                                              to_id))) {
                             kept_to_ids.push_back(to_id);
@@ -29761,6 +29795,12 @@ namespace {
                     break;
                 }
                 child_off += child.size;
+            }
+            if (child_off != payload_end) {
+                return fail_bmff_foreign_meta_merge(
+                    out, TransferStatus::Malformed,
+                    EmitTransferCode::InvalidPayload,
+                    "iref child box header is truncated");
             }
         } else {
             if (needs_iref_v1) {

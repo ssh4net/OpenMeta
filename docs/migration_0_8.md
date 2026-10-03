@@ -10,6 +10,13 @@ Package selection does not guarantee unchanged experimental APIs or binary
 compatibility. ABI label 4 alone does not establish compatibility with older
 binaries.
 
+## Bounded BMFF edits
+
+Patch 0.8.1 preserves ordered repeated `dimg` inputs during bounded BMFF edits.
+Removal of an input of a retained derived-image relation now rejects before
+output instead of silently shortening the list. Removing the source still drops
+its whole relation. This patch changes no public signatures or layouts.
+
 ## GPS edit ownership
 
 The primary, navigation, destination, quality and text GPS translation contracts

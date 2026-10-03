@@ -3446,28 +3446,167 @@ append_top_level_bmff_meta_child_box(std::vector<std::byte>* bytes,
 }
 
 static std::vector<std::byte>
-make_test_bmff_iref_v0_single_ref_box(uint32_t ref_type, uint16_t from_item_id,
-                                      uint16_t to_item_id)
+make_test_bmff_iref_relation_child_box(
+    uint8_t version, uint32_t ref_type, uint32_t from_item_id,
+    std::span<const uint32_t> to_item_ids)
 {
+    if (version > 1U || to_item_ids.size() > 0xFFFFU
+        || (version == 0U && from_item_id > 0xFFFFU)) {
+        return {};
+    }
+
     std::vector<std::byte> ref_payload;
-    append_u16be(&ref_payload, from_item_id);
-    append_u16be(&ref_payload, 1U);
-    append_u16be(&ref_payload, to_item_id);
+    if (version == 0U) {
+        append_u16be(&ref_payload, static_cast<uint16_t>(from_item_id));
+    } else {
+        append_u32be(&ref_payload, from_item_id);
+    }
+    append_u16be(&ref_payload, static_cast<uint16_t>(to_item_ids.size()));
+    for (size_t i = 0U; i < to_item_ids.size(); ++i) {
+        if (version == 0U) {
+            if (to_item_ids[i] > 0xFFFFU) {
+                return {};
+            }
+            append_u16be(&ref_payload,
+                         static_cast<uint16_t>(to_item_ids[i]));
+        } else {
+            append_u32be(&ref_payload, to_item_ids[i]);
+        }
+    }
 
     std::vector<std::byte> ref_box;
     append_bmff_box(&ref_box, ref_type,
                     std::span<const std::byte>(ref_payload.data(),
                                                ref_payload.size()));
+    return ref_box;
+}
+
+static std::vector<std::byte> make_test_bmff_iref_box(
+    uint8_t version, std::span<const std::vector<std::byte>> children)
+{
+    if (version > 1U) {
+        return {};
+    }
 
     std::vector<std::byte> iref_payload;
-    append_bmff_fullbox_header(&iref_payload, 0U);
-    iref_payload.insert(iref_payload.end(), ref_box.begin(), ref_box.end());
+    append_bmff_fullbox_header(&iref_payload, version);
+    for (size_t i = 0U; i < children.size(); ++i) {
+        iref_payload.insert(iref_payload.end(), children[i].begin(),
+                            children[i].end());
+    }
 
     std::vector<std::byte> iref_box;
     append_bmff_box(&iref_box, openmeta::fourcc('i', 'r', 'e', 'f'),
                     std::span<const std::byte>(iref_payload.data(),
                                                iref_payload.size()));
     return iref_box;
+}
+
+static bool append_test_bmff_meta_iref_bytes(
+    std::vector<std::byte>* bytes, std::span<const std::byte> data)
+{
+    if (!bytes || data.empty()) {
+        return false;
+    }
+
+    const std::span<const std::byte> view(bytes->data(), bytes->size());
+    size_t meta_off  = 0U;
+    size_t meta_size = 0U;
+    size_t iref_off  = 0U;
+    size_t iref_size = 0U;
+    if (!find_top_level_bmff_box(view, openmeta::fourcc('m', 'e', 't', 'a'),
+                                 &meta_off, &meta_size)
+        || !find_top_level_bmff_meta_child_box(
+            view, openmeta::fourcc('i', 'r', 'e', 'f'), &iref_off,
+            &iref_size)
+        || data.size() > std::numeric_limits<uint32_t>::max() - iref_size
+        || data.size() > std::numeric_limits<uint32_t>::max() - meta_size) {
+        return false;
+    }
+
+    bytes->insert(bytes->begin()
+                      + static_cast<std::ptrdiff_t>(iref_off + iref_size),
+                  data.begin(), data.end());
+    return write_test_u32be(bytes, iref_off,
+                            static_cast<uint32_t>(iref_size + data.size()))
+           && write_test_u32be(bytes, meta_off,
+                               static_cast<uint32_t>(meta_size + data.size()));
+}
+
+static bool patch_test_bmff_iref_relation_count(std::vector<std::byte>* bytes,
+                                                uint32_t ref_type,
+                                                uint16_t ref_count)
+{
+    if (!bytes) {
+        return false;
+    }
+
+    const std::span<const std::byte> view(bytes->data(), bytes->size());
+    size_t iref_off  = 0U;
+    size_t iref_size = 0U;
+    if (!find_top_level_bmff_meta_child_box(
+            view, openmeta::fourcc('i', 'r', 'e', 'f'), &iref_off,
+            &iref_size)
+        || iref_size < 12U) {
+        return false;
+    }
+
+    const uint8_t version = std::to_integer<uint8_t>(view[iref_off + 8U]);
+    if (version > 1U) {
+        return false;
+    }
+    const size_t id_width = version == 0U ? 2U : 4U;
+    size_t relation_off   = 0U;
+    size_t relation_size  = 0U;
+    if (!find_test_bmff_child_box(view, iref_off + 12U,
+                                  iref_off + iref_size, ref_type,
+                                  &relation_off, &relation_size)
+        || relation_size < 8U + id_width + 2U) {
+        return false;
+    }
+    const size_t count_offset = relation_off + 8U + id_width;
+    if (count_offset > bytes->size() || bytes->size() - count_offset < 2U) {
+        return false;
+    }
+    (*bytes)[count_offset] = static_cast<std::byte>(
+        static_cast<uint8_t>((ref_count >> 8U) & 0xFFU));
+    (*bytes)[count_offset + 1U]
+        = static_cast<std::byte>(static_cast<uint8_t>(ref_count & 0xFFU));
+    return true;
+}
+
+static bool replace_test_bmff_meta_iref_box(
+    std::vector<std::byte>* bytes, std::span<const std::byte> replacement)
+{
+    if (!bytes || replacement.empty()) {
+        return false;
+    }
+
+    const std::span<const std::byte> view(bytes->data(), bytes->size());
+    size_t meta_off  = 0U;
+    size_t meta_size = 0U;
+    size_t iref_off  = 0U;
+    size_t iref_size = 0U;
+    if (!find_top_level_bmff_box(view, openmeta::fourcc('m', 'e', 't', 'a'),
+                                 &meta_off, &meta_size)
+        || !find_top_level_bmff_meta_child_box(
+            view, openmeta::fourcc('i', 'r', 'e', 'f'), &iref_off,
+            &iref_size)
+        || replacement.size() > std::numeric_limits<uint32_t>::max()
+        || iref_size > meta_size
+        || replacement.size()
+               > std::numeric_limits<uint32_t>::max() - (meta_size - iref_size)) {
+        return false;
+    }
+
+    const size_t iref_end = iref_off + iref_size;
+    bytes->erase(bytes->begin() + static_cast<std::ptrdiff_t>(iref_off),
+                 bytes->begin() + static_cast<std::ptrdiff_t>(iref_end));
+    bytes->insert(bytes->begin() + static_cast<std::ptrdiff_t>(iref_off),
+                  replacement.begin(), replacement.end());
+    const size_t new_meta_size = meta_size - iref_size + replacement.size();
+    return write_test_u32be(bytes, meta_off,
+                            static_cast<uint32_t>(new_meta_size));
 }
 
 static bool
@@ -54147,6 +54286,294 @@ TEST(MetadataTransferApi,
 }
 
 TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditPreservesOrderedIrefRelationsAcrossRepeatedEdits)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+
+    openmeta::PreparedTransferBlock exif;
+    exif.route   = "bmff:item-exif";
+    exif.payload = make_test_bmff_exif_item_payload();
+    bundle.blocks.push_back(exif);
+
+    const std::array<uint32_t, 3> dimg_targets = { 2U, 1U, 2U };
+    const std::array<uint32_t, 4> iloc_targets = { 2U, 2U, 3U, 2U };
+    const std::array<uint32_t, 4> auxl_targets = { 2U, 3U, 2U, 2U };
+    const std::array<uint32_t, 3> cdsc_targets = { 1U, 1U, 1U };
+    const std::array<std::vector<std::byte>, 4> relation_boxes = {
+        make_test_bmff_iref_relation_child_box(
+            0U, openmeta::fourcc('d', 'i', 'm', 'g'), 1U,
+            std::span<const uint32_t>(dimg_targets.data(), dimg_targets.size())),
+        make_test_bmff_iref_relation_child_box(
+            0U, openmeta::fourcc('i', 'l', 'o', 'c'), 1U,
+            std::span<const uint32_t>(iloc_targets.data(), iloc_targets.size())),
+        make_test_bmff_iref_relation_child_box(
+            0U, openmeta::fourcc('a', 'u', 'x', 'l'), 1U,
+            std::span<const uint32_t>(auxl_targets.data(), auxl_targets.size())),
+        make_test_bmff_iref_relation_child_box(
+            0U, openmeta::fourcc('c', 'd', 's', 'c'), 2U,
+            std::span<const uint32_t>(cdsc_targets.data(), cdsc_targets.size())),
+    };
+    const std::vector<std::byte> input_iref = make_test_bmff_iref_box(
+        0U, std::span<const std::vector<std::byte>>(relation_boxes.data(),
+                                                   relation_boxes.size()));
+    std::vector<std::byte> current_input
+        = make_bmff_foreign_meta_existing_exif_xmp_target();
+    ASSERT_TRUE(replace_test_bmff_meta_iref_box(
+        &current_input,
+        std::span<const std::byte>(input_iref.data(), input_iref.size())));
+
+    for (uint32_t edit_number = 0U; edit_number < 2U; ++edit_number) {
+        SCOPED_TRACE(edit_number);
+        const std::vector<std::byte> unchanged_input = current_input;
+        openmeta::PreparedTransferBundle run_bundle = bundle;
+        openmeta::ExecutePreparedTransferOptions options;
+        options.edit_requested = true;
+        options.edit_apply     = true;
+        const openmeta::ExecutePreparedTransferResult result
+            = openmeta::execute_prepared_transfer(
+                &run_bundle,
+                std::span<const std::byte>(current_input.data(),
+                                           current_input.size()),
+                options);
+
+        ASSERT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok)
+            << result.edit_plan_message;
+        ASSERT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+        ASSERT_FALSE(result.edited_output.empty());
+        EXPECT_EQ(current_input, unchanged_input);
+
+        const std::span<const std::byte> edited(result.edited_output.data(),
+                                                result.edited_output.size());
+        uint8_t iref_version = 0U;
+        ASSERT_TRUE(read_test_bmff_iref_version(edited, &iref_version));
+        EXPECT_EQ(iref_version, 0U);
+
+        const uint32_t replacement_id = 4U + edit_number;
+        uint32_t count = 0U;
+        std::vector<uint32_t> targets;
+        ASSERT_TRUE(count_test_bmff_iref_relations(
+            edited, openmeta::fourcc('d', 'i', 'm', 'g'), true, 1U,
+            replacement_id, &count, &targets));
+        EXPECT_EQ(count, 2U);
+        EXPECT_EQ(targets, (std::vector<uint32_t> { replacement_id, 1U,
+                                                    replacement_id }));
+
+        ASSERT_TRUE(count_test_bmff_iref_relations(
+            edited, openmeta::fourcc('i', 'l', 'o', 'c'), true, 1U,
+            replacement_id, &count, &targets));
+        EXPECT_EQ(count, 3U);
+        EXPECT_EQ(targets, (std::vector<uint32_t> { replacement_id,
+                                                    replacement_id, 3U,
+                                                    replacement_id }));
+
+        ASSERT_TRUE(count_test_bmff_iref_relations(
+            edited, openmeta::fourcc('a', 'u', 'x', 'l'), true, 1U,
+            replacement_id, &count, &targets));
+        EXPECT_EQ(count, 1U);
+        EXPECT_EQ(targets,
+                  (std::vector<uint32_t> { replacement_id, 3U }));
+
+        ASSERT_TRUE(count_test_bmff_iref_relations(
+            edited, openmeta::fourcc('c', 'd', 's', 'c'), true,
+            replacement_id, 1U, &count, &targets));
+        EXPECT_EQ(count, 1U);
+        EXPECT_EQ(targets, (std::vector<uint32_t> { 1U }));
+
+        if (edit_number == 0U) {
+            BufferByteWriter writer;
+            openmeta::PreparedTransferBundle stream_bundle = bundle;
+            openmeta::ExecutePreparedTransferOptions stream_options;
+            stream_options.edit_requested     = true;
+            stream_options.edit_apply         = true;
+            stream_options.edit_output_writer = &writer;
+            const openmeta::ExecutePreparedTransferResult streamed
+                = openmeta::execute_prepared_transfer(
+                    &stream_bundle,
+                    std::span<const std::byte>(current_input.data(),
+                                               current_input.size()),
+                    stream_options);
+            ASSERT_EQ(streamed.edit_plan_status, openmeta::TransferStatus::Ok);
+            ASSERT_EQ(streamed.edit_apply.status, openmeta::TransferStatus::Ok);
+            EXPECT_GT(writer.writes, 0U);
+            EXPECT_EQ(writer.out, result.edited_output);
+            EXPECT_EQ(current_input, unchanged_input);
+
+            openmeta::PreparedTransferPackageBatch batch;
+            const openmeta::EmitTransferResult batch_result
+                = openmeta::build_executed_transfer_package_batch(
+                    std::span<const std::byte>(current_input.data(),
+                                               current_input.size()),
+                    bundle, result, &batch);
+            ASSERT_EQ(batch_result.status, openmeta::TransferStatus::Ok);
+            openmeta::EmitTransferResult package_write;
+            const std::vector<std::byte> packaged
+                = materialize_transfer_package_batch(batch, &package_write);
+            ASSERT_EQ(package_write.status, openmeta::TransferStatus::Ok);
+            EXPECT_EQ(packaged, result.edited_output);
+        }
+
+        current_input = result.edited_output;
+    }
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditRejectsInvalidDimgRelationsAtomically)
+{
+    struct Case final {
+        const char* label;
+        std::vector<std::byte> input;
+        bool strip_xmp = false;
+        openmeta::TransferStatus expected_status
+            = openmeta::TransferStatus::Malformed;
+        const char* expected_message = nullptr;
+    };
+
+    std::vector<Case> cases;
+    const std::array<uint32_t, 3> removed_targets = { 3U, 1U, 3U };
+    const std::vector<std::byte> removed_dimg
+        = make_test_bmff_iref_relation_child_box(
+            0U, openmeta::fourcc('d', 'i', 'm', 'g'), 1U,
+            std::span<const uint32_t>(removed_targets.data(),
+                                      removed_targets.size()));
+    std::vector<std::byte> removed_input
+        = make_bmff_foreign_meta_existing_exif_xmp_target();
+    ASSERT_TRUE(append_test_bmff_meta_iref_bytes(
+        &removed_input,
+        std::span<const std::byte>(removed_dimg.data(), removed_dimg.size())));
+    cases.push_back({ "retained source loses target", std::move(removed_input),
+                      true, openmeta::TransferStatus::Unsupported,
+                      "dimg target would be removed" });
+
+    const std::array<uint32_t, 1> one_target = { 2U };
+    const std::vector<std::byte> truncated_dimg
+        = make_test_bmff_iref_relation_child_box(
+            0U, openmeta::fourcc('d', 'i', 'm', 'g'), 1U,
+            std::span<const uint32_t>(one_target.data(), one_target.size()));
+    std::vector<std::byte> truncated_input
+        = make_bmff_foreign_meta_existing_exif_xmp_target();
+    ASSERT_TRUE(append_test_bmff_meta_iref_bytes(
+        &truncated_input, std::span<const std::byte>(truncated_dimg.data(),
+                                                     truncated_dimg.size())));
+    ASSERT_TRUE(patch_test_bmff_iref_relation_count(
+        &truncated_input, openmeta::fourcc('d', 'i', 'm', 'g'), 2U));
+    cases.push_back({ "reference count exceeds child data",
+                      std::move(truncated_input), false,
+                      openmeta::TransferStatus::Malformed,
+                      "iref reference targets are truncated" });
+
+    std::vector<std::byte> suffix_input
+        = make_bmff_foreign_meta_existing_exif_xmp_target();
+    const std::array<std::byte, 1> suffix = { std::byte { 0xA5 } };
+    ASSERT_TRUE(append_test_bmff_meta_iref_bytes(
+        &suffix_input,
+        std::span<const std::byte>(suffix.data(), suffix.size())));
+    cases.push_back({ "trailing partial child header", std::move(suffix_input),
+                      false, openmeta::TransferStatus::Malformed,
+                      "iref child box header is truncated" });
+
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+    openmeta::PreparedTransferBlock exif;
+    exif.route   = "bmff:item-exif";
+    exif.payload = make_test_bmff_exif_item_payload();
+    bundle.blocks.push_back(exif);
+
+    for (const Case& one : cases) {
+        SCOPED_TRACE(one.label);
+        const std::vector<std::byte> original_input = one.input;
+        openmeta::PreparedTransferBundle run_bundle = bundle;
+        openmeta::ExecutePreparedTransferOptions options;
+        options.edit_requested     = true;
+        options.edit_apply         = true;
+        options.strip_existing_xmp = one.strip_xmp;
+        const openmeta::ExecutePreparedTransferResult result
+            = openmeta::execute_prepared_transfer(
+                &run_bundle,
+                std::span<const std::byte>(one.input.data(), one.input.size()),
+                options);
+
+        EXPECT_EQ(result.edit_plan_status, one.expected_status)
+            << result.edit_plan_message;
+        EXPECT_NE(result.edit_plan_message.find(one.expected_message),
+                  std::string::npos);
+        EXPECT_EQ(result.edit_apply.status, one.expected_status);
+        EXPECT_TRUE(result.edited_output.empty());
+        EXPECT_EQ(one.input, original_input);
+
+        openmeta::PreparedTransferPackageBatch batch;
+        const openmeta::EmitTransferResult packaged
+            = openmeta::build_executed_transfer_package_batch(
+                std::span<const std::byte>(one.input.data(), one.input.size()),
+                run_bundle, result, &batch);
+        EXPECT_EQ(packaged.status, one.expected_status);
+        EXPECT_TRUE(batch.chunks.empty());
+        EXPECT_EQ(batch.output_size, 0U);
+
+        BufferByteWriter writer;
+        writer.out = { std::byte { 0x5A } };
+        openmeta::PreparedTransferBundle stream_bundle = bundle;
+        openmeta::ExecutePreparedTransferOptions stream_options;
+        stream_options.edit_requested     = true;
+        stream_options.edit_apply         = true;
+        stream_options.strip_existing_xmp = one.strip_xmp;
+        stream_options.edit_output_writer = &writer;
+        const openmeta::ExecutePreparedTransferResult streamed
+            = openmeta::execute_prepared_transfer(
+                &stream_bundle,
+                std::span<const std::byte>(one.input.data(), one.input.size()),
+                stream_options);
+        EXPECT_EQ(streamed.edit_plan_status, one.expected_status);
+        EXPECT_EQ(streamed.edit_apply.status, one.expected_status);
+        EXPECT_TRUE(streamed.edited_output.empty());
+        EXPECT_EQ(writer.writes, 0U);
+        EXPECT_EQ(writer.out, (std::vector<std::byte> { std::byte { 0x5A } }));
+        EXPECT_EQ(one.input, original_input);
+    }
+
+    const std::array<uint32_t, 3> removed_source_targets = { 2U, 1U, 2U };
+    const std::vector<std::byte> removed_source_dimg
+        = make_test_bmff_iref_relation_child_box(
+            0U, openmeta::fourcc('d', 'i', 'm', 'g'), 3U,
+            std::span<const uint32_t>(removed_source_targets.data(),
+                                      removed_source_targets.size()));
+    std::vector<std::byte> removed_source_input
+        = make_bmff_foreign_meta_existing_exif_xmp_target();
+    ASSERT_TRUE(append_test_bmff_meta_iref_bytes(
+        &removed_source_input,
+        std::span<const std::byte>(removed_source_dimg.data(),
+                                   removed_source_dimg.size())));
+    const std::vector<std::byte> unchanged_input = removed_source_input;
+    openmeta::PreparedTransferBundle run_bundle = bundle;
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested     = true;
+    options.edit_apply         = true;
+    options.strip_existing_xmp = true;
+    const openmeta::ExecutePreparedTransferResult removed_source_result
+        = openmeta::execute_prepared_transfer(
+            &run_bundle,
+            std::span<const std::byte>(removed_source_input.data(),
+                                       removed_source_input.size()),
+            options);
+    ASSERT_EQ(removed_source_result.edit_plan_status,
+              openmeta::TransferStatus::Ok)
+        << removed_source_result.edit_plan_message;
+    ASSERT_EQ(removed_source_result.edit_apply.status,
+              openmeta::TransferStatus::Ok);
+    ASSERT_FALSE(removed_source_result.edited_output.empty());
+    EXPECT_EQ(removed_source_input, unchanged_input);
+
+    uint32_t count = 0U;
+    std::vector<uint32_t> targets;
+    ASSERT_TRUE(count_test_bmff_iref_relations(
+        std::span<const std::byte>(removed_source_result.edited_output.data(),
+                                   removed_source_result.edited_output.size()),
+        openmeta::fourcc('d', 'i', 'm', 'g'), true, 3U, 2U, &count, &targets));
+    EXPECT_EQ(count, 0U);
+    EXPECT_TRUE(targets.empty());
+}
+
+TEST(MetadataTransferApi,
      ExecutePreparedTransferBmffEditPreservesIlocMethod2ReferenceOrder)
 {
     openmeta::PreparedTransferBundle bundle;
@@ -54666,49 +55093,95 @@ TEST(MetadataTransferApi,
     exif.payload = make_test_bmff_exif_item_payload();
     bundle.blocks.push_back(exif);
 
-    std::vector<std::byte> input
-        = make_bmff_foreign_meta_iloc_v2_high_item_id_target();
-    const std::vector<std::byte> iref = make_test_bmff_iref_v0_single_ref_box(
-        openmeta::fourcc('a', 'u', 'x', 'l'), 7U, 8U);
-    ASSERT_TRUE(append_top_level_bmff_meta_child_box(
-        &input, std::span<const std::byte>(iref.data(), iref.size())));
+    for (uint32_t test_case = 0U; test_case < 2U; ++test_case) {
+        SCOPED_TRACE(test_case);
+        const uint8_t input_version = test_case == 0U ? 0U : 1U;
+        std::array<uint32_t, 3> dimg_targets = {};
+        uint32_t dimg_from_id = 0U;
+        if (test_case == 0U) {
+            dimg_from_id = 7U;
+            dimg_targets = { 8U, 9U, 8U };
+        } else {
+            dimg_from_id = 70000U;
+            dimg_targets = { 70000U, 70000U, 70000U };
+        }
+        const std::vector<std::byte> dimg
+            = make_test_bmff_iref_relation_child_box(
+                input_version, openmeta::fourcc('d', 'i', 'm', 'g'),
+                dimg_from_id,
+                std::span<const uint32_t>(dimg_targets.data(),
+                                          dimg_targets.size()));
+        std::array<std::vector<std::byte>, 2> children = { dimg, {} };
+        size_t child_count = 1U;
+        if (test_case == 0U) {
+            const std::array<uint32_t, 2> auxl_targets = { 8U, 8U };
+            children[1] = make_test_bmff_iref_relation_child_box(
+                input_version, openmeta::fourcc('a', 'u', 'x', 'l'), 7U,
+                std::span<const uint32_t>(auxl_targets.data(),
+                                          auxl_targets.size()));
+            child_count = 2U;
+        }
+        const std::vector<std::byte> iref = make_test_bmff_iref_box(
+            input_version,
+            std::span<const std::vector<std::byte>>(children.data(),
+                                                    child_count));
+        std::vector<std::byte> input
+            = make_bmff_foreign_meta_iloc_v2_high_item_id_target();
+        ASSERT_TRUE(append_top_level_bmff_meta_child_box(
+            &input, std::span<const std::byte>(iref.data(), iref.size())));
 
-    openmeta::ExecutePreparedTransferOptions options;
-    options.edit_requested = true;
-    options.edit_apply     = true;
+        openmeta::PreparedTransferBundle run_bundle = bundle;
+        openmeta::ExecutePreparedTransferOptions options;
+        options.edit_requested = true;
+        options.edit_apply     = true;
+        const openmeta::ExecutePreparedTransferResult result
+            = openmeta::execute_prepared_transfer(
+                &run_bundle,
+                std::span<const std::byte>(input.data(), input.size()),
+                options);
 
-    const openmeta::ExecutePreparedTransferResult result
-        = openmeta::execute_prepared_transfer(
-            &bundle, std::span<const std::byte>(input.data(), input.size()),
-            options);
+        ASSERT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok)
+            << result.edit_plan_message;
+        ASSERT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
+        ASSERT_FALSE(result.edited_output.empty());
 
-    EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::Ok);
-    EXPECT_EQ(result.edit_apply.status, openmeta::TransferStatus::Ok);
-    ASSERT_FALSE(result.edited_output.empty());
+        const std::span<const std::byte> edited(result.edited_output.data(),
+                                                result.edited_output.size());
+        uint8_t iref_version = 0U;
+        ASSERT_TRUE(read_test_bmff_iref_version(edited, &iref_version));
+        EXPECT_EQ(iref_version, 1U);
 
-    const std::span<const std::byte> edited(result.edited_output.data(),
-                                            result.edited_output.size());
-    uint8_t iref_version = 0U;
-    ASSERT_TRUE(read_test_bmff_iref_version(edited, &iref_version));
-    EXPECT_EQ(iref_version, 1U);
+        uint32_t count = 0U;
+        std::vector<uint32_t> targets;
+        ASSERT_TRUE(count_test_bmff_iref_relations(
+            edited, openmeta::fourcc('d', 'i', 'm', 'g'), true,
+            dimg_from_id, test_case == 0U ? 8U : 70000U, &count, &targets));
+        EXPECT_EQ(count, test_case == 0U ? 2U : 3U);
+        EXPECT_EQ(targets,
+                  std::vector<uint32_t>(dimg_targets.begin(),
+                                        dimg_targets.end()));
+        if (test_case == 0U) {
+            ASSERT_TRUE(count_test_bmff_iref_relations(
+                edited, openmeta::fourcc('a', 'u', 'x', 'l'), true, 7U, 8U,
+                &count, &targets));
+            EXPECT_EQ(count, 1U);
+            EXPECT_EQ(targets, (std::vector<uint32_t> { 8U }));
+        }
 
-    uint32_t count = 0U;
-    ASSERT_TRUE(count_test_bmff_iref_relations(
-        edited, openmeta::fourcc('a', 'u', 'x', 'l'), true, 7U, 8U, &count));
-    EXPECT_EQ(count, 1U);
-    ASSERT_TRUE(
-        count_test_bmff_iref_relations(edited,
-                                       openmeta::fourcc('c', 'd', 's', 'c'),
-                                       true, 70001U, 70000U, &count));
-    EXPECT_EQ(count, 1U);
+        ASSERT_TRUE(count_test_bmff_iref_relations(
+            edited, openmeta::fourcc('c', 'd', 's', 'c'), true, 70001U,
+            70000U, &count));
+        EXPECT_EQ(count, 1U);
 
-    std::array<openmeta::ContainerBlockRef, 16> blocks {};
-    const openmeta::ScanResult scan = openmeta::scan_bmff(
-        edited,
-        std::span<openmeta::ContainerBlockRef>(blocks.data(), blocks.size()));
-    ASSERT_EQ(scan.status, openmeta::ScanStatus::Ok);
-    ASSERT_EQ(scan.written, 1U);
-    EXPECT_EQ(blocks[0].kind, openmeta::ContainerBlockKind::Exif);
+        std::array<openmeta::ContainerBlockRef, 16> blocks {};
+        const openmeta::ScanResult scan = openmeta::scan_bmff(
+            edited,
+            std::span<openmeta::ContainerBlockRef>(blocks.data(),
+                                                   blocks.size()));
+        ASSERT_EQ(scan.status, openmeta::ScanStatus::Ok);
+        ASSERT_EQ(scan.written, 1U);
+        EXPECT_EQ(blocks[0].kind, openmeta::ContainerBlockKind::Exif);
+    }
 }
 
 TEST(MetadataTransferApi,

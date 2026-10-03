@@ -1,5 +1,15 @@
 # OpenMeta Changes
 
+## 0.8.1 - 2026-10-03
+
+- Preserve every ordered `dimg` target occurrence during bounded BMFF metadata
+  edits, including repeated grid or overlay inputs. Keep existing `iloc` ordering
+  and managed endpoint remapping. Reject removal of an input of a retained
+  derived-image relation before output; removing its source still removes the
+  whole relation. This does not add arbitrary scene rewriting.
+- Keep public signatures, layouts, source snapshot v1, unfrozen ABI 4 and
+  same-major CMake minimum-version selection unchanged.
+
 ## 0.8.0 - 2026-10-02
 
 - Complete selected GPS update/deletion ownership across all five translators,

@@ -390,6 +390,12 @@ Implemented as a bounded BMFF target family:
   `LimitExceeded` before output. No complete item is materialized.
   Ordered `iloc` references retain repeated target IDs so explicit and implicit
   extent indices continue to select the same source slices.
+  Since 0.8.1, retained `dimg` references also preserve every target occurrence
+  in source order, including repeated grid or overlay inputs. Managed endpoint
+  replacement preserves that sequence after remapping. Removing an input of a
+  retained `dimg` source rejects before output; removing the source drops its
+  whole relation. Other relation types keep their existing deduplication and
+  stale-reference cleanup. This is bounded graph preservation, not scene editing.
   Resizing `meta` also rebases method-0 file offsets with a validated
   self-contained nonzero data-reference index.
 - unambiguous one-old-to-one-new managed Exif, XMP, JUMBF, and C2PA item
