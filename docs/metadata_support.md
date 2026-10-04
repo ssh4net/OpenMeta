@@ -77,6 +77,7 @@ Current tracked-gate status:
 | WebP | Yes | Yes | EXIF, XMP, ICC, and bounded JUMBF/C2PA; chunk scan supports bounded positional callbacks without reading image payloads |
 | GIF | Yes | Partial | XMP, ICC, and structured comments; extension scan and payload fetch support bounded positional callbacks without reading raster sub-block payloads |
 | TIFF / DNG / TIFF-based RAW | Yes | Yes | EXIF, MakerNote, XMP, IPTC, Photoshop IRB, ICC, GeoTIFF, and bounded JUMBF/C2PA |
+| Minolta MRW | Yes | Partial | Contiguous `\0MRM` segment discovery and bounded TTW TIFF metadata decode; PRD/WBG/RIF semantics and a native writer remain unsupported |
 | CRW / CIFF | Yes | Partial | Recursive CIFF directories, stable scalar/subtable decode, derived EXIF bridge, and bounded native Canon CIFF naming/projection |
 | RAF / X3F | Partial | Partial | RAF includes header-declared preview-JPEG EXIF/XMP discovery, FujiIFD/TIFF follow path, native RAF header/directory geometry tags, RAFData geometry projection, and standalone XMP fallback; X3F includes header fields, known PROP properties, section-directory JPEG metadata follow path, and legacy embedded-EXIF fallback |
 | JP2 | Yes | Yes | EXIF, XMP, IPTC, ICC, and GeoTIFF; box scan supports bounded positional callbacks without reading codestream payloads |
@@ -98,6 +99,12 @@ differ from raw block preservation.
 | CR3 | Yes through the dedicated ISO-BMFF lane | Bounded metadata graph, EXIF/XMP/ICC, and Canon maker metadata | Bounded metadata graph edit; not a CR3 image encoder |
 | CRW/CIFF | Yes through a dedicated native lane | Partial | No native writer |
 | RAF and X3F | Partial dedicated native lanes | Partial | No native writer |
+| Minolta MRW | Bounded TTW TIFF carrier through `scan_mrw` / `scan_auto` | Existing Minolta MakerNote interpretation; non-TTW blocks are skipped | No native writer |
+
+The TIFF lane recognizes both Olympus ORF headers `IIRO` and older `IIRS`.
+MRW discovery stops at the declared metadata boundary and does not search the
+pixel tail. It requires standalone big-endian `\0MRM`; embedded `\0MRI` records
+and positional callback MRW scanning are outside this lane.
 
 Vendor metadata for Phase One/Leaf, Panasonic, Olympus, Pentax, Kodak, Minolta,
 Samsung, Ricoh, Apple, DJI, Google, FLIR, and other families is interpreted

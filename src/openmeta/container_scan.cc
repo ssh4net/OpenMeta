@@ -369,7 +369,7 @@ namespace {
                  : static_cast<uint16_t>((u8(bytes[offset + 2]) << 8U)
                                          | u8(bytes[offset + 3]));
         if (version != 42 && version != 43 && version != 0x0055
-            && version != 0x4F52) {
+            && version != 0x4F52 && version != 0x5352) {
             return false;
         }
 
@@ -5981,11 +5981,11 @@ scan_tiff(std::span<const std::byte> bytes,
         cfg.bigtiff = false;
     } else if (version == 43) {
         cfg.bigtiff = true;
-    } else if (version == 0x0055 || version == 0x4F52) {
+    } else if (version == 0x0055 || version == 0x4F52 || version == 0x5352) {
         // Some TIFF-based RAW formats use a custom "version" field while still
         // storing classic TIFF IFD structures at offset 4:
         // - Panasonic RW2: "IIU\0" (0x0055 in LE form)
-        // - Olympus ORF: "IIRO" (0x4F52 in LE form)
+        // - Olympus ORF: "IIRO" / "IIRS" (0x4F52 / 0x5352 in LE form)
         cfg.bigtiff = false;
     } else {
         sink.result.status = ScanStatus::Unsupported;
@@ -6321,9 +6321,109 @@ scan_tiff(std::span<const std::byte> bytes,
 
 
 ScanResult
+scan_mrw(std::span<const std::byte> bytes,
+         std::span<ContainerBlockRef> out) noexcept
+{
+    static constexpr uint32_t kMaxSegments = 65536U;
+    ScanResult result;
+
+    if (bytes.size() < 4 || !match(bytes, 0, "\0MRM", 4U)) {
+        result.status = ScanStatus::Unsupported;
+        return result;
+    }
+    if (bytes.size() < 8U) {
+        result.status = ScanStatus::Malformed;
+        return result;
+    }
+
+    uint32_t metadata_size = 0U;
+    if (!read_u32be(bytes, 4U, &metadata_size)) {
+        result.status = ScanStatus::Malformed;
+        return result;
+    }
+    const uint64_t metadata_end = 8U + static_cast<uint64_t>(metadata_size);
+    if (metadata_end > bytes.size()) {
+        result.status = ScanStatus::Malformed;
+        return result;
+    }
+
+    uint64_t offset = 8U;
+    uint32_t segment_count = 0U;
+    while (offset < metadata_end) {
+        if (segment_count >= kMaxSegments) {
+            result.status = ScanStatus::Malformed;
+            return result;
+        }
+        ++segment_count;
+        if (!checked_range(offset, 8U, metadata_end)
+            || !checked_range(offset, 8U, bytes.size())) {
+            result.status = ScanStatus::Malformed;
+            return result;
+        }
+
+        uint32_t tag = 0U;
+        uint32_t segment_size = 0U;
+        if (!read_u32be(bytes, offset, &tag)
+            || !read_u32be(bytes, offset + 4U, &segment_size)) {
+            result.status = ScanStatus::Malformed;
+            return result;
+        }
+        const uint64_t data_offset = offset + 8U;
+        const uint64_t data_size   = static_cast<uint64_t>(segment_size);
+        if (!checked_range(data_offset, data_size, metadata_end)
+            || !checked_range(data_offset, data_size, bytes.size())) {
+            result.status = ScanStatus::Malformed;
+            return result;
+        }
+
+        if (tag == fourcc('\0', 'T', 'T', 'W')) {
+            const std::span<const std::byte> tiff = bytes.subspan(
+                static_cast<size_t>(data_offset),
+                static_cast<size_t>(data_size));
+            const std::span<ContainerBlockRef> remaining
+                = out.subspan(result.written);
+            const ScanResult tiff_result = scan_tiff(tiff, remaining);
+            for (uint32_t i = 0U; i < tiff_result.written; ++i) {
+                ContainerBlockRef& block = remaining[i];
+                block.format               = ContainerFormat::Mrw;
+                block.outer_offset += data_offset;
+                block.data_offset += data_offset;
+            }
+            const bool tiff_failed
+                = tiff_result.status == ScanStatus::Unsupported
+                  || tiff_result.status == ScanStatus::Malformed;
+            if (tiff_result.needed > UINT32_MAX - result.needed
+                || tiff_result.written > UINT32_MAX - result.written) {
+                result.status = tiff_failed ? tiff_result.status
+                                            : ScanStatus::Malformed;
+                return result;
+            }
+            result.written += tiff_result.written;
+            result.needed += tiff_result.needed;
+            if (tiff_failed) {
+                result.status = tiff_result.status;
+                return result;
+            }
+            if (tiff_result.status == ScanStatus::OutputTruncated
+                && result.status == ScanStatus::Ok) {
+                result.status = ScanStatus::OutputTruncated;
+            }
+        }
+
+        offset = data_offset + data_size;
+    }
+
+    return result;
+}
+
+
+ScanResult
 scan_auto(std::span<const std::byte> bytes,
           std::span<ContainerBlockRef> out) noexcept
 {
+    if (bytes.size() >= 4U && match(bytes, 0U, "\0MRM", 4U)) {
+        return scan_mrw(bytes, out);
+    }
     if (bytes.size() >= 2 && u8(bytes[0]) == 0xFF && u8(bytes[1]) == 0xD8) {
         const ScanResult jpeg = scan_jpeg(bytes, out);
         if (jpeg.status != ScanStatus::Ok && jpeg.written == 0U) {
@@ -6357,7 +6457,8 @@ scan_auto(std::span<const std::byte> bytes,
                                          u8(bytes[2]) | (u8(bytes[3]) << 8))
                                    : static_cast<uint16_t>((u8(bytes[2]) << 8)
                                                            | u8(bytes[3]));
-            if (v == 42 || v == 43 || v == 0x0055 || v == 0x4F52) {
+            if (v == 42 || v == 43 || v == 0x0055 || v == 0x4F52
+                || v == 0x5352) {
                 return scan_tiff(bytes, out);
             }
         }
@@ -6681,6 +6782,13 @@ measure_scan_tiff(std::span<const std::byte> bytes) noexcept
 {
     return normalize_estimate_scan_result(
         scan_tiff(bytes, std::span<ContainerBlockRef> {}));
+}
+
+ScanResult
+measure_scan_mrw(std::span<const std::byte> bytes) noexcept
+{
+    return normalize_estimate_scan_result(
+        scan_mrw(bytes, std::span<ContainerBlockRef> {}));
 }
 
 ScanResult

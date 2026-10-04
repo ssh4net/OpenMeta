@@ -1,5 +1,28 @@
 # OpenMeta Changes
 
+## 0.8.3 - 2026-10-04
+
+- Recognize older Olympus ORF `IIRS` headers in buffered and positional TIFF
+  scanning and decoding.
+- Add bounded standalone Minolta MRW TTW metadata scanning through `scan_mrw`,
+  `measure_scan_mrw`, and automatic detection. Preserve existing format enum
+  values, add the MRW value to Python and snapshot serialization, and stop
+  discovery at the declared metadata boundary. Non-TTW semantics and a native
+  MRW writer remain unsupported.
+- Resolve Minolta MakerNote values from their enclosing TIFF base in buffered
+  and positional decoding, retaining range, scratch and resource limits.
+  Distinguish big-endian binary 5D settings from normalized short arrays.
+- Select Nikon D300 ShotInfo layouts by their version and exact length. Correct
+  shutter, AF and settings offsets, decode firmware from plaintext, and retain
+  unknown layouts as opaque data instead of assigning known field meanings.
+- Use the Nikon D50 serial-key fallback for encrypted metadata, read its
+  two-byte shutter count, and select white-balance data from the correct
+  continuously decrypted ColorBalance0205 region.
+- Read Sony Tag9400c ModelReleaseYear as one byte, preserving adjacent fields
+  and the original encrypted source.
+- Retain the unfrozen development ABI label 4. Rebuild consumers against matching
+  headers and libraries; grouped read inventories do not imply semantic parity.
+
 ## 0.8.2 - 2026-10-03
 
 - Bound total JUMBF/C2PA semantic projection and verification-candidate work.

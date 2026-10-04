@@ -9121,7 +9121,8 @@ NB_MODULE(_openmeta, m)
         .value("Heif", ContainerFormat::Heif)
         .value("Avif", ContainerFormat::Avif)
         .value("Cr3", ContainerFormat::Cr3)
-        .value("Exr", ContainerFormat::Exr);
+        .value("Exr", ContainerFormat::Exr)
+        .value("Mrw", ContainerFormat::Mrw);
 
     nb::enum_<ContainerBlockKind>(m, "ContainerBlockKind")
         .value("Unknown", ContainerBlockKind::Unknown)

@@ -45,6 +45,7 @@ enum class ContainerFormat : uint8_t {
     Avif,
     Cr3,
     Exr,
+    Mrw,
 };
 
 /// Logical kind of a discovered metadata block.
@@ -347,6 +348,13 @@ scan_tiff(std::span<const std::byte> bytes,
           std::span<ContainerBlockRef> out) noexcept;
 ScanResult
 measure_scan_tiff(std::span<const std::byte> bytes) noexcept;
+/// Scans at most 65,536 Minolta MRW metadata segments and their embedded TTW
+/// TIFF payloads. A larger segment count is malformed.
+ScanResult
+scan_mrw(std::span<const std::byte> bytes,
+         std::span<ContainerBlockRef> out) noexcept;
+ScanResult
+measure_scan_mrw(std::span<const std::byte> bytes) noexcept;
 /// Scans a JPEG 2000 (JP2) byte stream and returns metadata boxes found.
 ScanResult
 scan_jp2(std::span<const std::byte> bytes,

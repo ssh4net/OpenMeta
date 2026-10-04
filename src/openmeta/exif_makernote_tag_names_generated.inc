@@ -5877,7 +5877,6 @@ static constexpr MakerNoteTagNameEntry kMakernoteNikonShotinfo[] = {
 static constexpr MakerNoteTagNameEntry kMakernoteNikonShotinfod300a[] = {
     { 0x0000u, "ShotInfoVersion" },
     { 0x025Cu, "ISO2" },
-    { 0x0265u, "ISO2" },
     { 0x0279u, "ShutterCount" },
     { 0x02D1u, "AFFineTuneAdj" },
 };

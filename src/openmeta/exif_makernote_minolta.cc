@@ -258,7 +258,8 @@ static void decode_minolta_binary_subdirs(std::string_view mk_ifd0,
                 mk_prefix, "camerasettings5d", idx_settings5d++,
                 std::span<char>(scratch));
             if (!ifd_name.empty()) {
-                decode_minolta_u16_table(ifd_name, raw, true, store, options,
+                const bool be = (value.kind == MetaValueKind::Bytes);
+                decode_minolta_u16_table(ifd_name, raw, be, store, options,
                                          status_out);
             }
             continue;
@@ -266,9 +267,63 @@ static void decode_minolta_binary_subdirs(std::string_view mk_ifd0,
     }
 }
 
+
+static bool select_minolta_ifd0(const TiffConfig& parent_cfg,
+                                std::span<const std::byte> maker_note,
+                                const ExifDecodeLimits& limits,
+                                ClassicIfdCandidate* out) noexcept
+{
+    if (!out) {
+        return false;
+    }
+    *out = ClassicIfdCandidate {};
+
+    TiffConfig cfg = parent_cfg;
+    cfg.bigtiff    = false;
+
+    uint16_t entry_count = 0U;
+    if (!read_tiff_u16(cfg, maker_note, 0U, &entry_count)
+        || entry_count == 0U || entry_count > 512U
+        || entry_count > limits.max_entries_per_ifd) {
+        return false;
+    }
+
+    const uint64_t table_bytes = 2ULL + uint64_t(entry_count) * 12ULL + 4ULL;
+    if (table_bytes > maker_note.size()) {
+        return false;
+    }
+
+    // Minolta IFD0 begins at the note start, but out-of-line values use the
+    // parent TIFF base. Only its table is validated against the note slice.
+    uint32_t valid_entries = 0U;
+    for (uint32_t i = 0U; i < entry_count; ++i) {
+        const uint64_t entry_off = 2ULL + uint64_t(i) * 12ULL;
+        ClassicIfdEntry entry;
+        uint64_t value_bytes = 0U;
+        if (read_classic_ifd_entry(cfg, maker_note, entry_off, &entry)
+            && classic_ifd_entry_value_bytes(entry, &value_bytes)
+            && value_bytes <= limits.max_value_bytes) {
+            ++valid_entries;
+        }
+    }
+
+    const uint32_t min_valid = (entry_count > 4U)
+                                   ? (uint32_t(entry_count) / 2U)
+                                   : uint32_t(entry_count);
+    if (valid_entries < min_valid) {
+        return false;
+    }
+
+    out->offset        = 0U;
+    out->le            = cfg.le;
+    out->entry_count   = entry_count;
+    out->valid_entries = valid_entries;
+    return true;
+}
+
 }  // namespace
 
-bool decode_minolta_makernote(const TiffConfig& /*parent_cfg*/,
+bool decode_minolta_makernote(const TiffConfig& parent_cfg,
                               std::span<const std::byte> tiff_bytes,
                               uint64_t maker_note_off,
                               uint64_t maker_note_bytes,
@@ -291,18 +346,50 @@ bool decode_minolta_makernote(const TiffConfig& /*parent_cfg*/,
                              static_cast<size_t>(maker_note_bytes));
 
     ClassicIfdCandidate best;
-    if (!find_best_classic_ifd_candidate(mn, 256, options.limits, &best)) {
-        return false;
+    if (!select_minolta_ifd0(parent_cfg, mn, options.limits, &best)) {
+        return true;
     }
 
-    TiffConfig cfg;
-    cfg.bigtiff = false;
-    cfg.le      = best.le;
-    decode_classic_ifd_no_header(cfg, mn, best.offset, mk_ifd0, store, options,
-                                 status_out, EntryFlags::None);
+    TiffConfig cfg       = parent_cfg;
+    cfg.bigtiff          = false;
+    cfg.le               = best.le;
+    const uint64_t ifd_off = maker_note_off;
+    decode_classic_ifd_no_header(cfg, tiff_bytes, ifd_off, mk_ifd0, store,
+                                 options, status_out, EntryFlags::None);
 
     decode_minolta_binary_subdirs(mk_ifd0, store, options, status_out);
 
+    return true;
+}
+
+bool decode_minolta_makernote_from_source(
+    SourceTiffReader* source, const TiffConfig& parent_cfg,
+    uint64_t maker_note_off, std::span<const std::byte> maker_note,
+    std::string_view mk_ifd0, MetaStore& store,
+    const ExifDecodeOptions& options, ExifDecodeResult* status_out) noexcept
+{
+    if (!source || !source->result || mk_ifd0.empty() || maker_note.empty()
+        || !source_tiff_contains(*source, maker_note_off, maker_note.size())) {
+        return false;
+    }
+
+    ClassicIfdCandidate best;
+    if (!select_minolta_ifd0(parent_cfg, maker_note, options.limits, &best)) {
+        return false;
+    }
+
+    TiffConfig cfg = parent_cfg;
+    cfg.bigtiff    = false;
+    cfg.le         = best.le;
+    const OffsetPolicy offsets;
+    if (!decode_classic_ifd_from_source(source, cfg,
+                                        maker_note_off, offsets,
+                                        mk_ifd0, store, options, status_out,
+                                        EntryFlags::None)) {
+        return false;
+    }
+
+    decode_minolta_binary_subdirs(mk_ifd0, store, options, status_out);
     return true;
 }
 

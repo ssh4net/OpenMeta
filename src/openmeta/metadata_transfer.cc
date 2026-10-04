@@ -16461,7 +16461,8 @@ namespace {
         case ContainerFormat::Unknown:
         case ContainerFormat::Tiff:
         case ContainerFormat::Crw:
-        case ContainerFormat::Exr: break;
+        case ContainerFormat::Exr:
+        case ContainerFormat::Mrw: break;
         }
         ContainerRandomAccessScanResult out;
         out.scan.status = ScanStatus::Unsupported;

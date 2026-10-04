@@ -159,6 +159,99 @@ namespace {
         return RandomAccessIoResult { RandomAccessIoCode::Ok, count };
     }
 
+    static MetaKeyView exif_key(std::string_view ifd, uint16_t tag);
+
+
+    static std::vector<std::byte>
+    make_minolta_parent_tiff(uint32_t settings_offset)
+    {
+        std::vector<std::byte> tiff;
+        append_bytes(&tiff, "II");
+        append_u16le(&tiff, 42U);
+        append_u32le(&tiff, 8U);
+
+        append_u16le(&tiff, 2U);
+        append_u16le(&tiff, 0x010FU);
+        append_u16le(&tiff, 2U);
+        append_u32le(&tiff, 8U);
+        append_u32le(&tiff, 38U);
+        append_u16le(&tiff, 0x8769U);
+        append_u16le(&tiff, 4U);
+        append_u32le(&tiff, 1U);
+        append_u32le(&tiff, 46U);
+        append_u32le(&tiff, 0U);
+        append_bytes(&tiff, "Minolta");
+        tiff.push_back(std::byte { 0 });
+
+        append_u16le(&tiff, 1U);
+        append_u16le(&tiff, 0x927CU);
+        append_u16le(&tiff, 7U);
+        append_u32le(&tiff, 66U);
+        append_u32le(&tiff, 64U);
+        append_u32le(&tiff, 0U);
+
+        append_u16le(&tiff, 5U);
+        const uint16_t main_tags[4] = { 0x0100U, 0x0101U, 0x0102U,
+                                        0x0103U };
+        const uint32_t main_values[4] = { 640U, 480U, 1U, 7U };
+        for (uint32_t i = 0U; i < 4U; ++i) {
+            append_u16le(&tiff, main_tags[i]);
+            append_u16le(&tiff, 4U);
+            append_u32le(&tiff, 1U);
+            append_u32le(&tiff, main_values[i]);
+        }
+        append_u16le(&tiff, 0x0114U);
+        append_u16le(&tiff, 7U);
+        append_u32le(&tiff, 6U);
+        append_u32le(&tiff, settings_offset);
+        append_u32le(&tiff, 0U);
+
+        tiff.resize(230U, std::byte { 0 });
+        const uint8_t settings[6] = { 0x01U, 0x02U, 0x03U,
+                                      0x04U, 0x05U, 0x06U };
+        const uint8_t decoy[6] = { 0x11U, 0x22U, 0x33U,
+                                   0x44U, 0x55U, 0x66U };
+        for (uint32_t i = 0U; i < 6U; ++i) {
+            tiff[160U + i] = std::byte { settings[i] };
+            tiff[224U + i] = std::byte { decoy[i] };
+        }
+        return tiff;
+    }
+
+
+    static void expect_minolta_parent_tiff_values(const MetaStore& store)
+    {
+        const std::span<const EntryId> main_ids = store.find_all(
+            exif_key("mk_minolta0", 0x0100U));
+        ASSERT_EQ(main_ids.size(), 1U);
+        const Entry& main = store.entry(main_ids[0]);
+        EXPECT_EQ(main.value.kind, MetaValueKind::Scalar);
+        EXPECT_EQ(main.value.elem_type, MetaElementType::U32);
+        EXPECT_EQ(main.value.data.u64, 640U);
+
+        const uint16_t derived_tags[3] = { 0x0000U, 0x0001U, 0x0002U };
+        const uint16_t derived_values[3] = { 0x0102U, 0x0304U, 0x0506U };
+        for (uint32_t i = 0U; i < 3U; ++i) {
+            const std::span<const EntryId> ids = store.find_all(exif_key(
+                "mk_minolta_camerasettings5d_0", derived_tags[i]));
+            ASSERT_EQ(ids.size(), 1U);
+            const Entry& entry = store.entry(ids[0]);
+            EXPECT_EQ(entry.value.kind, MetaValueKind::Scalar);
+            EXPECT_EQ(entry.value.elem_type, MetaElementType::U16);
+            EXPECT_EQ(entry.value.data.u64, derived_values[i]);
+            EXPECT_TRUE(any(entry.flags, EntryFlags::Derived));
+        }
+    }
+
+
+    static void expect_minolta_settings_unreadable(const MetaStore& store)
+    {
+        const std::span<const EntryId> ids = store.find_all(
+            exif_key("mk_minolta0", 0x0114U));
+        ASSERT_EQ(ids.size(), 1U);
+        EXPECT_TRUE(any(store.entry(ids[0]).flags, EntryFlags::Unreadable));
+    }
+
 
     static MetaKeyView exif_key(std::string_view ifd, uint16_t tag)
     {
@@ -942,6 +1035,85 @@ TEST(ExifTiffDecode, RandomAccessCallbackMatchesSpanThroughSourceSubrange)
 }
 
 
+TEST(ExifTiffDecode, MinoltaMakerNoteValuesUseParentTiffOffsetBase)
+{
+    const std::vector<std::byte> tiff = make_minolta_parent_tiff(160U);
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+
+    MetaStore span_store;
+    std::array<ExifIfdRef, 8> span_ifds {};
+    const ExifDecodeResult span_result
+        = decode_exif_tiff(tiff, span_store, span_ifds, options);
+    EXPECT_EQ(span_result.status, ExifDecodeStatus::Ok);
+    span_store.finalize();
+    expect_minolta_parent_tiff_values(span_store);
+
+    TiffCallbackState callback { tiff };
+    const RandomAccessSource source
+        = make_callback_random_access_source(tiff.size(), &callback,
+                                             tiff_read_at);
+    std::array<std::byte, 64> read_window {};
+    std::array<std::byte, 128> value_scratch {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window                       = read_window;
+    scratch.value                             = value_scratch;
+    scratch.window_options.minimum_read_bytes = read_window.size();
+
+    MetaStore callback_store;
+    std::array<ExifIfdRef, 8> callback_ifds {};
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_exif_tiff_random_access(make_random_access_source_range(source),
+                                         callback_store, callback_ifds, scratch,
+                                         options);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_GT(callback.calls, 0U);
+    EXPECT_LT(callback.max_request, tiff.size());
+    callback_store.finalize();
+    expect_minolta_parent_tiff_values(callback_store);
+}
+
+
+TEST(ExifTiffDecode, MinoltaMakerNoteParentOutOfRangeValueStaysUnreadable)
+{
+    const std::vector<std::byte> tiff
+        = make_minolta_parent_tiff(UINT32_MAX - 7U);
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+
+    MetaStore span_store;
+    std::array<ExifIfdRef, 8> span_ifds {};
+    const ExifDecodeResult span_result
+        = decode_exif_tiff(tiff, span_store, span_ifds, options);
+    EXPECT_EQ(span_result.status, ExifDecodeStatus::Malformed);
+    span_store.finalize();
+    expect_minolta_settings_unreadable(span_store);
+
+    TiffCallbackState callback { tiff };
+    const RandomAccessSource source
+        = make_callback_random_access_source(tiff.size(), &callback,
+                                             tiff_read_at);
+    std::array<std::byte, 64> read_window {};
+    std::array<std::byte, 128> value_scratch {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window                       = read_window;
+    scratch.value                             = value_scratch;
+    scratch.window_options.minimum_read_bytes = read_window.size();
+
+    MetaStore callback_store;
+    std::array<ExifIfdRef, 8> callback_ifds {};
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_exif_tiff_random_access(make_random_access_source_range(source),
+                                         callback_store, callback_ifds, scratch,
+                                         options);
+    EXPECT_TRUE(callback_result.input.ok());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    callback_store.finalize();
+    expect_minolta_settings_unreadable(callback_store);
+}
+
+
 TEST(ExifTiffDecode, RandomAccessCallbackDecodesBigTiffAndRawHeaders)
 {
     std::vector<std::byte> bigtiff;
@@ -983,7 +1155,8 @@ TEST(ExifTiffDecode, RandomAccessCallbackDecodesBigTiffAndRawHeaders)
     EXPECT_EQ(decode_callback(bigtiff), 1U);
 
     for (const uint16_t version :
-         { uint16_t { 0x0055U }, uint16_t { 0x4F52U } }) {
+         { uint16_t { 0x0055U }, uint16_t { 0x4F52U },
+           uint16_t { 0x5352U } }) {
         std::vector<std::byte> raw;
         append_bytes(&raw, "II");
         append_u16le(&raw, version);
@@ -1228,8 +1401,8 @@ TEST(ExifTiffDecode, AcceptsTiffRawVariantHeaders)
         return tiff;
     };
 
-    // Panasonic RW2 ("IIU\0") and Olympus ORF ("IIRO") variant headers.
-    const std::array<uint16_t, 2> versions = { 0x0055, 0x4F52 };
+    // Panasonic RW2 and both Olympus ORF classic-IFD headers.
+    const std::array<uint16_t, 3> versions = { 0x0055, 0x4F52, 0x5352 };
 
     for (const uint16_t v : versions) {
         const std::vector<std::byte> tiff = make_min(v);

@@ -633,7 +633,7 @@ static constexpr SonyCipherField kSonyTag9400cFields[] = {
     { 0x001E, SonyCipherFieldKind::U8 },     // SequenceLength
     { 0x0029, SonyCipherFieldKind::U8 },     // CameraOrientation
     { 0x002A, SonyCipherFieldKind::U8 },     // Quality2
-    { 0x0053, SonyCipherFieldKind::U16LE },  // ModelReleaseYear
+    { 0x0053, SonyCipherFieldKind::U8 },     // ModelReleaseYear
 };
 
 static constexpr SonyCipherField kSonyTag9406Fields[]

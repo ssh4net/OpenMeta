@@ -43,7 +43,10 @@ TEST(ExifTagNames, MapsCommonTags)
               std::string_view("NumberOfImages"));
 
     EXPECT_EQ(exif_tag_name("mk_nikon0", 0x0002), std::string_view("ISO"));
-    EXPECT_EQ(exif_tag_name("mk_nikon_shotinfod300a_0", 0x0265),
+    EXPECT_EQ(exif_tag_name("mk_nikon_shotinfod300a_0", 0x025c),
+              std::string_view("ISO2"));
+    EXPECT_TRUE(exif_tag_name("mk_nikon_shotinfod300a_0", 0x0265).empty());
+    EXPECT_EQ(exif_tag_name("mk_nikon_shotinfod300b_0", 0x0265),
               std::string_view("ISO2"));
     EXPECT_EQ(exif_tag_name("mk_canon0", 0x0003),
               std::string_view("CanonFlashInfo"));

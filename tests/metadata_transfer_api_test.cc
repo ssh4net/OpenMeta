@@ -55938,7 +55938,8 @@ TEST(MetadataTransferApi, TransferSourceSnapshotSerializationRoundTripsStore)
 {
     openmeta::TransferSourceSnapshot source;
     openmeta::BlockInfo block_info;
-    block_info.format             = 17U;
+    block_info.format             = static_cast<uint32_t>(
+        openmeta::ContainerFormat::Mrw);
     block_info.container          = 23U;
     block_info.id                 = 42U;
     const openmeta::BlockId block = source.store.add_block(block_info);
@@ -56037,7 +56038,7 @@ TEST(MetadataTransferApi, TransferSourceSnapshotSerializationRoundTripsStore)
     source.store.finalize();
 
     openmeta::TransferSourceRawCarrier carrier;
-    carrier.block.format       = openmeta::ContainerFormat::Jpeg;
+    carrier.block.format       = openmeta::ContainerFormat::Mrw;
     carrier.block.kind         = openmeta::ContainerBlockKind::Xmp;
     carrier.block.outer_offset = 20U;
     carrier.block.outer_size   = 30U;
@@ -56095,6 +56096,8 @@ TEST(MetadataTransferApi, TransferSourceSnapshotSerializationRoundTripsStore)
         EXPECT_EQ(after.flags, before.flags);
     }
     ASSERT_EQ(decoded.raw_carriers.size(), 1U);
+    EXPECT_EQ(decoded.raw_carriers[0].block.format,
+              openmeta::ContainerFormat::Mrw);
     EXPECT_EQ(decoded.raw_carriers[0].route, carrier.route);
     EXPECT_EQ(decoded.raw_carriers[0].payload, carrier.payload);
     EXPECT_EQ(decoded.raw_carriers[0].decoded_entry_ids,

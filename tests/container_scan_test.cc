@@ -122,6 +122,55 @@ namespace {
     }
 
 
+    static void append_mrw_header(std::vector<std::byte>* out,
+                                  uint32_t metadata_size)
+    {
+        out->push_back(std::byte { 0x00 });
+        out->push_back(std::byte { 'M' });
+        out->push_back(std::byte { 'R' });
+        out->push_back(std::byte { 'M' });
+        append_u32be(out, metadata_size);
+    }
+
+
+    static void append_mrw_segment(std::vector<std::byte>* out, uint32_t tag,
+                                   std::span<const std::byte> payload)
+    {
+        append_fourcc(out, tag);
+        append_u32be(out, static_cast<uint32_t>(payload.size()));
+        out->insert(out->end(), payload.begin(), payload.end());
+    }
+
+
+    static std::vector<std::byte> make_mrw_tiff_with_xmp()
+    {
+        std::vector<std::byte> tiff;
+        append_bytes(&tiff, "MM");
+        append_u16be(&tiff, 42U);
+        append_u32be(&tiff, 8U);
+        append_u16be(&tiff, 1U);
+        append_u16be(&tiff, 0x02BCU);
+        append_u16be(&tiff, 1U);
+        append_u32be(&tiff, 5U);
+        append_u32be(&tiff, 26U);
+        append_u32be(&tiff, 0U);
+        append_bytes(&tiff, "<xmp>");
+        return tiff;
+    }
+
+
+    static std::vector<std::byte> make_mrw_malformed_tiff()
+    {
+        std::vector<std::byte> tiff;
+        append_bytes(&tiff, "MM");
+        append_u16be(&tiff, 43U);
+        append_u16be(&tiff, 4U);
+        append_u16be(&tiff, 0U);
+        append_u64be(&tiff, 16U);
+        return tiff;
+    }
+
+
     static void append_fullbox_header(std::vector<std::byte>* out,
                                       uint8_t version)
     {
@@ -4373,6 +4422,188 @@ namespace {
     }
 
 
+    TEST(ContainerScan, MrwTtwOffsetsAndDeclaredMetadataBoundary)
+    {
+        const std::vector<std::byte> tiff = make_mrw_tiff_with_xmp();
+        std::vector<std::byte> metadata;
+        const std::array<std::byte, 3> prd = {
+            std::byte { 0x01 }, std::byte { 0x02 }, std::byte { 0x03 },
+        };
+        const std::array<std::byte, 2> padding = {
+            std::byte { 0x00 }, std::byte { 0x00 },
+        };
+        append_mrw_segment(&metadata, fourcc('\0', 'P', 'R', 'D'), prd);
+        append_mrw_segment(&metadata, fourcc('\0', 'W', 'B', 'G'), {});
+        append_mrw_segment(&metadata, fourcc('\0', 'R', 'I', 'F'), prd);
+        append_mrw_segment(&metadata, fourcc('\0', 'C', 'S', 'A'), padding);
+        append_mrw_segment(&metadata, fourcc('J', 'U', 'N', 'K'), {});
+        const uint64_t ttw_data_offset
+            = 8U + static_cast<uint64_t>(metadata.size()) + 8U;
+        append_mrw_segment(&metadata, fourcc('\0', 'T', 'T', 'W'), tiff);
+
+        std::vector<std::byte> file;
+        append_mrw_header(&file, static_cast<uint32_t>(metadata.size()));
+        file.insert(file.end(), metadata.begin(), metadata.end());
+        std::vector<std::byte> pixel_tail;
+        append_mrw_segment(&pixel_tail, fourcc('\0', 'T', 'T', 'W'), tiff);
+        file.insert(file.end(), pixel_tail.begin(), pixel_tail.end());
+
+        std::array<ContainerBlockRef, 4> blocks {};
+        const ScanResult res = scan_mrw(file, blocks);
+        ASSERT_EQ(res.status, ScanStatus::Ok);
+        ASSERT_EQ(res.written, 2U);
+        ASSERT_EQ(res.needed, 2U);
+        EXPECT_EQ(blocks[0].format, ContainerFormat::Mrw);
+        EXPECT_EQ(blocks[0].kind, ContainerBlockKind::Exif);
+        EXPECT_EQ(blocks[0].outer_offset, ttw_data_offset);
+        EXPECT_EQ(blocks[0].outer_size, tiff.size());
+        EXPECT_EQ(blocks[0].data_offset, ttw_data_offset);
+        EXPECT_EQ(blocks[0].data_size, tiff.size());
+        EXPECT_EQ(blocks[1].format, ContainerFormat::Mrw);
+        EXPECT_EQ(blocks[1].kind, ContainerBlockKind::Xmp);
+        EXPECT_EQ(blocks[1].outer_offset, ttw_data_offset + 26U);
+        EXPECT_EQ(blocks[1].outer_size, 5U);
+        EXPECT_EQ(blocks[1].data_offset, ttw_data_offset + 26U);
+        EXPECT_EQ(blocks[1].data_size, 5U);
+
+        const ScanResult measured = measure_scan_mrw(file);
+        EXPECT_EQ(measured.status, ScanStatus::Ok);
+        EXPECT_EQ(measured.written, 0U);
+        EXPECT_EQ(measured.needed, 2U);
+        const ScanResult auto_measured = measure_scan_auto(file);
+        EXPECT_EQ(auto_measured.status, ScanStatus::Ok);
+        EXPECT_EQ(auto_measured.needed, 2U);
+        std::array<ContainerBlockRef, 1> short_out {};
+        const ScanResult truncated = scan_mrw(file, short_out);
+        EXPECT_EQ(truncated.status, ScanStatus::OutputTruncated);
+        EXPECT_EQ(truncated.written, 1U);
+        EXPECT_EQ(truncated.needed, 2U);
+
+        const ScanResult auto_res = scan_auto(file, blocks);
+        EXPECT_EQ(auto_res.status, ScanStatus::Ok);
+        EXPECT_EQ(auto_res.written, 2U);
+        EXPECT_EQ(blocks[0].format, ContainerFormat::Mrw);
+    }
+
+
+    TEST(ContainerScan, MrwLaterTiffFailureOverridesEarlierOutputTruncation)
+    {
+        const std::vector<std::byte> valid_tiff = make_mrw_tiff_with_xmp();
+        const std::vector<std::byte> malformed_tiff
+            = make_mrw_malformed_tiff();
+        std::vector<std::byte> metadata;
+        append_mrw_segment(&metadata, fourcc('\0', 'T', 'T', 'W'), valid_tiff);
+        append_mrw_segment(&metadata, fourcc('\0', 'T', 'T', 'W'),
+                           malformed_tiff);
+        std::vector<std::byte> file;
+        append_mrw_header(&file, static_cast<uint32_t>(metadata.size()));
+        file.insert(file.end(), metadata.begin(), metadata.end());
+
+        std::array<ContainerBlockRef, 1> short_out {};
+        const ScanResult truncated_then_malformed = scan_mrw(file, short_out);
+        EXPECT_EQ(truncated_then_malformed.status, ScanStatus::Malformed);
+        EXPECT_EQ(truncated_then_malformed.written, 1U);
+        EXPECT_EQ(truncated_then_malformed.needed, 3U);
+        EXPECT_EQ(measure_scan_mrw(file).status, ScanStatus::Malformed);
+
+        std::array<std::byte, 8> unsupported_tiff {};
+        std::vector<std::byte> unsupported_metadata;
+        append_mrw_segment(&unsupported_metadata,
+                           fourcc('\0', 'T', 'T', 'W'), valid_tiff);
+        append_mrw_segment(&unsupported_metadata,
+                           fourcc('\0', 'T', 'T', 'W'), unsupported_tiff);
+        std::vector<std::byte> unsupported_file;
+        append_mrw_header(&unsupported_file,
+                          static_cast<uint32_t>(unsupported_metadata.size()));
+        unsupported_file.insert(unsupported_file.end(),
+                                unsupported_metadata.begin(),
+                                unsupported_metadata.end());
+        EXPECT_EQ(scan_mrw(unsupported_file, short_out).status,
+                  ScanStatus::Unsupported);
+        EXPECT_EQ(measure_scan_mrw(unsupported_file).status,
+                  ScanStatus::Unsupported);
+    }
+
+
+    TEST(ContainerScan, MrwZeroLengthSegmentBudget)
+    {
+        constexpr uint32_t segment_count = 65537U;
+        std::vector<std::byte> metadata;
+        metadata.reserve(static_cast<size_t>(segment_count) * 8U);
+        for (uint32_t i = 0U; i < segment_count; ++i) {
+            append_fourcc(&metadata, fourcc('J', 'U', 'N', 'K'));
+            append_u32be(&metadata, 0U);
+        }
+        std::vector<std::byte> file;
+        append_mrw_header(&file, static_cast<uint32_t>(metadata.size()));
+        file.insert(file.end(), metadata.begin(), metadata.end());
+
+        const ScanResult result = scan_mrw(file, {});
+        EXPECT_EQ(result.status, ScanStatus::Malformed);
+        EXPECT_EQ(result.written, 0U);
+        EXPECT_EQ(result.needed, 0U);
+    }
+
+
+    TEST(ContainerScan, MrwTruncatedAndOutOfBoundsSegmentsAreMalformed)
+    {
+        std::vector<std::byte> short_header;
+        short_header.push_back(std::byte { 0x00 });
+        append_bytes(&short_header, "MRM");
+        short_header.push_back(std::byte { 0x00 });
+        short_header.push_back(std::byte { 0x00 });
+        short_header.push_back(std::byte { 0x00 });
+        std::array<ContainerBlockRef, 2> blocks {};
+        EXPECT_EQ(scan_mrw(short_header, blocks).status, ScanStatus::Malformed);
+        EXPECT_EQ(scan_auto(short_header, blocks).status, ScanStatus::Malformed);
+
+        std::vector<std::byte> short_file;
+        append_mrw_header(&short_file, 8U);
+        EXPECT_EQ(scan_mrw(short_file, blocks).status, ScanStatus::Malformed);
+
+        std::vector<std::byte> payload_outside_metadata;
+        append_mrw_header(&payload_outside_metadata, 8U);
+        append_fourcc(&payload_outside_metadata, fourcc('\0', 'T', 'T', 'W'));
+        append_u32be(&payload_outside_metadata, 4U);
+        append_bytes(&payload_outside_metadata, "TAIL");
+        EXPECT_EQ(scan_mrw(payload_outside_metadata, blocks).status,
+                  ScanStatus::Malformed);
+
+        std::vector<std::byte> short_segment_header;
+        append_mrw_header(&short_segment_header, 7U);
+        for (uint32_t i = 0U; i < 7U; ++i) {
+            short_segment_header.push_back(std::byte { 0x00 });
+        }
+        EXPECT_EQ(scan_mrw(short_segment_header, blocks).status,
+                  ScanStatus::Malformed);
+    }
+
+
+    TEST(ContainerScan, MrwWithoutTtwReturnsNoBlocks)
+    {
+        std::vector<std::byte> metadata;
+        const std::array<std::byte, 1> unknown = { std::byte { 0x42 } };
+        append_mrw_segment(&metadata, fourcc('\0', 'P', 'R', 'D'), unknown);
+        append_mrw_segment(&metadata, fourcc('\0', 'C', 'S', 'A'), {});
+        std::vector<std::byte> file;
+        append_mrw_header(&file, static_cast<uint32_t>(metadata.size()));
+        file.insert(file.end(), metadata.begin(), metadata.end());
+
+        std::array<ContainerBlockRef, 2> blocks {};
+        const ScanResult direct = scan_mrw(file, blocks);
+        EXPECT_EQ(direct.status, ScanStatus::Ok);
+        EXPECT_EQ(direct.written, 0U);
+        EXPECT_EQ(direct.needed, 0U);
+        const ScanResult res = scan_auto(file, blocks);
+        EXPECT_EQ(res.status, ScanStatus::Ok);
+        EXPECT_EQ(res.written, 0U);
+        EXPECT_EQ(res.needed, 0U);
+        const ScanResult measured = measure_scan_auto(file);
+        EXPECT_EQ(measured.status, ScanStatus::Ok);
+        EXPECT_EQ(measured.needed, 0U);
+    }
+
+
     TEST(ContainerScan, TiffRawVariantHeaders)
     {
         auto make_min_tiff = [&](uint16_t version_le) {
@@ -4387,8 +4618,9 @@ namespace {
 
         const std::vector<std::byte> rw2 = make_min_tiff(0x0055);  // "IIU\0"
         const std::vector<std::byte> orf = make_min_tiff(0x4F52);  // "IIRO"
+        const std::vector<std::byte> old_orf = make_min_tiff(0x5352);  // "IIRS"
 
-        for (const std::vector<std::byte>& t : { rw2, orf }) {
+        for (const std::vector<std::byte>& t : { rw2, orf, old_orf }) {
             std::array<ContainerBlockRef, 8> blocks {};
             const ScanResult res = scan_auto(t, blocks);
             ASSERT_EQ(res.status, ScanStatus::Ok);

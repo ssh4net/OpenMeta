@@ -4377,10 +4377,10 @@ decode_exif_tiff_contiguous(std::span<const std::byte> tiff_bytes,
         cfg.bigtiff = false;
     } else if (version == 43) {
         cfg.bigtiff = true;
-    } else if (version == 0x0055 || version == 0x4F52) {
+    } else if (version == 0x0055 || version == 0x4F52 || version == 0x5352) {
         // TIFF-based RAW variants that still use classic TIFF IFD structures:
         // - Panasonic RW2: "IIU\0" (0x0055 in LE form)
-        // - Olympus ORF: "IIRO" (0x4F52 in LE form)
+        // - Olympus ORF: "IIRO" / "IIRS" (0x4F52 / 0x5352 in LE form)
         cfg.bigtiff = false;
     } else {
         sink.result.status = ExifDecodeStatus::Unsupported;
@@ -5993,9 +5993,15 @@ namespace {
         }
 
         if (vendor == MakerNoteVendor::Minolta) {
-            if (exif_internal::decode_minolta_makernote(
-                    cfg, maker_note, 0U, maker_note.size(), maker_ifd, store,
-                    mn_options, &result->decode)) {
+            const bool decoded
+                = source
+                      ? exif_internal::decode_minolta_makernote_from_source(
+                            source, cfg, maker_note_off, maker_note, maker_ifd,
+                            store, mn_options, &result->decode)
+                      : exif_internal::decode_minolta_makernote(
+                            cfg, maker_note, 0U, maker_note.size(), maker_ifd,
+                            store, mn_options, &result->decode);
+            if (decoded) {
                 return;
             }
             uint16_t entry_count = 1U;
@@ -6239,7 +6245,8 @@ decode_exif_tiff_random_access(
         result.decode.status = ExifDecodeStatus::Malformed;
         return result;
     }
-    if (version == 42U || version == 0x0055U || version == 0x4F52U) {
+    if (version == 42U || version == 0x0055U || version == 0x4F52U
+        || version == 0x5352U) {
         cfg.bigtiff = false;
     } else if (version == 43U) {
         cfg.bigtiff = true;

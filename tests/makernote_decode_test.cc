@@ -786,7 +786,8 @@ namespace {
         return mn;
     }
 
-    static std::vector<std::byte> make_minolta_makernote_with_binary_subdirs()
+    static std::vector<std::byte> make_minolta_makernote_with_binary_subdirs(
+        bool normalized_5d = false)
     {
         static constexpr uint16_t kEntryCount = 3;
         static constexpr uint32_t kHeaderSize = 2U + kEntryCount * 12U + 4U;
@@ -808,8 +809,8 @@ namespace {
         append_u32le(&mn, kCs7dOff);
 
         append_u16le(&mn, 0x0114);  // CameraSettings5D/A100
-        append_u16le(&mn, 7);       // UNDEFINED
-        append_u32le(&mn, 8U);
+        append_u16le(&mn, normalized_5d ? 3U : 7U);
+        append_u32le(&mn, normalized_5d ? 4U : 8U);
         append_u32le(&mn, kCs5dOff);
 
         append_u32le(&mn, 0);
@@ -825,11 +826,37 @@ namespace {
         append_u16le(&mn, 0x3333U);
         append_u16le(&mn, 0x4444U);
 
-        append_u16be(&mn, 0x0102U);
-        append_u16be(&mn, 0x0304U);
-        append_u16be(&mn, 0x0506U);
-        append_u16be(&mn, 0x0708U);
+        if (normalized_5d) {
+            append_u16le(&mn, 0x0102U);
+            append_u16le(&mn, 0x0304U);
+            append_u16le(&mn, 0x0506U);
+            append_u16le(&mn, 0x0708U);
+        } else {
+            append_u16be(&mn, 0x0102U);
+            append_u16be(&mn, 0x0304U);
+            append_u16be(&mn, 0x0506U);
+            append_u16be(&mn, 0x0708U);
+        }
         return mn;
+    }
+
+    static std::vector<std::byte> make_minolta_tiff_with_binary_subdirs(
+        bool normalized_5d = false)
+    {
+        const std::vector<std::byte> mn
+            = make_minolta_makernote_with_binary_subdirs(normalized_5d);
+        std::vector<std::byte> tiff
+            = make_test_tiff_with_makernote("KONICA MINOLTA", mn);
+        const uint32_t note_offset
+            = static_cast<uint32_t>(tiff.size() - mn.size());
+        // The standalone fixture uses base zero. Embedded Minolta values
+        // use the enclosing TIFF base, including its complete prefix.
+        const uint32_t local_offsets[3] = { 42U, 58U, 66U };
+        for (uint32_t i = 0U; i < 3U; ++i) {
+            write_u32le_at(&tiff, note_offset + 10U + 12U * i,
+                           note_offset + local_offsets[i]);
+        }
+        return tiff;
     }
 
 
@@ -2254,6 +2281,190 @@ namespace {
         mn.push_back(std::byte { 2 });
         mn.push_back(std::byte { 0 });
 
+        return mn;
+    }
+
+    static std::vector<std::byte>
+    make_nikon_d300_shotinfo_plain(size_t byte_count,
+                                   std::string_view version)
+    {
+        std::vector<std::byte> plain(byte_count, std::byte { 0 });
+        if (plain.size() < 0x0320U) {
+            return plain;
+        }
+
+        EXPECT_EQ(version.size(), 4U);
+        std::memcpy(plain.data(), version.data(), 4U);
+        if (plain.size() >= 9U) {
+            std::memcpy(plain.data() + 4U, "1.10B", 5U);
+        }
+
+        // Keep values at both known D300 layouts and conflicting A offsets.
+        plain[0x025cU] = std::byte { 0x12 };
+        plain[0x0265U] = std::byte { 0x34 };
+        write_u32be_at(&plain, 0x0279U, 0x01020304U);
+        write_u32be_at(&plain, 0x0284U, 7213U);
+        write_u16be_at(&plain, 0x02d1U, 0x2345U);
+        write_u16be_at(&plain, 0x02dcU, 0U);
+
+        // CustomSettingsD300 starts at 790 in layout A and 802 in layout B.
+        plain[801U] = std::byte { 0x11 };
+        plain[813U] = std::byte { 0x22 };
+        return plain;
+    }
+
+    static std::vector<std::byte>
+    encrypt_nikon_d300_synthetic(std::span<const std::byte> plain)
+    {
+        std::vector<std::byte> cipher(plain.begin(), plain.end());
+
+        // serial=0 and shutter count=0 select these first entries from the
+        // decoder's Nikon key tables. The reference-vector test pins the
+        // resulting stream independently from the decode assertions.
+        constexpr uint8_t kCi0 = 0xC1U;
+        uint8_t cj             = 0xA7U;
+        uint8_t ck             = 0x60U;
+        for (size_t i = 4U; i < plain.size(); ++i) {
+            const uint32_t prod = static_cast<uint32_t>(kCi0)
+                                  * static_cast<uint32_t>(ck);
+            cj = static_cast<uint8_t>((static_cast<uint32_t>(cj) + prod)
+                                      & 0xFFU);
+            ck = static_cast<uint8_t>((static_cast<uint32_t>(ck) + 1U)
+                                      & 0xFFU);
+            cipher[i] = std::byte { static_cast<uint8_t>(
+                static_cast<uint8_t>(plain[i]) ^ cj) };
+        }
+        return cipher;
+    }
+
+    static std::vector<std::byte>
+    make_nikon_d300_makernote(size_t shotinfo_byte_count,
+                              std::string_view version = "0210")
+    {
+        const std::vector<std::byte> plain
+            = make_nikon_d300_shotinfo_plain(shotinfo_byte_count, version);
+        const std::vector<std::byte> shotinfo
+            = encrypt_nikon_d300_synthetic(plain);
+
+        std::vector<std::byte> mn;
+        append_bytes(&mn, "Nikon");
+        mn.push_back(std::byte { 0 });
+        mn.push_back(std::byte { 2 });
+        mn.push_back(std::byte { 0 });
+        mn.push_back(std::byte { 0 });
+        mn.push_back(std::byte { 0 });
+        append_bytes(&mn, "II");
+        append_u16le(&mn, 42U);
+        append_u32le(&mn, 8U);
+        append_u16le(&mn, 3U);
+
+        const uint32_t shotinfo_off = 8U + 2U + 3U * 12U + 4U;
+        append_classic_ifd_entry_le(&mn, 0x001dU, 2U, 2U, 0x30U);
+        append_classic_ifd_entry_le(
+            &mn, 0x0091U, 7U, static_cast<uint32_t>(shotinfo.size()),
+            shotinfo_off);
+        append_classic_ifd_entry_le(&mn, 0x00a7U, 4U, 1U, 0U);
+        append_u32le(&mn, 0U);
+        EXPECT_EQ(mn.size(), 60U);
+        mn.insert(mn.end(), shotinfo.begin(), shotinfo.end());
+        return mn;
+    }
+
+    static std::vector<std::byte>
+    encrypt_nikon_d50_synthetic(std::span<const std::byte> plain)
+    {
+        std::vector<std::byte> cipher(plain.begin(), plain.end());
+
+        // D50 SerialKey 0x22 and shutter count 2846 select these Nikon table
+        // bytes. The encrypted stream starts at offset 4.
+        constexpr uint8_t kCi0 = 0xEFU;
+        uint8_t cj             = 0x11U;
+        uint8_t ck             = 0x60U;
+        for (size_t i = 4U; i < plain.size(); ++i) {
+            const uint32_t prod = static_cast<uint32_t>(kCi0)
+                                  * static_cast<uint32_t>(ck);
+            cj = static_cast<uint8_t>((static_cast<uint32_t>(cj) + prod)
+                                      & 0xFFU);
+            ck = static_cast<uint8_t>((static_cast<uint32_t>(ck) + 1U)
+                                      & 0xFFU);
+            cipher[i] = std::byte { static_cast<uint8_t>(
+                static_cast<uint8_t>(plain[i]) ^ cj) };
+        }
+        return cipher;
+    }
+
+    static std::vector<std::byte> make_nikon_d50_shotinfo_plain()
+    {
+        std::vector<std::byte> plain(0x01AFU, std::byte { 0 });
+        std::memcpy(plain.data(), "0205", 4U);
+        std::memcpy(plain.data() + 4U, "D50FW", 5U);
+        write_u16be_at(&plain, 0x0157U, 2846U);
+        plain[0x0159U] = std::byte { 0xA5 };
+        plain[0x015AU] = std::byte { 0x5A };
+        return plain;
+    }
+
+    static std::vector<std::byte> make_nikon_d50_colorbalance_plain()
+    {
+        std::vector<std::byte> plain(26U, std::byte { 0 });
+        std::memcpy(plain.data(), "0205", 4U);
+
+        // The first eight decrypted bytes are a decoy, before DirOffset 14.
+        const uint8_t decoy[8] = {
+            0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x66U, 0x77U, 0x88U,
+        };
+        for (size_t i = 0; i < sizeof(decoy) / sizeof(decoy[0]); ++i) {
+            plain[4U + i] = std::byte { decoy[i] };
+        }
+
+        // The D50 ColorBalance2 directory is little-endian int16u[4].
+        write_u16le_at(&plain, 18U, 538U);
+        write_u16le_at(&plain, 20U, 256U);
+        write_u16le_at(&plain, 22U, 256U);
+        write_u16le_at(&plain, 24U, 379U);
+        return plain;
+    }
+
+    static std::vector<std::byte> make_nikon_d50_makernote()
+    {
+        const std::vector<std::byte> shotinfo_plain
+            = make_nikon_d50_shotinfo_plain();
+        const std::vector<std::byte> colorbalance_plain
+            = make_nikon_d50_colorbalance_plain();
+        const std::vector<std::byte> shotinfo
+            = encrypt_nikon_d50_synthetic(shotinfo_plain);
+        const std::vector<std::byte> colorbalance
+            = encrypt_nikon_d50_synthetic(colorbalance_plain);
+
+        std::vector<std::byte> mn;
+        append_bytes(&mn, "Nikon");
+        mn.push_back(std::byte { 0 });
+        mn.push_back(std::byte { 2 });
+        mn.push_back(std::byte { 0 });
+        mn.push_back(std::byte { 0 });
+        mn.push_back(std::byte { 0 });
+        append_bytes(&mn, "II");
+        append_u16le(&mn, 42U);
+        append_u32le(&mn, 8U);
+        append_u16le(&mn, 4U);
+
+        constexpr uint32_t kDataOffset = 8U + 2U + 4U * 12U + 4U;
+        const uint32_t shotinfo_offset = kDataOffset;
+        const uint32_t colorbalance_offset
+            = shotinfo_offset + static_cast<uint32_t>(shotinfo.size());
+        append_classic_ifd_entry_le(&mn, 0x001DU, 2U, 4U, 0x00303544U);
+        append_classic_ifd_entry_le(
+            &mn, 0x0091U, 7U, static_cast<uint32_t>(shotinfo.size()),
+            shotinfo_offset);
+        append_classic_ifd_entry_le(
+            &mn, 0x0097U, 7U, static_cast<uint32_t>(colorbalance.size()),
+            colorbalance_offset);
+        append_classic_ifd_entry_le(&mn, 0x00A7U, 4U, 1U, 2846U);
+        append_u32le(&mn, 0U);
+
+        EXPECT_EQ(mn.size(), 72U);
+        mn.insert(mn.end(), shotinfo.begin(), shotinfo.end());
+        mn.insert(mn.end(), colorbalance.begin(), colorbalance.end());
         return mn;
     }
 
@@ -4437,6 +4648,16 @@ namespace {
         return make_sony_makernote_ciphered_blob(0x9400, plain);
     }
 
+    static std::vector<std::byte>
+    make_sony_makernote_tag9400c_release_year_width_ciphered()
+    {
+        std::vector<std::byte> plain(0x140U, std::byte { 0 });
+        plain[0x0000U] = std::byte { 0x07 };
+        plain[0x0053U] = std::byte { 14U };
+        plain[0x0054U] = std::byte { 0x49U };
+        return make_sony_makernote_ciphered_blob(0x9400U, plain);
+    }
+
     static std::vector<std::byte> make_sony_makernote_tag9400_ciphered()
     {
         return make_sony_makernote_tag9400_ciphered_with_v0(0x07);
@@ -5909,8 +6130,8 @@ TEST(MakerNoteDecode, DecodesSonyTag9400IntoDerivedIfd)
         ASSERT_EQ(ids.size(), 1U);
         const Entry& e = store.entry(ids[0]);
         EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
-        EXPECT_EQ(e.value.elem_type, MetaElementType::U16);
-        EXPECT_EQ(e.value.data.u64, 2023U);
+        EXPECT_EQ(e.value.elem_type, MetaElementType::U8);
+        EXPECT_EQ(e.value.data.u64, 231U);
     }
     {
         const std::span<const EntryId> ids = store.find_all(
@@ -5921,6 +6142,31 @@ TEST(MakerNoteDecode, DecodesSonyTag9400IntoDerivedIfd)
         EXPECT_EQ(e.value.elem_type, MetaElementType::U8);
         EXPECT_EQ(e.value.data.u64, 5U);
     }
+}
+
+TEST(MakerNoteDecode, DecodesSonyTag9400cReleaseYearAsU8)
+{
+    std::vector<std::byte> mn
+        = make_sony_makernote_tag9400c_release_year_width_ciphered();
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote_and_model(
+        "Sony", "ILCE-6000", mn);
+    ASSERT_TRUE(patch_sony_makernote_value_offset_in_tiff(&tiff));
+
+    MetaStore store;
+    std::array<ExifIfdRef, 8> ifds {};
+    ExifDecodeOptions options;
+    options.decode_makernote   = true;
+    const ExifDecodeResult res = decode_exif_tiff(tiff, store, ifds, options);
+    EXPECT_EQ(res.status, ExifDecodeStatus::Ok);
+
+    store.finalize();
+    const std::span<const EntryId> ids
+        = store.find_all(exif_key("mk_sony_tag9400c_0", 0x0053U));
+    ASSERT_EQ(ids.size(), 1U);
+    const Entry& e = store.entry(ids[0]);
+    EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
+    EXPECT_EQ(e.value.elem_type, MetaElementType::U8);
+    EXPECT_EQ(e.value.data.u64, 14U);
 }
 
 TEST(MakerNoteDecode, DecodesSonyTag9400bForNex3nModel)
@@ -7302,8 +7548,8 @@ TEST(MakerNoteDecode, DecodesSonyTag9400cForIlcaFamilyModel)
         ASSERT_EQ(ids.size(), 1U);
         const Entry& e = store.entry(ids[0]);
         EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
-        EXPECT_EQ(e.value.elem_type, MetaElementType::U16);
-        EXPECT_EQ(e.value.data.u64, 2023U);
+        EXPECT_EQ(e.value.elem_type, MetaElementType::U8);
+        EXPECT_EQ(e.value.data.u64, 231U);
     }
 }
 
@@ -7453,30 +7699,40 @@ TEST(MakerNoteDecode, DecodesKonicaMinoltaMakerNoteByMakeString)
 
 TEST(MakerNoteDecode, RandomAccessMatchesMinoltaBinarySubdirectories)
 {
-    const std::vector<std::byte> mn
-        = make_minolta_makernote_with_binary_subdirs();
-    const std::vector<std::byte> tiff
-        = make_test_tiff_with_makernote("KONICA MINOLTA", mn);
+    for (uint32_t representation = 0U; representation < 2U; ++representation) {
+        const std::vector<std::byte> tiff
+            = make_minolta_tiff_with_binary_subdirs(representation != 0U);
 
-    MetaStore span_store;
-    ExifDecodeOptions options;
-    options.decode_makernote           = true;
-    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {},
-                                                          options);
+        MetaStore span_store;
+        ExifDecodeOptions options;
+        options.decode_makernote           = true;
+        const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store,
+                                                              {}, options);
+        EXPECT_EQ(span_result.status, ExifDecodeStatus::Ok);
 
-    MetaStore callback_store;
-    const ExifRandomAccessDecodeResult callback_result
-        = decode_makernote_callback(tiff, callback_store);
-    EXPECT_TRUE(callback_result.complete());
-    EXPECT_EQ(callback_result.decode.status, span_result.status);
-    EXPECT_EQ(callback_result.decode.entries_decoded,
-              span_result.entries_decoded);
+        MetaStore callback_store;
+        const ExifRandomAccessDecodeResult callback_result
+            = decode_makernote_callback(tiff, callback_store);
+        EXPECT_TRUE(callback_result.complete());
+        EXPECT_EQ(callback_result.decode.status, span_result.status);
+        EXPECT_EQ(callback_result.decode.entries_decoded,
+                  span_result.entries_decoded);
 
-    callback_store.finalize();
-    const std::span<const EntryId> ids = callback_store.find_all(
-        exif_key("mk_minolta_camerasettings_0", 0x0002));
-    ASSERT_EQ(ids.size(), 1U);
-    EXPECT_EQ(callback_store.entry(ids[0]).value.data.u64, 0x12345678U);
+        span_store.finalize();
+        callback_store.finalize();
+        const std::span<const EntryId> ids = callback_store.find_all(
+            exif_key("mk_minolta_camerasettings_0", 0x0002));
+        ASSERT_EQ(ids.size(), 1U);
+        EXPECT_EQ(callback_store.entry(ids[0]).value.data.u64, 0x12345678U);
+        const std::span<const EntryId> span_5d = span_store.find_all(
+            exif_key("mk_minolta_camerasettings5d_0", 0x0001));
+        const std::span<const EntryId> callback_5d = callback_store.find_all(
+            exif_key("mk_minolta_camerasettings5d_0", 0x0001));
+        ASSERT_EQ(span_5d.size(), 1U);
+        ASSERT_EQ(callback_5d.size(), 1U);
+        EXPECT_EQ(span_store.entry(span_5d[0]).value.data.u64, 0x0304U);
+        EXPECT_EQ(callback_store.entry(callback_5d[0]).value.data.u64, 0x0304U);
+    }
 }
 
 TEST(MakerNoteDecode,
@@ -7548,10 +7804,8 @@ TEST(MakerNoteDecode, MarksMinolta0103AsQualityForDiMAGE7HiModel)
 TEST(MakerNoteDecode,
      DecodesKonicaMinoltaMakerNoteBinarySubdirectoriesByMakeString)
 {
-    const std::vector<std::byte> mn
-        = make_minolta_makernote_with_binary_subdirs();
     const std::vector<std::byte> tiff
-        = make_test_tiff_with_makernote("KONICA MINOLTA", mn);
+        = make_minolta_tiff_with_binary_subdirs();
 
     MetaStore store;
     std::array<ExifIfdRef, 8> ifds {};
@@ -11279,6 +11533,358 @@ TEST(MakerNoteDecode, DecodesNikonBinarySubdirectoriesExtended)
         EXPECT_EQ(e.value.elem_type, MetaElementType::I8);
         EXPECT_EQ(static_cast<int64_t>(e.value.data.i64), -1);
         EXPECT_TRUE(any(e.flags, EntryFlags::Derived));
+    }
+}
+
+TEST(MakerNoteDecode, NikonD300SyntheticCipherMatchesReferenceVector)
+{
+    std::vector<std::byte> plain(9U, std::byte { 0 });
+    std::memcpy(plain.data(), "0210", 4U);
+    std::memcpy(plain.data() + 4U, "1.10B", 5U);
+
+    const std::vector<std::byte> cipher
+        = encrypt_nikon_d300_synthetic(plain);
+    static constexpr uint8_t kExpectedCipher[5] = {
+        0x36U, 0x06U, 0x3BU, 0x9DU, 0x53U,
+    };
+    for (size_t i = 0; i < sizeof(kExpectedCipher) / sizeof(kExpectedCipher[0]);
+         ++i) {
+        EXPECT_EQ(static_cast<uint8_t>(cipher[4U + i]), kExpectedCipher[i]);
+    }
+}
+
+TEST(MakerNoteDecode, NikonD3000210ShotInfoLengthSelectsMatchingLayout)
+{
+    {
+        const std::vector<std::byte> mn = make_nikon_d300_makernote(5291U);
+        const std::vector<std::byte> tiff
+            = make_test_tiff_with_makernote_and_model("Nikon", "NIKON D300",
+                                                       mn);
+        MetaStore store;
+        std::array<ExifIfdRef, 8> ifds {};
+        ExifDecodeOptions options;
+        options.decode_makernote = true;
+        const ExifDecodeResult res
+            = decode_exif_tiff(tiff, store, ifds, options);
+        EXPECT_EQ(res.status, ExifDecodeStatus::Ok);
+        store.finalize();
+
+        {
+            const std::span<const EntryId> ids = store.find_all(
+                exif_key("mk_nikon_shotinfod300a_0", 0x0279U));
+            ASSERT_EQ(ids.size(), 1U);
+            EXPECT_EQ(store.entry(ids[0]).value.elem_type, MetaElementType::U32);
+            EXPECT_EQ(store.entry(ids[0]).value.data.u64, 0x01020304U);
+        }
+        {
+            const std::span<const EntryId> ids = store.find_all(
+                exif_key("mk_nikon_shotinfod300a_0", 0x02d1U));
+            ASSERT_EQ(ids.size(), 1U);
+            EXPECT_EQ(store.entry(ids[0]).value.elem_type, MetaElementType::U16);
+            EXPECT_EQ(store.entry(ids[0]).value.data.u64, 0x2345U);
+        }
+        {
+            const std::span<const EntryId> ids = store.find_all(
+                exif_key("mk_nikon_shotinfod300a_0", 0x025cU));
+            ASSERT_EQ(ids.size(), 1U);
+            EXPECT_EQ(store.entry(ids[0]).value.elem_type, MetaElementType::U8);
+            EXPECT_EQ(store.entry(ids[0]).value.data.u64, 0x12U);
+        }
+        EXPECT_TRUE(store.find_all(
+                        exif_key("mk_nikon_shotinfod300a_0", 0x0004U))
+                        .empty());
+        EXPECT_TRUE(store.find_all(
+                        exif_key("mk_nikon_shotinfod300a_0", 0x0265U))
+                        .empty());
+        EXPECT_TRUE(store.find_all(
+                        exif_key("mk_nikon_shotinfod300a_0", 0x0284U))
+                        .empty());
+        EXPECT_TRUE(store.find_all(
+                        exif_key("mk_nikon_shotinfod300a_0", 0x02dcU))
+                        .empty());
+        {
+            const std::span<const EntryId> ids = store.find_all(exif_key(
+                "mk_nikoncustom_settingsd3_0", 0x000bU));
+            ASSERT_EQ(ids.size(), 1U);
+            EXPECT_EQ(store.entry(ids[0]).value.data.u64, 0x11U);
+        }
+    }
+
+    {
+        const std::vector<std::byte> mn = make_nikon_d300_makernote(5303U);
+        const std::vector<std::byte> tiff
+            = make_test_tiff_with_makernote_and_model("Nikon", "NIKON D300",
+                                                       mn);
+        MetaStore store;
+        std::array<ExifIfdRef, 8> ifds {};
+        ExifDecodeOptions options;
+        options.decode_makernote = true;
+        const ExifDecodeResult res
+            = decode_exif_tiff(tiff, store, ifds, options);
+        EXPECT_EQ(res.status, ExifDecodeStatus::Ok);
+        store.finalize();
+
+        {
+            const std::span<const EntryId> ids = store.find_all(
+                exif_key("mk_nikon_shotinfod300b_0", 0x0284U));
+            ASSERT_EQ(ids.size(), 1U);
+            EXPECT_EQ(store.entry(ids[0]).value.elem_type, MetaElementType::U32);
+            EXPECT_EQ(store.entry(ids[0]).value.data.u64, 7213U);
+        }
+        {
+            const std::span<const EntryId> ids = store.find_all(
+                exif_key("mk_nikon_shotinfod300b_0", 0x02dcU));
+            ASSERT_EQ(ids.size(), 1U);
+            EXPECT_EQ(store.entry(ids[0]).value.elem_type, MetaElementType::U16);
+            EXPECT_EQ(store.entry(ids[0]).value.data.u64, 0U);
+        }
+        {
+            const std::span<const EntryId> ids = store.find_all(
+                exif_key("mk_nikon_shotinfod300b_0", 0x0265U));
+            ASSERT_EQ(ids.size(), 1U);
+            EXPECT_EQ(store.entry(ids[0]).value.elem_type, MetaElementType::U8);
+            EXPECT_EQ(store.entry(ids[0]).value.data.u64, 0x34U);
+        }
+        {
+            const std::span<const EntryId> ids = store.find_all(
+                exif_key("mk_nikon_shotinfod300b_0", 0x0004U));
+            ASSERT_EQ(ids.size(), 1U);
+            EXPECT_EQ(store.entry(ids[0]).value.kind, MetaValueKind::Text);
+            EXPECT_EQ(arena_string(store.arena(), store.entry(ids[0]).value),
+                      "1.10B");
+        }
+        EXPECT_TRUE(store.find_all(
+                        exif_key("mk_nikon_shotinfod300b_0", 0x025cU))
+                        .empty());
+        EXPECT_TRUE(store.find_all(
+                        exif_key("mk_nikon_shotinfod300b_0", 0x0279U))
+                        .empty());
+        EXPECT_TRUE(store.find_all(
+                        exif_key("mk_nikon_shotinfod300b_0", 0x02d1U))
+                        .empty());
+        EXPECT_TRUE(store.find_all(
+                        exif_key("mk_nikon_shotinfod300b_0", 0x04d2U))
+                        .empty());
+        {
+            const std::span<const EntryId> ids = store.find_all(exif_key(
+                "mk_nikoncustom_settingsd3_0", 0x000bU));
+            ASSERT_EQ(ids.size(), 1U);
+            EXPECT_EQ(store.entry(ids[0]).value.data.u64, 0x22U);
+        }
+    }
+}
+
+TEST(MakerNoteDecode, NikonD3000210UnknownShotInfoLengthStaysOpaque)
+{
+    const std::vector<std::byte> mn = make_nikon_d300_makernote(5292U);
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_model("Nikon", "NIKON D300", mn);
+
+    MetaStore store;
+    std::array<ExifIfdRef, 8> ifds {};
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    const ExifDecodeResult res = decode_exif_tiff(tiff, store, ifds, options);
+    EXPECT_EQ(res.status, ExifDecodeStatus::Ok);
+    store.finalize();
+
+    const std::span<const EntryId> raw_ids
+        = store.find_all(exif_key("mk_nikon0", 0x0091U));
+    ASSERT_EQ(raw_ids.size(), 1U);
+    const Entry& raw = store.entry(raw_ids[0]);
+    ASSERT_EQ(raw.value.kind, MetaValueKind::Bytes);
+    EXPECT_EQ(store.arena().span(raw.value.data.span).size(), 5292U);
+
+    EXPECT_TRUE(
+        store.find_all(exif_key("mk_nikon_shotinfo_0", 0x0000U)).empty());
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikon_shotinfod300a_0", 0x0279U))
+                    .empty());
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikon_shotinfod300b_0", 0x0284U))
+                    .empty());
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikoncustom_settingsd3_0", 0x000bU))
+                    .empty());
+}
+
+TEST(MakerNoteDecode, NikonD3000214ShotInfoStaysOpaque)
+{
+    const std::vector<std::byte> mn
+        = make_nikon_d300_makernote(5303U, "0214");
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_model("Nikon", "NIKON D300", mn);
+
+    MetaStore store;
+    std::array<ExifIfdRef, 8> ifds {};
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    const ExifDecodeResult res = decode_exif_tiff(tiff, store, ifds, options);
+    EXPECT_EQ(res.status, ExifDecodeStatus::Ok);
+    store.finalize();
+
+    const std::span<const EntryId> raw_ids
+        = store.find_all(exif_key("mk_nikon0", 0x0091U));
+    ASSERT_EQ(raw_ids.size(), 1U);
+    EXPECT_EQ(store.arena().span(store.entry(raw_ids[0]).value.data.span).size(),
+              5303U);
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikon_shotinfod300b_0", 0x0000U))
+                    .empty());
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikon_shotinfo_0", 0x0000U))
+                    .empty());
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikoncustom_settingsd3_0", 0x000bU))
+                    .empty());
+}
+
+TEST(MakerNoteDecode, NikonD300S0210ShotInfoStaysOpaque)
+{
+    const std::vector<std::byte> mn = make_nikon_d300_makernote(5303U);
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_model("Nikon", "NIKON D300S", mn);
+
+    MetaStore store;
+    std::array<ExifIfdRef, 8> ifds {};
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    const ExifDecodeResult res = decode_exif_tiff(tiff, store, ifds, options);
+    EXPECT_EQ(res.status, ExifDecodeStatus::Ok);
+    store.finalize();
+
+    const std::span<const EntryId> raw_ids
+        = store.find_all(exif_key("mk_nikon0", 0x0091U));
+    ASSERT_EQ(raw_ids.size(), 1U);
+    EXPECT_EQ(store.arena().span(store.entry(raw_ids[0]).value.data.span).size(),
+              5303U);
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikon_shotinfod300a_0", 0x0000U))
+                    .empty());
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikon_shotinfod300b_0", 0x0000U))
+                    .empty());
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikon_shotinfo_0", 0x0000U))
+                    .empty());
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikon_shotinfod3a_0", 0x0000U))
+                    .empty());
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikoncustom_settingsd3_0", 0x000bU))
+                    .empty());
+}
+
+TEST(MakerNoteDecode, NikonD50Decrypts0205ShotInfoAndColorBalance)
+{
+    const std::vector<std::byte> shotinfo_plain
+        = make_nikon_d50_shotinfo_plain();
+    const std::vector<std::byte> shotinfo
+        = encrypt_nikon_d50_synthetic(shotinfo_plain);
+    static constexpr uint8_t kExpectedCipherPrefix[5] = {
+        0xF5U, 0x75U, 0x8EU, 0x6DU, 0xD0U,
+    };
+    ASSERT_GE(shotinfo.size(), 9U);
+    for (size_t i = 0U;
+         i < sizeof(kExpectedCipherPrefix) / sizeof(kExpectedCipherPrefix[0]);
+         ++i) {
+        EXPECT_EQ(static_cast<uint8_t>(shotinfo[4U + i]),
+                  kExpectedCipherPrefix[i]);
+    }
+
+    const std::vector<std::byte> colorbalance_plain
+        = make_nikon_d50_colorbalance_plain();
+    const std::vector<std::byte> colorbalance
+        = encrypt_nikon_d50_synthetic(colorbalance_plain);
+    const std::vector<std::byte> mn = make_nikon_d50_makernote();
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_model("Nikon", "NIKON D50", mn);
+
+    MetaStore store;
+    std::array<ExifIfdRef, 8> ifds {};
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    const ExifDecodeResult res = decode_exif_tiff(tiff, store, ifds, options);
+    EXPECT_EQ(res.status, ExifDecodeStatus::Ok);
+    store.finalize();
+
+    {
+        const std::span<const EntryId> ids = store.find_all(
+            exif_key("mk_nikon_shotinfo_0", 0x0000U));
+        ASSERT_EQ(ids.size(), 1U);
+        EXPECT_EQ(arena_string(store.arena(), store.entry(ids[0]).value),
+                  "0205");
+    }
+    {
+        const std::span<const EntryId> ids = store.find_all(
+            exif_key("mk_nikon_shotinfo_0", 0x0157U));
+        ASSERT_EQ(ids.size(), 1U);
+        const Entry& e = store.entry(ids[0]);
+        EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
+        EXPECT_EQ(e.value.elem_type, MetaElementType::U16);
+        EXPECT_EQ(e.value.data.u64, 2846U);
+    }
+    {
+        const std::span<const EntryId> ids = store.find_all(
+            exif_key("mk_nikon_shotinfo_0", 0x01AEU));
+        ASSERT_EQ(ids.size(), 1U);
+        const Entry& e = store.entry(ids[0]);
+        EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
+        EXPECT_EQ(e.value.elem_type, MetaElementType::U8);
+        EXPECT_EQ(e.value.data.u64, 0U);
+    }
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikon_shotinfo_0", 0x0004U))
+                    .empty());
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikon_shotinfo_0", 0x006AU))
+                    .empty());
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikon_shotinfo_0", 0x006EU))
+                    .empty());
+    EXPECT_TRUE(store.find_all(
+                    exif_key("mk_nikon_shotinfo_0", 0x02D1U))
+                    .empty());
+    {
+        const std::span<const EntryId> ids = store.find_all(exif_key(
+            "mk_nikon_colorbalance2_0", 0x0000U));
+        ASSERT_EQ(ids.size(), 1U);
+        const Entry& e = store.entry(ids[0]);
+        ASSERT_EQ(e.value.kind, MetaValueKind::Array);
+        ASSERT_EQ(e.value.elem_type, MetaElementType::U16);
+        ASSERT_EQ(e.value.count, 4U);
+        const std::span<const std::byte> array_bytes
+            = store.arena().span(e.value.data.span);
+        ASSERT_EQ(array_bytes.size(), sizeof(uint16_t) * 4U);
+        uint16_t levels[4] {};
+        std::memcpy(levels, array_bytes.data(), array_bytes.size());
+        EXPECT_EQ(levels[0], 538U);
+        EXPECT_EQ(levels[1], 256U);
+        EXPECT_EQ(levels[2], 256U);
+        EXPECT_EQ(levels[3], 379U);
+    }
+
+    const std::span<const EntryId> shotinfo_raw
+        = store.find_all(exif_key("mk_nikon0", 0x0091U));
+    ASSERT_EQ(shotinfo_raw.size(), 1U);
+    const std::span<const std::byte> retained_shotinfo
+        = store.arena().span(store.entry(shotinfo_raw[0]).value.data.span);
+    ASSERT_EQ(retained_shotinfo.size(), shotinfo.size());
+    for (size_t i = 0U; i < shotinfo.size(); ++i) {
+        EXPECT_EQ(static_cast<uint8_t>(retained_shotinfo[i]),
+                  static_cast<uint8_t>(shotinfo[i]));
+    }
+
+    const std::span<const EntryId> colorbalance_raw
+        = store.find_all(exif_key("mk_nikon0", 0x0097U));
+    ASSERT_EQ(colorbalance_raw.size(), 1U);
+    const std::span<const std::byte> retained_colorbalance
+        = store.arena().span(
+            store.entry(colorbalance_raw[0]).value.data.span);
+    ASSERT_EQ(retained_colorbalance.size(), colorbalance.size());
+    for (size_t i = 0U; i < colorbalance.size(); ++i) {
+        EXPECT_EQ(static_cast<uint8_t>(retained_colorbalance[i]),
+                  static_cast<uint8_t>(colorbalance[i]));
     }
 }
 

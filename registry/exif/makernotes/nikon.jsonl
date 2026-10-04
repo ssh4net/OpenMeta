@@ -1196,7 +1196,6 @@
 {"kind":"exif.tag","ifd":"makernote:nikon:shotinfo","tag":"0x024d","name":"ShutterCount"}
 {"kind":"exif.tag","ifd":"makernote:nikon:shotinfod300a","tag":"0x0000","name":"ShotInfoVersion"}
 {"kind":"exif.tag","ifd":"makernote:nikon:shotinfod300a","tag":"0x025c","name":"ISO2"}
-{"kind":"exif.tag","ifd":"makernote:nikon:shotinfod300a","tag":"0x0265","name":"ISO2"}
 {"kind":"exif.tag","ifd":"makernote:nikon:shotinfod300a","tag":"0x0279","name":"ShutterCount"}
 {"kind":"exif.tag","ifd":"makernote:nikon:shotinfod300a","tag":"0x02d1","name":"AFFineTuneAdj"}
 {"kind":"exif.tag","ifd":"makernote:nikon:shotinfod300b","tag":"0x0000","name":"ShotInfoVersion"}

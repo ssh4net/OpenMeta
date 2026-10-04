@@ -1286,12 +1286,15 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
     std::string_view model;
     (void)ctx.find_first_text("ifd0", 0x0110 /* Model */, &model);
     // Resolve model-dependent choices before derived values grow the arena.
+    const bool model_is_d50 = model == "NIKON D50";
     const bool model_has_d40 = model.find("NIKON D40")
                                != std::string_view::npos;
     const bool model_has_d80 = model.find("NIKON D80")
                                != std::string_view::npos;
     const bool model_has_d300 = model.find("NIKON D300")
                                 != std::string_view::npos;
+    const bool model_has_d300s = model.find("NIKON D300S")
+                                 != std::string_view::npos;
     const bool model_has_d3  = model.find("NIKON D3") != std::string_view::npos;
     const bool model_has_d3x = model.find("NIKON D3X")
                                != std::string_view::npos;
@@ -1310,10 +1313,13 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
         have_serial                = have_serial_tag
                       && nikon_parse_u32_dec(serial_s, &serial_key);
         if (!have_serial && have_serial_tag) {
-            // Best-effort fallbacks (ExifTool decrypts even if SerialNumber
-            // is blank or non-numeric on some models).
-            if (nikon_is_blank_serial(serial_s)) {
-                serial_key  = 0;
+            // ExifTool uses key 0x22 for every non-numeric D50 serial. Keep
+            // this ahead of the permissive digit-only compatibility parser.
+            if (model_is_d50) {
+                serial_key  = 0x22U;
+                have_serial = true;
+            } else if (nikon_is_blank_serial(serial_s)) {
+                serial_key  = 0U;
                 have_serial = true;
             } else if (nikon_parse_u32_digits(serial_s, &serial_key)) {
                 have_serial = true;
@@ -2339,6 +2345,22 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                 reinterpret_cast<const char*>(ver_bytes.data()),
                 ver_bytes.size());
 
+            const bool d50_shotinfo_0205 = model_is_d50 && ver == "0205";
+            const bool d300_0210_model
+                = model_has_d300 && !model_has_d300s;
+            const bool d300_shotinfo_a
+                = d300_0210_model && ver == "0210" && raw_src.size() == 5291U;
+            const bool d300_shotinfo_b
+                = d300_0210_model && ver == "0210" && raw_src.size() == 5303U;
+            if (model_has_d300
+                && ((ver == "0210" && !d300_shotinfo_a
+                     && !d300_shotinfo_b)
+                    || ver == "0214")) {
+                // Only the D300 0210 layouts with confirmed lengths are known.
+                // Keep other D300 ShotInfo variants opaque in the raw entry.
+                continue;
+            }
+
             if (ver == "0805" && have_serial && have_shutter_count
                 && raw_src.size() > 4) {
                 static constexpr uint16_t kMenuSettingsZ9Tags[] = {
@@ -3190,8 +3212,10 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
             } else if (ver == "0208" && model_has_d80) {
                 shotinfo_table = "shotinfod80";
             } else if (ver == "0210") {
-                if (model_has_d300) {
+                if (d300_shotinfo_a) {
                     shotinfo_table = "shotinfod300a";
+                } else if (d300_shotinfo_b) {
+                    shotinfo_table = "shotinfod300b";
                 } else if (model_has_d3) {
                     shotinfo_table = "shotinfod3a";
                 }
@@ -3200,8 +3224,6 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
             } else if (ver == "0214") {
                 if (model_has_d3x) {
                     shotinfo_table = "shotinfod3x";
-                } else if (model_has_d300) {
-                    shotinfo_table = "shotinfod300b";
                 } else if (model_has_d3) {
                     shotinfo_table = "shotinfod3b";
                 }
@@ -3254,7 +3276,8 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                 uint32_t shotinfo_prefix_idx = 0;
                 std::array<std::byte, 5> shotinfo_prefix_bytes;
                 bool have_shotinfo_prefix = false;
-                if (raw_src.size() >= 9) {
+                if (raw_src.size() >= 9 && !d50_shotinfo_0205
+                    && !d300_shotinfo_a && !d300_shotinfo_b) {
                     tags_out[out_count] = 0x0004;
                     shotinfo_prefix_idx = out_count;
                     vals_out[out_count] = MetaValue {};
@@ -3290,6 +3313,15 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                             = std::span<const std::byte>(
                                 dec.data(), 4 + static_cast<size_t>(dec_len));
 
+                        if (d300_shotinfo_b && dec_src.size() >= 9U
+                            && out_count
+                                   < sizeof(tags_out) / sizeof(tags_out[0])) {
+                            tags_out[out_count] = 0x0004;
+                            vals_out[out_count] = make_fixed_ascii_text(
+                                store.arena(), dec_src.subspan(4U, 5U));
+                            out_count += 1;
+                        }
+
                         const uint16_t u8_tags[] = {
                             0x000b, 0x000c, 0x000d, 0x0012, 0x0014, 0x0015,
                             0x0017, 0x0018, 0x0019, 0x001a, 0x001b, 0x001c,
@@ -3320,6 +3352,13 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                                 break;
                             }
                             const uint16_t t   = u8_tags[k];
+                            if (d50_shotinfo_0205 && t != 0x01AEU) {
+                                continue;
+                            }
+                            if ((d300_shotinfo_a && t != 0x025cU)
+                                || (d300_shotinfo_b && t != 0x0265U)) {
+                                continue;
+                            }
                             const uint64_t off = t;
                             if (off >= dec_src.size()) {
                                 continue;
@@ -3330,7 +3369,9 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                             out_count += 1;
                         }
 
-                        if (out_count
+                        if (!d50_shotinfo_0205 && !d300_shotinfo_a
+                            && !d300_shotinfo_b
+                            && out_count
                             < sizeof(tags_out) / sizeof(tags_out[0])) {
                             const uint64_t off = 0x04d2;
                             if (off < dec_src.size()) {
@@ -3341,7 +3382,7 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                             }
                         }
 
-                        const uint16_t u16_tags[] = { 0x02d1 };
+                        const uint16_t u16_tags[] = { 0x02d1, 0x02dc };
                         for (size_t k = 0;
                              k < sizeof(u16_tags) / sizeof(u16_tags[0]); ++k) {
                             if (out_count
@@ -3349,6 +3390,13 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                                 break;
                             }
                             const uint16_t t   = u16_tags[k];
+                            if (d50_shotinfo_0205
+                                || (d300_shotinfo_a && t != 0x02d1U)
+                                || (d300_shotinfo_b && t != 0x02dcU)
+                                || (!d300_shotinfo_a && !d300_shotinfo_b
+                                    && t != 0x02d1U)) {
+                                continue;
+                            }
                             const uint64_t off = t;
                             uint16_t v16       = 0;
                             if (off + 2 > dec_src.size()
@@ -3360,10 +3408,22 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                             out_count += 1;
                         }
 
+                        if (d50_shotinfo_0205
+                            && out_count
+                                   < sizeof(tags_out) / sizeof(tags_out[0])) {
+                            uint16_t shutter_count16 = 0;
+                            if (read_u16be(dec_src, 0x0157U,
+                                           &shutter_count16)) {
+                                tags_out[out_count] = 0x0157U;
+                                vals_out[out_count] = make_u16(shutter_count16);
+                                out_count += 1;
+                            }
+                        }
+
                         const uint16_t u32_tags[] = {
                             0x006a, 0x006e, 0x0157, 0x0242, 0x0246, 0x024a,
-                            0x024d, 0x0276, 0x0279, 0x0280, 0x0286, 0x02d5,
-                            0x02d6, 0x0320, 0x0321, 0x05fb, 0x0bd8,
+                            0x024d, 0x0276, 0x0279, 0x0280, 0x0284, 0x0286,
+                            0x02d5, 0x02d6, 0x0320, 0x0321, 0x05fb, 0x0bd8,
                         };
                         for (size_t k = 0;
                              k < sizeof(u32_tags) / sizeof(u32_tags[0]); ++k) {
@@ -3372,6 +3432,15 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                                 break;
                             }
                             const uint16_t t   = u32_tags[k];
+                            if (d50_shotinfo_0205) {
+                                continue;
+                            }
+                            if ((d300_shotinfo_a && t != 0x0279U)
+                                || (d300_shotinfo_b && t != 0x0284U)
+                                || (!d300_shotinfo_a && !d300_shotinfo_b
+                                    && t == 0x0284U)) {
+                                continue;
+                            }
                             const uint64_t off = t;
                             uint32_t v32       = 0;
                             if (off + 4 > dec_src.size()
@@ -3402,7 +3471,8 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
                     }
                 }
 
-                if (!decoded_shotinfo_probe) {
+                if (!decoded_shotinfo_probe && !d50_shotinfo_0205
+                    && !d300_shotinfo_a && !d300_shotinfo_b) {
                     const uint16_t fallback_u8_tags[] = {
                         0x0007, 0x0009, 0x000b, 0x000c, 0x000d, 0x000f, 0x0010,
                         0x0014, 0x0015, 0x0016, 0x0017, 0x0018, 0x0019, 0x001a,
@@ -3486,8 +3556,13 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
             } else if (ver == "0210") {
                 settings_table = "settingsd3";
                 settings_len   = 24;
-                if (model_has_d300) {
+                if (d300_shotinfo_a) {
                     settings_start = 790;
+                } else if (d300_shotinfo_b) {
+                    settings_start = 802;
+                } else if (model_has_d300) {
+                    settings_table = {};
+                    settings_len   = 0;
                 } else {
                     settings_start = 0x0301;
                 }
@@ -3791,6 +3866,54 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
             if (decode_nikon_colorbalancec_table(
                     mk_prefix, std::span<char>(sub_ifd_buf), &idx_colorbalance,
                     raw_src, 0ULL, le, store, options, status_out)) {
+                continue;
+            }
+
+            if (model_is_d50 && ver == "0205") {
+                // D50 ColorBalance0205 starts decryption at byte 4. Its
+                // directory begins 14 decrypted bytes later, so retain the
+                // stream state across the entire bounded 22-byte span.
+                if (have_serial && have_shutter_count && raw_src.size() >= 26U) {
+                    std::array<std::byte, 22> dec {};
+                    const std::span<const std::byte> enc
+                        = raw_src.subspan(4U, dec.size());
+                    if (nikon_decrypt(enc, serial_key, shutter_count,
+                                      std::span<std::byte>(dec.data(),
+                                                           dec.size()))) {
+                        const std::span<const std::byte> directory
+                            = std::span<const std::byte>(dec.data() + 14U, 8U);
+                        uint16_t levels[4] {};
+                        bool ok = true;
+                        for (uint32_t k = 0; k < 4U; ++k) {
+                            if (!read_u16_endian(le, directory,
+                                                 uint64_t(k) * 2ULL,
+                                                 &levels[k])) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if (ok) {
+                            const std::string_view ifd_name
+                                = make_mk_subtable_ifd_token(
+                                    mk_prefix, "colorbalance2",
+                                    idx_colorbalance++,
+                                    std::span<char>(sub_ifd_buf));
+                            if (!ifd_name.empty()) {
+                                const uint16_t tags_out[] = { 0x0000U };
+                                const MetaValue vals_out[] = {
+                                    make_u16_array(
+                                        store.arena(),
+                                        std::span<const uint16_t>(levels)),
+                                };
+                                decode_nikon_bin_dir_entries(
+                                    ifd_name, store,
+                                    std::span<const uint16_t>(tags_out),
+                                    std::span<const MetaValue>(vals_out),
+                                    options.limits, status_out);
+                            }
+                        }
+                    }
+                }
                 continue;
             }
 

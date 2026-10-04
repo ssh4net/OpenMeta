@@ -368,6 +368,13 @@ namespace exif_internal {
                                   const ExifDecodeOptions& options,
                                   ExifDecodeResult* status_out) noexcept;
 
+    bool decode_minolta_makernote_from_source(
+        SourceTiffReader* source, const TiffConfig& parent_cfg,
+        uint64_t maker_note_off, std::span<const std::byte> maker_note,
+        std::string_view mk_ifd0, MetaStore& store,
+        const ExifDecodeOptions& options,
+        ExifDecodeResult* status_out) noexcept;
+
     bool decode_samsung_makernote(const TiffConfig& parent_cfg,
                                   std::span<const std::byte> tiff_bytes,
                                   uint64_t maker_note_off,

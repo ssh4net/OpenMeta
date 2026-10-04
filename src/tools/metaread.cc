@@ -353,6 +353,7 @@ namespace {
         case ContainerFormat::Avif: return "avif";
         case ContainerFormat::Cr3: return "cr3";
         case ContainerFormat::Exr: return "exr";
+        case ContainerFormat::Mrw: return "mrw";
         }
         return "unknown";
     }

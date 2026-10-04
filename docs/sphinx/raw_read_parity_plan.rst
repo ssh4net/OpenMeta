@@ -96,6 +96,13 @@ Family Gap Matrix
        records
      - Add X3F native sections only when they expose stable user-visible fields
        or transfer-safety inputs
+   * - Minolta MRW
+     - Contiguous standalone big-endian MRW segment traversal and exact TTW
+       TIFF metadata spans
+     - PRD/WBG/RIF native fields, embedded MRI records, positional callback
+       discovery
+     - Keep non-TTW payloads uninterpreted until their stable field layouts
+       have independent validation
    * - Panasonic, Olympus, Pentax, Kodak, Minolta, Samsung, Ricoh
      - Mixed TIFF/EXIF and MakerNote table coverage
      - Older model tables, preview/correction subtables, and private RAW
@@ -112,6 +119,29 @@ Family Gap Matrix
      - Native container and MakerNote depth
      - Preserve raw blocks, then add support only when validation inputs and
        stable structure are available
+
+Legacy read corrections (0.8.3)
+-------------------------------
+
+The TIFF lane accepts Olympus ``IIRO`` and older ``IIRS`` headers in buffered
+and positional decoding. Standalone big-endian MRW discovery bounds TTW TIFF
+metadata to declared segments and excludes the pixel tail. PRD/WBG/RIF fields
+and MRW positional discovery remain separate work.
+
+Nikon D300 ShotInfo ``0210`` uses lengths 5,291 and 5,303 for layouts A and B.
+The choice governs native shutter, AF and ISO codes, decrypted firmware and
+custom settings. Unknown lengths retain opaque data. Minolta MakerNote value
+pointers use the enclosing TIFF base in buffered and positional reads, including
+values outside the MakerNote byte count but inside that carrier.
+
+Nikon D50 encrypted records use the nonnumeric serial-key fallback, two-byte
+ShotInfo counter and ColorBalance0205 white-balance region. Sony Tag9400c
+ModelReleaseYear uses a single byte. The source payload remains available;
+other raw scales and ExifTool conversions remain distinct.
+
+Grouped comparisons keep vendor subtables and Canon CIFF directories distinct.
+Flat IDs and matching names do not establish semantic parity; partial,
+ambiguous, clipped and converted values remain explicitly unqualified.
 
 CR3 private records in 0.6.2
 ----------------------------
