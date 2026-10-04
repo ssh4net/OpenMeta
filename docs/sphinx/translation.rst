@@ -1769,7 +1769,7 @@ across nine APIs at 0.5.3. The spatial batch below extends this coverage;
 downstream application acceptance is separate.
 
 
-Focal-plane and subject writeback (contract version 1)
+Focal-plane and subject writeback (contract version 2)
 ------------------------------------------------------------
 
 ``translate_xmp_capture_spatial_metadata``, ``MetadataCaptureSpatialTranslationOptions``
@@ -1843,6 +1843,26 @@ entire group if any native member exists; FailOnConflict requires all native
 members to match; ReplaceExisting repairs partial groups, wrong types and
 duplicates. Equality checks exact native type/count, rational value and ordered
 array contents. Results count up to three logical groups and five native entries.
+
+Since 0.8.4, accepted clean exact native fields gain Dirty authority through
+same-value updates retaining their original rational components, ordered arrays
+and wire provenance. Complete accepted deletion carries Dirty+Deleted intent
+for every owned native tag, even when it is absent from the source. Repeat calls
+reuse that intent. PreserveExisting retains the entire active native group
+without promotion. New markers, promotions and duplicate removals count against
+the existing limits before publication.
+
+Prepared TIFF/DNG bundles use the existing native ExifIFD merge and removal
+fields for all five spatial tags. Unselected destination entries, MakerNotes
+and media ranges remain preserved. The bounded ExifIFD allowlist now has 44 tags. Dirty native owners select
+merge mode. Live entries included by ordinary EXIF preparation, including clean
+entries, supply destination values. Destination entries absent from the prepared
+EXIF payload retain their existing values.
+Source snapshot version 1 retains the flags needed to regenerate these intents.
+Fresh emission and non-edit consumers reject removal intent they cannot express.
+Signatures, options and bundle layout remain unchanged; spatial contract version
+2 identifies the extended lifecycle. Development ABI remains unfrozen 4.
+
 
 Parsing, conflicts and shared limits precede one commit, preserving separate
 and aliased output on failure. Success owns array storage and provenance.

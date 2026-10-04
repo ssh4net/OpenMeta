@@ -965,7 +965,7 @@ translate_xmp_apex_metadata(const MetaStore& source,
                             const MetadataApexTranslationOptions& options,
                             MetaStore* out_store);
 
-inline constexpr uint32_t kMetadataCaptureSpatialTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataCaptureSpatialTranslationContractVersion = 2U;
 inline constexpr uint32_t kMetadataCaptureSpatialTranslationMaxAddedEntries = 5U;
 inline constexpr uint64_t kMetadataCaptureSpatialTranslationMaxTotalTextBytes
     = 1152U;
@@ -1001,8 +1001,13 @@ struct MetadataCaptureSpatialTranslationOptions final {
  *
  * One eligible dirty member selects its whole group, including clean active
  * companions. Duplicate, sparse, qualified and mixed root/indexed shapes fail.
- * A root tombstone or complete deleted group removes its native targets under
- * ReplaceExisting; partial deletion fails. Conflicts apply to each whole group.
+ * A root tombstone or complete deleted group carries Dirty+Deleted native intent
+ * even when the native keys are absent; partial deletion fails. Omission retains
+ * the destination. Conflicts apply to each whole group. Accepted clean exact
+ * native values gain Dirty through same-value updates that retain value and wire
+ * provenance. PreserveExisting retains any active native group without promotion.
+ * New intents, promotions and duplicate removals consume the existing budgets;
+ * repeated calls reuse intent without growing history.
  * Results count three logical groups and up to five native entries. Bounds and
  * all validation precede mutation, including aliased output. Preparation may
  * allocate; synchronization of shared objects is the host's responsibility.

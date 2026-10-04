@@ -1126,6 +1126,16 @@ namespace {
                    || group.field == NativeCaptureField::ISOSpeed
                    || group.field == NativeCaptureField::ISOSpeedLatitudeyyy
                    || group.field == NativeCaptureField::ISOSpeedLatitudezzz;
+        case MetadataCaptureTranslationMapping::XmpFocalPlaneResolution:
+            return group.field == NativeCaptureField::FocalPlaneXResolution
+                   || group.field
+                          == NativeCaptureField::FocalPlaneYResolution
+                   || group.field
+                          == NativeCaptureField::FocalPlaneResolutionUnit;
+        case MetadataCaptureTranslationMapping::XmpSubjectArea:
+            return group.field == NativeCaptureField::SubjectArea;
+        case MetadataCaptureTranslationMapping::XmpSubjectLocation:
+            return group.field == NativeCaptureField::SubjectLocation;
         default: return false;
         }
     }
@@ -1178,10 +1188,23 @@ namespace {
         switch (field) {
         case NativeCaptureField::ExposureTime:
         case NativeCaptureField::FNumber:
-        case NativeCaptureField::FocalLength: return make_urational(0U, 1U);
+        case NativeCaptureField::FocalLength:
+        case NativeCaptureField::FocalPlaneXResolution:
+        case NativeCaptureField::FocalPlaneYResolution:
+            return make_urational(0U, 1U);
         case NativeCaptureField::Iso:
         case NativeCaptureField::Flash:
-        case NativeCaptureField::SensitivityType: return make_u16(0U);
+        case NativeCaptureField::SensitivityType:
+        case NativeCaptureField::FocalPlaneResolutionUnit:
+            return make_u16(0U);
+        case NativeCaptureField::SubjectArea:
+        case NativeCaptureField::SubjectLocation: {
+            MetaValue value;
+            value.kind      = MetaValueKind::Array;
+            value.elem_type = MetaElementType::U16;
+            value.data.span = {};
+            return value;
+        }
         case NativeCaptureField::ExposureProgram:
         case NativeCaptureField::MeteringMode:
         case NativeCaptureField::SensingMethod:
@@ -1635,7 +1658,13 @@ namespace {
                 ++result->entries_updated;
             } else if (capture_lifecycle_mapping(group)
                        && !any(entry.flags, EntryFlags::Dirty)) {
-                edit->set_value(id, entry.value);
+                MetaValue value = entry.value;
+                if (group.field == NativeCaptureField::SubjectArea
+                    || group.field == NativeCaptureField::SubjectLocation) {
+                    value.data.span = edit->arena().append(
+                        source.arena().span(entry.value.data.span));
+                }
+                edit->set_value(id, value);
                 ++result->entries_updated;
             }
         }
@@ -2242,6 +2271,8 @@ namespace {
                 group.source_entry          = property.entry_id;
                 result->failed_source_entry = property.entry_id;
                 group.present               = !property.deleted;
+                group.synthesize_delete_intent
+                    = !group.present && capture_lifecycle_mapping(group);
                 if (!group.present)
                     continue;
                 Status status = spatial_text_budget(source, *property.value,
@@ -2274,6 +2305,8 @@ namespace {
             if (member_count != 0U)
                 return Status::UnsupportedSourceShape;
             group.present = !root.deleted;
+            group.synthesize_delete_intent
+                = !group.present && capture_lifecycle_mapping(group);
             if (!group.present)
                 return Status::Ok;
             const MetaValue& value = *root.value;
@@ -2311,6 +2344,8 @@ namespace {
             if (status != Status::Ok)
                 return status;
         }
+        group.synthesize_delete_intent
+            = !group.present && capture_lifecycle_mapping(group);
         return Status::Ok;
     }
 
@@ -3245,10 +3280,12 @@ translate_xmp_capture_spatial_metadata(
             continue;
         bool existing = false;
         bool exact    = true;
+        uint32_t group_operations = 0U;
         for (auto& group : groups) {
             analyze_group(source, &group);
             existing = existing || group.existing_any;
             exact    = exact && group.exact_match;
+            group_operations += required_operations(source, group);
         }
         if (existing && options.conflict_policy == Policy::FailOnConflict
             && !exact) {
@@ -3257,7 +3294,7 @@ translate_xmp_capture_spatial_metadata(
         }
         if (existing && options.conflict_policy == Policy::PreserveExisting) {
             ++result.groups_preserved;
-        } else if (exact) {
+        } else if (exact && group_operations == 0U) {
             ++result.groups_unchanged;
         } else {
             ++translated;

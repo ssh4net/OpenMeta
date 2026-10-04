@@ -935,7 +935,7 @@ with tempfile.TemporaryDirectory() as temporary:
     path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
     document = openmeta.read(str(path))
     count = document.entry_count
-    assert openmeta.METADATA_CAPTURE_SPATIAL_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_CAPTURE_SPATIAL_TRANSLATION_CONTRACT_VERSION == 2
     assert document.translate_capture_spatial_metadata().entry_count == count
     translated = document.translate_capture_spatial_metadata(source_mode=mode)
     assert translated.entry_count == count + 5
@@ -957,6 +957,32 @@ with tempfile.TemporaryDirectory() as temporary:
     restored = openmeta.read(str(path))
     assert restored.translate_capture_spatial_metadata(source_mode=mode).entry_count == restored.entry_count + 5
     assert document.entry_count == count
+    probe = openmeta.unsafe_transfer_snapshot_probe(
+        translated.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='spatial.tiff',
+        target_bytes=bytes([73, 73, 42, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        include_edited_bytes=True,
+    )
+    assert probe['overall_status'] == openmeta.TransferStatus.Ok, probe
+    assert probe['tiff_merge_existing_exif'] is True, probe
+    native_path = Path(temporary) / 'spatial.tiff'
+    native_path.write_bytes(bytes(probe['edited_bytes']))
+    clean_native = openmeta.read(str(native_path))
+    promoted = clean_native.translate_capture_spatial_metadata(source_mode=mode)
+    assert promoted.entry_count == clean_native.entry_count
+    promoted_probe = openmeta.unsafe_transfer_snapshot_probe(
+        promoted.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='spatial.tiff',
+        target_bytes=bytes(probe['edited_bytes']),
+        include_edited_bytes=True,
+    )
+    assert promoted_probe['overall_status'] == openmeta.TransferStatus.Ok, promoted_probe
+    assert promoted_probe['tiff_merge_existing_exif'] is True, promoted_probe
+    exact_payload, _ = promoted.dump_xmp_portable(include_existing_xmp=False)
+    assert b'<exif:FocalPlaneXResolution>10000/3</exif:FocalPlaneXResolution>' in exact_payload
+    assert b'<rdf:li>65535</rdf:li>' in exact_payload
 
 with tempfile.TemporaryDirectory() as temporary:
     path = Path(temporary) / 'additional_environment.jpg'

@@ -1321,3 +1321,16 @@ and unknown destination GPS fields survive; version cleanup is destination-aware
 Conflicting versions/clear/manual edits fail before output. The public layout
 requires rebuilding matching consumers, with package minor 0.8 and unfrozen ABI4.
 See [migration](migration_0_8.md) for the exact contract and consumer limits.
+
+
+## Spatial destination lifecycle (0.8.4)
+
+The five native spatial fields now use bounded ExifIFD merge/removal authority:
+focal-plane X/Y/unit as one translator group and two independent subject arrays.
+Accepted exact native values retain their wire provenance while gaining Dirty;
+complete deletion carries intent for absent source keys. Omission preserves the
+destination. Existing snapshot v1/vector/stream/package paths carry this state.
+The allowlist extends39 to44 without a bundle-layout change. Spatial contract2,
+unfrozen ABI4 and host synchronization remain. Grouped qualification covers
+classic/BigTIFF endians and bounded original-backed TIFF/DNG writes; reader,
+codec, SDK, general private relocation and downstream qualification remain separate.

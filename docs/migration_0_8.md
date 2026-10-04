@@ -90,3 +90,21 @@ Consumers whose schemas cannot represent removal reject it before writing.
 The DNG SDK adapter also rejects GPS merge mode because it cannot preserve
 unselected destination GPS fields under this contract. These changes do not add
 private-record offset repair or codec conformance guarantees.
+
+
+Spatial destination editing in 0.8.4
+----------------------------------
+
+Spatial translation contract 2 adds Dirty authority for accepted exact native
+values and complete native deletion intent for absent keys. Focal-plane X/Y/unit
+remain one group; SubjectArea and SubjectLocation remain independent arrays.
+Existing parsing and coordinate semantics are unchanged. PreserveExisting keeps
+an active owner whole. New intent and promotions consume existing bounds.
+
+The existing native ExifIFD merge/removal fields now cover all five spatial tags
+(44 allowlisted tags total) for TIFF/BigTIFF/DNG destination edits. Prepared bundle
+layout, signatures, options and source snapshot version 1 remain unchanged.
+Non-edit consumers reject removal intent. Rebuild against matching headers and
+libraries: development ABI 4 is unfrozen. SameMajorVersion package selection
+continues to allow later source versions; it does not promise experimental API
+or binary compatibility. OIIO/iRAW adoption remains a separate acceptance gate.

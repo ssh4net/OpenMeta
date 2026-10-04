@@ -78,6 +78,12 @@ and broader synchronization. Fuzzy Search has the lowest priority and resumes
 after Adapters and Utilities for its Unicode/multilingual and optional-index
 milestones.
 
+The 0.8.4 spatial lifecycle extends this sequence through focal-plane X/Y/unit
+and both subject arrays. These five fields use the existing bounded TIFF/BigTIFF
+merge, native deletion intent and source snapshot path; unrelated destination
+metadata and media remain preserved. This is a bounded editing milestone, not a
+new read-coverage or downstream acceptance claim.
+
 ## Interpretation Maintenance Priorities
 
 The complete bounded BMFF tiled-image contract was independently qualified on

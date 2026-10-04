@@ -8316,6 +8316,429 @@ namespace {
     }
 
     TEST(MetadataCaptureSpatial,
+         LifecyclePromotesExactCleanNativesAndCreatesWholeGroupMarkers)
+    {
+        MetaStore source = spatial_source(false, 4U, EntryFlags::None);
+        for (EntryId id : { 0U, 3U }) {
+            Entry entry = source.entry(id);
+            entry.flags = EntryFlags::Dirty;
+            identity_fixture_replace(source, id, entry);
+        }
+        settings_native_entry(source, 0xa20eU, make_urational(20000U, 6U),
+                              EntryFlags::None, 3U, "spatial-native");
+        settings_native_entry(source, 0xa20fU, make_urational(5000U, 2U),
+                              EntryFlags::None, 3U, "spatial-native");
+        settings_native_entry(source, 0x9214U,
+                              make_u16_array(source.arena(), kSubjectArea),
+                              EntryFlags::ContextualName, 7U, "spatial-native");
+        settings_native_entry(source, 0xa214U,
+                              make_u16_array(source.arena(), kSubjectLocation),
+                              EntryFlags::None, 7U, "spatial-native");
+        source.finalize();
+        ASSERT_GT(settings_find(source, 0x9214U)->value.data.span.offset, 0U);
+
+        SpatialOptions options;
+        options.conflict_policy   = SpatialPolicy::ReplaceExisting;
+        MetaStore separate_source = source;
+        MetaStore separate_output;
+        const auto separated
+            = translate_xmp_capture_spatial_metadata(separate_source, options,
+                                                     &separate_output);
+        ASSERT_EQ(separated.status, SpatialStatus::Ok);
+        EXPECT_EQ(separated.groups_translated, 2U);
+        EXPECT_EQ(separated.entries_added, 1U);
+        EXPECT_EQ(separated.entries_updated, 3U);
+        const Entry* separate_area = settings_find(separate_output, 0x9214U);
+        ASSERT_NE(separate_area, nullptr);
+        EXPECT_EQ(separate_area->value.kind, MetaValueKind::Array);
+        EXPECT_EQ(separate_area->value.elem_type, MetaElementType::U16);
+        EXPECT_EQ(separate_area->value.count, kSubjectArea.size());
+        const auto separate_area_bytes = separate_output.arena().span(
+            separate_area->value.data.span);
+        ASSERT_EQ(separate_area_bytes.size(), sizeof(kSubjectArea));
+        EXPECT_EQ(std::memcmp(separate_area_bytes.data(), kSubjectArea.data(),
+                              separate_area_bytes.size()),
+                  0);
+
+        const auto promoted
+            = translate_xmp_capture_spatial_metadata(source, options, &source);
+        ASSERT_EQ(promoted.status, SpatialStatus::Ok);
+        EXPECT_EQ(promoted.groups_translated, 2U);
+        EXPECT_EQ(promoted.entries_added, 1U);
+        EXPECT_EQ(promoted.entries_updated, 3U);
+        for (uint16_t tag : { 0xa20eU, 0xa20fU, 0x9214U }) {
+            const Entry* entry = settings_find(source, tag);
+            ASSERT_NE(entry, nullptr);
+            EXPECT_TRUE(any(entry->flags, EntryFlags::Dirty));
+            EXPECT_FALSE(any(entry->flags, EntryFlags::Deleted));
+            EXPECT_EQ(entry->origin.wire_type.family, WireFamily::Tiff);
+            EXPECT_EQ(entry->origin.wire_type.code, tag == 0x9214U ? 7U : 3U);
+            EXPECT_EQ(entry->origin.wire_count,
+                      tag == 0x9214U ? kSubjectArea.size() : 1U);
+            EXPECT_EQ(entry->origin.order_in_block, 17U);
+            const auto name = source.arena().span(entry->origin.wire_type_name);
+            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                           name.data()),
+                                       name.size()),
+                      "spatial-native");
+            if (tag == 0x9214U)
+                EXPECT_TRUE(any(entry->flags, EntryFlags::ContextualName));
+        }
+        EXPECT_EQ(settings_find(source, 0xa20eU)->value.data.ur.numer, 20000U);
+        EXPECT_EQ(settings_find(source, 0xa20eU)->value.data.ur.denom, 6U);
+        EXPECT_EQ(settings_find(source, 0xa20fU)->value.data.ur.numer, 5000U);
+        EXPECT_EQ(settings_find(source, 0xa20fU)->value.data.ur.denom, 2U);
+        EXPECT_EQ(settings_find(source, 0xa210U)->value.data.u64, 3U);
+        const auto promoted_area = source.arena().span(
+            settings_find(source, 0x9214U)->value.data.span);
+        EXPECT_EQ(settings_find(source, 0x9214U)->value.count,
+                  kSubjectArea.size());
+        EXPECT_EQ(promoted_area.size(), sizeof(kSubjectArea));
+        EXPECT_EQ(std::memcmp(promoted_area.data(), kSubjectArea.data(),
+                              promoted_area.size()),
+                  0);
+        const Entry* preserved_location = settings_find(source, 0xa214U);
+        ASSERT_NE(preserved_location, nullptr);
+        EXPECT_FALSE(any(preserved_location->flags, EntryFlags::Dirty));
+
+        MetaStore deleted = spatial_source();
+        for (EntryId id = 0U; id < deleted.entries().size(); ++id) {
+            Entry entry = deleted.entry(id);
+            entry.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+            identity_fixture_replace(deleted, id, entry);
+        }
+        deleted.finalize();
+        const auto removed = translate_xmp_capture_spatial_metadata(deleted,
+                                                                    options,
+                                                                    &deleted);
+        ASSERT_EQ(removed.status, SpatialStatus::Ok);
+        EXPECT_EQ(removed.groups_translated, 3U);
+        EXPECT_EQ(removed.entries_added, 5U);
+        EXPECT_EQ(deleted.entries().size(), 10U);
+        std::array<bool, 5U> markers {};
+        for (const Entry& entry : deleted.entries()) {
+            if (entry.key.kind != MetaKeyKind::ExifTag)
+                continue;
+            for (size_t i = 0U; i < kSpatialTags.size(); ++i) {
+                if (entry.key.data.exif_tag.tag != kSpatialTags[i])
+                    continue;
+                EXPECT_TRUE(any(entry.flags, EntryFlags::Dirty));
+                EXPECT_TRUE(any(entry.flags, EntryFlags::Deleted));
+                markers[i] = true;
+            }
+        }
+        for (bool marker : markers)
+            EXPECT_TRUE(marker);
+        const size_t entries_after_delete = deleted.entries().size();
+        const auto repeated = translate_xmp_capture_spatial_metadata(deleted,
+                                                                     options,
+                                                                     &deleted);
+        ASSERT_EQ(repeated.status, SpatialStatus::Ok);
+        EXPECT_EQ(repeated.groups_unchanged, 3U);
+        EXPECT_EQ(repeated.entries_added, 0U);
+        EXPECT_EQ(deleted.entries().size(), entries_after_delete);
+    }
+
+    TEST(MetadataCaptureSpatial,
+         LifecyclePoliciesPreserveOwnersAndPromoteExactArrays)
+    {
+        MetaStore exact = spatial_source(false, 4U, EntryFlags::None);
+        for (EntryId id : { 3U, 4U }) {
+            Entry entry = exact.entry(id);
+            entry.flags = EntryFlags::Dirty;
+            identity_fixture_replace(exact, id, entry);
+        }
+        settings_native_entry(exact, 0x9214U,
+                              make_u16_array(exact.arena(), kSubjectArea),
+                              EntryFlags::ContextualName, 7U, "spatial-native");
+        settings_native_entry(exact, 0xa214U,
+                              make_u16_array(exact.arena(), kSubjectLocation),
+                              EntryFlags::ContextualName, 7U, "spatial-native");
+        exact.finalize();
+        MetaStore preserved = exact;
+
+        SpatialOptions options;
+        options.focal_plane_to_exif = false;
+        options.conflict_policy     = SpatialPolicy::FailOnConflict;
+        const auto promoted
+            = translate_xmp_capture_spatial_metadata(exact, options, &exact);
+        ASSERT_EQ(promoted.status, SpatialStatus::Ok);
+        EXPECT_EQ(promoted.groups_translated, 2U);
+        EXPECT_EQ(promoted.entries_updated, 2U);
+        EXPECT_EQ(promoted.entries_added, 0U);
+        for (size_t i = 3U; i < kSpatialTags.size(); ++i) {
+            const Entry* entry = settings_find(exact, kSpatialTags[i]);
+            ASSERT_NE(entry, nullptr);
+            EXPECT_TRUE(any(entry->flags, EntryFlags::Dirty));
+            EXPECT_TRUE(any(entry->flags, EntryFlags::ContextualName));
+            const std::span<const uint16_t> expected
+                = i == 3U ? std::span<const uint16_t>(kSubjectArea)
+                          : std::span<const uint16_t>(kSubjectLocation);
+            EXPECT_EQ(entry->value.kind, MetaValueKind::Array);
+            EXPECT_EQ(entry->value.elem_type, MetaElementType::U16);
+            EXPECT_EQ(entry->value.count, expected.size());
+            const auto bytes = exact.arena().span(entry->value.data.span);
+            ASSERT_EQ(bytes.size(), expected.size_bytes());
+            EXPECT_EQ(std::memcmp(bytes.data(), expected.data(), bytes.size()),
+                      0);
+        }
+
+        options.conflict_policy = SpatialPolicy::PreserveExisting;
+        const auto kept = translate_xmp_capture_spatial_metadata(preserved,
+                                                                 options,
+                                                                 &preserved);
+        ASSERT_EQ(kept.status, SpatialStatus::Ok);
+        EXPECT_EQ(kept.groups_preserved, 2U);
+        EXPECT_EQ(kept.groups_translated, 0U);
+        EXPECT_EQ(kept.entries_updated, 0U);
+        EXPECT_EQ(kept.entries_added, 0U);
+        for (size_t i = 3U; i < kSpatialTags.size(); ++i) {
+            const Entry* entry = settings_find(preserved, kSpatialTags[i]);
+            ASSERT_NE(entry, nullptr);
+            EXPECT_FALSE(any(entry->flags, EntryFlags::Dirty));
+            EXPECT_TRUE(any(entry->flags, EntryFlags::ContextualName));
+        }
+
+        MetaStore exact_focal = spatial_source(false, 4U);
+        settings_native_entry(exact_focal, 0xa20eU, make_urational(20000U, 6U),
+                              EntryFlags::ContextualName, 3U, "spatial-native");
+        settings_native_entry(exact_focal, 0xa20fU, make_urational(5000U, 2U),
+                              EntryFlags::None, 3U, "spatial-native");
+        settings_native_entry(exact_focal, 0xa210U, make_u16(3U),
+                              EntryFlags::None, 4U, "spatial-native");
+        exact_focal.finalize();
+        options.conflict_policy          = SpatialPolicy::FailOnConflict;
+        options.focal_plane_to_exif      = true;
+        options.subject_area_to_exif     = false;
+        options.subject_location_to_exif = false;
+        const auto exact_focal_result
+            = translate_xmp_capture_spatial_metadata(exact_focal, options,
+                                                     &exact_focal);
+        ASSERT_EQ(exact_focal_result.status, SpatialStatus::Ok);
+        EXPECT_EQ(exact_focal_result.groups_translated, 1U);
+        EXPECT_EQ(exact_focal_result.entries_updated, 3U);
+        EXPECT_EQ(exact_focal_result.entries_added, 0U);
+        EXPECT_EQ(settings_find(exact_focal, 0xa20eU)->value.data.ur.numer,
+                  20000U);
+        EXPECT_EQ(settings_find(exact_focal, 0xa20eU)->value.data.ur.denom, 6U);
+        EXPECT_EQ(settings_find(exact_focal, 0xa20fU)->value.data.ur.numer,
+                  5000U);
+        EXPECT_EQ(settings_find(exact_focal, 0xa20fU)->value.data.ur.denom, 2U);
+        for (uint16_t tag : { 0xa20eU, 0xa20fU, 0xa210U })
+            EXPECT_TRUE(
+                any(settings_find(exact_focal, tag)->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(settings_find(exact_focal, 0xa20eU)->flags,
+                        EntryFlags::ContextualName));
+        EXPECT_EQ(settings_find(exact_focal, 0xa20eU)->origin.wire_type.code,
+                  3U);
+
+        options.conflict_policy = SpatialPolicy::PreserveExisting;
+        MetaStore partial_owner = spatial_source(false, 4U);
+        settings_native_entry(partial_owner, 0xa20eU,
+                              make_urational(20000U, 6U), EntryFlags::None);
+        settings_native_entry(partial_owner, 0xa20fU, make_urational(5000U, 2U),
+                              EntryFlags::None);
+        settings_native_entry(partial_owner, 0xa210U, make_u16(2U),
+                              EntryFlags::None);
+        partial_owner.finalize();
+        options.focal_plane_to_exif      = true;
+        options.subject_area_to_exif     = false;
+        options.subject_location_to_exif = false;
+        const auto preserved_owner
+            = translate_xmp_capture_spatial_metadata(partial_owner, options,
+                                                     &partial_owner);
+        ASSERT_EQ(preserved_owner.status, SpatialStatus::Ok);
+        EXPECT_EQ(preserved_owner.groups_preserved, 1U);
+        EXPECT_EQ(preserved_owner.groups_translated, 0U);
+        EXPECT_EQ(preserved_owner.entries_updated, 0U);
+        EXPECT_EQ(preserved_owner.entries_added, 0U);
+        EXPECT_FALSE(any(settings_find(partial_owner, 0xa20eU)->flags,
+                         EntryFlags::Dirty));
+        EXPECT_FALSE(any(settings_find(partial_owner, 0xa20fU)->flags,
+                         EntryFlags::Dirty));
+        EXPECT_FALSE(any(settings_find(partial_owner, 0xa210U)->flags,
+                         EntryFlags::Dirty));
+    }
+
+    TEST(MetadataCaptureSpatial,
+         LifecycleFailOnConflictRejectsPartialFocalOwner)
+    {
+        MetaStore source = spatial_source(false, 4U);
+        settings_native_entry(source, 0xa20eU, make_urational(20000U, 6U),
+                              EntryFlags::None);
+        settings_native_entry(source, 0xa20fU, make_urational(5000U, 2U),
+                              EntryFlags::None);
+        settings_native_entry(source, 0xa210U, make_u16(2U), EntryFlags::None);
+        SpatialOptions options;
+        options.conflict_policy          = SpatialPolicy::FailOnConflict;
+        options.subject_area_to_exif     = false;
+        options.subject_location_to_exif = false;
+        spatial_failure(source, SpatialStatus::NativeConflict, options);
+    }
+
+    TEST(MetadataCaptureSpatial,
+         LifecycleReusesCleanDeleteMarkersForRootAndDenseSources)
+    {
+        for (bool indexed : { false, true }) {
+            MetaStore source           = spatial_source(indexed);
+            const EntryId source_count = indexed ? 9U : 5U;
+            for (EntryId id = 0U; id < source_count; ++id) {
+                Entry entry = source.entry(id);
+                entry.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+                identity_fixture_replace(source, id, entry);
+            }
+            settings_native_entry(source, 0xa20eU, make_urational(0U, 1U),
+                                  EntryFlags::Deleted);
+            settings_native_entry(source, 0xa20fU, make_urational(0U, 1U),
+                                  EntryFlags::Deleted);
+            settings_native_entry(source, 0xa210U, make_u16(0U),
+                                  EntryFlags::Deleted);
+            settings_native_entry(source, 0x9214U,
+                                  make_u16_array(source.arena(), kSubjectArea),
+                                  EntryFlags::Deleted);
+            settings_native_entry(source, 0xa214U,
+                                  make_u16_array(source.arena(),
+                                                 kSubjectLocation),
+                                  EntryFlags::Deleted);
+            source.finalize();
+
+            SpatialOptions options;
+            options.conflict_policy     = SpatialPolicy::ReplaceExisting;
+            const size_t entries_before = source.entries().size();
+            const auto result = translate_xmp_capture_spatial_metadata(source,
+                                                                       options,
+                                                                       &source);
+            ASSERT_EQ(result.status, SpatialStatus::Ok);
+            EXPECT_EQ(result.groups_translated, 3U);
+            EXPECT_EQ(result.entries_updated, 5U);
+            EXPECT_EQ(result.entries_added, 0U);
+            EXPECT_EQ(result.entries_removed, 0U);
+            EXPECT_EQ(source.entries().size(), entries_before);
+            for (uint16_t tag : kSpatialTags)
+                EXPECT_EQ(settings_find(source, tag), nullptr);
+
+            std::array<bool, 5U> dirty_markers {};
+            for (const Entry& entry : source.entries()) {
+                if (entry.key.kind != MetaKeyKind::ExifTag)
+                    continue;
+                for (size_t i = 0U; i < kSpatialTags.size(); ++i) {
+                    if (entry.key.data.exif_tag.tag != kSpatialTags[i])
+                        continue;
+                    EXPECT_TRUE(any(entry.flags, EntryFlags::Dirty));
+                    EXPECT_TRUE(any(entry.flags, EntryFlags::Deleted));
+                    dirty_markers[i] = true;
+                }
+            }
+            for (bool marker : dirty_markers)
+                EXPECT_TRUE(marker);
+
+            const auto repeated
+                = translate_xmp_capture_spatial_metadata(source, options,
+                                                         &source);
+            ASSERT_EQ(repeated.status, SpatialStatus::Ok);
+            EXPECT_EQ(repeated.groups_unchanged, 3U);
+            EXPECT_EQ(repeated.entries_updated, 0U);
+            EXPECT_EQ(repeated.entries_added, 0U);
+            EXPECT_EQ(source.entries().size(), entries_before);
+        }
+    }
+
+    TEST(MetadataCaptureSpatial, LifecycleIgnoresDisabledAndIneligibleOwners)
+    {
+        for (unsigned variant = 0U; variant < 2U; ++variant) {
+            MetaStore source = spatial_source(false, 4U, EntryFlags::None);
+            if (variant == 0U) {
+                Entry location = source.entry(4U);
+                location.flags = EntryFlags::Dirty;
+                identity_fixture_replace(source, 4U, location);
+            }
+            settings_native_entry(source, 0xa214U,
+                                  make_u16_array(source.arena(),
+                                                 kSubjectLocation),
+                                  EntryFlags::ContextualName, 7U,
+                                  "spatial-native");
+            source.finalize();
+
+            SpatialOptions options;
+            if (variant == 0U)
+                options.subject_location_to_exif = false;
+            const auto before = apex_snapshot(source);
+            MetaStore output;
+            const auto separate
+                = translate_xmp_capture_spatial_metadata(source, options,
+                                                         &output);
+            ASSERT_EQ(separate.status, SpatialStatus::Ok);
+            EXPECT_EQ(separate.groups_translated, 0U);
+            EXPECT_EQ(separate.entries_updated, 0U);
+            EXPECT_EQ(separate.entries_added, 0U);
+            EXPECT_EQ(apex_snapshot(source), before);
+            EXPECT_EQ(apex_snapshot(output), before);
+
+            const auto alias = translate_xmp_capture_spatial_metadata(source,
+                                                                      options,
+                                                                      &source);
+            ASSERT_EQ(alias.status, SpatialStatus::Ok);
+            EXPECT_EQ(alias.groups_translated, 0U);
+            EXPECT_EQ(alias.entries_updated, 0U);
+            EXPECT_EQ(alias.entries_added, 0U);
+            EXPECT_EQ(apex_snapshot(source), before);
+            EXPECT_FALSE(
+                any(settings_find(source, 0xa214U)->flags, EntryFlags::Dirty));
+        }
+    }
+
+    TEST(MetadataCaptureSpatial,
+         LifecycleOperationAndMarkerBudgetsRollBackBothOutputModes)
+    {
+        MetaStore promotions = spatial_source(false, 4U);
+        settings_native_entry(promotions, 0xa20eU, make_urational(20000U, 6U),
+                              EntryFlags::None);
+        settings_native_entry(promotions, 0xa20fU, make_urational(5000U, 2U),
+                              EntryFlags::None);
+        settings_native_entry(promotions, 0xa210U, make_u16(3U),
+                              EntryFlags::None);
+        SpatialOptions promotion_limit;
+        promotion_limit.conflict_policy          = SpatialPolicy::FailOnConflict;
+        promotion_limit.subject_area_to_exif     = false;
+        promotion_limit.subject_location_to_exif = false;
+        promotion_limit.max_operations           = 2U;
+        spatial_failure(promotions, SpatialStatus::OperationLimitExceeded,
+                        promotion_limit);
+
+        MetaStore deleted = spatial_source(true);
+        for (EntryId id = 0U; id < deleted.entries().size(); ++id) {
+            Entry entry = deleted.entry(id);
+            entry.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+            identity_fixture_replace(deleted, id, entry);
+        }
+        MetaStore addition_limited = deleted;
+        SpatialOptions addition_limit;
+        addition_limit.conflict_policy   = SpatialPolicy::ReplaceExisting;
+        addition_limit.max_added_entries = 4U;
+        spatial_failure(addition_limited, SpatialStatus::EntryLimitExceeded,
+                        addition_limit);
+        SpatialOptions operation_limit = addition_limit;
+        operation_limit.max_added_entries
+            = kMetadataCaptureSpatialTranslationMaxAddedEntries;
+        operation_limit.max_operations = 4U;
+        spatial_failure(deleted, SpatialStatus::OperationLimitExceeded,
+                        operation_limit);
+
+        MetaStore duplicates = spatial_source(false, 4U);
+        settings_native_entry(duplicates, 0xa210U, make_u16(3U),
+                              EntryFlags::None);
+        settings_native_entry(duplicates, 0xa210U, make_u16(3U),
+                              EntryFlags::None);
+        SpatialOptions duplicate_limit;
+        duplicate_limit.conflict_policy          = SpatialPolicy::ReplaceExisting;
+        duplicate_limit.subject_area_to_exif     = false;
+        duplicate_limit.subject_location_to_exif = false;
+        duplicate_limit.max_operations           = 3U;
+        spatial_failure(duplicates, SpatialStatus::OperationLimitExceeded,
+                        duplicate_limit);
+    }
+
+    TEST(MetadataCaptureSpatial,
          RejectsIncompleteAmbiguousAndUnsupportedShapesTransactionally)
     {
         constexpr std::array<std::string_view, 9> paths
@@ -8466,6 +8889,9 @@ namespace {
                 EXPECT_EQ(settings_active_count(source, 0xa210U), 2U);
             } else {
                 EXPECT_EQ(result.groups_translated, 3U);
+                EXPECT_EQ(result.entries_added, 3U);
+                EXPECT_EQ(result.entries_updated, 2U);
+                EXPECT_EQ(result.entries_removed, 1U);
                 EXPECT_EQ(settings_active_count(source, 0xa210U), 1U);
                 spatial_expect(source);
             }

@@ -1,5 +1,17 @@
 # OpenMeta Changes
 
+## 0.8.4 - 2026-10-05
+
+- Complete native editing authority for focal-plane X/Y resolution and unit,
+  SubjectArea, and SubjectLocation. Accepted exact clean values gain Dirty while
+  retaining rational components, arrays and wire provenance; complete deletion
+  carries native intent even when a source native key is absent.
+- Extend bounded TIFF/BigTIFF/DNG ExifIFD merge and removal to these five fields,
+  preserving unselected metadata, opaque MakerNotes and image ranges. Snapshot
+  version 1 and existing vector, stream and prepared-package routes carry intent.
+- Advance the spatial translation contract to 2. Keep public signatures, options,
+  bundle layout and the unfrozen ABI label 4. Hosts synchronize shared objects.
+
 ## 0.8.3 - 2026-10-04
 
 - Recognize older Olympus ORF `IIRS` headers in buffered and positional TIFF

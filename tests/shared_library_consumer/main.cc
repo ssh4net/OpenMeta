@@ -550,7 +550,7 @@ main()
                                                            &spatial_source);
     const bool spatial_contract_matches
         = spatial_authored.ok()
-          && openmeta::kMetadataCaptureSpatialTranslationContractVersion == 1U
+          && openmeta::kMetadataCaptureSpatialTranslationContractVersion == 2U
           && spatial_result.status
                  == openmeta::MetadataCaptureTranslationStatus::Ok
           && spatial_result.entries_added == 5U
