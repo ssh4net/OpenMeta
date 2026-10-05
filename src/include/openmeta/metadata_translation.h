@@ -538,7 +538,7 @@ translate_xmp_exif_text_metadata(
     MetaStore* out_store);
 
 inline constexpr uint32_t kMetadataCaptureAdditionalTranslationContractVersion
-    = 1U;
+    = 2U;
 inline constexpr uint32_t kMetadataCaptureAdditionalTranslationMaxAddedEntries
     = 3U;
 inline constexpr uint64_t kMetadataCaptureAdditionalTranslationMaxTotalTextBytes
@@ -569,6 +569,12 @@ struct MetadataCaptureAdditionalTranslationOptions final {
  * integer text. No labels, units, rounding or camera-model inference is used.
  * Duplicate aliases and non-scalar paths fail. Dirty tombstones, conflicts,
  * budgets and aliased output follow the capture translation contract.
+ * Accepted exact clean native values gain Dirty while retaining native code bytes,
+ * flags and wire provenance. Complete eligible deletion retains Dirty+Deleted
+ * intent for absent keys. PreserveExisting retains an active owner without
+ * promotion; omission and ineligible sources preserve the destination. Intent,
+ * promotion and duplicate removals consume existing preflight budgets. Repeated
+ * calls reuse intent; the host synchronizes shared objects.
  */
 MetadataCaptureTranslationResult
 translate_xmp_capture_additional_metadata(
@@ -576,7 +582,7 @@ translate_xmp_capture_additional_metadata(
     const MetadataCaptureAdditionalTranslationOptions& options,
     MetaStore* out_store);
 
-inline constexpr uint32_t kMetadataEnvironmentTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataEnvironmentTranslationContractVersion = 2U;
 inline constexpr uint32_t kMetadataEnvironmentTranslationMaxAddedEntries = 6U;
 inline constexpr uint64_t kMetadataEnvironmentTranslationMaxTotalTextBytes
     = 768U;
@@ -615,7 +621,13 @@ struct MetadataEnvironmentTranslationOptions final {
  * n/4294967295. Other finite denominators must be positive. Finite input that
  * would reduce to the reserved denominator fails. No float approximation.
  * Dirty tombstones, conflicts, budgets and aliased output follow the capture
- * contract. Each call is one transaction; shared-object access is host-owned.
+ * contract. Accepted exact clean native values gain Dirty while retaining raw
+ * rational components, unknown numerator/denominator bits, flags and provenance.
+ * Complete eligible deletion retains Dirty+Deleted intent even for absent native
+ * keys. PreserveExisting keeps active owners without promotion; omission and
+ * ineligible sources preserve the destination. Intent, promotions and duplicate
+ * removals consume existing preflight budgets; repeat calls reuse intent.
+ * Each call is one transaction; shared-object access is host-owned.
  */
 MetadataCaptureTranslationResult
 translate_xmp_environment_metadata(

@@ -719,7 +719,10 @@ struct PreparedTransferBundle final {
     /// FocalPlaneResolutionUnit (0xA210), and SubjectLocation (0xA214); rational
     /// fields SubjectDistance (0x9206), DigitalZoomRatio (0xA404), ExposureIndex
     /// (0xA215), FlashEnergy (0xA20B), LensSpecification (0xA432), and
-    /// ImageUniqueID (0xA420).
+    /// ImageUniqueID (0xA420); additional capture fields FocalLengthIn35mmFilm
+    /// (0xA405), FileSource (0xA300), SceneType (0xA301); and environment
+    /// fields Temperature, Humidity, Pressure, WaterDepth, Acceleration and
+    /// CameraElevationAngle (0x9400-0x9405).
     /// Explicit per-tag removals preserve unspecified destination ExifIFD
     /// entries. Fresh emit, adapter, payload, and codec handoff APIs reject
     /// non-empty removal lists because their operation schemas cannot express
@@ -727,7 +730,8 @@ struct PreparedTransferBundle final {
     /// this list during preparation.
     std::vector<uint16_t> tiff_exif_removals;
     /// Preserve unspecified destination ExifIFD entries when applying dirty
-    /// allowlisted native timestamp, capture, APEX, setting, lens, or spatial edits to
+    /// allowlisted native timestamp, capture, APEX, setting, lens, spatial or
+    /// environment edits to
     /// TIFF/DNG. This mode is opt-in and defaults to whole-ExifIFD replacement
     /// behavior.
     bool tiff_merge_existing_exif = false;

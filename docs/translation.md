@@ -1744,6 +1744,19 @@ The per-call defaults are 3 or 6 added entries, 1024 primitive edit operations,
 these bounds. Typed editing before translation is described in
 [editing.md](editing.md#exact-typed-keys-056).
 
+
+In 0.8.6, both contracts are version 2. Accepted exact clean native values gain
+`Dirty` while retaining native fractions, unknown numerator/denominator bits,
+one-byte UNDEFINED codes and wire provenance. Native byte spans copy into the
+edit arena before publication. Complete eligible deletion creates or reuses
+`Dirty|Deleted` native intent even for absent keys. `PreserveExisting` keeps an
+active owner without promotion; omitted and ineligible sources preserve the
+destination. Existing preflight budgets include intent, promotion and duplicate
+removal. Repeated calls reuse intent and failure retains source/output unchanged.
+The shared ExifIFD merge/removal allowlist grows from 50 to 59 using existing
+prepared fields and snapshot v1. Signatures, options and bundle layout stay the
+same; development ABI 4 is unfrozen. Hosts synchronize shared objects.
+
 Contracts follow the native definitions in
 [CIPA Exif 2.32](https://www.cipa.jp/std/documents/e/DC-X008-Translation-2019-E.pdf)
 and the namespace/property mappings in

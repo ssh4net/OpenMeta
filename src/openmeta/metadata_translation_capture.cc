@@ -1128,6 +1128,24 @@ namespace {
             return group.field == NativeCaptureField::LensSpecification;
         case MetadataCaptureTranslationMapping::XmpImageUniqueID:
             return group.field == NativeCaptureField::ImageUniqueID;
+        case MetadataCaptureTranslationMapping::XmpFocalLengthIn35mmFilm:
+            return group.field == NativeCaptureField::FocalLengthIn35mmFilm;
+        case MetadataCaptureTranslationMapping::XmpFileSource:
+            return group.field == NativeCaptureField::FileSource;
+        case MetadataCaptureTranslationMapping::XmpSceneType:
+            return group.field == NativeCaptureField::SceneType;
+        case MetadataCaptureTranslationMapping::XmpTemperature:
+            return group.field == NativeCaptureField::Temperature;
+        case MetadataCaptureTranslationMapping::XmpHumidity:
+            return group.field == NativeCaptureField::Humidity;
+        case MetadataCaptureTranslationMapping::XmpPressure:
+            return group.field == NativeCaptureField::Pressure;
+        case MetadataCaptureTranslationMapping::XmpWaterDepth:
+            return group.field == NativeCaptureField::WaterDepth;
+        case MetadataCaptureTranslationMapping::XmpAcceleration:
+            return group.field == NativeCaptureField::Acceleration;
+        case MetadataCaptureTranslationMapping::XmpCameraElevationAngle:
+            return group.field == NativeCaptureField::CameraElevationAngle;
         case MetadataCaptureTranslationMapping::XmpSensitivity:
             return group.field == NativeCaptureField::Iso
                    || group.field == NativeCaptureField::SensitivityType
@@ -1205,9 +1223,25 @@ namespace {
         case NativeCaptureField::DigitalZoomRatio:
         case NativeCaptureField::ExposureIndex:
         case NativeCaptureField::FlashEnergy:
+        case NativeCaptureField::Humidity:
+        case NativeCaptureField::Pressure:
+        case NativeCaptureField::Acceleration:
         case NativeCaptureField::FocalPlaneXResolution:
         case NativeCaptureField::FocalPlaneYResolution:
             return make_urational(0U, 1U);
+        case NativeCaptureField::Temperature:
+        case NativeCaptureField::WaterDepth:
+        case NativeCaptureField::CameraElevationAngle:
+            return make_srational(0, 1);
+        case NativeCaptureField::FocalLengthIn35mmFilm: return make_u16(0U);
+        case NativeCaptureField::FileSource:
+        case NativeCaptureField::SceneType: {
+            MetaValue value;
+            value.kind      = MetaValueKind::Bytes;
+            value.elem_type = MetaElementType::U8;
+            value.data.span = {};
+            return value;
+        }
         case NativeCaptureField::Iso:
         case NativeCaptureField::Flash:
         case NativeCaptureField::SensitivityType:
@@ -3764,6 +3798,8 @@ translate_xmp_capture_additional_metadata(
         group.mapping      = mapping.mapping;
         group.field        = mapping.field;
         group.source_entry = property.entry_id;
+        group.synthesize_delete_intent
+            = property.deleted && capture_lifecycle_mapping(group);
         if (status == Status::Ok && !property.deleted) {
             const MetaValue& value = *property.value;
             if (value.kind == MetaValueKind::Text) {
@@ -3893,6 +3929,8 @@ translate_xmp_environment_metadata(
         group.mapping      = mapping.mapping;
         group.field        = mapping.field;
         group.source_entry = property.entry_id;
+        group.synthesize_delete_intent
+            = property.deleted && capture_lifecycle_mapping(group);
         if (status == Status::Ok && !property.deleted) {
             const MetaValue& value = *property.value;
             if (value.kind == MetaValueKind::Text) {

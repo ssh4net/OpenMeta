@@ -1,5 +1,19 @@
 # OpenMeta Changes
 
+## 0.8.6 - 2026-10-06
+
+- Complete native editing authority for FocalLengthIn35mmFilm, FileSource,
+  SceneType and the six environment fields. Accepted exact clean values gain
+  Dirty while retaining native code bytes, rational components, unknown
+  numerator/denominator bits and wire provenance. Complete eligible deletion
+  retains absent-key native intent with transactional budgets and rollback.
+- Extend bounded TIFF/BigTIFF/DNG merge and removal from 50 to 59 ExifIFD fields
+  through existing prepared bundles and snapshot version 1. Preserve unspecified
+  destination metadata, MakerNotes and image ranges.
+- Advance additional capture and environment translation contracts to 2;
+  retain public signatures, options, bundle layout and unfrozen ABI label 4.
+  Host code owns shared-object synchronization.
+
 ## 0.8.5 - 2026-10-05
 
 - Complete native editing authority for SubjectDistance, DigitalZoomRatio,

@@ -1347,3 +1347,24 @@ contracts advance to 2 without signature, option or layout changes. ABI 4 and
 host synchronization remain. Grouped destination qualification covers exact
 sentinels, lens unknowns, ID text and bounded original-backed preservation.
 Reader, codec, SDK and downstream qualification remain separate.
+
+## Additional capture and environment lifecycle (0.8.6)
+
+The additional-capture and environment translation contracts are version 2.
+The nine fields are FocalLengthIn35mmFilm, FileSource, SceneType, Temperature,
+Humidity, Pressure, WaterDepth, Acceleration and CameraElevationAngle. Accepted
+exact clean native values gain `Dirty` while retaining raw rational components,
+unknown numerators and reserved denominator bits, one-byte UNDEFINED codes,
+flags and wire provenance. Complete eligible deletion creates or reuses
+`Dirty|Deleted` native intent even when the key is absent. Omitted and ineligible
+sources preserve the destination; `PreserveExisting` retains an active owner
+without promotion. Existing budgets include promotion, intent and duplicate
+removal; failure leaves source and output unchanged.
+
+The shared ExifIFD merge/removal allowlist grows from 50 to 59. `Dirty` selects
+merge mode; the prepared EXIF payload may also include clean live source entries.
+Unspecified destination entries are preserved when absent from that payload.
+Existing signatures, options, prepared bundle layout, snapshot v1 and package
+selection policy remain the same. Keep development ABI label 4 and rebuild
+consumers against matching headers and libraries. This batch changes no reader,
+pixel/RAW transfer exclusion, vendor interpretation or codec contract.

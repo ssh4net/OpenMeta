@@ -377,7 +377,9 @@ main()
         = openmeta::translate_xmp_capture_rational_metadata(
             capture_rational_source, {}, &capture_rational_output);
     const bool capture_rational_contract_matches
-        = openmeta::kMetadataCaptureRationalTranslationContractVersion == 2U
+        = openmeta::kMetadataCaptureAdditionalTranslationContractVersion == 2U
+          && openmeta::kMetadataEnvironmentTranslationContractVersion == 2U
+          && openmeta::kMetadataCaptureRationalTranslationContractVersion == 2U
           && capture_rational_authored.ok()
           && capture_rational_result.status
                  == openmeta::MetadataCaptureTranslationStatus::Ok

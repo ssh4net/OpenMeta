@@ -117,3 +117,12 @@ through existing native Dirty/deletion intent. Translation contracts are version
 2; exact native components and provenance remain, with transactional budgets and
 host synchronization. This closes this six-field editing lifecycle, not arbitrary
 EXIF editing, new reading semantics or downstream acceptance.
+
+## Additional capture and environment native edits (0.8.6)
+
+The nine additional-capture/environment fields have grouped native edit authority
+and TIFF/DNG merge/removal coverage. Exact promotion retains one-byte UNDEFINED
+codes, raw rational components, unknown sentinel bits and provenance. This edit
+milestone does not establish broader reader parity, vendor MakerNote interpretation,
+all-RAW acceptance, codec conformance or downstream application adoption. Bounded
+original-backed evidence belongs in the private repository; reader code is unchanged.
