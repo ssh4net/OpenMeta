@@ -1,5 +1,21 @@
 # OpenMeta Changes
 
+## 0.8.5 - 2026-10-05
+
+- Complete native editing authority for SubjectDistance, DigitalZoomRatio,
+  ExposureIndex, FlashEnergy, LensSpecification and ImageUniqueID. Accepted exact
+  clean values gain Dirty while retaining native components, lens unknowns, ID
+  text and wire provenance. Complete deletion retains absent-key native intent.
+- Correct detached validation of a native ImageUniqueID that already contains
+  its single terminal NUL: retain the actual 33-byte wire count during typed edits
+  and serialization.
+- Extend bounded TIFF/BigTIFF/DNG merge and removal to these six fields through
+  the existing prepared bundles and snapshot version 1. Preserve unspecified
+  destination metadata, MakerNotes and image ranges.
+- Advance rational and identity translation contracts to 2; retain public
+  signatures, options, bundle layout and unfrozen ABI label 4. Host code owns
+  shared-object synchronization.
+
 ## 0.8.4 - 2026-10-05
 
 - Complete native editing authority for focal-plane X/Y resolution and unit,

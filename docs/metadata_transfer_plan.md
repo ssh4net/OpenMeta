@@ -1334,3 +1334,16 @@ The allowlist extends39 to44 without a bundle-layout change. Spatial contract2,
 unfrozen ABI4 and host synchronization remain. Grouped qualification covers
 classic/BigTIFF endians and bounded original-backed TIFF/DNG writes; reader,
 codec, SDK, general private relocation and downstream qualification remain separate.
+
+
+## Rational and identity destination lifecycle (0.8.5)
+
+The four capture rationals, LensSpecification and ImageUniqueID now share the
+bounded native ExifIFD merge/removal lifecycle. Accepted clean exact native
+values retain their actual components/text and provenance while gaining Dirty;
+complete eligible deletion carries absent-key intent. The sorted allowlist grows
+44 to 50, using existing bundles and source snapshot v1. Rational/identity
+contracts advance to 2 without signature, option or layout changes. ABI 4 and
+host synchronization remain. Grouped destination qualification covers exact
+sentinels, lens unknowns, ID text and bounded original-backed preservation.
+Reader, codec, SDK and downstream qualification remain separate.

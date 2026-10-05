@@ -1116,6 +1116,18 @@ namespace {
             return group.field == NativeCaptureField::Sharpness;
         case MetadataCaptureTranslationMapping::XmpSubjectDistanceRange:
             return group.field == NativeCaptureField::SubjectDistanceRange;
+        case MetadataCaptureTranslationMapping::XmpSubjectDistance:
+            return group.field == NativeCaptureField::SubjectDistance;
+        case MetadataCaptureTranslationMapping::XmpDigitalZoomRatio:
+            return group.field == NativeCaptureField::DigitalZoomRatio;
+        case MetadataCaptureTranslationMapping::XmpExposureIndex:
+            return group.field == NativeCaptureField::ExposureIndex;
+        case MetadataCaptureTranslationMapping::XmpFlashEnergy:
+            return group.field == NativeCaptureField::FlashEnergy;
+        case MetadataCaptureTranslationMapping::XmpLensSpecification:
+            return group.field == NativeCaptureField::LensSpecification;
+        case MetadataCaptureTranslationMapping::XmpImageUniqueID:
+            return group.field == NativeCaptureField::ImageUniqueID;
         case MetadataCaptureTranslationMapping::XmpSensitivity:
             return group.field == NativeCaptureField::Iso
                    || group.field == NativeCaptureField::SensitivityType
@@ -1189,6 +1201,10 @@ namespace {
         case NativeCaptureField::ExposureTime:
         case NativeCaptureField::FNumber:
         case NativeCaptureField::FocalLength:
+        case NativeCaptureField::SubjectDistance:
+        case NativeCaptureField::DigitalZoomRatio:
+        case NativeCaptureField::ExposureIndex:
+        case NativeCaptureField::FlashEnergy:
         case NativeCaptureField::FocalPlaneXResolution:
         case NativeCaptureField::FocalPlaneYResolution:
             return make_urational(0U, 1U);
@@ -1203,6 +1219,20 @@ namespace {
             value.kind      = MetaValueKind::Array;
             value.elem_type = MetaElementType::U16;
             value.data.span = {};
+            return value;
+        }
+        case NativeCaptureField::LensSpecification: {
+            MetaValue value;
+            value.kind      = MetaValueKind::Array;
+            value.elem_type = MetaElementType::URational;
+            value.data.span = {};
+            return value;
+        }
+        case NativeCaptureField::ImageUniqueID: {
+            MetaValue value;
+            value.kind          = MetaValueKind::Text;
+            value.text_encoding = TextEncoding::Ascii;
+            value.data.span     = {};
             return value;
         }
         case NativeCaptureField::ExposureProgram:
@@ -1659,8 +1689,9 @@ namespace {
             } else if (capture_lifecycle_mapping(group)
                        && !any(entry.flags, EntryFlags::Dirty)) {
                 MetaValue value = entry.value;
-                if (group.field == NativeCaptureField::SubjectArea
-                    || group.field == NativeCaptureField::SubjectLocation) {
+                if (value.kind == MetaValueKind::Array
+                    || value.kind == MetaValueKind::Bytes
+                    || value.kind == MetaValueKind::Text) {
                     value.data.span = edit->arena().append(
                         source.arena().span(entry.value.data.span));
                 }
@@ -2056,8 +2087,10 @@ namespace {
                 if (properties[i].found)
                     return Status::UnsupportedSourceShape;
             group->present = !root.deleted;
-            if (root.deleted)
+            if (root.deleted) {
+                group->synthesize_delete_intent = true;
                 return Status::Ok;
+            }
             Status status = identity_text_budget(source, *root.value, options,
                                                  total);
             if (status != Status::Ok)
@@ -2127,6 +2160,7 @@ namespace {
                    > static_cast<uint64_t>(group->lens[1].numer)
                          * group->lens[0].denom)
             return Status::InvalidNumericValue;
+        group->synthesize_delete_intent = !group->present;
         return Status::Ok;
     }
 
@@ -4427,6 +4461,8 @@ translate_xmp_capture_rational_metadata(
         group.mapping      = mapping.mapping;
         group.field        = mapping.field;
         group.source_entry = property.entry_id;
+        group.synthesize_delete_intent
+            = property.deleted && capture_lifecycle_mapping(group);
         if (status == Status::Ok && !property.deleted) {
             const MetaValue& value = *property.value;
             if (value.kind == MetaValueKind::Text) {

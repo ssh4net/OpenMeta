@@ -8,6 +8,7 @@
 #include "openmeta/metadata_editing.h"
 #include "openmeta/metadata_transfer.h"
 #include "openmeta/metadata_translation.h"
+#include "openmeta/validate.h"
 #include "openmeta/xmp_decode.h"
 #include "openmeta/xmp_dump.h"
 
@@ -5158,6 +5159,207 @@ namespace {
         EXPECT_EQ(settings_find(output, 0x9215U), nullptr);
         EXPECT_EQ(settings_find(output, 0x920bU), nullptr);
     }
+    TEST(MetadataCaptureRational,
+         ExactCleanPromotionsPreserveRationalComponentsAndWireFlags)
+    {
+        constexpr std::array<URational, 4> native_values {
+            { { 6U, 4U }, { 10U, 8U }, { 400U, 2U }, { 15U, 6U } }
+        };
+        constexpr std::array<std::string_view, 4> wire_names {
+            "native-distance", "native-zoom", "native-index", "native-flash"
+        };
+        MetaStore source = rational_source();
+        for (size_t i = 0U; i < native_values.size(); ++i)
+            settings_native_entry(
+                source, kRationalTags[i],
+                make_urational(native_values[i].numer,
+                               native_values[i].denom),
+                EntryFlags::ValueBigEndian, 5U, wire_names[i]);
+        source.finalize();
+
+        RationalOptions limited;
+        limited.max_operations = 3U;
+        MetaStore separate;
+        settings_native(separate, 0x829aU, make_urational(1U, 100U));
+        separate.finalize();
+        const size_t source_count = source.entries().size();
+        const auto limited_separate = translate_xmp_capture_rational_metadata(
+            source, limited, &separate);
+        EXPECT_EQ(limited_separate.status,
+                  SettingsStatus::OperationLimitExceeded);
+        ASSERT_EQ(separate.entries().size(), 1U);
+        ASSERT_NE(settings_find(separate, 0x829aU), nullptr);
+        EXPECT_EQ(settings_find(separate, 0x829aU)->value.data.ur.numer, 1U);
+        const auto limited_alias = translate_xmp_capture_rational_metadata(
+            source, limited, &source);
+        EXPECT_EQ(limited_alias.status,
+                  SettingsStatus::OperationLimitExceeded);
+        EXPECT_EQ(source.entries().size(), source_count);
+        for (uint16_t tag : kRationalTags) {
+            const Entry* entry = settings_find(source, tag);
+            ASSERT_NE(entry, nullptr) << tag;
+            EXPECT_FALSE(any(entry->flags, EntryFlags::Dirty)) << tag;
+        }
+
+        const auto promoted
+            = translate_xmp_capture_rational_metadata(source, {}, &source);
+        ASSERT_EQ(promoted.status, SettingsStatus::Ok);
+        EXPECT_EQ(promoted.entries_updated, 4U);
+        EXPECT_EQ(promoted.entries_added, 0U);
+        EXPECT_EQ(promoted.entries_removed, 0U);
+        for (size_t i = 0U; i < native_values.size(); ++i) {
+            const Entry* entry = settings_find(source, kRationalTags[i]);
+            ASSERT_NE(entry, nullptr) << i;
+            EXPECT_EQ(entry->value.data.ur.numer, native_values[i].numer) << i;
+            EXPECT_EQ(entry->value.data.ur.denom, native_values[i].denom) << i;
+            EXPECT_TRUE(any(entry->flags, EntryFlags::Dirty)) << i;
+            EXPECT_TRUE(any(entry->flags, EntryFlags::ValueBigEndian)) << i;
+            EXPECT_EQ(entry->origin.wire_type.family, WireFamily::Tiff) << i;
+            EXPECT_EQ(entry->origin.wire_type.code, 5U) << i;
+            EXPECT_EQ(entry->origin.wire_count, 1U) << i;
+            EXPECT_EQ(entry->origin.order_in_block, 17U) << i;
+            const auto name = source.arena().span(entry->origin.wire_type_name);
+            EXPECT_EQ(std::string_view(
+                          reinterpret_cast<const char*>(name.data()),
+                          name.size()),
+                      wire_names[i]);
+        }
+        const auto repeated
+            = translate_xmp_capture_rational_metadata(source, {}, &source);
+        ASSERT_EQ(repeated.status, SettingsStatus::Ok);
+        EXPECT_EQ(repeated.groups_unchanged, 4U);
+        EXPECT_EQ(repeated.entries_updated, 0U);
+
+        RationalOptions preserve;
+        preserve.conflict_policy
+            = MetadataCaptureTranslationConflictPolicy::PreserveExisting;
+        MetaStore preserved = rational_source();
+        for (size_t i = 0U; i < native_values.size(); ++i)
+            settings_native_entry(
+                preserved, kRationalTags[i],
+                make_urational(native_values[i].numer,
+                               native_values[i].denom),
+                EntryFlags::None, 5U, wire_names[i]);
+        preserved.finalize();
+        const auto kept = translate_xmp_capture_rational_metadata(
+            preserved, preserve, &preserved);
+        ASSERT_EQ(kept.status, SettingsStatus::Ok);
+        EXPECT_EQ(kept.groups_preserved, 4U);
+        EXPECT_EQ(kept.entries_updated, 0U);
+        for (size_t i = 0U; i < native_values.size(); ++i) {
+            const Entry* entry = settings_find(preserved, kRationalTags[i]);
+            ASSERT_NE(entry, nullptr) << i;
+            EXPECT_FALSE(any(entry->flags, EntryFlags::Dirty)) << i;
+            EXPECT_EQ(entry->value.data.ur.numer, native_values[i].numer) << i;
+            EXPECT_EQ(entry->value.data.ur.denom, native_values[i].denom) << i;
+        }
+
+        MetaStore edge;
+        settings_xmp(edge, "SubjectDistance",
+                     make_text(edge.arena(), "Infinity", TextEncoding::Ascii));
+        settings_xmp(edge, "DigitalZoomRatio", make_urational(0U, 1U));
+        settings_native_entry(edge, 0x9206U,
+                              make_urational(UINT32_MAX, 7U),
+                              EntryFlags::ValueBigEndian, 5U,
+                              "native-infinity");
+        settings_native_entry(edge, 0xa404U, make_urational(0U, 19U),
+                              EntryFlags::ValueBigEndian, 5U, "native-zero");
+        edge.finalize();
+        RationalOptions selected;
+        selected.exposure_index_to_exif = false;
+        selected.flash_energy_to_exif  = false;
+        const auto edge_result = translate_xmp_capture_rational_metadata(
+            edge, selected, &edge);
+        ASSERT_EQ(edge_result.status, SettingsStatus::Ok);
+        EXPECT_EQ(edge_result.entries_updated, 2U);
+        const Entry* infinity = settings_find(edge, 0x9206U);
+        const Entry* zero      = settings_find(edge, 0xa404U);
+        ASSERT_NE(infinity, nullptr);
+        ASSERT_NE(zero, nullptr);
+        EXPECT_EQ(infinity->value.data.ur.numer, UINT32_MAX);
+        EXPECT_EQ(infinity->value.data.ur.denom, 7U);
+        EXPECT_EQ(zero->value.data.ur.numer, 0U);
+        EXPECT_EQ(zero->value.data.ur.denom, 19U);
+    }
+    TEST(MetadataCaptureRational, MissingNativeDeleteIntentsAreTypedAndStable)
+    {
+        MetaStore source = rational_source(EntryFlags::Dirty
+                                           | EntryFlags::Deleted);
+        source.finalize();
+        const size_t source_count = source.entries().size();
+        MetaStore separate;
+        settings_native(separate, 0x829aU, make_urational(1U, 100U));
+        separate.finalize();
+        RationalOptions limited;
+        limited.max_added_entries = 3U;
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(source, limited,
+                                                          &separate)
+                      .status,
+                  SettingsStatus::EntryLimitExceeded);
+        ASSERT_EQ(separate.entries().size(), 1U);
+        ASSERT_NE(settings_find(separate, 0x829aU), nullptr);
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(source, limited,
+                                                          &source)
+                      .status,
+                  SettingsStatus::EntryLimitExceeded);
+        EXPECT_EQ(source.entries().size(), source_count);
+        limited                      = {};
+        limited.max_operations      = 3U;
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(source, limited,
+                                                          &separate)
+                      .status,
+                  SettingsStatus::OperationLimitExceeded);
+        EXPECT_EQ(translate_xmp_capture_rational_metadata(source, limited,
+                                                          &source)
+                      .status,
+                  SettingsStatus::OperationLimitExceeded);
+        EXPECT_EQ(source.entries().size(), source_count);
+        const auto first
+            = translate_xmp_capture_rational_metadata(source, {}, &source);
+        ASSERT_EQ(first.status, SettingsStatus::Ok);
+        EXPECT_EQ(first.entries_added, 4U);
+        for (uint16_t tag : kRationalTags) {
+            const auto ids = settings_native_history_ids(source, tag);
+            ASSERT_EQ(ids.size(), 1U) << tag;
+            const Entry& entry = source.entry(ids.front());
+            EXPECT_TRUE(any(entry.flags, EntryFlags::Dirty)) << tag;
+            EXPECT_TRUE(any(entry.flags, EntryFlags::Deleted)) << tag;
+            EXPECT_EQ(entry.value.kind, MetaValueKind::Scalar) << tag;
+            EXPECT_EQ(entry.value.elem_type, MetaElementType::URational) << tag;
+            EXPECT_EQ(entry.value.data.ur.numer, 0U) << tag;
+            EXPECT_EQ(entry.value.data.ur.denom, 1U) << tag;
+        }
+        const auto repeated
+            = translate_xmp_capture_rational_metadata(source, {}, &source);
+        ASSERT_EQ(repeated.status, SettingsStatus::Ok);
+        EXPECT_EQ(repeated.groups_unchanged, 4U);
+        EXPECT_EQ(repeated.entries_added, 0U);
+        EXPECT_EQ(repeated.entries_updated, 0U);
+        EXPECT_EQ(repeated.entries_removed, 0U);
+
+        MetaStore reused = rational_source(EntryFlags::Dirty
+                                           | EntryFlags::Deleted);
+        settings_native_entry(reused, 0xa404U, make_urational(9U, 7U),
+                              EntryFlags::Deleted, 5U, "clean-delete");
+        reused.finalize();
+        const auto reuse_result
+            = translate_xmp_capture_rational_metadata(reused, {}, &reused);
+        ASSERT_EQ(reuse_result.status, SettingsStatus::Ok);
+        EXPECT_EQ(reuse_result.entries_added, 3U);
+        EXPECT_EQ(reuse_result.entries_updated, 1U);
+        const auto reused_ids = settings_native_history_ids(reused, 0xa404U);
+        ASSERT_EQ(reused_ids.size(), 1U);
+        const Entry& reused_intent = reused.entry(reused_ids.front());
+        EXPECT_TRUE(any(reused_intent.flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(reused_intent.flags, EntryFlags::Deleted));
+        EXPECT_EQ(reused_intent.value.data.ur.numer, 9U);
+        EXPECT_EQ(reused_intent.value.data.ur.denom, 7U);
+        const auto reused_again
+            = translate_xmp_capture_rational_metadata(reused, {}, &reused);
+        ASSERT_EQ(reused_again.status, SettingsStatus::Ok);
+        EXPECT_EQ(reused_again.groups_unchanged, 4U);
+        EXPECT_EQ(reused_again.entries_added, 0U);
+    }
     TEST(MetadataCaptureRational, SubjectDistanceSentinelsPrecedeReduction)
     {
         for (const MetaValue value :
@@ -5187,7 +5389,7 @@ namespace {
             const auto result
                 = translate_xmp_capture_rational_metadata(source, {}, &output);
             EXPECT_EQ(result.status, SettingsStatus::Ok);
-            EXPECT_EQ(result.groups_unchanged, 1U);
+            EXPECT_EQ(result.entries_updated, 1U);
             EXPECT_EQ(settings_find(output, 0x9206U)->value.data.ur.denom, 3U);
         }
         for (const std::string_view text : { "Unknown", "0", "0/17" }) {
@@ -5338,6 +5540,70 @@ namespace {
         settings_xmp(source, "ExposureIndex", make_u32(100U));
         rational_failure(source, SettingsStatus::AmbiguousSource);
     }
+    TEST(MetadataCaptureRational,
+         OmittedAndIneligibleSourcesLeaveNativeAuthorityUnchanged)
+    {
+        MetaStore omitted = rational_source();
+        settings_native_entry(omitted, 0xa20bU, make_urational(7U, 3U),
+                              EntryFlags::None, 5U, "omitted-flash");
+        omitted.finalize();
+        RationalOptions omit_flash;
+        omit_flash.flash_energy_to_exif = false;
+        const auto omitted_result = translate_xmp_capture_rational_metadata(
+            omitted, omit_flash, &omitted);
+        ASSERT_EQ(omitted_result.status, SettingsStatus::Ok);
+        const Entry* flash = settings_find(omitted, 0xa20bU);
+        ASSERT_NE(flash, nullptr);
+        EXPECT_FALSE(any(flash->flags, EntryFlags::Dirty));
+        EXPECT_EQ(flash->value.data.ur.numer, 7U);
+        EXPECT_EQ(flash->value.data.ur.denom, 3U);
+
+        constexpr std::array<URational, 4> expected {
+            { { 3U, 2U }, { 5U, 4U }, { 200U, 1U }, { 5U, 2U } }
+        };
+        MetaStore ineligible = rational_source(EntryFlags::None);
+        for (size_t i = 0U; i < expected.size(); ++i)
+            settings_native_entry(
+                ineligible, kRationalTags[i],
+                make_urational(expected[i].numer, expected[i].denom),
+                EntryFlags::None, 5U, "ineligible-native");
+        ineligible.finalize();
+        const auto ignored = translate_xmp_capture_rational_metadata(
+            ineligible, {}, &ineligible);
+        ASSERT_EQ(ignored.status, SettingsStatus::Ok);
+        EXPECT_EQ(ignored.source_properties, 0U);
+        EXPECT_EQ(ignored.entries_updated, 0U);
+        for (size_t i = 0U; i < expected.size(); ++i) {
+            const Entry* entry = settings_find(ineligible, kRationalTags[i]);
+            ASSERT_NE(entry, nullptr) << i;
+            EXPECT_FALSE(any(entry->flags, EntryFlags::Dirty)) << i;
+            EXPECT_EQ(entry->value.data.ur.numer, expected[i].numer) << i;
+            EXPECT_EQ(entry->value.data.ur.denom, expected[i].denom) << i;
+        }
+
+        MetaStore clean_tombstones
+            = rational_source(EntryFlags::Deleted);
+        for (size_t i = 0U; i < expected.size(); ++i)
+            settings_native_entry(
+                clean_tombstones, kRationalTags[i],
+                make_urational(expected[i].numer, expected[i].denom),
+                EntryFlags::None, 5U, "clean-tombstone-source-native");
+        clean_tombstones.finalize();
+        RationalOptions all;
+        all.source_mode = MetadataCaptureTranslationSourceMode::All;
+        const auto clean_ignored = translate_xmp_capture_rational_metadata(
+            clean_tombstones, all, &clean_tombstones);
+        ASSERT_EQ(clean_ignored.status, SettingsStatus::Ok);
+        EXPECT_EQ(clean_ignored.source_properties, 0U);
+        EXPECT_EQ(clean_ignored.entries_updated, 0U);
+        EXPECT_EQ(clean_ignored.entries_removed, 0U);
+        for (size_t i = 0U; i < expected.size(); ++i) {
+            const Entry* entry
+                = settings_find(clean_tombstones, kRationalTags[i]);
+            ASSERT_NE(entry, nullptr) << i;
+            EXPECT_FALSE(any(entry->flags, EntryFlags::Dirty)) << i;
+        }
+    }
     TEST(MetadataCaptureRational, ConflictsRepairDuplicatesAndRemoveAtomically)
     {
         MetaStore source = rational_source();
@@ -5347,10 +5613,13 @@ namespace {
         RationalOptions options;
         options.conflict_policy = SettingsPolicy::PreserveExisting;
         MetaStore output;
-        EXPECT_EQ(translate_xmp_capture_rational_metadata(source, options,
-                                                          &output)
-                      .groups_preserved,
-                  1U);
+        const auto preserved = translate_xmp_capture_rational_metadata(
+            source, options, &output);
+        ASSERT_EQ(preserved.status, SettingsStatus::Ok);
+        EXPECT_EQ(preserved.groups_preserved, 1U);
+        EXPECT_EQ(settings_active_count(output, 0xa404U), 2U);
+        for (EntryId id : settings_native_history_ids(output, 0xa404U))
+            EXPECT_FALSE(any(output.entry(id).flags, EntryFlags::Dirty));
         options.conflict_policy = SettingsPolicy::ReplaceExisting;
         const auto repaired
             = translate_xmp_capture_rational_metadata(source, options, &output);
@@ -5406,6 +5675,57 @@ namespace {
                                                           &output)
                       .status,
                   SettingsStatus::SourceNotFinalized);
+    }
+    TEST(MetadataCaptureRational,
+         DuplicateRepairOperationsPreflightSeparateAndAliasedOutputs)
+    {
+        MetaStore source;
+        settings_xmp(source, "DigitalZoomRatio",
+                     make_text(source.arena(), "5/4", TextEncoding::Ascii));
+        settings_native_entry(source, 0xa404U, make_urational(1U, 1U),
+                              EntryFlags::None, 5U, "first-duplicate");
+        settings_native_entry(source, 0xa404U, make_urational(3U, 1U),
+                              EntryFlags::None, 5U, "second-duplicate");
+        source.finalize();
+        RationalOptions options;
+        options.subject_distance_to_exif = false;
+        options.exposure_index_to_exif   = false;
+        options.flash_energy_to_exif     = false;
+        options.conflict_policy
+            = MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+        options.max_operations           = 1U;
+        MetaStore separate;
+        settings_native(separate, 0x829aU, make_urational(1U, 100U));
+        separate.finalize();
+        const size_t source_count = source.entries().size();
+        const auto separate_result
+            = translate_xmp_capture_rational_metadata(source, options,
+                                                      &separate);
+        EXPECT_EQ(separate_result.status,
+                  SettingsStatus::OperationLimitExceeded);
+        ASSERT_EQ(separate.entries().size(), 1U);
+        ASSERT_NE(settings_find(separate, 0x829aU), nullptr);
+        EXPECT_EQ(settings_find(separate, 0x829aU)->value.data.ur.numer, 1U);
+        const auto aliased_result
+            = translate_xmp_capture_rational_metadata(source, options, &source);
+        EXPECT_EQ(aliased_result.status,
+                  SettingsStatus::OperationLimitExceeded);
+        EXPECT_EQ(source.entries().size(), source_count);
+        EXPECT_EQ(settings_active_count(source, 0xa404U), 2U);
+        for (EntryId id : settings_native_history_ids(source, 0xa404U))
+            EXPECT_FALSE(any(source.entry(id).flags, EntryFlags::Dirty));
+
+        options.max_operations = 2U;
+        options.conflict_policy
+            = MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+        const auto repaired
+            = translate_xmp_capture_rational_metadata(source, options, &source);
+        ASSERT_EQ(repaired.status, SettingsStatus::Ok);
+        EXPECT_EQ(repaired.entries_updated, 1U);
+        EXPECT_EQ(repaired.entries_removed, 1U);
+        ASSERT_EQ(settings_active_count(source, 0xa404U), 1U);
+        EXPECT_EQ(settings_find(source, 0xa404U)->value.data.ur.numer, 5U);
+        EXPECT_EQ(settings_find(source, 0xa404U)->value.data.ur.denom, 4U);
     }
 }  // namespace
 }  // namespace openmeta
@@ -7454,6 +7774,261 @@ namespace {
         }
     }
 
+    TEST(MetadataIdentity,
+         ExactCleanPromotionOwnsArrayAndTextAndPreservesNativeProvenance)
+    {
+        MetaStore source;
+        identity_source(source);
+        constexpr std::array<URational, 4> native_lens {
+            { { 100U, 6U }, { 200U, 3U }, { 28U, 10U }, { 0U, 0U } }
+        };
+        settings_native_entry(
+            source, 0xa432U, make_urational_array(source.arena(), native_lens),
+            EntryFlags::None, 5U, "native-lens");
+        std::string native_id(kIdentityId);
+        native_id.push_back('\0');
+        settings_native_entry(
+            source, 0xa420U,
+            make_text(source.arena(),
+                      std::string_view(native_id.data(), native_id.size()),
+                      TextEncoding::Utf8),
+            EntryFlags::None, 2U, "native-id");
+        source.finalize();
+
+        IdentityOptions limited;
+        limited.max_operations = 1U;
+        MetaStore separate;
+        settings_native(separate, 0x9209U, make_u16(95U));
+        separate.finalize();
+        const size_t source_count = source.entries().size();
+        const auto limited_separate
+            = translate_xmp_identity_metadata(source, limited, &separate);
+        EXPECT_EQ(limited_separate.status,
+                  IdentityStatus::OperationLimitExceeded);
+        ASSERT_EQ(separate.entries().size(), 1U);
+        ASSERT_NE(settings_find(separate, 0x9209U), nullptr);
+        EXPECT_EQ(settings_find(separate, 0x9209U)->value.data.u64, 95U);
+        const auto limited_alias
+            = translate_xmp_identity_metadata(source, limited, &source);
+        EXPECT_EQ(limited_alias.status,
+                  IdentityStatus::OperationLimitExceeded);
+        EXPECT_EQ(source.entries().size(), source_count);
+        for (uint16_t tag : { uint16_t { 0xa432U }, uint16_t { 0xa420U } }) {
+            const Entry* entry = settings_find(source, tag);
+            ASSERT_NE(entry, nullptr) << tag;
+            EXPECT_FALSE(any(entry->flags, EntryFlags::Dirty)) << tag;
+        }
+        const auto promoted
+            = translate_xmp_identity_metadata(source, {}, &source);
+        ASSERT_EQ(promoted.status, IdentityStatus::Ok);
+        EXPECT_EQ(promoted.entries_updated, 2U);
+        const Entry* lens = settings_find(source, 0xa432U);
+        const Entry* id   = settings_find(source, 0xa420U);
+        ASSERT_NE(lens, nullptr);
+        ASSERT_NE(id, nullptr);
+        EXPECT_TRUE(any(lens->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(id->flags, EntryFlags::Dirty));
+        EXPECT_EQ(lens->value.kind, MetaValueKind::Array);
+        EXPECT_EQ(lens->value.elem_type, MetaElementType::URational);
+        EXPECT_EQ(lens->value.count, 4U);
+        const auto lens_bytes = source.arena().span(lens->value.data.span);
+        ASSERT_EQ(lens_bytes.size(), sizeof(native_lens));
+        std::array<URational, 4> actual_lens {};
+        std::memcpy(actual_lens.data(), lens_bytes.data(), sizeof(actual_lens));
+        for (size_t i = 0U; i < native_lens.size(); ++i) {
+            EXPECT_EQ(actual_lens[i].numer, native_lens[i].numer) << i;
+            EXPECT_EQ(actual_lens[i].denom, native_lens[i].denom) << i;
+        }
+        EXPECT_EQ(id->value.kind, MetaValueKind::Text);
+        EXPECT_EQ(id->value.text_encoding, TextEncoding::Utf8);
+        EXPECT_EQ(id->value.count, native_id.size());
+        const auto id_bytes = source.arena().span(id->value.data.span);
+        EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(id_bytes.data()),
+                                   id_bytes.size()),
+                  std::string_view(native_id.data(), native_id.size()));
+        EXPECT_EQ(lens->origin.wire_type.family, WireFamily::Tiff);
+        EXPECT_EQ(lens->origin.wire_type.code, 5U);
+        EXPECT_EQ(lens->origin.wire_count, 4U);
+        EXPECT_EQ(lens->origin.order_in_block, 17U);
+        EXPECT_EQ(id->origin.wire_type.family, WireFamily::Tiff);
+        EXPECT_EQ(id->origin.wire_type.code, 2U);
+        EXPECT_EQ(id->origin.wire_count, native_id.size());
+        EXPECT_EQ(id->origin.order_in_block, 17U);
+        for (const Entry* entry : { lens, id }) {
+            const auto wire_name = source.arena().span(
+                entry->origin.wire_type_name);
+            EXPECT_EQ(std::string_view(
+                          reinterpret_cast<const char*>(wire_name.data()),
+                          wire_name.size()),
+                      entry == lens ? "native-lens" : "native-id");
+        }
+        ASSERT_TRUE(validate_store(source).ok());
+        const auto repeated
+            = translate_xmp_identity_metadata(source, {}, &source);
+        ASSERT_EQ(repeated.status, IdentityStatus::Ok);
+        EXPECT_EQ(repeated.groups_unchanged, 2U);
+        EXPECT_EQ(repeated.entries_updated, 0U);
+
+        MetaStore deleted;
+        identity_source(deleted, false, false,
+                        EntryFlags::Dirty | EntryFlags::Deleted);
+        deleted.finalize();
+        const size_t deleted_source_count = deleted.entries().size();
+        MetaStore deletion_output;
+        settings_native(deletion_output, 0x9209U, make_u16(95U));
+        deletion_output.finalize();
+        IdentityOptions deletion_limit;
+        deletion_limit.max_added_entries = 1U;
+        EXPECT_EQ(translate_xmp_identity_metadata(deleted, deletion_limit,
+                                                  &deletion_output)
+                      .status,
+                  IdentityStatus::EntryLimitExceeded);
+        ASSERT_EQ(deletion_output.entries().size(), 1U);
+        ASSERT_NE(settings_find(deletion_output, 0x9209U), nullptr);
+        EXPECT_EQ(settings_find(deletion_output, 0x9209U)->value.data.u64,
+                  95U);
+        EXPECT_EQ(translate_xmp_identity_metadata(deleted, deletion_limit,
+                                                  &deleted)
+                      .status,
+                  IdentityStatus::EntryLimitExceeded);
+        EXPECT_EQ(deleted.entries().size(), deleted_source_count);
+        deletion_limit               = {};
+        deletion_limit.max_operations = 1U;
+        EXPECT_EQ(translate_xmp_identity_metadata(deleted, deletion_limit,
+                                                  &deletion_output)
+                      .status,
+                  IdentityStatus::OperationLimitExceeded);
+        EXPECT_EQ(translate_xmp_identity_metadata(deleted, deletion_limit,
+                                                  &deleted)
+                      .status,
+                  IdentityStatus::OperationLimitExceeded);
+        EXPECT_EQ(deleted.entries().size(), deleted_source_count);
+        const auto deletion
+            = translate_xmp_identity_metadata(deleted, {}, &deleted);
+        ASSERT_EQ(deletion.status, IdentityStatus::Ok);
+        EXPECT_EQ(deletion.entries_added, 2U);
+        EXPECT_EQ(settings_find(deleted, 0xa432U), nullptr);
+        EXPECT_EQ(settings_find(deleted, 0xa420U), nullptr);
+        const auto lens_ids = settings_native_history_ids(deleted, 0xa432U);
+        const auto id_ids   = settings_native_history_ids(deleted, 0xa420U);
+        ASSERT_EQ(lens_ids.size(), 1U);
+        ASSERT_EQ(id_ids.size(), 1U);
+        const Entry& deleted_lens = deleted.entry(lens_ids.front());
+        const Entry& deleted_id   = deleted.entry(id_ids.front());
+        EXPECT_TRUE(any(deleted_lens.flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(deleted_lens.flags, EntryFlags::Deleted));
+        EXPECT_EQ(deleted_lens.value.kind, MetaValueKind::Array);
+        EXPECT_EQ(deleted_lens.value.elem_type, MetaElementType::URational);
+        EXPECT_EQ(deleted_lens.value.count, 0U);
+        EXPECT_EQ(deleted_lens.value.data.span.size, 0U);
+        EXPECT_TRUE(any(deleted_id.flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(deleted_id.flags, EntryFlags::Deleted));
+        EXPECT_EQ(deleted_id.value.kind, MetaValueKind::Text);
+        EXPECT_EQ(deleted_id.value.text_encoding, TextEncoding::Ascii);
+        EXPECT_EQ(deleted_id.value.count, 0U);
+        EXPECT_EQ(deleted_id.value.data.span.size, 0U);
+        const auto repeated_deletion
+            = translate_xmp_identity_metadata(deleted, {}, &deleted);
+        ASSERT_EQ(repeated_deletion.status, IdentityStatus::Ok);
+        EXPECT_EQ(repeated_deletion.groups_unchanged, 2U);
+        EXPECT_EQ(repeated_deletion.entries_added, 0U);
+
+        MetaStore indexed_deleted;
+        identity_source(indexed_deleted, true, false,
+                        EntryFlags::Dirty | EntryFlags::Deleted);
+        indexed_deleted.finalize();
+        const auto indexed_result = translate_xmp_identity_metadata(
+            indexed_deleted, {}, &indexed_deleted);
+        ASSERT_EQ(indexed_result.status, IdentityStatus::Ok);
+        EXPECT_EQ(indexed_result.entries_added, 2U);
+        expect_native_delete_intent(indexed_deleted, 0xa432U);
+        expect_native_delete_intent(indexed_deleted, 0xa420U);
+        const auto indexed_repeat = translate_xmp_identity_metadata(
+            indexed_deleted, {}, &indexed_deleted);
+        ASSERT_EQ(indexed_repeat.status, IdentityStatus::Ok);
+        EXPECT_EQ(indexed_repeat.groups_unchanged, 2U);
+        EXPECT_EQ(indexed_repeat.entries_added, 0U);
+
+        MetaStore reused;
+        identity_source(reused, false, false,
+                        EntryFlags::Dirty | EntryFlags::Deleted);
+        std::string reused_id(kIdentityId);
+        reused_id.push_back('\0');
+        settings_native_entry(
+            reused, 0xa432U,
+            make_urational_array(reused.arena(), kIdentityLens),
+            EntryFlags::Deleted, 5U, "reused-lens-delete");
+        settings_native_entry(
+            reused, 0xa420U,
+            make_text(reused.arena(),
+                      std::string_view(reused_id.data(), reused_id.size()),
+                      TextEncoding::Utf8),
+            EntryFlags::Deleted, 2U, "reused-id-delete");
+        reused.finalize();
+        const auto reuse_result
+            = translate_xmp_identity_metadata(reused, {}, &reused);
+        ASSERT_EQ(reuse_result.status, IdentityStatus::Ok);
+        EXPECT_EQ(reuse_result.entries_added, 0U);
+        EXPECT_EQ(reuse_result.entries_updated, 2U);
+        expect_native_delete_intent(reused, 0xa432U);
+        expect_native_delete_intent(reused, 0xa420U);
+        const auto reuse_again
+            = translate_xmp_identity_metadata(reused, {}, &reused);
+        ASSERT_EQ(reuse_again.status, IdentityStatus::Ok);
+        EXPECT_EQ(reuse_again.groups_unchanged, 2U);
+        EXPECT_EQ(reuse_again.entries_added, 0U);
+    }
+
+    TEST(MetadataIdentity,
+         ExactPromotionPayloadsOutliveSeparateOutputSource)
+    {
+        constexpr std::array<URational, 4> native_lens {
+            { { 100U, 6U }, { 200U, 3U }, { 28U, 10U }, { 0U, 0U } }
+        };
+        std::string native_id(kIdentityId);
+        native_id.push_back('\0');
+        MetaStore output;
+        {
+            MetaStore source;
+            identity_source(source);
+            settings_native_entry(
+                source, 0xa432U,
+                make_urational_array(source.arena(), native_lens),
+                EntryFlags::None, 5U, "lifetime-lens");
+            settings_native_entry(
+                source, 0xa420U,
+                make_text(source.arena(),
+                          std::string_view(native_id.data(), native_id.size()),
+                          TextEncoding::Utf8),
+                EntryFlags::None, 2U, "lifetime-id");
+            source.finalize();
+            const auto result
+                = translate_xmp_identity_metadata(source, {}, &output);
+            ASSERT_EQ(result.status, IdentityStatus::Ok);
+            EXPECT_EQ(result.entries_updated, 2U);
+        }
+        const Entry* lens = settings_find(output, 0xa432U);
+        const Entry* id   = settings_find(output, 0xa420U);
+        ASSERT_NE(lens, nullptr);
+        ASSERT_NE(id, nullptr);
+        ASSERT_EQ(lens->value.count, 4U);
+        const auto lens_bytes = output.arena().span(lens->value.data.span);
+        ASSERT_EQ(lens_bytes.size(), sizeof(native_lens));
+        std::array<URational, 4> actual_lens {};
+        std::memcpy(actual_lens.data(), lens_bytes.data(), sizeof(actual_lens));
+        for (size_t i = 0U; i < native_lens.size(); ++i) {
+            EXPECT_EQ(actual_lens[i].numer, native_lens[i].numer) << i;
+            EXPECT_EQ(actual_lens[i].denom, native_lens[i].denom) << i;
+        }
+        EXPECT_EQ(id->value.text_encoding, TextEncoding::Utf8);
+        EXPECT_EQ(id->value.count, native_id.size());
+        const auto id_bytes = output.arena().span(id->value.data.span);
+        EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(id_bytes.data()),
+                                   id_bytes.size()),
+                  std::string_view(native_id.data(), native_id.size()));
+        ASSERT_TRUE(validate_store(output).ok());
+    }
+
     TEST(MetadataIdentity, SelectionUsesCleanLensCompanionsAndIndependentFlags)
     {
         MetaStore source;
@@ -7490,6 +8065,88 @@ namespace {
             EXPECT_EQ(settings_find(selected, lens ? 0xa420U : 0xa432U),
                       nullptr);
         }
+    }
+
+    TEST(MetadataIdentity,
+         OmittedCleanAndIneligibleGroupsKeepNativeOwnership)
+    {
+        MetaStore omitted;
+        identity_source(omitted);
+        constexpr std::array<URational, 4> omitted_lens {
+            { { 60U, 3U }, { 200U, 3U }, { 14U, 5U }, { 0U, 0U } }
+        };
+        settings_native_entry(
+            omitted, 0xa432U,
+            make_urational_array(omitted.arena(), omitted_lens),
+            EntryFlags::None, 5U, "omitted-lens");
+        omitted.finalize();
+        IdentityOptions omit_lens;
+        omit_lens.lens_specification_to_exif = false;
+        const auto omitted_result = translate_xmp_identity_metadata(
+            omitted, omit_lens, &omitted);
+        ASSERT_EQ(omitted_result.status, IdentityStatus::Ok);
+        EXPECT_EQ(omitted_result.entries_added, 1U);
+        const Entry* untouched_lens = settings_find(omitted, 0xa432U);
+        ASSERT_NE(untouched_lens, nullptr);
+        EXPECT_FALSE(any(untouched_lens->flags, EntryFlags::Dirty));
+        std::array<URational, 4> actual_omitted_lens {};
+        const auto omitted_bytes
+            = omitted.arena().span(untouched_lens->value.data.span);
+        ASSERT_EQ(omitted_bytes.size(), sizeof(actual_omitted_lens));
+        std::memcpy(actual_omitted_lens.data(), omitted_bytes.data(),
+                    sizeof(actual_omitted_lens));
+        EXPECT_EQ(actual_omitted_lens[0].numer, 60U);
+        EXPECT_EQ(actual_omitted_lens[0].denom, 3U);
+
+        MetaStore ineligible;
+        identity_source(ineligible, false, false, EntryFlags::None);
+        settings_native_entry(
+            ineligible, 0xa432U,
+            make_urational_array(ineligible.arena(), kIdentityLens),
+            EntryFlags::None, 5U, "ineligible-lens");
+        settings_native_entry(
+            ineligible, 0xa420U,
+            make_text(ineligible.arena(), kIdentityId, TextEncoding::Ascii),
+            EntryFlags::None, 2U, "ineligible-id");
+        ineligible.finalize();
+        const auto ignored
+            = translate_xmp_identity_metadata(ineligible, {}, &ineligible);
+        ASSERT_EQ(ignored.status, IdentityStatus::Ok);
+        EXPECT_EQ(ignored.source_properties, 0U);
+        EXPECT_EQ(ignored.entries_updated, 0U);
+        const Entry* ineligible_lens = settings_find(ineligible, 0xa432U);
+        const Entry* ineligible_id   = settings_find(ineligible, 0xa420U);
+        ASSERT_NE(ineligible_lens, nullptr);
+        ASSERT_NE(ineligible_id, nullptr);
+        EXPECT_FALSE(any(ineligible_lens->flags, EntryFlags::Dirty));
+        EXPECT_FALSE(any(ineligible_id->flags, EntryFlags::Dirty));
+
+        MetaStore clean_tombstones;
+        identity_source(clean_tombstones, true, false,
+                        EntryFlags::Deleted);
+        settings_native_entry(
+            clean_tombstones, 0xa432U,
+            make_urational_array(clean_tombstones.arena(), kIdentityLens),
+            EntryFlags::None, 5U, "clean-source-lens");
+        settings_native_entry(
+            clean_tombstones, 0xa420U,
+            make_text(clean_tombstones.arena(), kIdentityId,
+                      TextEncoding::Ascii),
+            EntryFlags::None, 2U, "clean-source-id");
+        clean_tombstones.finalize();
+        IdentityOptions all;
+        all.source_mode = MetadataCaptureTranslationSourceMode::All;
+        const auto clean_ignored = translate_xmp_identity_metadata(
+            clean_tombstones, all, &clean_tombstones);
+        ASSERT_EQ(clean_ignored.status, IdentityStatus::Ok);
+        EXPECT_EQ(clean_ignored.source_properties, 0U);
+        EXPECT_EQ(clean_ignored.entries_updated, 0U);
+        const Entry* clean_lens = settings_find(clean_tombstones, 0xa432U);
+        const Entry* clean_id   = settings_find(clean_tombstones, 0xa420U);
+        ASSERT_NE(clean_lens, nullptr);
+        ASSERT_NE(clean_id, nullptr);
+        EXPECT_FALSE(any(clean_lens->flags, EntryFlags::Dirty));
+        EXPECT_FALSE(any(clean_id->flags, EntryFlags::Dirty));
     }
 
     TEST(MetadataIdentity,
@@ -7645,9 +8302,10 @@ namespace {
                                   std::string(kIdentityId) + '\0',
                                   TextEncoding::Ascii));
         source.finalize();
-        EXPECT_EQ(translate_xmp_identity_metadata(source, {}, &source)
-                      .groups_unchanged,
-                  2U);
+        const auto promoted
+            = translate_xmp_identity_metadata(source, {}, &source);
+        EXPECT_EQ(promoted.status, IdentityStatus::Ok);
+        EXPECT_EQ(promoted.entries_updated, 2U);
         expect_identity_lens(source, equivalent);
         {
             Entry replacement = source.entry(3U);
@@ -7658,16 +8316,34 @@ namespace {
         }
         settings_native(source, 0xa420U, make_u32(1U));
         source.finalize();
-        const auto failed = translate_xmp_identity_metadata(source, {},
-                                                            &source);
-        EXPECT_EQ(failed.status, IdentityStatus::NativeConflict);
-        EXPECT_EQ(failed.failed_mapping,
+        const size_t conflict_count = source.entries().size();
+        MetaStore separate;
+        settings_native(separate, 0x9209U, make_u16(95U));
+        separate.finalize();
+        IdentityOptions fail_on_conflict;
+        fail_on_conflict.conflict_policy = IdentityPolicy::FailOnConflict;
+        const auto failed_separate
+            = translate_xmp_identity_metadata(source, fail_on_conflict,
+                                              &separate);
+        EXPECT_EQ(failed_separate.status, IdentityStatus::NativeConflict);
+        EXPECT_EQ(failed_separate.failed_mapping,
                   MetadataCaptureTranslationMapping::XmpImageUniqueID);
+        ASSERT_EQ(separate.entries().size(), 1U);
+        EXPECT_EQ(settings_find(separate, 0x9209U)->value.data.u64, 95U);
+        const auto failed_alias
+            = translate_xmp_identity_metadata(source, fail_on_conflict,
+                                              &source);
+        EXPECT_EQ(failed_alias.status, IdentityStatus::NativeConflict);
+        EXPECT_EQ(source.entries().size(), conflict_count);
+        EXPECT_EQ(settings_active_count(source, 0xa420U), 2U);
         IdentityOptions options;
         options.conflict_policy = IdentityPolicy::PreserveExisting;
-        EXPECT_EQ(translate_xmp_identity_metadata(source, options, &source)
-                      .groups_preserved,
-                  2U);
+        const auto preserved
+            = translate_xmp_identity_metadata(source, options, &source);
+        ASSERT_EQ(preserved.status, IdentityStatus::Ok);
+        EXPECT_EQ(preserved.groups_preserved, 2U);
+        EXPECT_EQ(source.entries().size(), conflict_count);
+        EXPECT_EQ(settings_active_count(source, 0xa432U), 1U);
         EXPECT_EQ(settings_active_count(source, 0xa420U), 2U);
         options.conflict_policy = IdentityPolicy::ReplaceExisting;
         const auto replaced = translate_xmp_identity_metadata(source, options,
@@ -7687,6 +8363,78 @@ namespace {
         ASSERT_EQ(translate_xmp_identity_metadata(source, options, &source)
                       .entries_updated,
                   1U);
+        expect_identity_lens(source);
+    }
+
+    TEST(MetadataIdentity,
+         LensConflictPoliciesAndDuplicateLimitsAreAtomic)
+    {
+        MetaStore source;
+        identity_source(source);
+        constexpr std::array<URational, 4> wrong_lens {
+            { { 60U, 3U }, { 200U, 3U }, { 14U, 5U }, { 0U, 0U } }
+        };
+        settings_native_entry(
+            source, 0xa432U,
+            make_urational_array(source.arena(), wrong_lens),
+            EntryFlags::None, 5U, "first-lens");
+        settings_native_entry(
+            source, 0xa432U,
+            make_urational_array(source.arena(), wrong_lens),
+            EntryFlags::None, 5U, "duplicate-lens");
+        source.finalize();
+        const size_t source_count = source.entries().size();
+
+        IdentityOptions lens_only;
+        lens_only.image_unique_id_to_exif = false;
+        lens_only.conflict_policy = IdentityPolicy::FailOnConflict;
+        MetaStore separate;
+        settings_native(separate, 0x9209U, make_u16(95U));
+        separate.finalize();
+        const auto failed_separate
+            = translate_xmp_identity_metadata(source, lens_only, &separate);
+        EXPECT_EQ(failed_separate.status, IdentityStatus::NativeConflict);
+        ASSERT_EQ(separate.entries().size(), 1U);
+        EXPECT_EQ(settings_find(separate, 0x9209U)->value.data.u64, 95U);
+        const auto failed_alias
+            = translate_xmp_identity_metadata(source, lens_only, &source);
+        EXPECT_EQ(failed_alias.status, IdentityStatus::NativeConflict);
+        EXPECT_EQ(source.entries().size(), source_count);
+        EXPECT_EQ(settings_active_count(source, 0xa432U), 2U);
+
+        lens_only.conflict_policy = IdentityPolicy::PreserveExisting;
+        const auto preserved
+            = translate_xmp_identity_metadata(source, lens_only, &source);
+        ASSERT_EQ(preserved.status, IdentityStatus::Ok);
+        EXPECT_EQ(preserved.groups_preserved, 1U);
+        EXPECT_EQ(preserved.entries_updated, 0U);
+        EXPECT_EQ(settings_active_count(source, 0xa432U), 2U);
+        for (EntryId id : settings_native_history_ids(source, 0xa432U))
+            EXPECT_FALSE(any(source.entry(id).flags, EntryFlags::Dirty));
+
+        lens_only.conflict_policy = IdentityPolicy::ReplaceExisting;
+        lens_only.max_operations  = 1U;
+        const auto limited_separate = translate_xmp_identity_metadata(
+            source, lens_only, &separate);
+        EXPECT_EQ(limited_separate.status,
+                  IdentityStatus::OperationLimitExceeded);
+        ASSERT_EQ(separate.entries().size(), 1U);
+        ASSERT_NE(settings_find(separate, 0x9209U), nullptr);
+        EXPECT_EQ(settings_find(separate, 0x9209U)->value.data.u64, 95U);
+        const auto limited_alias
+            = translate_xmp_identity_metadata(source, lens_only, &source);
+        EXPECT_EQ(limited_alias.status,
+                  IdentityStatus::OperationLimitExceeded);
+        EXPECT_EQ(source.entries().size(), source_count);
+        EXPECT_EQ(settings_active_count(source, 0xa432U), 2U);
+
+        lens_only.max_operations = 2U;
+        const auto repaired
+            = translate_xmp_identity_metadata(source, lens_only, &source);
+        ASSERT_EQ(repaired.status, IdentityStatus::Ok);
+        EXPECT_EQ(repaired.entries_updated, 1U);
+        EXPECT_EQ(repaired.entries_removed, 1U);
+        EXPECT_EQ(settings_active_count(source, 0xa432U), 1U);
         expect_identity_lens(source);
     }
 

@@ -839,6 +839,14 @@ namespace {
                   : inferred_tiff_type(entry.value);
         uint16_t type              = inferred;
         uint32_t count             = inferred_tiff_count(entry.value);
+        if (ifd == "exififd" && tag == 0xA420U
+            && entry.value.kind == MetaValueKind::Text
+            && entry.value.count == 33U
+            && detail::standard_capture_value_valid(store.arena(), tag,
+                                                     entry.value,
+                                                     entry.flags)) {
+            count = 33U;
+        }
 
         if (options.validate_wire_hints) {
             if (entry.origin.wire_type.family == WireFamily::Tiff) {

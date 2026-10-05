@@ -108,3 +108,33 @@ Non-edit consumers reject removal intent. Rebuild against matching headers and
 libraries: development ABI 4 is unfrozen. SameMajorVersion package selection
 continues to allow later source versions; it does not promise experimental API
 or binary compatibility. OIIO/iRAW adoption remains a separate acceptance gate.
+
+
+Rational and identity destination editing in 0.8.5
+--------------------------------------------------
+
+Rational and identity translation contracts are version 2. SubjectDistance,
+DigitalZoomRatio, ExposureIndex and FlashEnergy are four independent scalar
+owners. LensSpecification owns its four-element array; ImageUniqueID is independent.
+Accepted exact clean natives gain Dirty while retaining rational components,
+lens unknown markers, ID case/NUL and wire provenance. Complete eligible deletion
+carries native intent even for absent keys. Omission and ineligible sources
+preserve destination values; PreserveExisting retains an active owner without
+promotion. Existing budgets include intent, promotion and duplicate-removal costs.
+
+The shared ExifIFD merge/removal allowlist grows from 44 to 50 using existing
+prepared fields. Dirty selects bounded merge; ordinary prepared EXIF may include
+clean live source entries too. Destination entries absent from the prepared
+payload are preserved. Native wire values, SubjectDistance numerator sentinels,
+lens unknown aperture rules and 32-hex identity semantics are unchanged.
+
+Public signatures, options, bundle layout and snapshot v1 remain unchanged.
+Development ABI 4 is unfrozen; rebuild consumers against matching headers and
+libraries. SameMajorVersion package selection is unchanged. Hosts stage separate
+translator calls before publishing and synchronize shared objects. These changes
+do not add reader, codec, SDK, private-offset repair or downstream qualification.
+
+Native ImageUniqueID text may retain its single terminal NUL. Detached validation
+and serialization both use the actual 33-byte wire representation, rather than
+counting or emitting another terminator. Invalid hex, embedded/multiple NULs and
+incorrect wire-count hints remain invalid.

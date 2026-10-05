@@ -247,7 +247,7 @@ arrays. These twelve settings do not close arbitrary EXIF writeback.
 
 `translate_xmp_capture_rational_metadata(...)` and Python
 `Document.translate_capture_rational_metadata(...)` use
-`MetadataCaptureRationalTranslationOptions`, contract version 1, for four
+`MetadataCaptureRationalTranslationOptions`, contract version 2, for four
 independent unsigned RATIONAL singletons. Exact unindexed source paths use
 `http://ns.adobe.com/exif/1.0/`.
 
@@ -282,6 +282,14 @@ values/types/duplicates or removes a dirty source tombstone's native field.
 All selected fields commit atomically, including source/output aliasing and
 owned provenance. Limits are four additions, 1024 operations, 128 source text
 bytes per property, and 512 total text bytes. Preparation may allocate.
+
+Accepted exact clean native values gain Dirty while retaining native components
+and wire provenance. Complete eligible deletion creates or reuses Dirty|Deleted
+native intent even when the native key was absent. PreserveExisting keeps an
+active owner without promotion; omitted or ineligible sources preserve the
+destination. Intent, promotions and duplicate removals consume the existing
+preflight budgets. Repeated calls reuse intent; failure preserves source and
+output. The host synchronizes shared objects.
 
 The canonical EXIF tags 0xA215 and 0xA20B are the only ExposureIndex/FlashEnergy
 targets; older TIFF/EP aliases remain untouched. No APEX conversion, unit
@@ -1396,7 +1404,7 @@ APEX and focal-plane/subject arrays are covered by the combined batches below.
 
 `translate_xmp_identity_metadata(...)` and Python
 `Document.translate_identity_metadata(...)` use
-`MetadataIdentityTranslationOptions`, contract version 1, and the existing
+`MetadataIdentityTranslationOptions`, contract version 2, and the existing
 capture source modes, conflict policies, statuses and result counters. The two
 fields have independent switches and conflict decisions, followed by one commit.
 
@@ -1474,6 +1482,14 @@ version. No existing EXIF version is upgraded implicitly.
 Combined tests cover C++, Python, installed shared consumers, exact portable
 round trips, and serialized snapshots through JPEG, Classic TIFF and BigTIFF.
 The APEX and focal-plane/subject batches below extend this coverage.
+
+Accepted exact clean natives gain Dirty while retaining lens fractions/unknown
+markers, ID case/NUL and wire provenance. Complete eligible deletion creates or
+reuses Dirty|Deleted intent even for absent keys. PreserveExisting retains an
+active owner without promotion; omitted or ineligible sources preserve the
+destination. Intent, promotions and duplicate removals consume existing budgets.
+Repeated calls reuse intent; failure retains source and output unchanged.
+
 
 ## APEX writeback (contract version 2)
 

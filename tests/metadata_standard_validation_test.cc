@@ -122,6 +122,69 @@ namespace {
         return bytes;
     }
 
+    TEST(MetadataStandardValidation,
+         TerminatedImageIdRetainsWireCountDuringTypedEdits)
+    {
+        constexpr std::string_view identity = "00112233445566778899aAbBcCdDeEfF";
+        std::string terminated(identity);
+        terminated.push_back('\0');
+        MetaStore source;
+        Entry native;
+        native.key = make_exif_tag_key(source.arena(), "exififd", 0xA420U);
+        native.value = make_text(source.arena(), terminated, TextEncoding::Ascii);
+        native.origin.wire_type = { WireFamily::Tiff, 2U };
+        native.origin.wire_count = 33U;
+        source.add_entry(native);
+        source.finalize();
+        ASSERT_TRUE(validate_store(source).ok());
+
+        MetadataTypedEditingOperation operation;
+        operation.entry.key = make_xmp_property_key_view(
+            "http://ns.adobe.com/exif/1.0/", "ExposureIndex");
+        operation.entry.value = make_value_view_text("200", TextEncoding::Utf8);
+        MetaStore edited;
+        ASSERT_TRUE(edit_metadata_typed(source, std::span(&operation, 1U),
+                                         &edited).ok());
+        ASSERT_TRUE(validate_store(edited).ok());
+        const Entry& retained = edited.entry(0U);
+        EXPECT_EQ(retained.origin.wire_count, 33U);
+        EXPECT_EQ(retained.value.count, 33U);
+        const auto retained_bytes = edited.arena().span(retained.value.data.span);
+        EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(retained_bytes.data()),
+                                   retained_bytes.size()), terminated);
+
+        MetaStore decoded;
+        const auto serialized = canonical(edited);
+        ASSERT_EQ(decode_exif_tiff(serialized, decoded, {}, {}).status,
+                  ExifDecodeStatus::Ok);
+        decoded.finalize();
+        EXPECT_TRUE(validate_store(decoded).ok());
+        const auto identities = decoded.find_all(
+            make_exif_tag_key_view("exififd", 0xA420U));
+        ASSERT_EQ(identities.size(), 1U);
+        EXPECT_EQ(decoded.entry(identities[0U]).origin.wire_count, 33U);
+
+        for (unsigned variant = 0U; variant < 3U; ++variant) {
+            MetaStore invalid;
+            std::string text = terminated;
+            if (variant == 0U) text.push_back('\0');
+            if (variant == 1U) text[12U] = '\0';
+            Entry entry;
+            entry.key = make_exif_tag_key(invalid.arena(), "exififd", 0xA420U);
+            entry.value = make_text(invalid.arena(), text, TextEncoding::Ascii);
+            entry.origin.wire_type = { WireFamily::Tiff, 2U };
+            entry.origin.wire_count = variant == 2U ? 34U : 33U;
+            invalid.add_entry(entry);
+            invalid.finalize();
+            EXPECT_FALSE(validate_store(invalid).ok()) << variant;
+            const auto rejected = edit_metadata_typed(
+                invalid, std::span(&operation, 1U), &edited);
+            EXPECT_EQ(rejected.status, MetadataTypedEditingStatus::ValidationFailed)
+                << variant;
+            EXPECT_EQ(canonical(edited), serialized) << variant;
+        }
+    }
+
     TEST(MetadataStandardValidation, All64RoutedFieldsAreKnownAndStandalone)
     {
         const std::vector<MetadataAuthoringEntry> fields = routed_fields();

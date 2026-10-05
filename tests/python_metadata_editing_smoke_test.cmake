@@ -691,7 +691,7 @@ with tempfile.TemporaryDirectory() as temporary:
     path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
     document = openmeta.read(str(path))
     count = document.entry_count
-    assert openmeta.METADATA_CAPTURE_RATIONAL_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_CAPTURE_RATIONAL_TRANSLATION_CONTRACT_VERSION == 2
     assert document.translate_capture_rational_metadata().entry_count == count
     translated = document.translate_capture_rational_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
     assert translated.entry_count == count + 4
@@ -701,6 +701,29 @@ with tempfile.TemporaryDirectory() as temporary:
         assert one.entry_count == count + 1
     assert translated.translate_capture_rational_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All).entry_count == count + 4
     assert document.entry_count == count
+    probe = openmeta.unsafe_transfer_snapshot_probe(
+        translated.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='capture_rationals.tiff',
+        target_bytes=bytes([73, 73, 42, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        include_edited_bytes=True,
+    )
+    assert probe['overall_status'] == openmeta.TransferStatus.Ok, probe
+    assert probe['tiff_merge_existing_exif'] is True, probe
+    native_path = Path(temporary) / 'capture_rationals.tiff'
+    native_path.write_bytes(bytes(probe['edited_bytes']))
+    clean_native = openmeta.read(str(native_path))
+    promoted = clean_native.translate_capture_rational_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
+    assert promoted.entry_count == clean_native.entry_count
+    promoted_probe = openmeta.unsafe_transfer_snapshot_probe(
+        promoted.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='capture_rationals.tiff',
+        target_bytes=bytes(probe['edited_bytes']),
+        include_edited_bytes=True,
+    )
+    assert promoted_probe['overall_status'] == openmeta.TransferStatus.Ok, promoted_probe
+    assert promoted_probe['tiff_merge_existing_exif'] is True, promoted_probe
 
 with tempfile.TemporaryDirectory() as temporary:
     path = Path(temporary) / 'flash.jpg'
@@ -835,7 +858,7 @@ with tempfile.TemporaryDirectory() as temporary:
         path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
         document = openmeta.read(str(path))
         count = document.entry_count
-        assert openmeta.METADATA_IDENTITY_TRANSLATION_CONTRACT_VERSION == 1
+        assert openmeta.METADATA_IDENTITY_TRANSLATION_CONTRACT_VERSION == 2
         assert document.translate_identity_metadata().entry_count == count
         if identity.startswith(' '):
             try:
@@ -864,6 +887,29 @@ with tempfile.TemporaryDirectory() as temporary:
         restored = openmeta.read(str(path))
         assert restored.translate_identity_metadata(source_mode=mode).entry_count == restored.entry_count + 2
         assert document.entry_count == count
+        probe = openmeta.unsafe_transfer_snapshot_probe(
+            translated.build_transfer_source_snapshot(),
+            target_format=openmeta.TransferTargetFormat.Tiff,
+            edit_target_path='identity.tiff',
+            target_bytes=bytes([73, 73, 42, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            include_edited_bytes=True,
+        )
+        assert probe['overall_status'] == openmeta.TransferStatus.Ok, probe
+        assert probe['tiff_merge_existing_exif'] is True, probe
+        native_path = Path(temporary) / 'identity.tiff'
+        native_path.write_bytes(bytes(probe['edited_bytes']))
+        clean_native = openmeta.read(str(native_path))
+        promoted = clean_native.translate_identity_metadata(source_mode=openmeta.MetadataCaptureTranslationSourceMode.All)
+        assert promoted.entry_count == clean_native.entry_count
+        promoted_probe = openmeta.unsafe_transfer_snapshot_probe(
+            promoted.build_transfer_source_snapshot(),
+            target_format=openmeta.TransferTargetFormat.Tiff,
+            edit_target_path='identity.tiff',
+            target_bytes=bytes(probe['edited_bytes']),
+            include_edited_bytes=True,
+        )
+        assert promoted_probe['overall_status'] == openmeta.TransferStatus.Ok, promoted_probe
+        assert promoted_probe['tiff_merge_existing_exif'] is True, promoted_probe
 
 with tempfile.TemporaryDirectory() as temporary:
     path = Path(temporary) / 'apex.jpg'

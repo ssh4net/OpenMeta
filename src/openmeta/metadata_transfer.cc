@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "metadata_text_fields_internal.h"
+#include "metadata_capture_fields_internal.h"
 
 #include "openmeta/metadata_transfer.h"
 
@@ -6986,7 +6987,15 @@ namespace {
                     text.data());
                 out->value.assign(begin, begin + text.size());
             } else {
-                out->value.assign(text_bytes.begin(), text_bytes.end());
+                const bool terminated_identity
+                    = detail::primary_exif_entry(store.arena(), e, 0xA420U)
+                      && v.count == 33U
+                      && detail::standard_capture_value_valid(
+                          store.arena(), 0xA420U, v, e.flags);
+                const std::span<const std::byte> logical_text
+                    = terminated_identity ? text_bytes.first(32U)
+                                          : text_bytes;
+                out->value.assign(logical_text.begin(), logical_text.end());
             }
             out->value.push_back(std::byte { 0x00 });
             out->count = static_cast<uint32_t>(out->value.size());
@@ -11026,13 +11035,14 @@ namespace {
         0x010EU, 0x010FU, 0x0110U, 0x0131U, 0x0132U, 0x013BU, 0x8298U,
     };
 
-    static constexpr std::array<uint16_t, 44U> kTiffExifRemovalTags = {
+    static constexpr std::array<uint16_t, 50U> kTiffExifRemovalTags = {
         0x829AU, 0x829DU, 0x8822U, 0x8827U, 0x8830U, 0x8831U, 0x8832U, 0x8833U,
         0x8834U, 0x8835U, 0x9003U, 0x9004U, 0x9010U, 0x9011U, 0x9012U, 0x9201U,
-        0x9202U, 0x9203U, 0x9204U, 0x9205U, 0x9207U, 0x9209U, 0x920AU, 0x9214U,
-        0x9290U, 0x9291U, 0x9292U, 0xA20EU, 0xA20FU, 0xA210U, 0xA214U, 0xA217U,
-        0xA401U, 0xA402U, 0xA403U, 0xA406U, 0xA407U, 0xA408U, 0xA409U, 0xA40AU,
-        0xA40CU, 0xA433U, 0xA434U, 0xA435U,
+        0x9202U, 0x9203U, 0x9204U, 0x9205U, 0x9206U, 0x9207U, 0x9209U, 0x920AU,
+        0x9214U, 0x9290U, 0x9291U, 0x9292U, 0xA20BU, 0xA20EU, 0xA20FU, 0xA210U,
+        0xA214U, 0xA215U, 0xA217U, 0xA401U, 0xA402U, 0xA403U, 0xA404U, 0xA406U,
+        0xA407U, 0xA408U, 0xA409U, 0xA40AU, 0xA40CU, 0xA420U, 0xA432U, 0xA433U,
+        0xA434U, 0xA435U,
     };
 
     static uint32_t tiff_ifd0_profile_removal_slot(uint16_t tag) noexcept

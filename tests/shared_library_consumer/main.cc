@@ -377,7 +377,8 @@ main()
         = openmeta::translate_xmp_capture_rational_metadata(
             capture_rational_source, {}, &capture_rational_output);
     const bool capture_rational_contract_matches
-        = capture_rational_authored.ok()
+        = openmeta::kMetadataCaptureRationalTranslationContractVersion == 2U
+          && capture_rational_authored.ok()
           && capture_rational_result.status
                  == openmeta::MetadataCaptureTranslationStatus::Ok
           && capture_rational_result.entries_added == 1U;
@@ -739,7 +740,8 @@ main()
         = openmeta::translate_xmp_identity_metadata(identity_source, {},
                                                     &identity_source);
     const bool identity_contract_matches
-        = identity_authored.ok()
+        = openmeta::kMetadataIdentityTranslationContractVersion == 2U
+          && identity_authored.ok()
           && identity_result.status
                  == openmeta::MetadataCaptureTranslationStatus::Ok
           && identity_result.entries_added == 2U

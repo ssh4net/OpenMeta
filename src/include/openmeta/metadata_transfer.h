@@ -716,7 +716,10 @@ struct PreparedTransferBundle final {
     /// GainControl (0xA407), Contrast (0xA408), Saturation (0xA409), Sharpness
     /// (0xA40A), and SubjectDistanceRange (0xA40C); spatial fields SubjectArea
     /// (0x9214), FocalPlaneXResolution/FocalPlaneYResolution (0xA20E/0xA20F),
-    /// FocalPlaneResolutionUnit (0xA210), and SubjectLocation (0xA214).
+    /// FocalPlaneResolutionUnit (0xA210), and SubjectLocation (0xA214); rational
+    /// fields SubjectDistance (0x9206), DigitalZoomRatio (0xA404), ExposureIndex
+    /// (0xA215), FlashEnergy (0xA20B), LensSpecification (0xA432), and
+    /// ImageUniqueID (0xA420).
     /// Explicit per-tag removals preserve unspecified destination ExifIFD
     /// entries. Fresh emit, adapter, payload, and codec handoff APIs reject
     /// non-empty removal lists because their operation schemas cannot express

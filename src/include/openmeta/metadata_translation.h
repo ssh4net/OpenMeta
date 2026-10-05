@@ -1018,7 +1018,7 @@ translate_xmp_capture_spatial_metadata(
     const MetadataCaptureSpatialTranslationOptions& options,
     MetaStore* out_store);
 
-inline constexpr uint32_t kMetadataIdentityTranslationContractVersion   = 1U;
+inline constexpr uint32_t kMetadataIdentityTranslationContractVersion   = 2U;
 inline constexpr uint32_t kMetadataIdentityTranslationMaxAddedEntries   = 2U;
 inline constexpr uint64_t kMetadataIdentityTranslationMaxTotalTextBytes = 544U;
 
@@ -1052,6 +1052,12 @@ struct MetadataIdentityTranslationOptions final {
  * Duplicate aliases, mixed root/indexed forms and incomplete arrays fail.
  * A dirty root tombstone or four deleted members removes the lens group;
  * partial member deletion fails. The image ID uses a scalar tombstone.
+ * Complete eligible deletion retains Dirty+Deleted intent for absent native keys.
+ * Accepted exact clean natives gain Dirty while retaining native lens components,
+ * unknown markers, ID case/NUL and wire provenance. PreserveExisting keeps an
+ * active owner without promotion; omission preserves the destination. Intent,
+ * promotion and duplicate-removal costs precede publication and repeated calls
+ * reuse intent. Shared-object synchronization belongs to the host.
  * Conflict and resource checks precede all mutations, including aliased output.
  * Preparation may allocate. This is a structural translation contract, not
  * validation of UUID generation, uniqueness or capture-time identity policy.
@@ -1168,7 +1174,7 @@ translate_xmp_capture_settings_metadata(
 
 /// Experimental exact capture-rational writeback contract.
 inline constexpr uint32_t kMetadataCaptureRationalTranslationContractVersion
-    = 1U;
+    = 2U;
 inline constexpr uint32_t kMetadataCaptureRationalTranslationMaxAddedEntries
     = 4U;
 inline constexpr uint64_t kMetadataCaptureRationalTranslationMaxTotalTextBytes
@@ -1206,7 +1212,13 @@ struct MetadataCaptureRationalTranslationOptions final {
  * fail. DigitalZoomRatio zero means unused; ExposureIndex must be positive;
  * FlashEnergy may be zero. Zero denominators and floating-point values fail.
  * No units, APEX values, flash state, or EXIF versions are inferred or converted.
- * Older TIFF/EP aliases are not targets. Preparation may allocate; failure leaves
+ * Older TIFF/EP aliases are not targets. Complete eligible deletion retains
+ * Dirty+Deleted native intent even for absent keys. Accepted exact clean natives
+ * gain Dirty through same-value updates that retain rational components and wire
+ * provenance. PreserveExisting retains active owners without promotion; omission
+ * preserves the destination. Intent, promotion and duplicate-removal costs count
+ * against existing limits; repeat calls reuse intent. Hosts synchronize shared
+ * objects. Preparation may allocate; failure leaves
  * source and output unchanged, including aliased calls.
  */
 MetadataCaptureTranslationResult

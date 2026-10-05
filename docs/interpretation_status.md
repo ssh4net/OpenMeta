@@ -107,3 +107,13 @@ a bounded policy correction, not general per-family diagnostic completion.
    per-model tables only where context is strong enough to avoid wrong labels.
 4. Keep transfer-safety classification conservative when interpretation is
    incomplete.
+
+
+## Rational and identity native editing (0.8.5)
+
+SubjectDistance, DigitalZoomRatio, ExposureIndex, FlashEnergy, LensSpecification
+and ImageUniqueID now participate in bounded TIFF/BigTIFF/DNG merge and removal
+through existing native Dirty/deletion intent. Translation contracts are version
+2; exact native components and provenance remain, with transactional budgets and
+host synchronization. This closes this six-field editing lifecycle, not arbitrary
+EXIF editing, new reading semantics or downstream acceptance.
