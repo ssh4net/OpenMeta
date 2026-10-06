@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -147,17 +148,18 @@ namespace {
     static ExifRandomAccessDecodeResult
     decode_makernote_callback(std::span<const std::byte> tiff, MetaStore& store,
                               const RandomAccessReadLimits& limits
-                              = RandomAccessReadLimits {}) noexcept
+                              = RandomAccessReadLimits {},
+                              size_t value_capacity = 4096U) noexcept
     {
         MakerNoteCallbackState state { tiff };
         const RandomAccessSource source
             = make_callback_random_access_source(tiff.size(), &state,
                                                  maker_note_read_at);
         std::array<std::byte, 64> read_window {};
-        std::array<std::byte, 4096> value_scratch {};
+        std::array<std::byte, 16384> value_scratch {};
         ExifRandomAccessScratch scratch;
         scratch.read_window                       = read_window;
-        scratch.value                             = value_scratch;
+        scratch.value = std::span<std::byte>(value_scratch).first(value_capacity);
         scratch.window_options.minimum_read_bytes = read_window.size();
         ExifDecodeOptions options;
         options.decode_makernote = true;
@@ -7051,6 +7053,120 @@ TEST(MakerNoteDecode, DecodesSonyTag9405aForNex5tModel)
     EXPECT_EQ(e.value.data.u64, 2U);
 }
 
+TEST(MakerNoteDecode, SonyCameraSettingsUseExactLayoutsAndNativeTypes)
+{
+    const std::array<size_t, 7> sizes = { 280U,  364U,  332U, 1536U,
+                                          2048U, 1536U, 333U };
+    const std::array<std::string_view, 7> models
+        = { "DSLR-A200", "DSLR-A900", "DSLR-A330", "SLT-A55V",
+            "DSLR-A550", "NEX-3",     "DSLR-A330" };
+    for (size_t i = 0U; i < sizes.size(); ++i) {
+        std::vector<std::byte> raw(sizes[i], std::byte { 0 });
+        if (i < 3U) {
+            write_u16be_at(&raw, 0U, 0x1234U);
+            write_u16be_at(&raw, (i < 2U ? 4U : 0x7eU) * 2U, 0xffabU);
+            if (i == 2U) {
+                write_u16be_at(&raw, 8U * 2U, 0x0102U);
+                write_u16be_at(&raw, 8U * 2U + 2U, 0x0304U);
+                write_u16be_at(&raw, 8U * 2U + 4U, 0x0506U);
+            }
+        } else if (i < 6U) {
+            raw[0x10U] = std::byte { 0xffU };
+            raw[0x32U] = std::byte { 7U };
+            raw[0x99U] = std::byte { 1U };
+            write_u16be_at(&raw, 0x19U, 0x0102U);
+            write_u16be_at(&raw, 0x1bU, 0x0304U);
+            write_u16be_at(&raw, 0x1dU, 0x0506U);
+            write_u32le_at(&raw, 0x114U, 0x04000000U | (123U << 14U) | 456U);
+            write_u16le_at(&raw, 0x314U, 0xc456U);
+        }
+        std::vector<std::byte> mn;
+        append_u16le(&mn, 1U);
+        append_u16le(&mn, 0x0114U);
+        append_u16le(&mn, 7U);
+        append_u32le(&mn, static_cast<uint32_t>(raw.size()));
+        append_u32le(&mn, 0U);
+        append_u32le(&mn, 0U);
+        mn.insert(mn.end(), raw.begin(), raw.end());
+        std::vector<std::byte> tiff
+            = make_test_tiff_with_makernote_and_model("SONY", models[i], mn);
+        const size_t maker_offset = tiff.size() - mn.size();
+        write_u32le_at(&tiff, maker_offset + 10U,
+                       static_cast<uint32_t>(maker_offset + 18U));
+        MetaStore span_store;
+        std::array<ExifIfdRef, 8> ifds {};
+        ExifDecodeOptions options;
+        options.decode_makernote           = true;
+        const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store,
+                                                              ifds, options);
+        ASSERT_EQ(span_result.status, ExifDecodeStatus::Ok);
+        MetaStore callback_store;
+        const ExifRandomAccessDecodeResult callback_result
+            = decode_makernote_callback(tiff, callback_store);
+        EXPECT_TRUE(callback_result.complete());
+        EXPECT_EQ(callback_result.decode.status, span_result.status);
+        EXPECT_EQ(callback_result.decode.entries_decoded,
+                  span_result.entries_decoded);
+        const std::string_view token     = i < 2U ? "mk_sony_camerasettings_0"
+                                           : i == 2U ? "mk_sony_camerasettings2_0"
+                                                     : "mk_sony_camerasettings3_0";
+        std::array<MetaStore*, 2> stores = { &span_store, &callback_store };
+        for (MetaStore* store : stores) {
+            store->finalize();
+            const std::span<const EntryId> ids = store->find_all(
+                exif_key(token, 0U));
+            if (i == 6U) {
+                EXPECT_TRUE(ids.empty());
+                continue;
+            }
+            ASSERT_EQ(ids.size(), 1U);
+            if (i < 3U) {
+                EXPECT_EQ(store->entry(ids[0]).value.elem_type,
+                          MetaElementType::U16);
+                EXPECT_EQ(store->entry(ids[0]).value.data.u64, 0x1234U);
+                const std::span<const EntryId> drive = store->find_all(
+                    exif_key(token, i < 2U ? 4U : 0x7eU));
+                ASSERT_EQ(drive.size(), 1U);
+                EXPECT_EQ(store->entry(drive[0]).value.data.u64, 0xabU);
+            } else {
+                const std::span<const EntryId> contrast = store->find_all(
+                    exif_key(token, 0x10U));
+                ASSERT_EQ(contrast.size(), 1U);
+                EXPECT_EQ(store->entry(contrast[0]).value.elem_type,
+                          MetaElementType::I8);
+                EXPECT_EQ(store->entry(contrast[0]).value.data.i64, -1);
+                EXPECT_EQ(store->find_all(exif_key(token, 0x32U)).empty(),
+                          i == 4U);
+                EXPECT_EQ(store->find_all(exif_key(token, 0x36U)).empty(),
+                          i == 4U || i == 5U);
+                if (i != 4U) {
+                    const std::span<const EntryId> folder = store->find_all(
+                        exif_key(token, 0x114U));
+                    ASSERT_EQ(folder.size(), 1U);
+                    EXPECT_EQ(store->entry(folder[0]).value.elem_type,
+                              MetaElementType::U32);
+                    EXPECT_EQ(store->entry(folder[0]).value.data.u64, 123U);
+                }
+            }
+            if (i >= 2U) {
+                const std::span<const EntryId> wb = store->find_all(
+                    exif_key(token, i == 2U ? 8U : 0x19U));
+                ASSERT_EQ(wb.size(), 1U);
+                const Entry& entry = store->entry(wb[0]);
+                ASSERT_EQ(entry.value.elem_type, MetaElementType::U16);
+                ASSERT_EQ(entry.value.count, 3U);
+                std::array<uint16_t, 3> words {};
+                const std::span<const std::byte> bytes = store->arena().span(
+                    entry.value.data.span);
+                ASSERT_EQ(bytes.size(), sizeof(words));
+                std::memcpy(words.data(), bytes.data(), bytes.size());
+                EXPECT_EQ(words, (std::array<uint16_t, 3> { 0x0102U, 0x0304U,
+                                                            0x0506U }));
+            }
+        }
+    }
+}
+
 TEST(MakerNoteDecode, DecodesSonyTag9405bForIlcaFamilyModel)
 {
     std::vector<std::byte> mn = make_sony_makernote_tag9405b_ciphered();
@@ -8655,6 +8771,97 @@ TEST(MakerNoteDecode, DecodesCanonCameraInfoPictureStyleIntoDerivedIfd)
         EXPECT_EQ(e.value.elem_type, MetaElementType::U16);
         EXPECT_EQ(e.value.data.u64, 129U);
         EXPECT_TRUE(any(e.flags, EntryFlags::Derived));
+    }
+}
+
+TEST(MakerNoteDecode, RejectsPartialIfdCoincidenceInCanonCameraInfo)
+{
+    std::vector<std::byte> cam(0x0300U, std::byte { 0 });
+    const size_t candidate = 140U;
+    write_u16le_at(&cam, candidate, 8U);
+    for (uint32_t i = 0U; i < 8U; ++i) {
+        const size_t entry = candidate + 2U + i * 12U;
+        write_u16le_at(&cam, entry, static_cast<uint16_t>(0xd100U + i));
+        write_u16le_at(&cam, entry + 2U, i < 6U ? 3U : 2U);
+        write_u32le_at(&cam, entry + 4U, i < 6U ? 1U : 100U);
+        write_u32le_at(&cam, entry + 8U, i < 6U ? 42U : 0xffff0000U);
+    }
+    const char firmware[] = "1.0.7";
+    std::memcpy(cam.data() + 0x019bU, firmware, sizeof(firmware));
+    const std::vector<std::byte> mn = make_canon_camera_info_blob_makernote(
+        cam);
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_model("Canon", "Canon EOS 1200D",
+                                                  mn);
+    MetaStore store;
+    std::array<ExifIfdRef, 8> ifds {};
+    ExifDecodeOptions options;
+    options.decode_makernote      = true;
+    const ExifDecodeResult result = decode_exif_tiff(tiff, store, ifds,
+                                                     options);
+    ASSERT_EQ(result.status, ExifDecodeStatus::Ok);
+    store.finalize();
+    EXPECT_TRUE(
+        store.find_all(exif_key("mk_canon_camerainfo600d_0", 0xd100U)).empty());
+    const std::span<const EntryId> ids = store.find_all(
+        exif_key("mk_canon_camerainfo600d_0", 0x019bU));
+    ASSERT_EQ(ids.size(), 1U);
+    const Entry& entry = store.entry(ids[0]);
+    ASSERT_EQ(entry.value.kind, MetaValueKind::Text);
+    const std::span<const std::byte> raw = store.arena().span(
+        entry.value.data.span);
+    EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(raw.data()),
+                               raw.size()),
+              "1.0.7");
+    EXPECT_FALSE(store.find_all(exif_key("mk_canon0", 0x000dU)).empty());
+}
+
+TEST(MakerNoteDecode, CanonG9WbInfoKeepsSignedWordArrays)
+{
+    std::vector<std::byte> mn;
+    append_u16le(&mn, 1U);
+    append_u16le(&mn, 0x0029U);
+    append_u16le(&mn, 1U);
+    append_u32le(&mn, 2048U);
+    append_u32le(&mn, 18U);
+    append_u32le(&mn, 0U);
+    mn.resize(18U + 2048U);
+    const uint16_t tags[] = { 0x0002U, 0x000aU, 0x0012U, 0x001aU, 0x0022U,
+                              0x002aU, 0x0032U, 0x003aU, 0x0042U, 0x004aU };
+    for (uint16_t tag : tags) {
+        for (uint32_t i = 0U; i < 4U; ++i) {
+            write_u32le_at(&mn, 18U + tag * 4U + i * 4U,
+                           i == 1U ? 0xffffffffU : 0x01020300U + i);
+        }
+    }
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote_and_model(
+        "Canon", "Canon PowerShot G9", mn);
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store, {}, options);
+    ASSERT_EQ(span_result.status, ExifDecodeStatus::Ok);
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result = decode_makernote_callback(tiff, callback_store);
+    ASSERT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, ExifDecodeStatus::Ok);
+    EXPECT_EQ(callback_result.decode.entries_decoded, span_result.entries_decoded);
+    for (MetaStore* store : { &span_store, &callback_store }) {
+        store->finalize();
+        for (uint16_t tag : tags) {
+            const auto ids = store->find_all(exif_key("mk_canon_wbinfo_0", tag));
+            ASSERT_EQ(ids.size(), 1U);
+            const Entry& entry = store->entry(ids[0]);
+            EXPECT_EQ(entry.value.elem_type, MetaElementType::I32);
+            EXPECT_EQ(entry.value.count, 4U);
+            const auto raw = store->arena().span(entry.value.data.span);
+            ASSERT_EQ(raw.size(), 16U);
+            std::array<int32_t, 4> levels {};
+            std::memcpy(levels.data(), raw.data(), raw.size());
+            EXPECT_EQ(levels[0], 0x01020300);
+            EXPECT_EQ(levels[1], -1);
+            EXPECT_EQ(levels[3], 0x01020303);
+        }
     }
 }
 
@@ -10867,6 +11074,179 @@ TEST(MakerNoteDecode, RandomAccessCallbackMatchesFujiGeType2Layout)
     EXPECT_EQ(entry.value.kind, MetaValueKind::Scalar);
     EXPECT_EQ(entry.value.elem_type, MetaElementType::U32);
     EXPECT_EQ(entry.value.data.u64, 0x11223344U);
+}
+
+TEST(MakerNoteDecode, KodakLegacyCameraInfoPrefersCompleteRecordedRoot)
+{
+    std::vector<std::byte> note;
+    append_u16le(&note, 3U);
+    append_classic_ifd_entry_le(&note, 0xff00U, 4U, 1U, 0U);
+    append_classic_ifd_entry_le(&note, 0x0f00U, 7U, 8U, 0U);
+    append_classic_ifd_entry_le(&note, 0x0f03U, 1U, 1U, 0U);
+    append_u32le(&note, 0U);
+    auto tiff = make_test_tiff_with_makernote_and_model(
+        "EASTMAN KODAK COMPANY", "KODAK P880 ZOOM DIGITAL CAMERA", note);
+    const size_t root     = tiff.size() - note.size();
+    const size_t external = tiff.size();
+    tiff.insert(tiff.end(), 8U, std::byte { 0x5a });
+    const size_t child = tiff.size();
+    append_u16le(&tiff, 4U);
+    for (uint16_t i = 0U; i < 4U; ++i) {
+        append_classic_ifd_entry_le(&tiff, static_cast<uint16_t>(0xf900U + i),
+                                    3U, 1U, 1234U + i);
+    }
+    append_u32le(&tiff, 0U);
+    write_u32le_at(&tiff, root + 10U, static_cast<uint32_t>(child));
+    write_u32le_at(&tiff, root + 22U, static_cast<uint32_t>(external));
+    // Nearby directories can be larger, but must not replace this exact
+    // complete CameraInfo pointer. Keep the decoy on the same byte parity.
+    append_u16le(&tiff, 8U);
+    for (uint16_t i = 0U; i < 8U; ++i) {
+        append_classic_ifd_entry_le(&tiff, static_cast<uint16_t>(0xfa00U + i),
+                                    3U, 1U, 9000U + i);
+    }
+    append_u32le(&tiff, 0U);
+    for (bool callback : { false, true }) {
+        MetaStore store;
+        ExifDecodeOptions options;
+        options.decode_makernote = true;
+        const auto result        = callback
+                                       ? decode_makernote_callback(tiff, store).decode
+                                       : decode_exif_tiff(tiff, store, {}, options);
+        EXPECT_EQ(result.status, ExifDecodeStatus::Ok);
+        store.finalize();
+        const auto ids = store.find_all(
+            exif_key("mk_kodak_camerainfo_0", 0xf900U));
+        ASSERT_EQ(ids.size(), 1U);
+        EXPECT_EQ(store.entry(ids[0]).value.data.u64, 1234U);
+        EXPECT_TRUE(store.find_all(exif_key("mk_kodak_camerainfo_0", 0xfa00U))
+                        .empty());
+        const auto payload = store.find_all(
+            exif_key("mk_kodak_type8_0", 0x0f00U));
+        ASSERT_EQ(payload.size(), 1U);
+        const Entry& opaque = store.entry(payload[0]);
+        EXPECT_EQ(opaque.value.kind, MetaValueKind::Bytes);
+        EXPECT_EQ(opaque.value.count, 8U);
+        const auto preserved = store.arena().span(opaque.value.data.span);
+        ASSERT_EQ(preserved.size(), 8U);
+        for (std::byte byte : preserved)
+            EXPECT_EQ(byte, std::byte { 0x5a });
+    }
+}
+
+TEST(MakerNoteDecode, KodakPrivateIfdProcessingKeepsNativeWhiteBalanceWords)
+{
+    for (bool le : { true, false }) {
+        std::vector<std::byte> tiff;
+        append_bytes(&tiff, le ? "II" : "MM");
+        if (le) {
+            append_u16le(&tiff, 42U);
+            append_u32le(&tiff, 8U);
+            append_u16le(&tiff, 1U); append_u16le(&tiff, 0x8290U);
+            append_u16le(&tiff, 4U); append_u32le(&tiff, 1U);
+            append_u32le(&tiff, 26U); append_u32le(&tiff, 0U);
+            append_u16le(&tiff, 1U); append_u16le(&tiff, 0x03fdU);
+            append_u16le(&tiff, 7U); append_u32le(&tiff, 72U);
+            append_u32le(&tiff, 44U); append_u32le(&tiff, 0U);
+        } else {
+            append_u16be(&tiff, 42U); append_u32be(&tiff, 8U);
+            append_u16be(&tiff, 1U); append_u16be(&tiff, 0x8290U);
+            append_u16be(&tiff, 4U); append_u32be(&tiff, 1U);
+            append_u32be(&tiff, 26U); append_u32be(&tiff, 0U);
+            append_u16be(&tiff, 1U); append_u16be(&tiff, 0x03fdU);
+            append_u16be(&tiff, 7U); append_u32be(&tiff, 72U);
+            append_u32be(&tiff, 44U); append_u32be(&tiff, 0U);
+        }
+        tiff.resize(44U + 40U);
+        for (uint16_t word : { 0x0102U, 0x0304U, 0x0506U }) {
+            if (le) append_u16le(&tiff, word); else append_u16be(&tiff, word);
+        }
+        tiff.resize(44U + 72U);
+        MetaStore span_store;
+        ExifDecodeOptions options;
+        options.decode_makernote = true;
+        const auto span_result = decode_exif_tiff(tiff, span_store, {}, options);
+        ASSERT_EQ(span_result.status, ExifDecodeStatus::Ok);
+        MetaStore callback_store;
+        const auto callback_result = decode_makernote_callback(tiff, callback_store);
+        ASSERT_TRUE(callback_result.complete());
+        EXPECT_EQ(callback_result.decode.entries_decoded, span_result.entries_decoded);
+        for (MetaStore* store : { &span_store, &callback_store }) {
+            store->finalize();
+            const auto ids = store->find_all(exif_key("mk_kodak_processing_0", 0x0014U));
+            ASSERT_EQ(ids.size(), 1U);
+            const Entry& entry = store->entry(ids[0]);
+            EXPECT_EQ(entry.value.elem_type, MetaElementType::U16);
+            EXPECT_EQ(entry.value.count, 3U);
+            const auto raw = store->arena().span(entry.value.data.span);
+            ASSERT_EQ(raw.size(), 6U);
+            std::array<uint16_t, 3> words {};
+            std::memcpy(words.data(), raw.data(), raw.size());
+            EXPECT_EQ(words[0], 0x0102U); EXPECT_EQ(words[1], 0x0304U); EXPECT_EQ(words[2], 0x0506U);
+        }
+        MetaStore disabled_store;
+        options.decode_makernote = false;
+        EXPECT_EQ(decode_exif_tiff(tiff, disabled_store, {}, options).entries_decoded, 1U);
+    }
+}
+
+TEST(MakerNoteDecode, PentaxAndSamsungDngPrivateOffsetsUseTheWholeBlock)
+{
+    for (bool samsung : { false, true }) {
+        for (bool le : { true, false }) {
+            std::vector<std::byte> block;
+            append_bytes(&block, samsung ? "SAMSUNG" : "PENTAX ");
+            block.push_back(std::byte { 0 });
+            append_bytes(&block, le ? "II" : "MM");
+            if (le) {
+                append_u16le(&block, 2U); append_u16le(&block, 0x0008U);
+                append_u16le(&block, 4U); append_u32le(&block, 2U);
+                append_u32le(&block, 40U);
+                append_u16le(&block, 0x03ffU); append_u16le(&block, 7U);
+                append_u32le(&block, 8192U); append_u32le(&block, 48U);
+                append_u32le(&block, 0U);
+                append_u32le(&block, 0x01020304U); append_u32le(&block, 0x05060708U);
+            } else {
+                append_u16be(&block, 2U); append_u16be(&block, 0x0008U);
+                append_u16be(&block, 4U); append_u32be(&block, 2U);
+                append_u32be(&block, 40U);
+                append_u16be(&block, 0x03ffU); append_u16be(&block, 7U);
+                append_u32be(&block, 8192U); append_u32be(&block, 48U);
+                append_u32be(&block, 0U);
+                append_u32be(&block, 0x01020304U); append_u32be(&block, 0x05060708U);
+            }
+            block.resize(48U + 8192U);
+            std::vector<std::byte> tiff;
+            append_bytes(&tiff, "II"); append_u16le(&tiff, 42U); append_u32le(&tiff, 8U);
+            append_u16le(&tiff, 1U); append_u16le(&tiff, 0xc634U);
+            append_u16le(&tiff, 1U); append_u32le(&tiff, static_cast<uint32_t>(block.size()));
+            append_u32le(&tiff, 26U); append_u32le(&tiff, 0U);
+            tiff.insert(tiff.end(), block.begin(), block.end());
+            MetaStore span_store;
+            ExifDecodeOptions options; options.decode_makernote = true;
+            const auto span_result = decode_exif_tiff(tiff, span_store, {}, options);
+            ASSERT_EQ(span_result.status, ExifDecodeStatus::Ok);
+            MetaStore callback_store;
+            const auto callback_result = decode_makernote_callback(tiff, callback_store, {}, 16384U);
+            ASSERT_TRUE(callback_result.complete());
+            EXPECT_EQ(callback_result.decode.entries_decoded, span_result.entries_decoded);
+            for (MetaStore* store : { &span_store, &callback_store }) {
+                store->finalize();
+                const auto ids = store->find_all(exif_key("mk_pentax0", 0x0008U));
+                ASSERT_EQ(ids.size(), 1U);
+                const Entry& entry = store->entry(ids[0]);
+                const auto raw = store->arena().span(entry.value.data.span);
+                ASSERT_EQ(raw.size(), 8U);
+                std::array<uint32_t, 2> words {};
+                std::memcpy(words.data(), raw.data(), raw.size());
+                EXPECT_EQ(words[0], 0x01020304U); EXPECT_EQ(words[1], 0x05060708U);
+                EXPECT_TRUE(store->find_all(exif_key("mk_pentax_tempinfo_0", 0x000cU)).empty());
+                const auto unknown = store->find_all(exif_key("mk_pentax0", 0x03ffU));
+                ASSERT_EQ(unknown.size(), 1U);
+                EXPECT_EQ(store->entry(unknown[0]).value.count, 8192U);
+            }
+        }
+    }
 }
 
 TEST(MakerNoteDecode, DecodesKodakKdkMakerNote)
@@ -14852,6 +15232,149 @@ TEST(MakerNoteDecode, MapsSamsungType2A002ToCompatPlaceholder)
               std::string_view("SerialNumber"));
     EXPECT_EQ(exif_entry_name(store, e, ExifTagNamePolicy::ExifToolCompat),
               std::string_view("Samsung_Type2_0xa002"));
+}
+
+TEST(MakerNoteDecode, SigmaAndHasselbladValuesUseParentTiffOffsets)
+{
+    for (uint32_t variant = 0U; variant < 6U; ++variant) {
+        SCOPED_TRACE(variant);
+        const bool sigma            = variant < 4U;
+        const bool little           = (variant & 1U) == 0U;
+        const std::string_view make = sigma ? "SIGMA" : "Hasselblad";
+        const size_t prefix         = sigma ? 10U : 0U;
+        std::vector<std::byte> mn(prefix + 18U, std::byte { 0 });
+        if (sigma) {
+            const char* signature = variant < 2U ? "SIGMA" : "FOVEON";
+            std::memcpy(mn.data(), signature, std::strlen(signature));
+            mn[9] = std::byte { 1 };
+        }
+        if (little) {
+            write_u16le_at(&mn, prefix, 1U);
+            write_u16le_at(&mn, prefix + 2U, 0x0002U);
+            write_u16le_at(&mn, prefix + 4U, 2U);
+            write_u32le_at(&mn, prefix + 6U, 8U);
+        } else {
+            write_u16be_at(&mn, prefix, 1U);
+            write_u16be_at(&mn, prefix + 2U, 0x0002U);
+            write_u16be_at(&mn, prefix + 4U, 2U);
+            write_u32be_at(&mn, prefix + 6U, 8U);
+        }
+        std::vector<std::byte> tiff = make_test_tiff_with_makernote(make, mn);
+        const size_t maker_offset   = tiff.size() - mn.size();
+        const size_t value_field    = maker_offset + prefix + 10U;
+        const uint32_t text_offset  = static_cast<uint32_t>(tiff.size());
+        if (little) {
+            write_u32le_at(&tiff, value_field, text_offset);
+        } else {
+            write_u32be_at(&tiff, value_field, text_offset);
+        }
+        append_bytes(&tiff, "1234567");
+        tiff.push_back(std::byte { 0 });
+        MetaStore span_store;
+        std::array<ExifIfdRef, 8> ifds {};
+        ExifDecodeOptions options;
+        options.decode_makernote           = true;
+        const ExifDecodeResult span_result = decode_exif_tiff(tiff, span_store,
+                                                              ifds, options);
+        ASSERT_EQ(span_result.status, ExifDecodeStatus::Ok);
+        MetaStore callback_store;
+        const ExifRandomAccessDecodeResult callback_result
+            = decode_makernote_callback(tiff, callback_store);
+        EXPECT_TRUE(callback_result.complete());
+        EXPECT_EQ(callback_result.decode.status, span_result.status);
+        const std::string_view token     = sigma ? "mk_sigma0" : "mkifd0";
+        std::array<MetaStore*, 2> stores = { &span_store, &callback_store };
+        for (MetaStore* store : stores) {
+            store->finalize();
+            const std::span<const EntryId> ids = store->find_all(
+                exif_key(token, 0x0002U));
+            ASSERT_EQ(ids.size(), 1U);
+            const Entry& entry = store->entry(ids[0]);
+            ASSERT_EQ(entry.value.kind, MetaValueKind::Text);
+            const std::span<const std::byte> raw = store->arena().span(
+                entry.value.data.span);
+            EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(raw.data()),
+                                       raw.size()),
+                      "1234567");
+            EXPECT_FALSE(any(entry.flags, EntryFlags::Unreadable));
+        }
+        if (little) {
+            write_u32le_at(&tiff, value_field, 0xffffff00U);
+        } else {
+            write_u32be_at(&tiff, value_field, 0xffffff00U);
+        }
+        MetaStore malformed_store;
+        const ExifDecodeResult malformed
+            = decode_exif_tiff(tiff, malformed_store, ifds, options);
+        EXPECT_EQ(malformed.status, sigma ? ExifDecodeStatus::Malformed
+                                         : ExifDecodeStatus::Ok);
+        MetaStore malformed_callback;
+        EXPECT_EQ(
+            decode_makernote_callback(tiff, malformed_callback).decode.status,
+            sigma ? ExifDecodeStatus::Malformed : ExifDecodeStatus::Ok);
+    }
+}
+
+TEST(MakerNoteDecode, NonBareHasselbladPayloadsFallThroughAndRemainRaw)
+{
+    std::array<std::vector<std::byte>, 7> notes;
+    append_bytes(&notes[0], std::string_view("L01\0", 4U));
+    append_bytes(&notes[0], "II");
+    append_u16le(&notes[0], 42U);
+    append_u32le(&notes[0], 8U);
+    append_u16le(&notes[0], 1U);
+    append_classic_ifd_entry_le(&notes[0], 0x0100U, 4U, 1U, 640U);
+    append_u32le(&notes[0], 0U);
+    append_bytes(&notes[1], "[ae_dbg_info: diagnostic payload");
+    append_bytes(&notes[2], "DJI MakerNotes opaque payload");
+    append_u16le(&notes[3], 1U);
+    append_classic_ifd_entry_le(&notes[3], 0x7437U, 0xfce4U, 1U, 0U);
+    append_u32le(&notes[3], 0U);
+    append_u16le(&notes[4], 1U);
+    append_classic_ifd_entry_le(&notes[4], 0x0100U, 7U, 8U, UINT32_MAX);
+    append_u32le(&notes[4], 0U);
+    append_u16le(&notes[5], 1U);
+    append_classic_ifd_entry_le(&notes[5], 0x7437U, 0xfce4U, 0U, 0U);
+    append_u32le(&notes[5], 0U);
+    append_bytes(&notes[6], "Opaque");
+    append_u16le(&notes[6], 1U);
+    append_classic_ifd_entry_le(&notes[6], 0x0100U, 4U, 1U, 640U);
+    append_u32le(&notes[6], 0U);
+
+    for (size_t note_index = 0U; note_index < notes.size(); ++note_index) {
+        for (bool callback : { false, true }) {
+            SCOPED_TRACE(note_index);
+            SCOPED_TRACE(callback);
+            const std::vector<std::byte> tiff
+                = make_test_tiff_with_makernote_and_model(
+                    "Hasselblad", "L1D-20c", notes[note_index]);
+            MetaStore store;
+            ExifDecodeResult result;
+            if (callback) {
+                result = decode_makernote_callback(tiff, store).decode;
+            } else {
+                std::array<ExifIfdRef, 8> ifds {};
+                ExifDecodeOptions options;
+                options.decode_makernote = true;
+                result = decode_exif_tiff(tiff, store, ifds, options);
+            }
+            EXPECT_EQ(result.status, ExifDecodeStatus::Ok);
+            if (note_index >= 3U) {
+                EXPECT_EQ(store.block_count(), 2U);
+            }
+            store.finalize();
+            const std::span<const EntryId> raw_ids
+                = store.find_all(exif_key("exififd", 0x927cU));
+            ASSERT_EQ(raw_ids.size(), 1U);
+            const Entry& raw_entry = store.entry(raw_ids[0]);
+            ASSERT_EQ(raw_entry.value.kind, MetaValueKind::Bytes);
+            const std::span<const std::byte> raw_bytes
+                = store.arena().span(raw_entry.value.data.span);
+            ASSERT_EQ(raw_bytes.size(), notes[note_index].size());
+            EXPECT_TRUE(std::equal(raw_bytes.begin(), raw_bytes.end(),
+                                   notes[note_index].begin()));
+        }
+    }
 }
 
 TEST(MakerNoteDecode, MapsSigmaTag0033ToCompatPlaceholderForDp2QuattroModel)

@@ -404,6 +404,7 @@ namespace {
     static std::vector<std::byte> make_crw_with_shotinfo()
     {
         std::vector<std::byte> shot_info;
+        append_u16le(&shot_info, 22U); // Word zero precedes the named fields.
         append_u16le(&shot_info, 100U);
         append_u16le(&shot_info, 200U);
         append_u16le(&shot_info, 300U);
@@ -581,6 +582,7 @@ TEST(CrwCiffDecode, ProjectsNativeCiffSubtables)
     std::array<uint32_t, 64> payload_scratch {};
 
     ExifDecodeOptions exif_opts;
+    exif_opts.decode_makernote = true;
     PayloadOptions payload_opts;
 
     const SimpleMetaResult res = simple_meta_read(file, store, blocks, ifds,
@@ -699,7 +701,7 @@ TEST(CrwCiffDecode, ProjectsNativeCiffSubtables)
     }
     {
         const std::span<const EntryId> ids = store.find_all(
-            exif_key("ciff_300B_3_focallength", 0x0000));
+            exif_key("mk_canon_focallength_0", 0x0000));
         ASSERT_EQ(ids.size(), 1U);
         const Entry& e = store.entry(ids[0]);
         EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
@@ -708,7 +710,7 @@ TEST(CrwCiffDecode, ProjectsNativeCiffSubtables)
     }
     {
         const std::span<const EntryId> ids = store.find_all(
-            exif_key("ciff_300B_3_focallength", 0x0001));
+            exif_key("mk_canon_focallength_0", 0x0001));
         ASSERT_EQ(ids.size(), 1U);
         const Entry& e = store.entry(ids[0]);
         EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
@@ -717,7 +719,7 @@ TEST(CrwCiffDecode, ProjectsNativeCiffSubtables)
     }
     {
         const std::span<const EntryId> ids = store.find_all(
-            exif_key("ciff_300B_3_focallength", 0x0002));
+            exif_key("mk_canon_focallength_0", 0x0002));
         ASSERT_EQ(ids.size(), 1U);
         const Entry& e = store.entry(ids[0]);
         EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
@@ -726,7 +728,7 @@ TEST(CrwCiffDecode, ProjectsNativeCiffSubtables)
     }
     {
         const std::span<const EntryId> ids = store.find_all(
-            exif_key("ciff_300B_3_focallength", 0x0003));
+            exif_key("mk_canon_focallength_0", 0x0003));
         ASSERT_EQ(ids.size(), 1U);
         const Entry& e = store.entry(ids[0]);
         EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
@@ -939,6 +941,7 @@ TEST(CrwCiffDecode, ProjectsNativeRawJpgInfoAndWhiteSampleFields)
     std::array<uint32_t, 64> payload_scratch {};
 
     ExifDecodeOptions exif_opts;
+    exif_opts.decode_makernote = true;
     PayloadOptions payload_opts;
 
     const SimpleMetaResult res = simple_meta_read(file, store, blocks, ifds,
@@ -1017,6 +1020,7 @@ TEST(CrwCiffDecode, ProjectsNativeShotInfoLeadFields)
     std::array<uint32_t, 64> payload_scratch {};
 
     ExifDecodeOptions exif_opts;
+    exif_opts.decode_makernote = true;
     PayloadOptions payload_opts;
 
     const SimpleMetaResult res = simple_meta_read(file, store, blocks, ifds,
@@ -1034,11 +1038,11 @@ TEST(CrwCiffDecode, ProjectsNativeShotInfoLeadFields)
         const Entry& e = store.entry(ids[0]);
         EXPECT_EQ(e.value.kind, MetaValueKind::Array);
         EXPECT_EQ(e.value.elem_type, MetaElementType::U16);
-        EXPECT_EQ(e.value.count, 10U);
+        EXPECT_EQ(e.value.count, 11U);
     }
     {
         const std::span<const EntryId> ids = store.find_all(
-            exif_key("ciff_300B_0_shotinfo", 0x0001));
+            exif_key("mk_canon_shotinfo_0", 0x0001));
         ASSERT_EQ(ids.size(), 1U);
         const Entry& e = store.entry(ids[0]);
         EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
@@ -1047,7 +1051,7 @@ TEST(CrwCiffDecode, ProjectsNativeShotInfoLeadFields)
     }
     {
         const std::span<const EntryId> ids = store.find_all(
-            exif_key("ciff_300B_0_shotinfo", 0x0005));
+            exif_key("mk_canon_shotinfo_0", 0x0005));
         ASSERT_EQ(ids.size(), 1U);
         const Entry& e = store.entry(ids[0]);
         EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
@@ -1056,7 +1060,7 @@ TEST(CrwCiffDecode, ProjectsNativeShotInfoLeadFields)
     }
     {
         const std::span<const EntryId> ids = store.find_all(
-            exif_key("ciff_300B_0_shotinfo", 0x000A));
+            exif_key("mk_canon_shotinfo_0", 0x000A));
         ASSERT_EQ(ids.size(), 1U);
         const Entry& e = store.entry(ids[0]);
         EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);

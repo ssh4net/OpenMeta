@@ -440,6 +440,8 @@ set(OPENMETA_SOURCES
   src/openmeta/meta_store.cc
   src/openmeta/meta_edit.cc
   src/openmeta/meta_value.cc
+  src/openmeta/mrw_decode.cc
+  src/openmeta/nikon_capture_decode.cc
   src/openmeta/ocio_adapter.cc
   src/openmeta/orientation.cc
   src/openmeta/phaseone_geometry.cc
@@ -1025,6 +1027,8 @@ if(OPENMETA_BUILD_TESTS)
     tests/interop_import_test.cc
     tests/dji_app4_decode_test.cc
     tests/makernote_decode_test.cc
+    tests/nikon_raw_gap_test.cc
+    tests/nikon_capture_decode_test.cc
     tests/metadata_capabilities_test.cc
     tests/metadata_concepts_test.cc
     tests/metadata_authoring_serialize_test.cc
@@ -1044,6 +1048,10 @@ if(OPENMETA_BUILD_TESTS)
     tests/metadata_query_test.cc
     tests/metadata_transfer_api_test.cc
     tests/prepared_transfer_handoff_test.cc
+    tests/ciff_raw_gap_test.cc
+    tests/sony_raw_gap_test.cc
+    tests/minolta_a100_gap_test.cc
+    tests/mrw_decode_test.cc
     tests/flir_fff_decode_test.cc
     tests/meta_store_test.cc
     tests/mpf_decode_test.cc

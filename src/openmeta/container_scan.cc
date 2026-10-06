@@ -594,8 +594,10 @@ namespace {
 
 
     static bool scan_x3f_jpeg_sections(std::span<const std::byte> bytes,
-                                       BlockSink* sink) noexcept
+                                       BlockSink* sink,
+                                       bool* valid_directory) noexcept
     {
+        *valid_directory = false;
         if (!sink || bytes.size() < 16U || !match(bytes, 0U, "FOVb", 4U)) {
             return false;
         }
@@ -611,14 +613,15 @@ namespace {
         if (!read_u32le(bytes, dir_off + 8U, &entries)) {
             return false;
         }
-        if (entries > 128U) {
-            sink->result.status = ScanStatus::OutputTruncated;
-            entries             = 128U;
-        }
         if (dir_off + 12ULL + static_cast<uint64_t>(entries) * 12ULL
             > bytes.size()) {
             sink->result.status = ScanStatus::Malformed;
             return false;
+        }
+        *valid_directory = true;
+        if (entries > 128U) {
+            sink->result.status = ScanStatus::OutputTruncated;
+            entries             = 128U;
         }
 
         bool any = false;
@@ -631,6 +634,11 @@ namespace {
             if (!read_u32le(bytes, entry_off + 0U, &section_off)
                 || !read_u32le(bytes, entry_off + 4U, &section_size)
                 || !read_u32le(bytes, entry_off + 8U, &section_tag)) {
+                sink->result.status = ScanStatus::Malformed;
+                return any;
+            }
+            if (section_off > bytes.size()
+                || section_size > bytes.size() - static_cast<uint64_t>(section_off)) {
                 sink->result.status = ScanStatus::Malformed;
                 return any;
             }
@@ -2101,6 +2109,12 @@ scan_x3f_random_access(const RandomAccessSourceRange& x3f,
         result.scan        = sink.result;
         return result;
     }
+    if (12ULL + static_cast<uint64_t>(section_count) * 12ULL
+        > x3f.size - directory_offset) {
+        sink.result.status = ScanStatus::Malformed;
+        result.scan = sink.result;
+        return result;
+    }
     if (section_count > 128U) {
         sink.result.status = ScanStatus::OutputTruncated;
         section_count      = 128U;
@@ -2134,14 +2148,14 @@ scan_x3f_random_access(const RandomAccessSourceRange& x3f,
             sink.result.status = ScanStatus::Malformed;
             break;
         }
-        if (section_tag != x3f_tag('I', 'M', 'A', '2')
-            && section_tag != x3f_tag('I', 'M', 'A', 'G')) {
-            continue;
-        }
         if (section_offset > x3f.size
             || section_size > x3f.size - section_offset) {
             sink.result.status = ScanStatus::Malformed;
             break;
+        }
+        if (section_tag != x3f_tag('I', 'M', 'A', '2')
+            && section_tag != x3f_tag('I', 'M', 'A', 'G')) {
+            continue;
         }
         if (section_size <= 28U) {
             continue;
@@ -2177,10 +2191,6 @@ scan_x3f_random_access(const RandomAccessSourceRange& x3f,
                                                             result.input));
         merge_nested_scan(nested, ContainerFormat::X3f, jpeg_offset, local,
                           &sink, &result.input);
-    }
-
-    if (sink.result.needed == 0U && sink.result.status == ScanStatus::Ok) {
-        sink.result.status = ScanStatus::Unsupported;
     }
     result.scan = sink.result;
     return result;
@@ -6611,7 +6621,8 @@ scan_auto(std::span<const std::byte> bytes,
         BlockSink sink;
         sink.out = out.data();
         sink.cap = static_cast<uint32_t>(out.size());
-        if (scan_x3f_jpeg_sections(bytes, &sink)) {
+        bool valid_directory = false;
+        if (scan_x3f_jpeg_sections(bytes, &sink, &valid_directory)) {
             return sink.result;
         }
         if (sink.result.status == ScanStatus::Malformed) {
@@ -6642,6 +6653,9 @@ scan_auto(std::span<const std::byte> bytes,
                 out[i].format = ContainerFormat::X3f;
             }
             return res;
+        }
+        if (valid_directory) {
+            return sink.result;
         }
     }
 

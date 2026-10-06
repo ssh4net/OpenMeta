@@ -75,6 +75,10 @@ enum class EntryNameContextKind : uint8_t {
     CanonCustomFunctions20510,
     CanonCustomFunctions20701,
     CanonMain0000,
+    CanonColorBalance001D,
+    CanonAfInfo0011,
+    SonyPrivateField,
+    NikonCaptureField,
 };
 
 /// Wire-format element type + family (e.g. TIFF type code).

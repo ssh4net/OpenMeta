@@ -9,6 +9,7 @@
 #include "openmeta/vendor_raw_processing.h"
 
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <span>
@@ -3592,7 +3593,8 @@ namespace {
     static void append_scalar_bounds_rect_candidate(
         const MetaStore& store, MetadataQueryResult* result, EntryId left_id,
         EntryId top_id, EntryId right_id, EntryId bottom_id,
-        MetadataQuerySemanticKind semantic, uint8_t confidence)
+        MetadataQuerySemanticKind semantic, uint8_t confidence,
+        double coordinate_scale = 1.0)
     {
         if (!result || left_id == kInvalidEntryId || top_id == kInvalidEntryId
             || right_id == kInvalidEntryId || bottom_id == kInvalidEntryId) {
@@ -3607,9 +3609,16 @@ namespace {
             || !first_entry_value_to_double(store, top_id, &top)
             || !first_entry_value_to_double(store, right_id, &right)
             || !first_entry_value_to_double(store, bottom_id, &bottom)
-            || left < 0.0 || top < 0.0 || right <= left || bottom <= top) {
+            || !std::isfinite(left) || !std::isfinite(top)
+            || !std::isfinite(right) || !std::isfinite(bottom) || left < 0.0
+            || top < 0.0 || right <= left || bottom <= top) {
             return;
         }
+
+        left *= coordinate_scale;
+        top *= coordinate_scale;
+        right *= coordinate_scale;
+        bottom *= coordinate_scale;
 
         MetadataQueryCandidate candidate;
         candidate.semantic         = semantic;
@@ -3760,7 +3769,9 @@ namespace {
             }
             const std::string_view ifd
                 = arena_string(store.arena(), entry.key.data.exif_tag.ifd);
-            if (!starts_with_ascii_case_insensitive(
+            const bool native_capture = ifd == "mk_nikon_capture_374233e0";
+            if (!native_capture
+                && !starts_with_ascii_case_insensitive(
                     ifd, "mk_nikoncapture_cropdata")) {
                 continue;
             }
@@ -3769,7 +3780,8 @@ namespace {
                 find_first_exif_entry(store, ifd, kNikonCaptureCropTopTag),
                 find_first_exif_entry(store, ifd, kNikonCaptureCropRightTag),
                 find_first_exif_entry(store, ifd, kNikonCaptureCropBottomTag),
-                MetadataQuerySemanticKind::Crop, 88U);
+                MetadataQuerySemanticKind::Crop, 88U,
+                native_capture ? 0.5 : 1.0);
         }
     }
 

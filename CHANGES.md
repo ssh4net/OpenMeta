@@ -1,5 +1,27 @@
 # OpenMeta Changes
 
+## 0.8.7 - 2026-10-06
+
+- Apply the existing MakerNote decode option to expanded CIFF vendor fields and
+  native MRW fields; raw CIFF parents and standard metadata remain available.
+
+- Expand legacy Canon CIFF native tables, including signed capture/settings,
+  colour balance, custom functions and variable-length autofocus positions.
+  Correct the older ShotInfo word offset and keep child-table provenance.
+- Decode bounded Minolta MRW PRD/WBG/RIF fields and Sony embedded little-endian
+  MRI records. Apply camera make/model conditions and preserve metadata bounds.
+- Add Nikon colour-balance, D60 lens, D4S setting and Nikon Capture record fields;
+  add Sony CameraSettings and older private tables with model/layout gates.
+- Follow the Sony A100's bounded Minolta subtree with its own native layouts.
+  Expose bounded Sony MoreInfo records, Tag900b fields and encoded metering
+  metadata without constructing an image representation.
+- Correct Sigma/Hasselblad enclosing-TIFF offsets, legacy RAF header bounds,
+  Kodak private-IFD discovery and Pentax/Samsung DNG private-data routing.
+  Scan valid SD9/SD10 native X3F metadata without requiring a JPEG preview.
+- Retain opaque source carriers, native numeric units and caller resource limits.
+  Extended entry-name contexts persist through snapshot version 1. Public
+  signatures, host-owned synchronization and unfrozen ABI label 4 remain.
+
 ## 0.8.6 - 2026-10-06
 
 - Complete native editing authority for FocalLengthIn35mmFilm, FileSource,

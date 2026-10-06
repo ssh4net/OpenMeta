@@ -809,6 +809,56 @@ namespace {
         EXPECT_EQ(blocks[0].kind, ContainerBlockKind::Exif);
     }
 
+    TEST(ContainerScan, X3fNativeSectionsWithoutJpegAreSupported)
+    {
+        std::vector<std::byte> x3f;
+        append_bytes(&x3f, "FOVb");
+        x3f.resize(40U, std::byte { 0 });
+        append_bytes(&x3f, "SECi");
+        x3f.resize(104U, std::byte { 0x5a });
+        append_bytes(&x3f, "SECp");
+        x3f.resize(152U, std::byte { 0 });
+        const uint32_t directory = static_cast<uint32_t>(x3f.size());
+        append_bytes(&x3f, "SECd");
+        append_u32le(&x3f, 0x00020000U);
+        append_u32le(&x3f, 2U);
+        append_u32le(&x3f, 40U);
+        append_u32le(&x3f, 64U);
+        append_bytes(&x3f, "IMAG");
+        append_u32le(&x3f, 104U);
+        append_u32le(&x3f, 48U);
+        append_bytes(&x3f, "PROP");
+        append_u32le(&x3f, directory);
+        std::array<ContainerBlockRef, 4> blocks {};
+        const ScanResult span = scan_auto(x3f, blocks);
+        EXPECT_EQ(span.status, ScanStatus::Ok);
+        EXPECT_EQ(span.needed, 0U);
+        EXPECT_EQ(span.written, 0U);
+        JpegCallbackState callback { x3f };
+        callback.forbidden_begin = 70U;
+        callback.forbidden_end = 152U;
+        const RandomAccessSource source = make_callback_random_access_source(
+            x3f.size(), &callback, jpeg_read_at);
+        std::array<std::byte, 64> window {};
+        ContainerRandomAccessScratch scratch;
+        scratch.read_window = window;
+        const ContainerRandomAccessScanResult positional
+            = scan_x3f_random_access(make_random_access_source_range(source),
+                                     blocks, scratch);
+        EXPECT_TRUE(positional.input.ok());
+        EXPECT_EQ(positional.scan.status, ScanStatus::Ok);
+        EXPECT_EQ(positional.scan.needed, 0U);
+        EXPECT_FALSE(callback.touched_forbidden);
+        for (uint32_t i = 0U; i < 4U; ++i) {
+            x3f[directory + 24U + i] = std::byte {
+                static_cast<uint8_t>(0xffffff00U >> (i * 8U)) };
+        }
+        EXPECT_EQ(scan_auto(x3f, blocks).status, ScanStatus::Malformed);
+        EXPECT_EQ(scan_x3f_random_access(make_random_access_source_range(source),
+                                         blocks, scratch).scan.status,
+                  ScanStatus::Malformed);
+    }
+
     TEST(ContainerScan, X3fSectionJpegMetadataUsesX3fFormat)
     {
         std::vector<std::byte> jpeg;

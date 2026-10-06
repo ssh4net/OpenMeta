@@ -5,6 +5,7 @@
 #include "bmff_fields_decode_internal.h"
 #include "crw_ciff_decode_internal.h"
 #include "exif_tiff_decode_internal.h"
+#include "mrw_decode_internal.h"
 #include "raf_decode_internal.h"
 #include "x3f_decode_internal.h"
 
@@ -1751,7 +1752,8 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
             one.entries_decoded = 0;
 
             if (ciff_internal::decode_crw_ciff(block_bytes, store,
-                                               options.exif.limits, &one)) {
+                                               options.exif.limits, &one,
+                                               options.exif.decode_makernote)) {
                 merge_exif_status(&exif.status, one.status);
                 exif.entries_decoded += one.entries_decoded;
             } else {
@@ -1949,6 +1951,18 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
         xmp.entries_decoded += one.entries_decoded;
     }
 
+    if (options.exif.decode_makernote
+        && mrw_internal::looks_like_mrw(file_bytes)) {
+        const ExifDecodeResult mrw
+            = mrw_internal::decode_mrw_native(file_bytes, store,
+                                              options.exif.limits);
+        if (mrw.status != ExifDecodeStatus::Unsupported
+            || mrw.entries_decoded > 0U) {
+            any_exif = true;
+            merge_exif_status(&exif.status, mrw.status);
+            exif.entries_decoded += mrw.entries_decoded;
+        }
+    }
     if (!any_exif) {
         exif.status = ExifDecodeStatus::Unsupported;
     }

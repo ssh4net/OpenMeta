@@ -18,12 +18,14 @@ namespace openmeta::ciff_internal {
 bool
 decode_crw_ciff(std::span<const std::byte> file_bytes, MetaStore& store,
                 const ExifDecodeLimits& limits,
-                ExifDecodeResult* status_out) noexcept;
+                ExifDecodeResult* status_out,
+                bool decode_vendor_tables = true) noexcept;
 
 ExifRandomAccessDecodeResult
 decode_crw_ciff_random_access(
     const RandomAccessSourceRange& source, MetaStore& store,
     const ExifRandomAccessScratch& scratch, const ExifDecodeLimits& limits,
-    const RandomAccessReadLimits& read_limits) noexcept;
+    const RandomAccessReadLimits& read_limits,
+    bool decode_vendor_tables = true) noexcept;
 
 }  // namespace openmeta::ciff_internal

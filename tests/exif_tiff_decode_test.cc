@@ -5,6 +5,7 @@
 #include "openmeta/byte_arena.h"
 #include "openmeta/simple_meta.h"
 #include "openmeta/vendor_raw_processing.h"
+#include "../src/openmeta/raf_decode_internal.h"
 
 #include <gtest/gtest.h>
 
@@ -743,25 +744,26 @@ namespace {
         mn.push_back(std::byte { 0 });
         mn.push_back(std::byte { 0 });
 
+        append_u16be(&mn, 2);  // MakerNote version 2
         append_u16be(&mn, 2);  // entry count
 
         append_u16be(&mn, 0x0002);  // SerialNumber
         append_u16be(&mn, 2);       // ASCII
         append_u32be(&mn, 9);
-        append_u32be(&mn, 38);
+        append_u32be(&mn, 62U + 40U);
 
         append_u16be(&mn, 0x0003);  // DriveMode
         append_u16be(&mn, 2);       // ASCII
         append_u32be(&mn, 6);
-        append_u32be(&mn, 47);
+        append_u32be(&mn, 62U + 49U);
 
         append_u32be(&mn, 0);  // next IFD
 
-        EXPECT_EQ(mn.size(), 38U);
+        EXPECT_EQ(mn.size(), 40U);
         append_bytes(&mn, "90301541");
         mn.push_back(std::byte { 0 });
 
-        EXPECT_EQ(mn.size(), 47U);
+        EXPECT_EQ(mn.size(), 49U);
         append_bytes(&mn, "2 Sec");
         mn.push_back(std::byte { 0 });
         return mn;
@@ -819,14 +821,15 @@ namespace {
         mn.push_back(std::byte { 0 });
         mn.push_back(std::byte { 0 });
 
+        append_u16be(&mn, 2);       // MakerNote version 2
         append_u16be(&mn, 1);       // entry count
         append_u16be(&mn, 0x0120);  // WBSettings
         append_u16be(&mn, 11);      // FLOAT
         append_u32be(&mn, 30);
-        append_u32be(&mn, 26);
+        append_u32be(&mn, 62U + 28U);
         append_u32be(&mn, 0);  // next IFD
 
-        EXPECT_EQ(mn.size(), 26U);
+        EXPECT_EQ(mn.size(), 28U);
         for (uint32_t i = 0; i < 30U; ++i) {
             append_u32be(&mn, f32_bits(static_cast<float>(i + 1U)));
         }
@@ -2130,6 +2133,55 @@ TEST(SimpleMetaRead, DecodesRafPreviewJpegExif)
     ASSERT_EQ(date_ids.size(), 1U);
     EXPECT_EQ(arena_string(store.arena(), store.entry(date_ids[0]).value),
               "2024:01:01 00:00:00");
+}
+
+TEST(SimpleMetaRead, LegacyRafHeaderStopsAtDeclaredPreview)
+{
+    std::vector<std::byte> raf;
+    append_bytes(&raf, "FUJIFILMCCD-RAW ");
+    raf.resize(0x3cU, std::byte { 0 });
+    append_bytes(&raf, "0100");
+    raf.resize(0x54U, std::byte { 0 });
+    append_u32be(&raf, 0x6cU);
+    append_u32be(&raf, 0x20U);
+    append_u32be(&raf, 0x100U);
+    append_u32be(&raf, 12U);
+    raf.resize(0x78U, std::byte { 0 });
+    append_u32be(&raf, 0xffff0000U);
+    append_u32be(&raf, 0xffffffffU);
+    raf.resize(0x100U, std::byte { 0 });
+    append_u32be(&raf, 1U);
+    append_u16be(&raf, 0x0100U);
+    append_u16be(&raf, 4U);
+    append_u16be(&raf, 6048U);
+    append_u16be(&raf, 4032U);
+    MetaStore span_store;
+    const ExifDecodeResult span_result
+        = raf_internal::decode_raf_native(raf, span_store, ExifDecodeLimits {});
+    ASSERT_EQ(span_result.status, ExifDecodeStatus::Ok);
+    TiffCallbackState callback { raf };
+    const RandomAccessSource source
+        = make_callback_random_access_source(raf.size(), &callback,
+                                             tiff_read_at);
+    std::array<std::byte, 256> values {};
+    ExifRandomAccessScratch scratch;
+    scratch.value = values;
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = raf_internal::decode_raf_native_random_access(
+            make_random_access_source_range(source), callback_store, scratch,
+            ExifDecodeLimits {}, RandomAccessReadLimits {});
+    ASSERT_EQ(callback_result.decode.status, ExifDecodeStatus::Ok);
+    ASSERT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+    std::array<MetaStore*, 2> stores = { &span_store, &callback_store };
+    for (MetaStore* store : stores) {
+        store->finalize();
+        EXPECT_TRUE(store->find_all(exif_key("raf_header", 0x0078U)).empty());
+        EXPECT_TRUE(store->find_all(exif_key("raf_header", 0x007cU)).empty());
+        ASSERT_EQ(store->find_all(exif_key("raf_0", 0x0100U)).size(), 1U);
+    }
 }
 
 TEST(SimpleMetaRead, DecodesRafNativeDirectory)

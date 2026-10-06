@@ -39,7 +39,7 @@ group names, and intentional-difference notes. Each new lane should add:
 | Canon CRW/CIFF | Partial native lane with bounded positional recursive CIFF directories, stable scalar/subtable decoding, common native names, and derived EXIF bridge | Older Canon private tables and long-tail legacy records | Continue table-by-table decode only where stable validation data exists |
 | Fujifilm RAF | Partial native lane with bounded positional header/directory reads, header-declared preview-JPEG EXIF/XMP and FujiIFD/TIFF traversal, RAF header fields, RAF directory geometry tags, RAFData geometry projection, normalized raw crop/zoom rectangles, and contiguous standalone XMP fallback | Model-specific RAF tables, less common native sections outside the stable carrier/header/directory subset, and callback-safe discovery for undeclared standalone carriers | Extend native RAF section inventory table-by-table, with broader color/correction safety buckets before transfer use |
 | Sigma X3F | Partial native lane with bounded positional header/section-directory/PROP reads and declared section-JPEG metadata traversal, known PROP properties, and contiguous legacy embedded-EXIF fallback | Deeper image-processing/compression sections, model-specific private records, and callback-safe discovery for undeclared carriers | Add X3F native sections only when they expose stable user-visible fields or transfer-safety inputs |
-| Minolta MRW | Contiguous standalone big-endian MRW segment traversal and exact TTW TIFF metadata spans | PRD/WBG/RIF native fields, embedded MRI records, positional callback discovery | Keep non-TTW payloads uninterpreted until their stable field layouts have independent validation |
+| Minolta MRW | Contiguous big-endian MRW TTW and native PRD/WBG/RIF fields; Sony embedded little-endian MRI through buffered or positional TIFF | Unknown native segments and standalone callback discovery | Add native segments only with original evidence and explicit bounds |
 | Panasonic, Olympus, Pentax, Kodak, Minolta, Samsung, Ricoh | Mixed TIFF/EXIF and MakerNote table coverage | Older model tables, preview/correction subtables, and private RAW payloads | Prioritize tables that affect crop, color, lens correction, orientation, or transfer safety |
 | Apple, DJI, Google, FLIR | Live-vendor source-processing classification exists for rendered-transfer safety | Computational, thermal, radiometric, and shot-log interpretation depth | Add decode only for stable fields that hosts can use safely |
 | Rare and legacy RAW families | Raw-preservation-first | Native container and MakerNote depth | Preserve raw blocks, then add support only when validation inputs and stable structure are available |
@@ -49,7 +49,8 @@ group names, and intentional-difference notes. Each new lane should add:
 The shared TIFF lane accepts both Olympus `IIRO` and older `IIRS` headers in
 buffered and positional decoding. Standalone big-endian MRW discovery scans
 exact TTW TIFF spans inside declared metadata segments and excludes the pixel
-tail. PRD/WBG/RIF fields and MRW positional discovery remain separate work.
+tail. Version 0.8.7 adds PRD/WBG/RIF fields and Sony embedded MRI; standalone
+MRW positional discovery remains separate work.
 
 Nikon D300 ShotInfo uses the same `0210` prefix for two layouts: 5,291 bytes
 select layout A and 5,303 bytes select layout B. The choice governs native
@@ -70,6 +71,52 @@ permit references outside the TIFF metadata carrier.
 Grouped comparisons keep direct MakerNotes, NikonCapture/Custom tables and
 Canon CIFF directories distinct. Matching names or flat IDs do not establish
 semantic parity; partial, ambiguous and clipped values remain unqualified.
+
+## Mixed camera corpus expansion (0.8.7)
+
+The grouped reader update adds Canon CIFF CameraSettings, ShotInfo, SensorInfo,
+CustomFunctions, ColorBalance and sequential AFInfo fields. Known signed defaults
+and unsigned overrides keep their native types. ShotInfo uses the correct word
+index; each expanded table keeps its source identity. FocalLength and RawJpgInfo
+retain one structured projection rather than duplicate aliases.
+
+Minolta MRW PRD/WBG/RIF fields and Sony little-endian embedded MRI records stop
+at the declared metadata boundary. Sony RAW image offsets are distinguished
+from valid metadata SubIFDs. TIFF Model/Make are available before private MRI
+expansion, including unsorted root directories. WBG channel naming and conditional
+RIF fields use documented make/model gates.
+
+Nikon additions cover ColorBalanceA/B and early C, LensData 0202, the gated D4S
+selector field and Nikon Capture records. Capture record hashes retain all 32 bits
+in their namespace. Known fields are typed; unknown records and XML stay opaque.
+Raw crop doubles retain their encoded scale; geometry queries normalize the
+confirmed CropData bounds by two and reject nonfinite bounds.
+
+Sony CameraSettings and older private CameraInfo/FocusInfo/MoreInfo records use
+payload length, model, byte order and bit masks. Kodak private-IFD discovery and
+legacy CameraInfo roots retain enclosing-TIFF offsets and prefer a complete
+directory at its recorded pointer over nearby recovery candidates. Unknown Sony
+MoreInfo records retain their bounded byte spans in a separate native table.
+Encoded metering metadata remains source bytes; the reader does not construct
+ExifTool's TIFF representation. Tag900b uses its cipher prefix and model gates.
+Pentax/Samsung DNG private
+carriers distinguish supported TemperatureInfo models from unknown large payloads.
+Sigma/Hasselblad offsets, old RAF header bounds and SD9/SD10 X3F discovery are
+corrected without reading image payloads as metadata.
+
+The Sony A100's nonzero Minolta MakerNote pointer has a separate enclosing-TIFF
+subtree. Its CameraInfo, image-stabilization, white-balance and settings layouts
+use their own source formats and byte order, with an exact A100 model gate.
+Unrecognized Sony private carriers and non-bare Hasselblad notes retain opaque
+handling instead of inheriting a directory error from an unrecognized layout.
+
+These native entries retain encoded numeric values unless an existing documented
+semantic representation applies. ExifTool `-n` still applies ValueConv: Canon
+APEX and focal units, Kodak reciprocal white balance, Nikon Capture exposure/crop
+scales and MRW colour temperature need explicit comparison rules. Matching names,
+flat ID unions or preserved raw parents alone do not establish field parity.
+Unknown layouts, damaged originals and pixel/compression records remain separate
+from the confirmed native-field scope.
 
 ## CR3 carrier inventory (0.6.2)
 

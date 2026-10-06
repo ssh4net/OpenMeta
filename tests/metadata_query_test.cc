@@ -934,6 +934,37 @@ TEST(MetadataQuery, NormalizesNikonCaptureCropData)
     EXPECT_DOUBLE_EQ(candidate->rect[3], 3000.0);
 }
 
+TEST(MetadataQuery, NativeNikonCaptureCropUsesHalfUnitsAndRejectsNonfiniteBounds)
+{
+    for (uint64_t right_bits : { 0x40bf540000000000ULL, 0x7ff0000000000000ULL,
+                                 0x7ff8000000000001ULL }) {
+        MetaStore store;
+        constexpr std::string_view ifd = "mk_nikon_capture_374233e0";
+        (void)add_exif_u32(&store, ifd, 0x001eU, 20U);
+        (void)add_exif_u32(&store, ifd, 0x0026U, 40U);
+        (void)add_exif_u32(&store, ifd, 0x0036U, 6040U);
+        Entry entry;
+        entry.key   = make_exif_tag_key(store.arena(), ifd, 0x002eU);
+        entry.value = make_f64_bits(right_bits);  // 8020, infinity, or NaN.
+        const EntryId id = store.add_entry(entry);
+        store.finalize();
+        const auto result     = query_crop_metadata(store);
+        const auto* candidate = find_candidate(result,
+                                               MetadataQuerySemanticKind::Crop);
+        EXPECT_EQ(store.entry(id).value.data.f64_bits, right_bits);
+        if (right_bits != 0x40bf540000000000ULL) {
+            EXPECT_EQ(candidate, nullptr);
+            continue;
+        }
+        ASSERT_NE(candidate, nullptr);
+        EXPECT_DOUBLE_EQ(candidate->rect[0], 10.0);
+        EXPECT_DOUBLE_EQ(candidate->rect[1], 20.0);
+        EXPECT_DOUBLE_EQ(candidate->rect[2], 4000.0);
+        EXPECT_DOUBLE_EQ(candidate->rect[3], 3000.0);
+        EXPECT_TRUE(contains_entry(candidate->source_entries, id));
+    }
+}
+
 TEST(MetadataQuery, NormalizesSonyPanoramaCropMargins)
 {
     MetaStore store;

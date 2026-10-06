@@ -2757,6 +2757,468 @@ decode_sony_tag9050c_extras(std::span<const std::byte> bytes,
 }
 
 
+#include "exif_makernote_sony_private_fields.inc"
+
+std::string_view
+sony_private_field_name(uint8_t index) noexcept
+{
+    return index < std::size(kSonyPrivateFieldNames)
+               ? kSonyPrivateFieldNames[index]
+               : std::string_view {};
+}
+
+static bool
+sony_private_field_enabled(SonyPrivateGate gate, std::string_view model,
+                           std::span<const std::byte> raw) noexcept
+{
+    const bool legacy = model == "DSLR-A450" || model == "DSLR-A500"
+                        || model == "DSLR-A550";
+    const bool nex35 = model.starts_with("NEX-3") || model.starts_with("NEX-5");
+    uint16_t faces   = 0U;
+    (void)read_u16le(raw, legacy ? 6U : 0U, &faces);
+    if (faces > (legacy ? 8U : 32767U))
+        faces = 0U;
+    switch (gate) {
+    case SonyPrivateGate::Any: return true;
+    case SonyPrivateGate::Modern: return !legacy;
+    case SonyPrivateGate::Legacy: return legacy;
+    case SonyPrivateGate::Slr15:
+        return model.starts_with("SLT-") || model == "DSLR-A560"
+               || model == "DSLR-A580";
+    case SonyPrivateGate::FullFrame:
+        return model == "DSLR-A850" || model == "DSLR-A900";
+    case SonyPrivateGate::NotNex5C: return !model.starts_with("NEX-5C");
+    case SonyPrivateGate::NotNex35: return !nex35;
+    case SonyPrivateGate::NotNex35Exact:
+        return model != "NEX-3" && model != "NEX-5";
+    case SonyPrivateGate::Nex35: return nex35;
+    case SonyPrivateGate::Other: return !legacy && !nex35;
+    case SonyPrivateGate::EntrySlr:
+        return model == "DSLR-A230" || model == "DSLR-A290"
+               || model == "DSLR-A330" || model == "DSLR-A380"
+               || model == "DSLR-A390";
+    case SonyPrivateGate::CountSlr:
+        return sony_private_field_enabled(SonyPrivateGate::EntrySlr, model, raw)
+               || model == "DSLR-A850" || model == "DSLR-A900";
+    case SonyPrivateGate::FocusSlr:
+        return sony_private_field_enabled(SonyPrivateGate::CountSlr, model, raw)
+               || model == "DSLR-A200" || model == "DSLR-A300"
+               || model == "DSLR-A350" || model == "DSLR-A700";
+    default: break;
+    }
+    const uint8_t ordinal = static_cast<uint8_t>(gate);
+    if (ordinal >= static_cast<uint8_t>(SonyPrivateGate::Face1)
+        && ordinal <= static_cast<uint8_t>(SonyPrivateGate::Face8)) {
+        return faces
+               >= ordinal - static_cast<uint8_t>(SonyPrivateGate::Face1) + 1U;
+    }
+    const uint16_t required
+        = ordinal - static_cast<uint8_t>(SonyPrivateGate::PotentialFace1) + 1U;
+    uint16_t test2 = 0U, test8 = 0U;
+    (void)read_u16le(raw, 4U, &test2);
+    (void)read_u16le(raw, 16U, &test8);
+    if (required == 1U)
+        return faces >= 1U || (test8 > 0U && (test2 == 1U || test2 == 257U));
+    return faces >= required || (faces + 1U == required && test8 > 0U);
+}
+
+static void
+decode_sony_private_fields(std::span<const std::byte> raw,
+                           std::string_view suffix,
+                           std::span<const SonyPrivateField> fields,
+                           uint32_t offset_unit, bool le,
+                           std::string_view model, MetaStore& store,
+                           const ExifDecodeOptions& options,
+                           ExifDecodeResult* result) noexcept
+{
+    char token[96];
+    const std::string_view ifd = make_mk_subtable_ifd_token("mk_sony", suffix,
+                                                            0U, token);
+    if (ifd.empty())
+        return;
+    const BlockId block = store.add_block(BlockInfo {});
+    if (block == kInvalidBlockId) {
+        update_status(result, ExifDecodeStatus::LimitExceeded);
+        return;
+    }
+    uint32_t emitted       = 0U;
+    uint32_t previous_tag  = UINT32_MAX;
+    uint32_t previous_mask = 0U;
+    for (const SonyPrivateField& field : fields) {
+        const bool separate_bits = field.mask != 0U && previous_mask != 0U
+                                   && (field.mask & previous_mask) == 0U;
+        if ((previous_tag == field.tag && !separate_bits)
+            || !sony_private_field_enabled(field.gate, model, raw))
+            continue;
+        const size_t offset = size_t(field.tag) * offset_unit;
+        uint32_t width      = 1U;
+        if (field.kind == SonyPrivateKind::U16
+            || field.kind == SonyPrivateKind::I16)
+            width = 2U;
+        if (field.kind == SonyPrivateKind::U32)
+            width = 4U;
+        const size_t size = size_t(width) * field.count;
+        if (offset > raw.size() || size > raw.size() - offset)
+            continue;
+        if (emitted >= options.limits.max_entries_per_ifd
+            || store.entries().size() >= options.limits.max_total_entries
+            || size > options.limits.max_value_bytes) {
+            update_status(result, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        const bool value_le = field.reversed ? !le : le;
+        MetaValue value;
+        if (field.kind == SonyPrivateKind::Bytes) {
+            value = make_bytes(store.arena(), raw.subspan(offset, size));
+        } else if (field.kind == SonyPrivateKind::U8
+                   || field.kind == SonyPrivateKind::I8) {
+            uint32_t byte = u8(raw[offset]);
+            if (field.mask)
+                byte = (byte & field.mask) >> field.shift;
+            value
+                = field.kind == SonyPrivateKind::U8
+                      ? make_u8(static_cast<uint8_t>(byte))
+                      : make_i8(static_cast<int8_t>(
+                            byte < 128U ? int32_t(byte) : int32_t(byte) - 256));
+        } else if (field.kind == SonyPrivateKind::U32) {
+            uint32_t word = 0U;
+            (void)(value_le ? read_u32le(raw, offset, &word)
+                            : read_u32be(raw, offset, &word));
+            if (field.mask)
+                word = (word & field.mask) >> field.shift;
+            value = make_u32(word);
+        } else {
+            std::array<uint16_t, 18> unsigned_values {};
+            std::array<int16_t, 18> signed_values {};
+            if (field.count > unsigned_values.size()) {
+                update_status(result, ExifDecodeStatus::Malformed);
+                return;
+            }
+            for (uint32_t i = 0U; i < field.count; ++i) {
+                uint16_t word = 0U;
+                (void)read_u16_endian(value_le, raw, offset + i * 2U, &word);
+                if (field.mask)
+                    word = static_cast<uint16_t>((word & field.mask)
+                                                 >> field.shift);
+                if (suffix == "faceinfoa" && field.tag == 3U && word > 8U)
+                    word = 0U;
+                unsigned_values[i] = word;
+                signed_values[i]   = static_cast<int16_t>(
+                    word < 32768U ? int32_t(word) : int32_t(word) - 65536);
+            }
+            if (field.count == 1U) {
+                value = field.kind == SonyPrivateKind::U16
+                            ? make_u16(unsigned_values[0])
+                            : make_i16(signed_values[0]);
+            } else if (field.kind == SonyPrivateKind::U16) {
+                value = make_u16_array(
+                    store.arena(),
+                    std::span<const uint16_t>(unsigned_values.data(),
+                                              field.count));
+            } else {
+                value = make_i16_array(store.arena(),
+                                       std::span<const int16_t>(
+                                           signed_values.data(), field.count));
+            }
+        }
+        Entry entry;
+        entry.key          = make_exif_tag_key(store.arena(), ifd, field.tag);
+        entry.origin.block = block;
+        entry.origin.order_in_block    = emitted;
+        entry.origin.wire_type         = WireType { WireFamily::Other, 0U };
+        entry.origin.wire_count        = field.count;
+        entry.origin.name_context_kind = EntryNameContextKind::SonyPrivateField;
+        entry.origin.name_context_variant = field.name_index;
+        entry.flags = EntryFlags::Derived | EntryFlags::ContextualName;
+        entry.value = value;
+        if (store.add_entry(entry) == kInvalidEntryId) {
+            update_status(result, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        ++emitted;
+        previous_tag  = field.tag;
+        previous_mask = field.mask;
+        if (result)
+            ++result->entries_decoded;
+    }
+}
+
+static void
+decode_sony_more_info(std::span<const std::byte> raw, std::string_view model,
+                      MetaStore& store, const ExifDecodeOptions& options,
+                      ExifDecodeResult* result) noexcept
+{
+    uint16_t count = 0U, size = 0U;
+    if (!read_u16le(raw, 0U, &count) || !read_u16le(raw, 2U, &size))
+        return;
+    const size_t header_end = 4U + size_t(count) * 4U;
+    if (count > 50U || header_end > raw.size() || size > raw.size()
+        || size < header_end) {
+        update_status(result, ExifDecodeStatus::Malformed);
+        return;
+    }
+    if (count > options.limits.max_entries_per_ifd) {
+        update_status(result, ExifDecodeStatus::LimitExceeded);
+        return;
+    }
+    std::array<uint16_t, 50> tags {}, offsets {};
+    for (uint32_t i = 0U; i < count; ++i) {
+        (void)read_u16le(raw, 4U + i * 4U, &tags[i]);
+        (void)read_u16le(raw, 6U + i * 4U, &offsets[i]);
+        if (offsets[i] < header_end || offsets[i] > size) {
+            update_status(result, ExifDecodeStatus::Malformed);
+            return;
+        }
+    }
+    const bool legacy = model == "DSLR-A450" || model == "DSLR-A500"
+                        || model == "DSLR-A550";
+    char token[96];
+    const std::string_view directory = make_mk_subtable_ifd_token(
+        "mk_sony", "moreinfo", 0U, token);
+    if (directory.empty())
+        return;
+    const BlockId directory_block = store.add_block(BlockInfo {});
+    if (directory_block == kInvalidBlockId) {
+        update_status(result, ExifDecodeStatus::LimitExceeded);
+        return;
+    }
+    for (uint32_t i = 0U; i < count; ++i) {
+        uint16_t end   = size;
+        bool duplicate = false;
+        for (uint32_t j = 0U; j < count; ++j) {
+            if (i != j && offsets[j] == offsets[i])
+                duplicate = true;
+            if (offsets[j] > offsets[i] && offsets[j] < end)
+                end = offsets[j];
+        }
+        if (duplicate || end == offsets[i])
+            continue;
+        const auto segment = raw.subspan(offsets[i], end - offsets[i]);
+        if (store.entries().size() >= options.limits.max_total_entries
+            || segment.size() > options.limits.max_value_bytes) {
+            update_status(result, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        // Retain every bounded record, including unknown records and encoded
+        // metering samples. No TIFF synthesis or pixel interpretation occurs.
+        Entry record;
+        record.key = make_exif_tag_key(store.arena(), directory, tags[i]);
+        record.origin.block = directory_block;
+        record.origin.order_in_block = i;
+        record.origin.wire_type = WireType { WireFamily::Other, 0U };
+        record.origin.wire_count = static_cast<uint32_t>(segment.size());
+        record.flags = EntryFlags::Derived;
+        if (tags[i] == 0x0107U) {
+            record.origin.name_context_kind = EntryNameContextKind::SonyPrivateField;
+            record.origin.name_context_variant = 196U;
+            record.flags |= EntryFlags::ContextualName;
+        }
+        record.value = make_bytes(store.arena(), segment);
+        if (store.add_entry(record) == kInvalidEntryId) {
+            update_status(result, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        if (result)
+            ++result->entries_decoded;
+        switch (tags[i]) {
+        case 0x0001U:
+            decode_sony_private_fields(segment, "moresettings",
+                                       kSonyMoreSettingsFields, 1U, true, model,
+                                       store, options, result);
+            break;
+        case 0x0002U:
+            if (legacy)
+                decode_sony_private_fields(segment, "faceinfoa",
+                                           kSonyFaceInfoAFields, 2U, true,
+                                           model, store, options, result);
+            else
+                decode_sony_private_fields(segment, "faceinfo",
+                                           kSonyFaceInfoFields, 2U, true, model,
+                                           store, options, result);
+            break;
+        case 0x0201U:
+            decode_sony_private_fields(segment, "moreinfo0201",
+                                       kSonyMoreInfo0201Fields, 1U, true, model,
+                                       store, options, result);
+            break;
+        case 0x0401U:
+            decode_sony_private_fields(segment, "moreinfo0401",
+                                       kSonyMoreInfo0401Fields, 1U, true, model,
+                                       store, options, result);
+            break;
+        default: break;
+        }
+        if (result && result->status == ExifDecodeStatus::LimitExceeded)
+            return;
+    }
+}
+
+static void
+decode_sony_legacy_private(uint16_t tag, std::span<const std::byte> raw,
+                           std::string_view model, MetaStore& store,
+                           const ExifDecodeOptions& options,
+                           ExifDecodeResult* result) noexcept
+{
+    if (tag == 0x0010U) {
+        if (raw.size() == 368U || raw.size() == 5478U)
+            decode_sony_private_fields(raw, "camerainfo", kSonyCameraInfoFields,
+                                       1U, false, model, store, options,
+                                       result);
+        else if (raw.size() == 5506U || raw.size() == 6118U)
+            decode_sony_private_fields(raw, "camerainfo2",
+                                       kSonyCameraInfo2Fields, 1U, true, model,
+                                       store, options, result);
+        else if (raw.size() == 15360U) {
+            decode_sony_private_fields(raw, "camerainfo3",
+                                       kSonyCameraInfo3Fields, 1U, true, model,
+                                       store, options, result);
+            if ((model.starts_with("SLT-") || model == "DSLR-A560"
+                 || model == "DSLR-A580")
+                && !(result
+                     && result->status == ExifDecodeStatus::LimitExceeded)) {
+                decode_sony_private_fields(raw.subspan(0x23U, 36U),
+                                           "afstatus15", kSonyAFStatus15Fields,
+                                           1U, true, model, store, options,
+                                           result);
+            }
+        }
+    } else if (tag == 0x0020U) {
+        if (raw.size() == 19154U || raw.size() == 19148U)
+            decode_sony_private_fields(raw, "focusinfo", kSonyFocusInfoFields,
+                                       1U, true, model, store, options, result);
+        else if (raw.size() == 20480U)
+            decode_sony_more_info(raw, model, store, options, result);
+    }
+}
+#include "exif_makernote_sony_settings.inc"
+
+static void
+decode_sony_camera_settings(std::span<const std::byte> raw,
+                            std::string_view model, MetaStore& store,
+                            const ExifDecodeOptions& options,
+                            ExifDecodeResult* status_out) noexcept
+{
+    std::span<const SonySettingsField> fields;
+    std::string_view suffix;
+    uint32_t unit = 2U;
+    if (raw.size() == 280U || raw.size() == 364U) {
+        fields = kSonyCameraSettingsFields;
+        suffix = "camerasettings";
+    } else if (raw.size() == 332U) {
+        fields = kSonyCameraSettings2Fields;
+        suffix = "camerasettings2";
+    } else if (raw.size() == 1536U || raw.size() == 2048U) {
+        fields = kSonyCameraSettings3Fields;
+        suffix = "camerasettings3";
+        unit   = 1U;
+    } else {
+        return;
+    }
+    const bool legacy = model == "DSLR-A450" || model == "DSLR-A500"
+                        || model == "DSLR-A550";
+    const bool nex     = model.starts_with("NEX-");
+    const bool a_mount = raw.size() > 0x99U && u8(raw[0x99U]) != 1U;
+    char token[96];
+    const std::string_view ifd = make_mk_subtable_ifd_token("mk_sony", suffix,
+                                                            0U, token);
+    if (ifd.empty()) {
+        return;
+    }
+    const BlockId block = store.add_block(BlockInfo {});
+    if (block == kInvalidBlockId) {
+        update_status(status_out, ExifDecodeStatus::LimitExceeded);
+        return;
+    }
+    uint32_t order = 0U;
+    for (const SonySettingsField& field : fields) {
+        bool enabled = true;
+        switch (field.gate) {
+        case SonySettingsGate::Any: break;
+        case SonySettingsGate::Modern: enabled = !legacy; break;
+        case SonySettingsGate::Legacy: enabled = legacy; break;
+        case SonySettingsGate::ModernDslr: enabled = !legacy && !nex; break;
+        case SonySettingsGate::Nex: enabled = nex; break;
+        case SonySettingsGate::NexAMount: enabled = nex && a_mount; break;
+        }
+        if (!enabled) {
+            continue;
+        }
+        if (order >= options.limits.max_entries_per_ifd
+            || store.entries().size() >= options.limits.max_total_entries) {
+            update_status(status_out, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        const uint64_t offset = uint64_t(field.tag) * unit;
+        MetaValue value;
+        uint16_t word  = 0U;
+        uint32_t dword = 0U;
+        switch (field.kind) {
+        case SonySettingsKind::U8:
+        case SonySettingsKind::I8:
+            if (offset >= raw.size()) {
+                continue;
+            }
+            if (field.kind == SonySettingsKind::I8) {
+                const int16_t signed_value
+                    = u8(raw[offset]) < 128U
+                          ? u8(raw[offset])
+                          : static_cast<int16_t>(u8(raw[offset])) - 256;
+                value = make_i8(static_cast<int8_t>(signed_value));
+            } else {
+                value = make_u8(u8(raw[offset]));
+            }
+            break;
+        case SonySettingsKind::U16BE:
+        case SonySettingsKind::U16LE:
+            if (!(field.kind == SonySettingsKind::U16BE
+                      ? read_u16be(raw, offset, &word)
+                      : read_u16le(raw, offset, &word))) {
+                continue;
+            }
+            if (field.mask != 0U) {
+                word = static_cast<uint16_t>((word & field.mask)
+                                             >> field.shift);
+            }
+            value = make_u16(word);
+            break;
+        case SonySettingsKind::U32LE:
+            if (!read_u32le(raw, offset, &dword)) {
+                continue;
+            }
+            if (field.mask != 0U) {
+                dword = (dword & field.mask) >> field.shift;
+            }
+            value = make_u32(dword);
+            break;
+        case SonySettingsKind::U16BE3: {
+            std::array<uint16_t, 3> words {};
+            if (offset > raw.size() || 6U > raw.size() - offset) {
+                continue;
+            }
+            for (uint32_t i = 0U; i < words.size(); ++i) {
+                (void)read_u16be(raw, offset + i * 2U, &words[i]);
+            }
+            value = make_u16_array(store.arena(), words);
+            break;
+        }
+        }
+        Entry entry;
+        entry.key          = make_exif_tag_key(store.arena(), ifd, field.tag);
+        entry.origin.block = block;
+        entry.origin.order_in_block = order++;
+        entry.origin.wire_type      = WireType { WireFamily::Other, 0 };
+        entry.origin.wire_count     = value.count;
+        entry.flags                 = EntryFlags::Derived;
+        entry.value                 = value;
+        if (store.add_entry(entry) == kInvalidEntryId) {
+            update_status(status_out, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        if (status_out) {
+            ++status_out->entries_decoded;
+        }
+    }
+}
 void
 decode_sony_cipher_subdirs(std::string_view mk_ifd0, MetaStore& store,
                            const ExifDecodeOptions& options,
@@ -2771,7 +3233,7 @@ decode_sony_cipher_subdirs(std::string_view mk_ifd0, MetaStore& store,
         MetaValue value;
     };
 
-    Candidate cands[16];
+    Candidate cands[32];
     uint32_t cand_count = 0;
 
     const ByteArena& arena               = store.arena();
@@ -2785,11 +3247,18 @@ decode_sony_cipher_subdirs(std::string_view mk_ifd0, MetaStore& store,
         if (arena_string(arena, e.key.data.exif_tag.ifd) != mk_ifd0) {
             continue;
         }
-        if (e.value.kind != MetaValueKind::Bytes) {
+        if (e.value.kind != MetaValueKind::Bytes
+            && !(e.value.kind == MetaValueKind::Array
+                 && e.value.elem_type == MetaElementType::U8)) {
             continue;
         }
         const uint16_t tag = e.key.data.exif_tag.tag;
         switch (tag) {
+        case 0x0010:  // CameraInfo
+        case 0x0020:  // FocusInfo / MoreInfo
+        case 0x0114:  // CameraSettings
+        case 0x0116:  // ExtraInfo
+        case 0x900B:  // Tag900b face detection
         case 0x9050:  // Tag9050*
         case 0x3000:  // ShotInfo
         case 0x9400:  // Tag9400*
@@ -2858,6 +3327,50 @@ decode_sony_cipher_subdirs(std::string_view mk_ifd0, MetaStore& store,
         std::memcpy(stable_storage.get(), arena_raw.data(), arena_raw.size());
         const std::span<const std::byte> raw(stable_storage.get(),
                                              arena_raw.size());
+
+        if (tag == 0x0010U || tag == 0x0020U) {
+            decode_sony_legacy_private(tag, raw, model, store, options, status_out);
+            continue;
+        }
+
+        if (tag == 0x0114U) {
+            decode_sony_camera_settings(raw, model, store, options, status_out);
+            continue;
+        }
+
+        if (tag == 0x0116U) {
+            const auto matches_model = [model](std::string_view prefix) {
+                if (!model.starts_with(prefix))
+                    return false;
+                if (model.size() == prefix.size())
+                    return true;
+                const char next = model[prefix.size()];
+                return !((next >= 'a' && next <= 'z')
+                         || (next >= 'A' && next <= 'Z')
+                         || (next >= '0' && next <= '9') || next == '_');
+            };
+            if (matches_model("DSLR-A850") || matches_model("DSLR-A900"))
+                decode_sony_private_fields(raw, "extrainfo", kSonyExtraInfoFields,
+                                           1U, false, model, store, options,
+                                           status_out);
+            continue;
+        }
+
+        if (tag == 0x900bU) {
+            // Sony.pm selects this format only for an enciphered 0xae prefix.
+            if (u8(raw[0]) == 0xaeU) {
+                static constexpr SonyCipherField fields[] = {
+                    { 0x0002U, SonyCipherFieldKind::U8 },
+                    { 0x00bdU, SonyCipherFieldKind::U8 },
+                };
+                const bool legacy = model == "DSLR-A450" || model == "DSLR-A500"
+                                    || model == "DSLR-A550";
+                sony_decode_cipher_fields(raw, mk_prefix, "tag900b", 1U,
+                    std::span<const SonyCipherField>(fields, legacy ? 1U : 2U),
+                    store, options, status_out);
+            }
+            continue;
+        }
 
         if (tag == 0x3000) {
             decode_sony_shotinfo_from_tag3000(raw, mk_prefix, store, options,

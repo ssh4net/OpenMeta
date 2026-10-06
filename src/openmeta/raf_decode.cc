@@ -33,6 +33,17 @@ namespace {
 
     static uint8_t u8(std::byte b) noexcept { return static_cast<uint8_t>(b); }
 
+    static std::span<const std::byte>
+    raf_header_span(std::span<const std::byte> bytes) noexcept
+    {
+        uint32_t preview_offset = 0U;
+        if (exif_internal::read_u32be(bytes, 0x54U, &preview_offset)
+            && preview_offset != 0U && preview_offset < bytes.size()) {
+            return bytes.first(preview_offset);
+        }
+        return bytes;
+    }
+
     static bool is_printable_ascii(std::span<const std::byte> bytes) noexcept
     {
         for (size_t i = 0; i < bytes.size(); ++i) {
@@ -379,15 +390,16 @@ decode_raf_native(std::span<const std::byte> file_bytes, MetaStore& store,
         return out;
     }
 
-    bool any = emit_header_fields(file_bytes, store, block, limits, &out);
+    const std::span<const std::byte> header = raf_header_span(file_bytes);
+    bool any = emit_header_fields(header, store, block, limits, &out);
 
     static constexpr uint64_t kDirOffsetFields[] = { 0x5cU, 0x78U };
     static constexpr uint64_t kDirLengthFields[] = { 0x60U, 0x7cU };
     for (uint32_t i = 0; i < std::size(kDirOffsetFields); ++i) {
         uint32_t dir_off = 0;
         uint32_t dir_len = 0;
-        if (!exif_internal::read_u32be(file_bytes, kDirOffsetFields[i], &dir_off)
-            || !exif_internal::read_u32be(file_bytes, kDirLengthFields[i],
+        if (!exif_internal::read_u32be(header, kDirOffsetFields[i], &dir_off)
+            || !exif_internal::read_u32be(header, kDirLengthFields[i],
                                           &dir_len)) {
             continue;
         }
@@ -445,7 +457,8 @@ decode_raf_native_random_access(
         != RandomAccessReadCode::Ok) {
         return result;
     }
-    const std::span<const std::byte> header_bytes(header.data(), header_size);
+    const std::span<const std::byte> header_bytes = raf_header_span(
+        std::span<const std::byte>(header.data(), header_size));
     if (!looks_like_raf(header_bytes)) {
         return result;
     }

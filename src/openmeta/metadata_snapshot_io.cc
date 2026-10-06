@@ -331,7 +331,7 @@ namespace {
                && span_is_valid(origin.wire_type_name, arena_size)
                && static_cast<uint8_t>(origin.name_context_kind)
                       <= static_cast<uint8_t>(
-                          EntryNameContextKind::CanonMain0000);
+                          EntryNameContextKind::NikonCaptureField);
     }
 
     static bool write_key(WireWriter* out, const MetaKey& key) noexcept
@@ -500,7 +500,7 @@ namespace {
             || !in->u8(&origin->name_context_variant)
             || family > static_cast<uint8_t>(WireFamily::Other)
             || context > static_cast<uint8_t>(
-                   EntryNameContextKind::CanonMain0000)) {
+                   EntryNameContextKind::NikonCaptureField)) {
             return false;
         }
         origin->wire_type.family  = static_cast<WireFamily>(family);

@@ -69,6 +69,13 @@ namespace {
     }
 
 
+    static bool has_legacy_camera_info_layout(std::string_view model) noexcept
+    {
+        return model == "KODAK P712 ZOOM DIGITAL CAMERA"
+               || model == "KODAK P850 ZOOM DIGITAL CAMERA"
+               || model == "KODAK P880 ZOOM DIGITAL CAMERA";
+    }
+
     static std::string_view
     select_kodak_absolute_ifd_subtable(std::string_view model,
                                        bool has_byte_order_marker) noexcept
@@ -723,6 +730,27 @@ namespace {
         ClassicIfdCandidate best;
         bool found = false;
 
+        // A pointer can be byte-aligned. Include its exact address before the
+        // nearby two-byte heuristic walk, which may have the opposite parity.
+        for (int endian = 0; endian < 2; ++endian) {
+            TiffConfig cfg;
+            cfg.le      = endian == 0;
+            cfg.bigtiff = false;
+            ClassicIfdCandidate candidate;
+            if (score_classic_ifd_candidate(cfg, bytes, approx_off, limits,
+                                            &candidate)
+                && (!found || candidate.valid_entries > best.valid_entries)) {
+                // A complete directory at the recorded pointer takes
+                // precedence over larger unrelated directories nearby.
+                if (candidate.valid_entries == candidate.entry_count) {
+                    *out = candidate;
+                    return true;
+                }
+                best  = candidate;
+                found = true;
+            }
+        }
+
         const uint64_t start = (approx_off > radius) ? (approx_off - radius)
                                                      : 0;
         const uint64_t end   = ((approx_off + radius) < bytes.size())
@@ -1311,7 +1339,9 @@ namespace {
                     have_best = true;
                 }
             }
-            if (!have_best || best.valid_entries < 4) {
+            const bool complete_legacy = has_legacy_camera_info_layout(model)
+                && best.entry_count >= 2U && best.valid_entries == best.entry_count;
+            if (!have_best || (best.valid_entries < 4U && !complete_legacy)) {
                 return false;
             }
             cfg.le   = best.le;
@@ -1736,6 +1766,22 @@ namespace {
                                                       : approx_off + radius;
         ClassicIfdCandidate best;
         bool found = false;
+        for (uint32_t endian = 0U; endian < 2U; ++endian) {
+            TiffConfig cfg;
+            cfg.le      = endian == 0U;
+            cfg.bigtiff = false;
+            ClassicIfdCandidate candidate;
+            if (score_source_kodak_ifd(source, cfg, approx_off, limits,
+                                       &candidate)
+                && (!found || candidate.valid_entries > best.valid_entries)) {
+                if (candidate.valid_entries == candidate.entry_count) {
+                    *out = candidate;
+                    return true;
+                }
+                best  = candidate;
+                found = true;
+            }
+        }
         for (uint64_t off = start; off <= end && end - off >= 2U; off += 2U) {
             for (uint32_t endian = 0U; endian < 2U; ++endian) {
                 TiffConfig cfg;
@@ -1902,7 +1948,9 @@ namespace {
                     found = true;
                 }
             }
-            if (!found || main.valid_entries < 4U) {
+            const bool complete_legacy = has_legacy_camera_info_layout(model)
+                && main.entry_count >= 2U && main.valid_entries == main.entry_count;
+            if (!found || (main.valid_entries < 4U && !complete_legacy)) {
                 return SourceKodakResult::NotRecognized;
             }
         }
@@ -2018,6 +2066,51 @@ namespace {
     }
 
 }  // namespace
+
+void
+decode_kodak_ifd_processing(const TiffConfig& cfg, MetaStore& store,
+                             const ExifDecodeOptions& options,
+                             ExifDecodeResult* result) noexcept
+{
+    ExifContext context(store);
+    MetaValue processing;
+    if (!context.find_first_value("mk_kodak_ifd_0", 0x03fdU, &processing)
+        || processing.kind != MetaValueKind::Bytes || processing.count != 72U) {
+        return;
+    }
+    const std::span<const std::byte> raw = store.arena().span(processing.data.span);
+    if (raw.size() != 72U) {
+        return;
+    }
+    if (options.limits.max_entries_per_ifd == 0U
+        || store.entries().size() >= options.limits.max_total_entries
+        || options.limits.max_value_bytes < 6U) {
+        update_status(result, ExifDecodeStatus::LimitExceeded);
+        return;
+    }
+    std::array<uint16_t, 3> levels {};
+    for (size_t i = 0U; i < levels.size(); ++i) {
+        (void)read_tiff_u16(cfg, raw, 40U + i * 2U, &levels[i]);
+    }
+    const BlockId block = store.add_block(BlockInfo {});
+    if (block == kInvalidBlockId) {
+        update_status(result, ExifDecodeStatus::LimitExceeded);
+        return;
+    }
+    Entry entry;
+    entry.key = make_exif_tag_key(store.arena(), "mk_kodak_processing_0", 0x0014U);
+    entry.origin.block = block;
+    entry.origin.wire_type = WireType { WireFamily::Other, 0U };
+    entry.origin.wire_count = 3U;
+    entry.flags = EntryFlags::Derived;
+    entry.value = make_u16_array(store.arena(), levels);
+    if (store.add_entry(entry) == kInvalidEntryId) {
+        update_status(result, ExifDecodeStatus::LimitExceeded);
+    } else if (result) {
+        ++result->entries_decoded;
+    }
+}
+
 
 bool
 decode_kodak_makernote(const TiffConfig& parent_cfg,

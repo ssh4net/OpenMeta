@@ -4,6 +4,7 @@
 
 #include "openmeta/exif_tag_names.h"
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 
@@ -2636,6 +2637,58 @@ decode_canon_i32_table(const TiffConfig& cfg, std::span<const std::byte> bytes,
 
 
 static void
+decode_canon_wbinfo(const TiffConfig& cfg, std::span<const std::byte> raw,
+                    MetaStore& store, const ExifDecodeOptions& options,
+                    ExifDecodeResult* result) noexcept
+{
+    static constexpr uint16_t tags[] = {
+        0x0002U, 0x000aU, 0x0012U, 0x001aU, 0x0022U,
+        0x002aU, 0x0032U, 0x003aU, 0x0042U, 0x004aU
+    };
+    const BlockId block = store.add_block(BlockInfo {});
+    if (block == kInvalidBlockId) {
+        update_status(result, ExifDecodeStatus::LimitExceeded);
+        return;
+    }
+    uint32_t emitted = 0U;
+    for (uint16_t tag : tags) {
+        const size_t offset = static_cast<size_t>(tag) * 4U;
+        if (offset > raw.size() || raw.size() - offset < 16U) {
+            continue;
+        }
+        if (emitted >= options.limits.max_entries_per_ifd
+            || store.entries().size() >= options.limits.max_total_entries
+            || options.limits.max_value_bytes < 16U) {
+            update_status(result, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        std::array<int32_t, 4> levels {};
+        for (size_t i = 0U; i < levels.size(); ++i) {
+            uint32_t value = 0U;
+            (void)read_tiff_u32(cfg, raw, offset + i * 4U, &value);
+            levels[i] = canon_to_i32(value);
+        }
+        Entry entry;
+        entry.key = make_exif_tag_key(store.arena(), "mk_canon_wbinfo_0", tag);
+        entry.origin.block = block;
+        entry.origin.order_in_block = emitted;
+        entry.origin.wire_type = WireType { WireFamily::Other, 0U };
+        entry.origin.wire_count = 4U;
+        entry.value = make_i32_array(store.arena(), levels);
+        entry.flags = EntryFlags::Derived;
+        if (store.add_entry(entry) == kInvalidEntryId) {
+            update_status(result, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        ++emitted;
+        if (result) {
+            ++result->entries_decoded;
+        }
+    }
+}
+
+
+static void
 decode_canon_psinfo_table(std::span<const std::byte> bytes, uint64_t value_off,
                           uint64_t value_bytes, std::string_view ifd_name,
                           MetaStore& store, const ExifDecodeOptions& options,
@@ -3933,6 +3986,14 @@ decode_canon_makernote(const TiffConfig& cfg,
         char sub_ifd_buf[96];
         const std::string_view mk_prefix = "mk_canon";
 
+        if (tag == 0x0029U && (type == 1U || type == 4U || type == 7U)
+            && model == "Canon PowerShot G9") {
+            decode_canon_wbinfo(mk_cfg,
+                                tiff_bytes.subspan(static_cast<size_t>(abs_value_off),
+                                                   static_cast<size_t>(value_bytes)),
+                                store, options, status_out);
+        }
+
         // CanonCameraInfo* (tag 0x000d) often contains an embedded TIFF-like
         // IFD stream describing a "CameraInfo" block. Best-effort: locate a
         // plausible classic IFD and decode it into mk_canon_camerainfo_0.
@@ -3943,7 +4004,8 @@ decode_canon_makernote(const TiffConfig& cfg,
             ClassicIfdCandidate best;
             const bool has_best
                 = find_best_classic_ifd_candidate(cam, 512, options.limits,
-                                                  &best);
+                                                  &best)
+                  && best.valid_entries == best.entry_count;
             uint32_t cam_tag_extent = (cam.size() > 0U) ? static_cast<uint32_t>(
                                                               cam.size() - 1U)
                                                         : 0U;
@@ -4436,4 +4498,280 @@ decode_canon_makernote(const TiffConfig& cfg,
     return true;
 }
 
+void
+decode_canon_ciff_binary_table(std::span<const std::byte> raw, bool le,
+                               uint16_t source_tag, uint32_t index,
+                               std::string_view model, MetaStore& store,
+                               const ExifDecodeLimits& limits,
+                               ExifDecodeResult* result) noexcept
+{
+    if (raw.empty() || raw.size() % 2U != 0U)
+        return;
+    const size_t count = raw.size() / 2U;
+    if (count > limits.max_entries_per_ifd
+        || raw.size() > limits.max_value_bytes) {
+        update_status(result, ExifDecodeStatus::LimitExceeded);
+        return;
+    }
+    store.constrain_resources(limits.max_total_entries, limits.max_arena_bytes);
+    if (store.resource_limit_exceeded()) {
+        update_status(result, ExifDecodeStatus::LimitExceeded);
+        return;
+    }
+    const TiffConfig cfg { le, false };
+    char token[96];
+    auto family = [&](std::string_view name) noexcept {
+        for (size_t i = 0U; i + name.size() <= model.size(); ++i) {
+            if (!canon_ascii_contains_insensitive(model.substr(i, name.size()),
+                                                  name))
+                continue;
+            const size_t end = i + name.size();
+            const char c     = end < model.size() ? model[end] : '\0';
+            const bool word  = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                              || (c >= '0' && c <= '9') || c == '_';
+            if (!word)
+                return true;
+        }
+        return false;
+    };
+    if (source_tag == 0x1033U) {
+        uint16_t declared = 0U;
+        (void)read_tiff_u16(cfg, raw, 0U, &declared);
+        const bool d60 = family("EOS D60");
+        if (declared != raw.size()
+            && !(d60 && size_t(declared) + 2U == raw.size())) {
+            update_status(result, ExifDecodeStatus::Malformed);
+            return;
+        }
+        const std::string_view suffix = family("EOS 10D")
+                                            ? "functions10d"
+                                            : ((family("EOS D30") || d60)
+                                                   ? "functionsd30"
+                                                   : "functionsunknown");
+        const auto ifd = make_mk_subtable_ifd_token("mk_canoncustom", suffix,
+                                                    index, token);
+        const BlockId block = store.add_block(BlockInfo {});
+        if (block == kInvalidBlockId) {
+            update_status(result, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        for (uint32_t i = 1U; i < count; ++i) {
+            if (store.entries().size() >= limits.max_total_entries) {
+                update_status(result, ExifDecodeStatus::LimitExceeded);
+                return;
+            }
+            uint16_t word = 0U;
+            (void)read_tiff_u16(cfg, raw, size_t(i) * 2U, &word);
+            const uint16_t tag = uint16_t(word >> 8U);
+            Entry entry;
+            entry.key          = make_exif_tag_key(store.arena(), ifd, tag);
+            entry.value        = make_u8(uint8_t(word & 0xffU));
+            entry.flags        = EntryFlags::Derived;
+            entry.origin.block = block;
+            entry.origin.order_in_block = i - 1U;
+            entry.origin.wire_type = WireType { WireFamily::Other, source_tag };
+            entry.origin.wire_count = 1U;
+            canon_maybe_mark_contextual_name(model, ifd, tag, &entry);
+            if (store.add_entry(entry) == kInvalidEntryId) {
+                update_status(result, ExifDecodeStatus::LimitExceeded);
+                return;
+            }
+            if (result)
+                ++result->entries_decoded;
+        }
+        return;
+    }
+    if (source_tag == 0x1038U) {
+        uint16_t points = 0U;
+        (void)read_tiff_u16(cfg, raw, 0U, &points);
+        // These point counts define the documented older serial AF layout.
+        if (points != 1U && points != 5U && points != 7U && points != 9U
+            && points != 15U && points != 45U && points != 53U)
+            return;
+        const uint32_t focus_words = (uint32_t(points) + 15U) / 16U;
+        const size_t minimum = 16U + size_t(points) * 4U + focus_words * 2U;
+        if (raw.size() < minimum) {
+            update_status(result, ExifDecodeStatus::Malformed);
+            return;
+        }
+        const bool eos = canon_ascii_contains_insensitive(model, "EOS");
+        const bool primary_after_unknown = !eos && count == 36U;
+        const size_t primary_offset      = minimum
+                                      + (primary_after_unknown ? 16U : 0U);
+        const bool primary       = !eos && primary_offset + 2U <= raw.size();
+        const bool unknown_array = primary_after_unknown
+                                   && minimum + 16U <= raw.size();
+        const uint32_t fields = 11U + (primary ? 1U : 0U)
+                                + (unknown_array ? 1U : 0U);
+        if (fields > limits.max_entries_per_ifd
+            || store.entries().size() > limits.max_total_entries
+            || fields > limits.max_total_entries - store.entries().size()) {
+            update_status(result, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        const auto ifd = make_mk_subtable_ifd_token("mk_canon", "afinfo", index,
+                                                    token);
+        const BlockId block = store.add_block(BlockInfo {});
+        if (block == kInvalidBlockId) {
+            update_status(result, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        uint32_t order = 0U;
+        auto emit      = [&](uint16_t tag, const MetaValue& value) noexcept {
+            Entry entry;
+            entry.key          = make_exif_tag_key(store.arena(), ifd, tag);
+            entry.value        = value;
+            entry.flags        = EntryFlags::Derived;
+            entry.origin.block = block;
+            entry.origin.order_in_block = order;
+            entry.origin.wire_type = WireType { WireFamily::Other, source_tag };
+            entry.origin.wire_count = value.count;
+            if (tag == 11U && unknown_array) {
+                entry.flags |= EntryFlags::ContextualName;
+                entry.origin.name_context_kind
+                    = EntryNameContextKind::CanonAfInfo0011;
+            }
+            if (store.add_entry(entry) == kInvalidEntryId) {
+                update_status(result, ExifDecodeStatus::LimitExceeded);
+                return false;
+            }
+            ++order;
+            if (result)
+                ++result->entries_decoded;
+            return true;
+        };
+        for (uint16_t tag = 0U; tag < 8U; ++tag) {
+            uint16_t value = 0U;
+            (void)read_tiff_u16(cfg, raw, size_t(tag) * 2U, &value);
+            if (!emit(tag, make_u16(value)))
+                return;
+        }
+        size_t offset = 16U;
+        for (uint16_t tag = 8U; tag <= 10U; ++tag) {
+            const uint32_t elements = tag == 10U ? focus_words : points;
+            if (elements * 2U > limits.max_value_bytes) {
+                update_status(result, ExifDecodeStatus::LimitExceeded);
+                return;
+            }
+            std::array<int16_t, 53> values {};
+            for (uint32_t i = 0U; i < elements; ++i) {
+                uint16_t bits = 0U;
+                (void)read_tiff_u16(cfg, raw, offset + i * 2U, &bits);
+                values[i] = static_cast<int16_t>(
+                    bits < 32768U ? int32_t(bits) : int32_t(bits) - 65536);
+            }
+            if (!emit(tag, make_i16_array(store.arena(),
+                                          std::span<const int16_t>(values.data(),
+                                                                   elements))))
+                return;
+            offset += elements * 2U;
+        }
+        if (unknown_array) {
+            std::array<uint16_t, 8> values {};
+            for (size_t i = 0U; i < values.size(); ++i)
+                (void)read_tiff_u16(cfg, raw, minimum + i * 2U, &values[i]);
+            if (!emit(11U, make_u16_array(store.arena(), values)))
+                return;
+        }
+        if (primary) {
+            uint16_t value = 0U;
+            (void)read_tiff_u16(cfg, raw, primary_offset, &value);
+            (void)emit(primary_after_unknown ? 12U : 11U, make_u16(value));
+        }
+        return;
+    }
+    if (source_tag == 0x10a9U) {
+        const auto ifd = make_mk_subtable_ifd_token("mk_canon", "colorbalance",
+                                                    index, token);
+        const BlockId block = store.add_block(BlockInfo {});
+        if (block == kInvalidBlockId) {
+            update_status(result, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        uint32_t order = 0U;
+        for (uint16_t tag = 1U; tag <= 37U; tag += 4U) {
+            const size_t offset = size_t(tag) * 2U;
+            if (offset > raw.size() || 8U > raw.size() - offset)
+                continue;
+            if (order >= limits.max_entries_per_ifd
+                || store.entries().size() >= limits.max_total_entries) {
+                update_status(result, ExifDecodeStatus::LimitExceeded);
+                return;
+            }
+            std::array<int16_t, 4> levels {};
+            for (size_t i = 0; i < levels.size(); ++i) {
+                uint16_t bits = 0U;
+                (void)read_tiff_u16(cfg, raw, offset + i * 2U, &bits);
+                levels[i] = static_cast<int16_t>(
+                    bits < 32768U ? int32_t(bits) : int32_t(bits) - 65536);
+            }
+            Entry entry;
+            entry.key          = make_exif_tag_key(store.arena(), ifd, tag);
+            entry.origin.block = block;
+            entry.origin.order_in_block = order++;
+            entry.origin.wire_type = WireType { WireFamily::Other, source_tag };
+            entry.origin.wire_count = 4U;
+            entry.flags             = EntryFlags::Derived;
+            if (tag == 29U && family("EOS D60")) {
+                entry.flags |= EntryFlags::ContextualName;
+                entry.origin.name_context_kind
+                    = EntryNameContextKind::CanonColorBalance001D;
+            }
+            entry.value = make_i16_array(store.arena(), levels);
+            if (store.add_entry(entry) == kInvalidEntryId) {
+                update_status(result, ExifDecodeStatus::LimitExceeded);
+                return;
+            }
+            if (result)
+                ++result->entries_decoded;
+        }
+        return;
+    }
+    std::string_view suffix;
+    switch (source_tag) {
+    case 0x1029U: suffix = "focallength"; break;
+    case 0x102dU: suffix = "camerasettings"; break;
+    case 0x102aU: suffix = "shotinfo"; break;
+    case 0x1031U: suffix = "sensorinfo"; break;
+    default: return;
+    }
+    const auto ifd      = make_mk_subtable_ifd_token("mk_canon", suffix, index,
+                                                     token);
+    const BlockId block = store.add_block(BlockInfo {});
+    if (block == kInvalidBlockId) {
+        update_status(result, ExifDecodeStatus::LimitExceeded);
+        return;
+    }
+    for (uint32_t tag = 0U; tag < count && tag <= UINT16_MAX; ++tag) {
+        if (exif_tag_name(ifd, uint16_t(tag)).empty())
+            continue;
+        if (store.entries().size() >= limits.max_total_entries) {
+            update_status(result, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        uint16_t bits = 0U;
+        (void)read_tiff_u16(cfg, raw, size_t(tag) * 2U, &bits);
+        const bool unsigned_field
+            = source_tag == 0x1029U
+              || (source_tag == 0x102dU && tag >= 22U && tag <= 24U)
+              || (source_tag == 0x102aU && (tag == 19U || tag == 20U));
+        const int16_t signed_value = static_cast<int16_t>(
+            bits < 32768U ? int32_t(bits) : int32_t(bits) - 65536);
+        Entry entry;
+        entry.key   = make_exif_tag_key(store.arena(), ifd, uint16_t(tag));
+        entry.value = unsigned_field ? make_u16(bits) : make_i16(signed_value);
+        entry.flags = EntryFlags::Derived;
+        entry.origin.block          = block;
+        entry.origin.order_in_block = tag;
+        entry.origin.wire_type  = WireType { WireFamily::Other, source_tag };
+        entry.origin.wire_count = 1U;
+        canon_maybe_mark_contextual_name(model, ifd, uint16_t(tag), &entry);
+        if (store.add_entry(entry) == kInvalidEntryId) {
+            update_status(result, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        if (result)
+            ++result->entries_decoded;
+    }
+}
 }  // namespace openmeta::exif_internal

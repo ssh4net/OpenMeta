@@ -271,6 +271,11 @@ namespace exif_internal {
                          const ExifDecodeLimits& limits,
                          ExifDecodeResult* status_out) noexcept;
 
+    void decode_canon_ciff_binary_table(
+        std::span<const std::byte> raw, bool le, uint16_t source_tag,
+        uint32_t index, std::string_view model, MetaStore& store,
+        const ExifDecodeLimits& limits, ExifDecodeResult* result) noexcept;
+
     bool decode_canon_makernote(const TiffConfig& parent_cfg,
                                 std::span<const std::byte> tiff_bytes,
                                 uint64_t maker_note_off,
@@ -314,6 +319,10 @@ namespace exif_internal {
         std::string_view mk_ifd0, MetaStore& store,
         const ExifDecodeOptions& options,
         ExifDecodeResult* status_out) noexcept;
+
+    void decode_kodak_ifd_processing(const TiffConfig& cfg, MetaStore& store,
+                                      const ExifDecodeOptions& options,
+                                      ExifDecodeResult* result) noexcept;
 
     bool decode_kodak_makernote(const TiffConfig& parent_cfg,
                                 std::span<const std::byte> tiff_bytes,
@@ -372,6 +381,12 @@ namespace exif_internal {
         SourceTiffReader* source, const TiffConfig& parent_cfg,
         uint64_t maker_note_off, std::span<const std::byte> maker_note,
         std::string_view mk_ifd0, MetaStore& store,
+        const ExifDecodeOptions& options,
+        ExifDecodeResult* status_out) noexcept;
+
+    void decode_minolta_a100_subtree_from_source(
+        SourceTiffReader* source, const TiffConfig& parent_cfg,
+        uint32_t ifd_offset, MetaStore& store,
         const ExifDecodeOptions& options,
         ExifDecodeResult* status_out) noexcept;
 

@@ -4,6 +4,12 @@
 #include "openmeta/meta_store.h"
 
 #include <cstdint>
+#include <span>
+
+namespace openmeta::exif_internal {
+std::string_view sony_private_field_name(uint8_t index) noexcept;
+std::string_view nikon_capture_field_name(uint8_t index) noexcept;
+}
 
 namespace openmeta {
 std::string_view
@@ -820,6 +826,60 @@ namespace {
                                ExifTagNamePolicy policy,
                                std::string_view canonical) noexcept
     {
+        if (any(entry.flags, EntryFlags::ContextualName)
+            && entry.origin.name_context_kind
+                   == EntryNameContextKind::CanonColorBalance001D)
+            return "BlackLevels";
+        if (any(entry.flags, EntryFlags::ContextualName)
+            && entry.origin.name_context_kind
+                   == EntryNameContextKind::CanonAfInfo0011)
+            return "Canon_AFInfo_0x000b";
+        if (any(entry.flags, EntryFlags::ContextualName)
+            && entry.origin.name_context_kind
+                   == EntryNameContextKind::SonyPrivateField) {
+            const std::string_view name = exif_internal::sony_private_field_name(
+                entry.origin.name_context_variant);
+            if (!name.empty())
+                return name;
+        }
+        if (any(entry.flags, EntryFlags::ContextualName)
+            && entry.origin.name_context_kind
+                   == EntryNameContextKind::NikonCaptureField) {
+            const std::string_view name
+                = exif_internal::nikon_capture_field_name(
+                    entry.origin.name_context_variant);
+            if (!name.empty())
+                return name;
+        }
+        if (entry.key.kind == MetaKeyKind::ExifTag
+            && entry.key.data.exif_tag.tag == 0x0004U
+            && arena_string(store.arena(), entry.key.data.exif_tag.ifd)
+                   .starts_with("mk_minoltaraw_wbg_")) {
+            for (const Entry& model_entry : store.entries()) {
+                if (model_entry.key.kind != MetaKeyKind::ExifTag
+                    || model_entry.key.data.exif_tag.tag != 0x0110U
+                    || model_entry.value.kind != MetaValueKind::Text
+                    || arena_string(store.arena(),
+                                    model_entry.key.data.exif_tag.ifd)
+                           != "ifd0")
+                    continue;
+                const auto model                = arena_string(store.arena(),
+                                                               model_entry.value.data.span);
+                constexpr std::string_view name = "DiMAGE A200";
+                const size_t position           = model.find(name);
+                if (position != std::string_view::npos) {
+                    const size_t end = position + name.size();
+                    const char next  = end < model.size() ? model[end] : '\0';
+                    const bool word  = (next >= 'a' && next <= 'z')
+                                      || (next >= 'A' && next <= 'Z')
+                                      || (next >= '0' && next <= '9')
+                                      || next == '_';
+                    if (!word)
+                        return "WB_GBRGLevels";
+                }
+                break;
+            }
+        }
         if (policy != ExifTagNamePolicy::ExifToolCompat) {
             return canonical;
         }
@@ -893,6 +953,10 @@ namespace {
 
         switch (entry.origin.name_context_kind) {
         case EntryNameContextKind::None: return canonical;
+        case EntryNameContextKind::CanonColorBalance001D:
+        case EntryNameContextKind::CanonAfInfo0011:
+        case EntryNameContextKind::NikonCaptureField:
+        case EntryNameContextKind::SonyPrivateField: return canonical;
         case EntryNameContextKind::CasioType2Legacy:
             switch (entry.origin.name_context_variant) {
             case 1: {
@@ -1191,6 +1255,12 @@ namespace {
 std::string_view
 exif_tag_name(std::string_view ifd, uint16_t tag) noexcept
 {
+    if (ifd.starts_with("mk_minoltaraw_wbg_") && tag == 0x0004U) {
+        // The generated ExifTool registry records the conditional A200 name.
+        // Use the common RGGB name here; entry-aware naming applies GBRG
+        // when the TIFF model identifies a DiMAGE A200.
+        return "WB_RGGBLevels";
+    }
     const ExifIfdGroup group = exif_ifd_group(ifd);
     if (group == ExifIfdGroup::Unknown) {
         if (ifd == "ciff_root" || ifd.starts_with("ciff_")) {

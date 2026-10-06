@@ -358,6 +358,22 @@ namespace {
             store.arena());
 
         const std::string_view mk_prefix = "mk_pentax";
+        ExifContext context(store);
+        std::string_view model;
+        (void)context.find_first_text("ifd0", 0x0110U, &model);
+        bool have_temp_info = false;
+        static constexpr std::string_view temp_models[] = {
+            "K-01", "K-3", "K-30", "K-5", "K-50", "K-500"
+        };
+        for (std::string_view temp_model : temp_models) {
+            const size_t pos = model.find(temp_model);
+            if (pos == std::string_view::npos) continue;
+            const size_t end = pos + temp_model.size();
+            if (end == model.size() || model[end] == ' ' || model[end] == '\0') {
+                have_temp_info = true;
+                break;
+            }
+        }
 
         for (uint32_t i = 0; i < cand_count; ++i) {
             const uint16_t tag  = cands[i].tag;
@@ -790,6 +806,9 @@ namespace {
             }
 
             if (tag == 0x03ff) {  // TempInfo
+                if (!have_temp_info) {
+                    continue;
+                }
                 const std::string_view ifd_name
                     = make_mk_subtable_ifd_token(mk_prefix, "tempinfo",
                                                  idx_tempinfo++,
@@ -866,31 +885,24 @@ decode_pentax_makernote(std::span<const std::byte> maker_note_bytes,
     }
 
     if (!match_bytes(maker_note_bytes, 0, "AOC\0", 4)) {
-        if (match_bytes(maker_note_bytes, 0, "PENTAX ", 7)) {
-            const uint64_t hdr_off = 8;
-            if (hdr_off >= maker_note_bytes.size()) {
-                return false;
-            }
-            const std::span<const std::byte> body = maker_note_bytes.subspan(
-                static_cast<size_t>(hdr_off));
-
-            ClassicIfdCandidate best;
-            if (find_best_classic_ifd_candidate(body, 1024, options.limits,
-                                                &best)) {
-                TiffConfig pent_cfg;
-                pent_cfg.bigtiff = false;
-                pent_cfg.le      = best.le;
-                decode_classic_ifd_no_header(pent_cfg, body, best.offset,
-                                             pentax_ifd0, store, options,
-                                             status_out, EntryFlags::None);
-                if (!use_type2) {
-                    decode_pentax_binary_subdirs(pentax_ifd0, store,
-                                                 pent_cfg.le, options,
-                                                 status_out);
+        if (match_bytes(maker_note_bytes, 0, "PENTAX \0", 8)
+            || match_bytes(maker_note_bytes, 0, "SAMSUNG\0", 8)) {
+            TiffConfig cfg;
+            cfg.bigtiff = false;
+            cfg.le = match_bytes(maker_note_bytes, 8U, "II", 2U);
+            if (!looks_like_classic_ifd(cfg, maker_note_bytes, 10U, options.limits)) {
+                cfg.le = !cfg.le;
+                if (!looks_like_classic_ifd(cfg, maker_note_bytes, 10U, options.limits)) {
+                    return false;
                 }
-                return true;
             }
-            return false;
+            // DNG private offsets are relative to the complete vendor block.
+            decode_classic_ifd_no_header(cfg, maker_note_bytes, 10U, pentax_ifd0,
+                                         store, options, status_out, EntryFlags::None);
+            if (!use_type2) {
+                decode_pentax_binary_subdirs(pentax_ifd0, store, cfg.le, options, status_out);
+            }
+            return true;
         }
 
         if (maker_note_bytes.size() >= 4) {
