@@ -635,7 +635,7 @@ translate_xmp_environment_metadata(
     const MetadataEnvironmentTranslationOptions& options, MetaStore* out_store);
 
 /// Experimental image-encoding metadata contract; these calls do not alter pixels.
-inline constexpr uint32_t kMetadataImageEncodingTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataImageEncodingTranslationContractVersion = 2U;
 inline constexpr uint32_t kMetadataImageEncodingTranslationMaxAddedEntries = 3U;
 inline constexpr uint64_t kMetadataImageEncodingTranslationMaxTotalTextBytes
     = 768U;
@@ -664,7 +664,14 @@ struct MetadataImageEncodingTranslationOptions final {
  * accept a typed unsigned array or four dense one-based indexed properties.
  * The host asserts correspondence to the encoded pixels. No channel reorder,
  * gamma application, compression measurement or pixel inference occurs.
- * Existing target-image transfer filtering remains applicable.
+ * Existing target-image transfer filtering remains applicable. Accepted exact
+ * clean native values gain Dirty while retaining their rational components,
+ * byte spans, flags and wire provenance. Eligible deletion records typed
+ * Dirty|Deleted intent for absent native fields. Promotion, deletion intent
+ * and duplicate removal use the existing preflight limits; repeated calls
+ * reuse intent. PreserveExisting retains active owners, while omission and
+ * ineligible sources leave destination fields unchanged. Host synchronization
+ * remains external.
  */
 MetadataCaptureTranslationResult
 translate_xmp_image_encoding_metadata(
@@ -672,7 +679,7 @@ translate_xmp_image_encoding_metadata(
     const MetadataImageEncodingTranslationOptions& options,
     MetaStore* out_store);
 
-inline constexpr uint32_t kMetadataCompositeTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataCompositeTranslationContractVersion = 2U;
 inline constexpr uint32_t kMetadataCompositeTranslationMaxAddedEntries = 3U;
 inline constexpr uint32_t kMetadataCompositeTranslationMaxExposureValues = 4096U;
 inline constexpr uint64_t kMetadataCompositeTranslationMaxTotalTextBytes
@@ -713,6 +720,16 @@ struct MetadataCompositeTranslationOptions final {
  * New A462 byte payloads are little-endian; decoded big-endian bytes retain
  * their raw content and EntryFlags::ValueBigEndian provenance. Typed Set with
  * wire hints resets that flag for the newly supplied little-endian payload.
+ * Contract 2 promotes accepted exact clean native group values to Dirty while
+ * retaining their raw values, byte order, flags and wire provenance. Complete
+ * eligible deletion creates or reuses typed Dirty|Deleted intent for absent
+ * group members. Under ReplaceExisting, valid code 0 or 1, and code 2 with an
+ * omitted optional companion, also creates or reuses intent for that absent
+ * companion. Existing companion values are removed in the same transaction.
+ * PreserveExisting retains an active group without promotion; omission and
+ * ineligible sources leave it unchanged. Promotion, intent and duplicate
+ * removal consume the existing preflight limits. Repeated calls reuse intent;
+ * host synchronization remains external.
  */
 MetadataCaptureTranslationResult
 translate_xmp_composite_metadata(

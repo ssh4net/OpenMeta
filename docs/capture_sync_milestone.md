@@ -4,6 +4,16 @@ Audit date: 2026-09-14. The original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing API signatures, ABI 3, or host synchronization responsibilities.
 
+## Native encoding and composite lifecycle in 0.8.8
+
+The six existing fields now have translation contract 2: exact clean native
+values gain Dirty, and eligible absent deletion retains typed intent. Composite
+ReplaceExisting also clears omitted companions from the destination. The three
+composite fields enter the native TIFF/BigTIFF/DNG merge/removal allowlist;
+encoding fields retain their source-pixel transfer exclusions. Canonical EXIF
+serialization retains all six. ABI 4, snapshot v1 and host synchronization
+remain unchanged. See [the contract](translation.md#image-encoding-and-composite-capture-057).
+
 ## EXIF 3.1 LearningOptOutIn and profile authoring in 0.5.12
 
 The seventh EXIF 3.1 field, `LearningOptOutIn` `9287`, now has a bounded C++

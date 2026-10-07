@@ -235,6 +235,16 @@ Copyright's two-part NUL-separated representation remains outside this text
 extension. Downstream application acceptance stays on hold; fuzzy search remains
 lowest priority.
 
+Native Encoding and Composite Lifecycle in 0.8.8
+------------------------------------------------
+
+The six existing fields use translation contract 2: exact clean native values
+gain ``Dirty`` and eligible absent deletion retains typed intent. Composite
+``ReplaceExisting`` also clears omitted destination companions. The composite
+fields enter the TIFF/BigTIFF/DNG merge/removal allowlist. Encoding fields retain
+source-pixel transfer exclusions; canonical serialization retains all six.
+ABI 4, snapshot v1 and host synchronization remain unchanged.
+
 EXIF 3.1 LearningOptOutIn and Profile Authoring Update (0.5.12)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

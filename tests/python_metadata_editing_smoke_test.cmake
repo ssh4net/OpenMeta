@@ -1109,7 +1109,7 @@ with tempfile.TemporaryDirectory() as temporary:
     translated = document
     for api in ('image_encoding', 'composite'):
         method = getattr(document, 'translate_' + api + '_metadata')
-        assert getattr(openmeta, 'METADATA_' + api.upper() + '_TRANSLATION_CONTRACT_VERSION') == 1
+        assert getattr(openmeta, 'METADATA_' + api.upper() + '_TRANSLATION_CONTRACT_VERSION') == 2
         assert method().entry_count == count
         assert method(source_mode=mode).entry_count == count + 3
         translated = getattr(translated, 'translate_' + api + '_metadata')(source_mode=mode)
@@ -1129,6 +1129,29 @@ with tempfile.TemporaryDirectory() as temporary:
         assert 'source_limit_exceeded' in str(error)
     else:
         raise AssertionError('composite ignored the exposure bound')
+    probe = openmeta.unsafe_transfer_snapshot_probe(
+        translated.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='encoding_composite.tiff',
+        target_bytes=bytes([73, 73, 42, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        include_edited_bytes=True,
+    )
+    assert probe['overall_status'] == openmeta.TransferStatus.Ok, probe
+    assert probe['tiff_merge_existing_exif'] is True, probe
+    native_path = Path(temporary) / 'encoding_composite.tiff'
+    native_path.write_bytes(bytes(probe['edited_bytes']))
+    clean_native = openmeta.read(str(native_path))
+    promoted = clean_native.translate_composite_metadata(source_mode=mode)
+    assert promoted.entry_count == clean_native.entry_count
+    promoted_probe = openmeta.unsafe_transfer_snapshot_probe(
+        promoted.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='encoding_composite.tiff',
+        target_bytes=bytes(probe['edited_bytes']),
+        include_edited_bytes=True,
+    )
+    assert promoted_probe['overall_status'] == openmeta.TransferStatus.Ok, promoted_probe
+    assert promoted_probe['tiff_merge_existing_exif'] is True, promoted_probe
     payload, _ = translated.dump_xmp_portable(include_existing_xmp=False)
     assert b'<exifEX:Gamma>11/5</exifEX:Gamma>' in payload
     assert b'<exifEX:SumOfExposureTimesOfUsed>0/0</exifEX:SumOfExposureTimesOfUsed>' in payload

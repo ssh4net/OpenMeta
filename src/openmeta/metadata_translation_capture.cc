@@ -1166,6 +1166,18 @@ namespace {
             return group.field == NativeCaptureField::SubjectArea;
         case MetadataCaptureTranslationMapping::XmpSubjectLocation:
             return group.field == NativeCaptureField::SubjectLocation;
+        case MetadataCaptureTranslationMapping::XmpGamma:
+            return group.field == NativeCaptureField::Gamma;
+        case MetadataCaptureTranslationMapping::XmpCompressedBitsPerPixel:
+            return group.field == NativeCaptureField::CompressedBitsPerPixel;
+        case MetadataCaptureTranslationMapping::XmpComponentsConfiguration:
+            return group.field == NativeCaptureField::ComponentsConfiguration;
+        case MetadataCaptureTranslationMapping::XmpCompositeImage:
+            return group.field == NativeCaptureField::CompositeImage
+                   || group.field
+                          == NativeCaptureField::SourceImageNumberOfCompositeImage
+                   || group.field
+                          == NativeCaptureField::SourceExposureTimesOfCompositeImage;
         default: return false;
         }
     }
@@ -1219,6 +1231,8 @@ namespace {
         case NativeCaptureField::ExposureTime:
         case NativeCaptureField::FNumber:
         case NativeCaptureField::FocalLength:
+        case NativeCaptureField::Gamma:
+        case NativeCaptureField::CompressedBitsPerPixel:
         case NativeCaptureField::SubjectDistance:
         case NativeCaptureField::DigitalZoomRatio:
         case NativeCaptureField::ExposureIndex:
@@ -1235,7 +1249,9 @@ namespace {
             return make_srational(0, 1);
         case NativeCaptureField::FocalLengthIn35mmFilm: return make_u16(0U);
         case NativeCaptureField::FileSource:
-        case NativeCaptureField::SceneType: {
+        case NativeCaptureField::SceneType:
+        case NativeCaptureField::ComponentsConfiguration:
+        case NativeCaptureField::SourceExposureTimesOfCompositeImage: {
             MetaValue value;
             value.kind      = MetaValueKind::Bytes;
             value.elem_type = MetaElementType::U8;
@@ -1248,7 +1264,8 @@ namespace {
         case NativeCaptureField::FocalPlaneResolutionUnit:
             return make_u16(0U);
         case NativeCaptureField::SubjectArea:
-        case NativeCaptureField::SubjectLocation: {
+        case NativeCaptureField::SubjectLocation:
+        case NativeCaptureField::SourceImageNumberOfCompositeImage: {
             MetaValue value;
             value.kind      = MetaValueKind::Array;
             value.elem_type = MetaElementType::U16;
@@ -1270,6 +1287,7 @@ namespace {
             return value;
         }
         case NativeCaptureField::ExposureProgram:
+        case NativeCaptureField::CompositeImage:
         case NativeCaptureField::MeteringMode:
         case NativeCaptureField::SensingMethod:
         case NativeCaptureField::CustomRendered:
@@ -4151,6 +4169,8 @@ translate_xmp_image_encoding_metadata(
             result.status = status;
             return result;
         }
+        group.synthesize_delete_intent
+            = !group.present && capture_lifecycle_mapping(group);
     }
     result.failed_mapping      = Mapping::None;
     result.failed_source_entry = kInvalidEntryId;
@@ -4268,6 +4288,18 @@ translate_xmp_composite_metadata(
         result.status = status;
         return result;
     }
+    for (size_t i = 0U; i < groups.size(); ++i) {
+        CapturePlannedGroup& group = groups[i];
+        const bool replace_absent_companion
+            = i != 0U && options.conflict_policy == Policy::ReplaceExisting;
+        group.synthesize_delete_intent
+            = !group.present && capture_lifecycle_mapping(group)
+              && (code.deleted || replace_absent_companion);
+        if (group.synthesize_delete_intent
+            && group.source_entry == kInvalidEntryId) {
+            group.source_entry = code.entry_id;
+        }
+    }
     bool existing = false;
     bool exact    = true;
     for (CapturePlannedGroup& group : groups) {
@@ -4282,12 +4314,8 @@ translate_xmp_composite_metadata(
     }
     result.failed_mapping      = Mapping::None;
     result.failed_source_entry = kInvalidEntryId;
-    if ((existing && options.conflict_policy == Policy::PreserveExisting)
-        || exact) {
-        if (existing && options.conflict_policy == Policy::PreserveExisting)
-            result.groups_preserved = 1U;
-        else
-            result.groups_unchanged = 1U;
+    if (existing && options.conflict_policy == Policy::PreserveExisting) {
+        result.groups_preserved = 1U;
         return apply_capture_groups(source, {}, Policy::ReplaceExisting,
                                     options.max_added_entries,
                                     options.max_operations, result, out_store);
@@ -4296,8 +4324,11 @@ translate_xmp_composite_metadata(
                                   options.max_added_entries,
                                   options.max_operations, result, out_store);
     if (result.status == Status::Ok) {
-        result.groups_translated = 1U;
-        result.groups_unchanged  = 0U;
+        const bool changed = result.entries_added != 0U
+                             || result.entries_updated != 0U
+                             || result.entries_removed != 0U;
+        result.groups_translated = changed ? 1U : 0U;
+        result.groups_unchanged  = changed ? 0U : 1U;
     }
     return result;
 }

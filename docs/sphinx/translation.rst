@@ -1990,6 +1990,33 @@ Preparation can allocate. Conflicting shared-object access remains host owned.
 See the detailed `field and binary-layout contracts
 <https://github.com/ssh4net/OpenMeta/blob/main/docs/translation.md#image-encoding-and-composite-capture-057>`_.
 
+In 0.8.8, both translation contracts are version 2. Accepted exact clean
+native values gain ``Dirty`` without replacing their stored fractions, byte spans,
+byte-order flags or wire provenance. Complete eligible deletion creates or reuses
+typed ``Dirty|Deleted`` intent, including absent native fields. Under
+``ReplaceExisting``, a selected valid composite group also records removal of
+omitted companions: source-only codes 0/1/2 can clear a destination's old group.
+``PreserveExisting`` keeps an active native group without promotion; omitted and
+ineligible source properties leave the store unchanged. Promotion, deletion
+intent and duplicate removal consume the existing entry/operation budgets.
+Preflight failure leaves source and output unchanged, and repeated calls reuse
+intent.
+
+The shared ExifIFD merge/removal allowlist grows from 59 to 62 with A460-A462.
+Existing TIFF/BigTIFF/DNG preparation, snapshot v1 and vector/stream/package paths
+carry eligible composite edits. The three encoding fields remain excluded from
+target transfer, even when dirty or deleted: Gamma, compressed bits per pixel and
+component configuration describe source pixels. Direct canonical EXIF serialization
+retains them; callers own their correspondence to encoded pixels. Destination
+encoding metadata is preserved during composite merge. For an existing DNG,
+retain its original ``DNGVersion`` in the source metadata. DNG preparation
+synthesizes a version when the source lacks one; it cannot infer target context
+during preparation. No pixel transformation,
+RAW encoding or private-offset repair is performed. Append-based TIFF writing
+preserves retained image data; it does not promise whole-file identity after
+repeated edits. Public signatures, options and prepared-bundle/snapshot layouts
+remain unchanged; ABI 4 remains unfrozen and hosts synchronize shared objects.
+
 Structured Capture Data (0.5.8)
 ===============================
 

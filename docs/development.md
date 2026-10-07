@@ -62,6 +62,12 @@ work includes independently sourced quality expansion, designed
 Unicode/transliteration behavior, multilingual gates, and an optional immutable
 index for repeated searches over large stores.
 
+The 0.8.8 lifecycle batch completes exact clean-value promotion and typed
+absent deletion for the existing image-encoding/composite group. Composite native
+writeback uses the existing TIFF/BigTIFF/DNG merge and removal paths. Encoding
+properties remain excluded from target transfer because they depend on source
+pixels. ABI 4 and host synchronization remain unchanged.
+
 The 0.5.6 batch adds exact-key typed editing plus three additional capture and
 six environment mappings. The 0.5.7 encoding/composite batch adds six more
 fields; the 0.5.8 structured batch adds four more. Capture-related translation
