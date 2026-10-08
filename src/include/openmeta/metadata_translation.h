@@ -483,7 +483,7 @@ struct MetadataCaptureTranslationResult final {
 };
 
 /// Bounded EXIF text/version translation contract.
-inline constexpr uint32_t kMetadataExifTextTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataExifTextTranslationContractVersion = 2U;
 inline constexpr uint32_t kMetadataExifTextTranslationMaxAddedEntries = 13U;
 inline constexpr uint32_t kMetadataExifTextTranslationMaxTextBytesPerProperty
     = 65536U;
@@ -529,8 +529,26 @@ struct MetadataExifTextTranslationOptions final {
  * UserComment uses ASCII, EXIF 3 UNICODE/UTF-8, or legacy UNICODE/UTF-16LE
  * with a BOM according to the effective version. Version edits must preserve
  * the interpretation of an existing comment or explicitly replace/remove it.
- * Conflict, tombstone, bounded preparation and host synchronization rules
- * follow the capture contract. Output is unchanged on failure.
+ * Under FailOnConflict and ReplaceExisting, exact clean native matches are
+ * promoted with a same-value update that keeps their raw bytes, value encoding,
+ * wire hints, endian flag and provenance; this includes ASCII text stored as
+ * TIFF type 129. PreserveExisting retains active native values without
+ * promotion, and dirty exact matches remain unchanged. Under a ReplaceExisting
+ * version-family downgrade, a matching UserComment is re-encoded and a selected
+ * ASCII owner/lens type-129 value is rewritten as type 2; unselected type-129 and
+ * EXIF 3 text values still block a legacy downgrade.
+ *
+ * A complete selected deletion preserves active native values under
+ * PreserveExisting, conflicts under FailOnConflict, and removes them under
+ * ReplaceExisting. If no active native value exists, the translator carries a
+ * Dirty|Deleted intent even when the native key is absent. It promotes a clean
+ * deletion marker when one exists, leaves an existing dirty marker unchanged,
+ * or adds a typed marker (Text for text tags, Bytes/U8 for versions and
+ * UserComment). Source masks, duplicate handling and bounded preparation keep
+ * the capture contract rules. Clean promotions count as updates and operations;
+ * new markers count as additions and operations.
+ * Omitted or disabled sources leave native metadata untouched, and output is
+ * unchanged on failure. Hosts synchronize conflicting access to shared stores.
  */
 MetadataCaptureTranslationResult
 translate_xmp_exif_text_metadata(

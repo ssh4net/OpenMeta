@@ -65,6 +65,10 @@ enum class TransferTargetFormat : uint8_t {
 };
 
 /// Public DNG target contract for metadata-only transfer workflows.
+/// Existing/template preparation treats clean source DNGVersion as context and
+/// preserves the target version. Eligible dirty versions can replace it under
+/// CompatibleFile; RenderedImage filtering still excludes RAW version edits.
+/// Only MinimalFreshScaffold preparation synthesizes a missing DNGVersion.
 enum class DngTargetMode : uint8_t {
     ExistingTarget,
     TemplateTarget,
@@ -722,7 +726,10 @@ struct PreparedTransferBundle final {
     /// ImageUniqueID (0xA420); additional capture fields FocalLengthIn35mmFilm
     /// (0xA405), FileSource (0xA300), SceneType (0xA301); and environment
     /// fields Temperature, Humidity, Pressure, WaterDepth, Acceleration and
-    /// CameraElevationAngle (0x9400-0x9405).
+    /// CameraElevationAngle (0x9400-0x9405); composite/structured fields
+    /// (0xA460-0xA462, 0x8828, 0xA20C, 0xA302, 0xA40B); and EXIF text/version
+    /// fields ExifVersion (0x9000), FlashpixVersion (0xA000), UserComment
+    /// (0x9286), CameraOwnerName (0xA430), and EXIF 3 text (0xA436-0xA43C).
     /// Explicit per-tag removals preserve unspecified destination ExifIFD
     /// entries. Fresh emit, adapter, payload, and codec handoff APIs reject
     /// non-empty removal lists because their operation schemas cannot express
@@ -731,7 +738,7 @@ struct PreparedTransferBundle final {
     std::vector<uint16_t> tiff_exif_removals;
     /// Preserve unspecified destination ExifIFD entries when applying dirty
     /// allowlisted native timestamp, capture, APEX, setting, lens, spatial or
-    /// environment edits to
+    /// environment, composite, structured or EXIF text/version edits to
     /// TIFF/DNG. This mode is opt-in and defaults to whole-ExifIFD replacement
     /// behavior.
     bool tiff_merge_existing_exif = false;

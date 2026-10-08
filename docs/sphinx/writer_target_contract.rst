@@ -430,6 +430,15 @@ can emit a minimal metadata scaffold without an existing DNG target. When a
 non-DNG source is merged into an existing DNG target, OpenMeta preserves
 existing target DNG core tags within the bounded DNG policy layer.
 
+Since 0.8.10, existing/template preparation does not generate a missing source
+DNGVersion and excludes a clean primary source DNGVersion from the update.
+The destination version therefore stays intact. An eligible dirty version can
+replace it under CompatibleFile; RenderedImage retains its RAW filtering and
+drops that source version edit. MinimalFreshScaffold still synthesizes 1.6.0.0
+when required. Direct TIFF serialization options keep their existing behavior.
+Existing/template removal-only preparation succeeds without a fabricated EXIF
+block; the existing target supplies its DNG core metadata.
+
 PNG
 ---
 

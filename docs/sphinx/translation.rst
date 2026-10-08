@@ -2188,8 +2188,8 @@ BOM, ``UNICODE`` follows the declared EXIF version: UTF-8 for EXIF 3 and the TIF
 byte order for legacy UTF-16. The existing nonstandard ``UTF8`` marker is accepted
 for reading only. JIS and undefined character sets remain opaque; no guessed
 conversion or new charset dependency is introduced. Raw snapshots preserve the
-original bytes. Semantic translation preserves text, not padding or the original
-character-set choice.
+original bytes. An explicit semantic replacement preserves text rather than padding or the
+original character-set choice. Exact clean promotion in 0.8.10 retains both.
 
 Version changes cannot reinterpret retained comments or downgrade retained
 EXIF 3 text. Supply the comment source with ``ReplaceExisting``, or a dirty
@@ -2205,6 +2205,27 @@ language alternatives remain in XMP, including under ``CanonicalizeManaged``.
 The reverse API chooses only the scalar/default source. It rejects eligible
 scalar/default duplicates and unsupported structured/indexed shapes. No locale
 is selected automatically. Invalid native comments do not hide valid source XMP.
+
+The 0.8.10 native lifecycle uses EXIF text translation contract 2. Under
+FailOnConflict or ReplaceExisting, an exact clean valid native match gains
+Dirty while keeping raw bytes, encoding, endian flags and wire provenance.
+This includes comment prefixes, explicit BOMs and padding, and ASCII stored as
+type 129 under EXIF 3. Dirty exact matches remain unchanged; PreserveExisting
+retains active values. Explicit replacements use the authoring encodings above.
+A ReplaceExisting version-family change re-encodes a selected matching comment;
+a legacy downgrade also rewrites selected ASCII owner/lens type 129 as type 2.
+Unselected type 129 and EXIF 3-only tags still block a legacy downgrade.
+Artist/Software companion requirements apply to promotions too.
+
+Complete selected deletion preserves active native values under PreserveExisting,
+conflicts under FailOnConflict, and removes them under ReplaceExisting. Without
+an active value it promotes a clean tombstone, reuses a dirty tombstone, or adds
+an empty typed Dirty|Deleted marker: Bytes/U8 for versions and UserComment,
+Text for the other ten fields. Promotions and new markers consume an operation;
+new markers also consume an addition. Omitted or disabled sources retain native
+state, and all preflight failures leave output unchanged. All 13 fields now
+support native TIFF/BigTIFF/DNG selective merge/removal, including snapshot v1.
+The shared ExifIFD allowlist grows from 66 to 77; no public layout changes.
 
 Defaults follow the capture APIs: ``DirtyOnly`` and ``FailOnConflict``.
 ``PreserveExisting``, ``ReplaceExisting``, dirty tombstones, independent field

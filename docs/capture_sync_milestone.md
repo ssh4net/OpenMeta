@@ -4,6 +4,19 @@ Audit date: 2026-09-14. The original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing API signatures, ABI 3, or host synchronization responsibilities.
 
+## Native EXIF text/version lifecycle in 0.8.10
+
+The 13 existing text/version fields now have translation contract 2. Exact
+clean native matches gain Dirty while retaining bytes, encoding and wire
+provenance, including comment BOMs/padding and valid ASCII type 129. Complete
+eligible deletion retains typed intent even for absent keys. All 13 use the
+native TIFF/BigTIFF/DNG merge/removal path; the shared allowlist grows from 66
+to 77. Explicit version changes still enforce charset and companion rules.
+Existing/template DNG preparation retains the target DNGVersion unless an
+eligible dirty version requests replacement. Fresh scaffolds retain their
+version-generation policy. ABI 4, snapshot v1 and host synchronization remain
+unchanged. See [the contract](translation.md#exif-text-and-version-metadata-059).
+
 ## Native structured capture lifecycle in 0.8.9
 
 The four existing structured fields now have translation contract 2: exact

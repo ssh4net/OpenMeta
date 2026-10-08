@@ -19,7 +19,21 @@ namespace {
     constexpr auto kAll = MetadataCaptureTranslationSourceMode::All;
     constexpr auto kReplace
         = MetadataCaptureTranslationConflictPolicy::ReplaceExisting;
+    constexpr auto kPreserve
+        = MetadataCaptureTranslationConflictPolicy::PreserveExisting;
+    constexpr auto kFail
+        = MetadataCaptureTranslationConflictPolicy::FailOnConflict;
     constexpr auto kOk = MetadataCaptureTranslationStatus::Ok;
+    constexpr std::array<std::string_view, 13> kFieldNames = {
+        "ExifVersion", "FlashpixVersion", "UserComment", "ImageTitle",
+        "Photographer", "ImageEditor", "CameraFirmware",
+        "RAWDevelopingSoftware", "ImageEditingSoftware",
+        "MetadataEditingSoftware", "CameraOwnerName", "LensMake", "LensModel"
+    };
+    constexpr std::array<uint16_t, 13> kFieldTags = {
+        0x9000U, 0xa000U, 0x9286U, 0xa436U, 0xa437U, 0xa438U, 0xa439U,
+        0xa43aU, 0xa43bU, 0xa43cU, 0xa430U, 0xa433U, 0xa434U
+    };
 
     void xmp(MetaStore& store, std::string_view name, std::string_view text,
              bool extended = false, EntryFlags flags = EntryFlags::Dirty)
@@ -41,6 +55,22 @@ namespace {
         e.flags = flags;
         (void)store.add_entry(e);
     }
+    void native_wire(MetaStore& store, uint16_t tag, const MetaValue& value,
+                     uint16_t wire_type, uint32_t wire_count,
+                     std::string_view ifd = "exififd",
+                     EntryFlags flags = EntryFlags::None)
+    {
+        Entry e;
+        e.key = make_exif_tag_key(store.arena(), ifd, tag);
+        e.value = value;
+        e.origin.block = 7U;
+        e.origin.order_in_block = 9U;
+        e.origin.wire_type = { WireFamily::Tiff, wire_type };
+        e.origin.wire_count = wire_count;
+        e.origin.wire_type_name = store.arena().append_string("retained-type");
+        e.flags = flags;
+        (void)store.add_entry(e);
+    }
     MetaValue bytes(MetaStore& store, std::string_view text)
     {
         return make_bytes(store.arena(),
@@ -50,6 +80,19 @@ namespace {
     {
         const auto ids = store.find_all(make_exif_tag_key_view("exififd", tag));
         return ids.size() == 1U ? &store.entry(ids[0]) : nullptr;
+    }
+    const Entry* stored_entry(const MetaStore& store, uint16_t tag)
+    {
+        for (const Entry& e : store.entries()) {
+            if (e.key.kind != MetaKeyKind::ExifTag
+                || e.key.data.exif_tag.tag != tag)
+                continue;
+            const auto ifd = store.arena().span(e.key.data.exif_tag.ifd);
+            if (std::string_view(reinterpret_cast<const char*>(ifd.data()),
+                                 ifd.size()) == "exififd")
+                return &e;
+        }
+        return nullptr;
     }
     std::string raw(const MetaStore& store, uint16_t tag)
     {
@@ -87,6 +130,36 @@ namespace {
         EXPECT_EQ(std::vector<std::byte>(store.arena().bytes().begin(),
                                          store.arena().bytes().end()),
                   before);
+    }
+    void expect_failure_distinct(
+        MetaStore& source, MetadataCaptureTranslationStatus expected,
+        MetadataExifTextTranslationOptions options = {})
+    {
+        source.finalize();
+        const auto* source_entries = source.entries().data();
+        const auto source_data = source.arena().bytes();
+        const std::vector<std::byte> source_before(source_data.begin(),
+                                                   source_data.end());
+        MetaStore output;
+        native(output, 0x010eU,
+               make_text(output.arena(), "sentinel", TextEncoding::Ascii),
+               "ifd0");
+        output.finalize();
+        const auto* output_entries = output.entries().data();
+        const auto output_data = output.arena().bytes();
+        const std::vector<std::byte> output_before(output_data.begin(),
+                                                   output_data.end());
+        EXPECT_EQ(translate_xmp_exif_text_metadata(source, options, &output)
+                      .status,
+                  expected);
+        EXPECT_EQ(source.entries().data(), source_entries);
+        EXPECT_EQ(std::vector<std::byte>(source.arena().bytes().begin(),
+                                         source.arena().bytes().end()),
+                  source_before);
+        EXPECT_EQ(output.entries().data(), output_entries);
+        EXPECT_EQ(std::vector<std::byte>(output.arena().bytes().begin(),
+                                         output.arena().bytes().end()),
+                  output_before);
     }
 
     TEST(MetadataExifText, FullBatchExactUtf8WireAndRoundTrip)
@@ -173,6 +246,544 @@ namespace {
         EXPECT_EQ(raw(restored, 0x9286), raw(store, 0x9286));
         for (uint16_t tag : tags)
             EXPECT_EQ(raw(restored, tag), raw(store, tag));
+    }
+
+    TEST(MetadataExifText, CleanExactNativeBatchPromotesWithoutReencoding)
+    {
+        MetaStore store;
+        xmp(store, "ExifVersion", "0300");
+        xmp(store, "FlashpixVersion", "0100");
+        xmp(store, "UserComment", "A");
+        for (size_t i = 3U; i < kFieldNames.size(); ++i)
+            xmp(store, kFieldNames[i], "same", true);
+
+        native_wire(store, 0x9000U, bytes(store, "0300"), 7U, 4U);
+        native_wire(store, 0xa000U, bytes(store, "0100"), 7U, 4U);
+        const std::string comment
+            = std::string("UNICODE\0", 8U) + std::string("\xfe\xff", 2U)
+              + std::string("\0A\0\0", 4U);
+        native_wire(store, 0x9286U, bytes(store, comment), 7U,
+                    static_cast<uint32_t>(comment.size()), "exififd",
+                    EntryFlags::ValueBigEndian);
+        for (size_t i = 3U; i < kFieldTags.size(); ++i) {
+            const bool type129 = i == 3U || i >= 10U;
+            const std::string raw("same\0", 5U);
+            const MetaValue value
+                = make_text(store.arena(), raw,
+                            type129 ? TextEncoding::Utf8 : TextEncoding::Ascii);
+            native_wire(store, kFieldTags[i], value, type129 ? 129U : 2U,
+                        static_cast<uint32_t>(raw.size()));
+        }
+        native_wire(store, 0x013bU,
+                    make_text(store.arena(), "Artist", TextEncoding::Ascii),
+                    2U, 7U, "ifd0");
+        native_wire(store, 0x0131U,
+                    make_text(store.arena(), "Software", TextEncoding::Ascii),
+                    2U, 9U, "ifd0");
+        store.finalize();
+
+        std::array<std::string, 13> before_raw;
+        std::array<TextEncoding, 13> before_encoding {};
+        std::array<uint16_t, 13> before_wire {};
+        std::array<uint32_t, 13> before_wire_count {};
+        std::array<uint32_t, 13> before_origin_order {};
+        for (size_t i = 0U; i < kFieldTags.size(); ++i) {
+            const Entry* entry = find(store, kFieldTags[i]);
+            ASSERT_NE(entry, nullptr);
+            const auto data = store.arena().span(entry->value.data.span);
+            before_raw[i] = { reinterpret_cast<const char*>(data.data()),
+                              data.size() };
+            before_encoding[i] = entry->value.text_encoding;
+            before_wire[i] = entry->origin.wire_type.code;
+            before_wire_count[i] = entry->origin.wire_count;
+            before_origin_order[i] = entry->origin.order_in_block;
+        }
+
+        const auto result = translate_xmp_exif_text_metadata(store, {}, &store);
+        ASSERT_EQ(result.status, kOk);
+        EXPECT_EQ(result.groups_translated, 13U);
+        EXPECT_EQ(result.groups_unchanged, 0U);
+        EXPECT_EQ(result.entries_added, 0U);
+        EXPECT_EQ(result.entries_updated, 13U);
+        EXPECT_EQ(result.entries_removed, 0U);
+        for (size_t i = 0U; i < kFieldTags.size(); ++i) {
+            const Entry* entry = find(store, kFieldTags[i]);
+            ASSERT_NE(entry, nullptr);
+            const auto data = store.arena().span(entry->value.data.span);
+            EXPECT_EQ(std::string(reinterpret_cast<const char*>(data.data()),
+                                  data.size()),
+                      before_raw[i]);
+            EXPECT_EQ(entry->value.text_encoding, before_encoding[i]);
+            EXPECT_EQ(entry->value.kind,
+                      i < 3U ? MetaValueKind::Bytes : MetaValueKind::Text);
+            EXPECT_EQ(entry->origin.wire_type.code, before_wire[i]);
+            EXPECT_EQ(entry->origin.wire_type.family, WireFamily::Tiff);
+            EXPECT_EQ(entry->origin.wire_count, before_wire_count[i]);
+            EXPECT_EQ(entry->origin.order_in_block, before_origin_order[i]);
+            EXPECT_EQ(entry->origin.block, 7U);
+            EXPECT_EQ(std::string(
+                          reinterpret_cast<const char*>(store.arena()
+                                                            .span(entry->origin
+                                                                      .wire_type_name)
+                                                            .data()),
+                          store.arena().span(entry->origin.wire_type_name)
+                              .size()),
+                      "retained-type");
+            EXPECT_TRUE(any(entry->flags, EntryFlags::Dirty));
+            if (i == 2U)
+                EXPECT_TRUE(any(entry->flags, EntryFlags::ValueBigEndian));
+        }
+        const auto repeated = translate_xmp_exif_text_metadata(store, {}, &store);
+        EXPECT_EQ(repeated.status, kOk);
+        EXPECT_EQ(repeated.groups_unchanged, 13U);
+        EXPECT_EQ(repeated.entries_updated, 0U);
+        EXPECT_EQ(repeated.entries_added, 0U);
+    }
+
+    TEST(MetadataExifText, CompleteAbsentDeletionCreatesTypedMarkersForAllFields)
+    {
+        for (const auto policy : { kPreserve, kFail, kReplace }) {
+            MetaStore store;
+            for (size_t i = 0U; i < kFieldNames.size(); ++i)
+                xmp(store, kFieldNames[i], "", i >= 3U,
+                    EntryFlags::Dirty | EntryFlags::Deleted);
+            store.finalize();
+
+            const auto result = translate_xmp_exif_text_metadata(
+                store, { .conflict_policy = policy }, &store);
+            ASSERT_EQ(result.status, kOk);
+            EXPECT_EQ(result.source_properties, 13U);
+            EXPECT_EQ(result.groups_translated, 13U);
+            EXPECT_EQ(result.entries_added, 13U);
+            EXPECT_EQ(result.entries_updated, 0U);
+            EXPECT_EQ(result.entries_removed, 0U);
+            for (size_t i = 0U; i < kFieldTags.size(); ++i) {
+                EXPECT_EQ(find(store, kFieldTags[i]), nullptr);
+                const Entry* entry = stored_entry(store, kFieldTags[i]);
+                ASSERT_NE(entry, nullptr);
+                EXPECT_TRUE(any(entry->flags, EntryFlags::Dirty));
+                EXPECT_TRUE(any(entry->flags, EntryFlags::Deleted));
+                EXPECT_EQ(entry->origin.wire_type.family, WireFamily::Tiff);
+                if (i < 3U) {
+                    EXPECT_EQ(entry->value.kind, MetaValueKind::Bytes);
+                    EXPECT_EQ(entry->value.elem_type, MetaElementType::U8);
+                    EXPECT_EQ(entry->origin.wire_type.code, 7U);
+                    EXPECT_EQ(entry->origin.wire_count, 0U);
+                } else {
+                    EXPECT_EQ(entry->value.kind, MetaValueKind::Text);
+                    EXPECT_EQ(entry->value.text_encoding, TextEncoding::Utf8);
+                    EXPECT_EQ(entry->origin.wire_type.code, 2U);
+                    EXPECT_EQ(entry->origin.wire_count, 1U);
+                }
+            }
+        }
+    }
+
+    TEST(MetadataExifText, CompleteDeletionPromotesOrReusesCleanNativeMarker)
+    {
+        for (const auto policy : { kPreserve, kFail, kReplace }) {
+            MetaStore store;
+            const std::string retained("clean-marker");
+            native_wire(store, 0xa436U,
+                        make_text(store.arena(), retained, TextEncoding::Ascii),
+                        2U, static_cast<uint32_t>(retained.size() + 1U),
+                        "exififd", EntryFlags::Deleted);
+            xmp(store, "ImageTitle", "", true,
+                EntryFlags::Dirty | EntryFlags::Deleted);
+            store.finalize();
+
+            const auto result = translate_xmp_exif_text_metadata(
+                store, { .conflict_policy = policy }, &store);
+            ASSERT_EQ(result.status, kOk);
+            EXPECT_EQ(result.groups_translated, 1U);
+            EXPECT_EQ(result.entries_updated, 1U);
+            EXPECT_EQ(result.entries_added, 0U);
+            EXPECT_EQ(result.entries_removed, 0U);
+            EXPECT_EQ(find(store, 0xa436U), nullptr);
+            const Entry* entry = stored_entry(store, 0xa436U);
+            ASSERT_NE(entry, nullptr);
+            EXPECT_EQ(entry->value.kind, MetaValueKind::Text);
+            const auto value = store.arena().span(entry->value.data.span);
+            EXPECT_EQ(std::string(reinterpret_cast<const char*>(value.data()),
+                                  value.size()),
+                      retained);
+            EXPECT_EQ(entry->origin.wire_type.code, 2U);
+            EXPECT_EQ(entry->origin.wire_count, retained.size() + 1U);
+            EXPECT_EQ(entry->origin.order_in_block, 9U);
+            EXPECT_EQ(std::string(
+                          reinterpret_cast<const char*>(store.arena()
+                                                            .span(entry->origin
+                                                                      .wire_type_name)
+                                                            .data()),
+                          store.arena().span(entry->origin.wire_type_name)
+                              .size()),
+                      "retained-type");
+            EXPECT_TRUE(any(entry->flags, EntryFlags::Dirty));
+            EXPECT_TRUE(any(entry->flags, EntryFlags::Deleted));
+        }
+
+        MetaStore already_deleted;
+        native_wire(already_deleted, 0xa436U,
+                    make_text(already_deleted.arena(), "dirty-marker",
+                              TextEncoding::Ascii),
+                    2U, 13U, "exififd",
+                    EntryFlags::Dirty | EntryFlags::Deleted);
+        xmp(already_deleted, "ImageTitle", "", true,
+            EntryFlags::Dirty | EntryFlags::Deleted);
+        already_deleted.finalize();
+        const auto repeated = translate_xmp_exif_text_metadata(
+            already_deleted, {}, &already_deleted);
+        EXPECT_EQ(repeated.status, kOk);
+        EXPECT_EQ(repeated.groups_unchanged, 1U);
+        EXPECT_EQ(repeated.groups_translated, 0U);
+        EXPECT_EQ(repeated.entries_added, 0U);
+        EXPECT_EQ(repeated.entries_updated, 0U);
+        EXPECT_EQ(repeated.entries_removed, 0U);
+        const Entry* marker = stored_entry(already_deleted, 0xa436U);
+        ASSERT_NE(marker, nullptr);
+        EXPECT_TRUE(any(marker->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(marker->flags, EntryFlags::Deleted));
+    }
+
+    TEST(MetadataExifText, Type129AsciiEqualityUsesTheDeclaredExifVersion)
+    {
+        for (const EntryFlags flags : { EntryFlags::None, EntryFlags::Dirty }) {
+            MetaStore store;
+            native_wire(store, 0x9000U, bytes(store, "0300"), 7U, 4U);
+            const std::string original("same\0", 5U);
+            native_wire(store, 0xa436U,
+                        make_text(store.arena(), original, TextEncoding::Utf8),
+                        129U, static_cast<uint32_t>(original.size()), "exififd",
+                        flags);
+            xmp(store, "ImageTitle", "same", true);
+            store.finalize();
+            const auto result = translate_xmp_exif_text_metadata(
+                store, { .conflict_policy = kFail }, &store);
+            ASSERT_EQ(result.status, kOk);
+            const Entry* entry = find(store, 0xa436U);
+            ASSERT_NE(entry, nullptr);
+            const auto raw_value = store.arena().span(entry->value.data.span);
+            EXPECT_EQ(std::string(
+                          reinterpret_cast<const char*>(raw_value.data()),
+                          raw_value.size()),
+                      original);
+            EXPECT_EQ(entry->origin.wire_type.code, 129U);
+            EXPECT_EQ(entry->value.text_encoding, TextEncoding::Utf8);
+            EXPECT_TRUE(any(entry->flags, EntryFlags::Dirty));
+            if (flags == EntryFlags::None) {
+                EXPECT_EQ(result.entries_updated, 1U);
+                EXPECT_EQ(result.groups_translated, 1U);
+            } else {
+                EXPECT_EQ(result.entries_updated, 0U);
+                EXPECT_EQ(result.groups_unchanged, 1U);
+            }
+        }
+
+        MetaStore legacy;
+        native_wire(legacy, 0x9000U, bytes(legacy, "0232"), 7U, 4U);
+        const std::string legacy_raw("owner\0", 6U);
+        native_wire(legacy, 0xa430U,
+                    make_text(legacy.arena(), legacy_raw, TextEncoding::Utf8),
+                    129U, static_cast<uint32_t>(legacy_raw.size()), "exififd",
+                    EntryFlags::Dirty);
+        xmp(legacy, "CameraOwnerName", "owner", true);
+        expect_failure(legacy,
+                       MetadataCaptureTranslationStatus::NativeConflict,
+                       { .conflict_policy = kFail });
+    }
+
+    TEST(MetadataExifText, ExplicitOwnerLensTextReplacementCanDowngradeType129)
+    {
+        for (size_t i = 10U; i < kFieldNames.size(); ++i) {
+            for (const EntryFlags flags : { EntryFlags::None,
+                                            EntryFlags::Dirty }) {
+                for (const bool changed : { false, true }) {
+                    MetaStore store;
+                    native_wire(store, 0x9000U, bytes(store, "0300"), 7U, 4U);
+                    const std::string original("same\0", 5U);
+                    native_wire(
+                        store, kFieldTags[i],
+                        make_text(store.arena(), original, TextEncoding::Utf8),
+                        129U, static_cast<uint32_t>(original.size()), "exififd",
+                        flags);
+                    xmp(store, "ExifVersion", "0232");
+                    xmp(store, kFieldNames[i], changed ? "replacement" : "same",
+                        true);
+                    store.finalize();
+
+                    const std::string_view expected
+                        = changed ? "replacement" : "same";
+                    const auto result = translate_xmp_exif_text_metadata(
+                        store, { .conflict_policy = kReplace }, &store);
+                    ASSERT_EQ(result.status, kOk);
+                    EXPECT_EQ(result.entries_updated, 2U);
+                    const Entry* entry = find(store, kFieldTags[i]);
+                    ASSERT_NE(entry, nullptr);
+                    const auto raw_value
+                        = store.arena().span(entry->value.data.span);
+                    EXPECT_EQ(std::string(
+                                  reinterpret_cast<const char*>(raw_value.data()),
+                                  raw_value.size()),
+                              expected);
+                    EXPECT_EQ(entry->value.text_encoding, TextEncoding::Ascii);
+                    EXPECT_EQ(entry->origin.wire_type.code, 2U);
+                    EXPECT_EQ(entry->origin.wire_count,
+                              expected.size() + 1U);
+                }
+            }
+
+            for (const EntryFlags flags : { EntryFlags::None,
+                                            EntryFlags::Dirty }) {
+                MetaStore omitted;
+                native_wire(omitted, 0x9000U, bytes(omitted, "0300"), 7U, 4U);
+                const std::string original("same\0", 5U);
+                native_wire(
+                    omitted, kFieldTags[i],
+                    make_text(omitted.arena(), original, TextEncoding::Utf8),
+                    129U, static_cast<uint32_t>(original.size()), "exififd",
+                    flags);
+                xmp(omitted, "ExifVersion", "0232");
+                expect_failure(omitted,
+                               MetadataCaptureTranslationStatus::NativeConflict,
+                               { .conflict_policy = kReplace });
+            }
+
+            for (const auto policy : { kPreserve, kFail }) {
+                for (const EntryFlags flags : { EntryFlags::None,
+                                                EntryFlags::Dirty }) {
+                    MetaStore retained;
+                    native_wire(retained, 0x9000U, bytes(retained, "0300"),
+                                7U, 4U);
+                    const std::string original("same\0", 5U);
+                    native_wire(
+                        retained, kFieldTags[i],
+                        make_text(retained.arena(), original,
+                                  TextEncoding::Utf8),
+                        129U, static_cast<uint32_t>(original.size()), "exififd",
+                        flags);
+                    xmp(retained, "ExifVersion", "0232");
+                    xmp(retained, kFieldNames[i], "same", true);
+                    if (policy == kPreserve) {
+                        retained.finalize();
+                        const auto result = translate_xmp_exif_text_metadata(
+                            retained, { .conflict_policy = policy }, &retained);
+                        ASSERT_EQ(result.status, kOk);
+                        EXPECT_EQ(result.groups_preserved, 2U);
+                        EXPECT_EQ(result.groups_translated, 0U);
+                        EXPECT_EQ(result.entries_added, 0U);
+                        EXPECT_EQ(result.entries_updated, 0U);
+                        EXPECT_EQ(result.entries_removed, 0U);
+                        EXPECT_EQ(raw(retained, 0x9000U), "0300");
+                        const Entry* owner = find(retained, kFieldTags[i]);
+                        ASSERT_NE(owner, nullptr);
+                        const auto owner_raw
+                            = retained.arena().span(owner->value.data.span);
+                        EXPECT_EQ(std::string(
+                                      reinterpret_cast<const char*>(
+                                          owner_raw.data()),
+                                      owner_raw.size()),
+                                  original);
+                        EXPECT_EQ(owner->origin.wire_type.code, 129U);
+                    } else {
+                        expect_failure(
+                            retained,
+                            MetadataCaptureTranslationStatus::NativeConflict,
+                            { .conflict_policy = policy });
+                    }
+                }
+            }
+        }
+    }
+
+    TEST(MetadataExifText, SameValueOwnerLensPromotionKeepsType129WithoutDowngrade)
+    {
+        for (size_t i = 10U; i < kFieldNames.size(); ++i) {
+            for (const EntryFlags flags : { EntryFlags::None,
+                                            EntryFlags::Dirty }) {
+                MetaStore store;
+                native_wire(store, 0x9000U, bytes(store, "0300"), 7U, 4U);
+                const std::string original("same\0", 5U);
+                native_wire(store, kFieldTags[i],
+                            make_text(store.arena(), original,
+                                      TextEncoding::Utf8),
+                            129U, static_cast<uint32_t>(original.size()),
+                            "exififd", flags);
+                xmp(store, kFieldNames[i], "same", true);
+                store.finalize();
+                const auto result = translate_xmp_exif_text_metadata(
+                    store, { .conflict_policy = kFail }, &store);
+                ASSERT_EQ(result.status, kOk);
+                const Entry* entry = find(store, kFieldTags[i]);
+                ASSERT_NE(entry, nullptr);
+                const auto raw_value = store.arena().span(entry->value.data.span);
+                EXPECT_EQ(std::string(
+                              reinterpret_cast<const char*>(raw_value.data()),
+                              raw_value.size()),
+                          original);
+                EXPECT_EQ(entry->origin.wire_type.code, 129U);
+                EXPECT_EQ(entry->value.text_encoding, TextEncoding::Utf8);
+                if (flags == EntryFlags::None)
+                    EXPECT_EQ(result.entries_updated, 1U);
+                else
+                    EXPECT_EQ(result.entries_updated, 0U);
+            }
+        }
+    }
+
+    TEST(MetadataExifText, EveryExif3TextTagRejectsAnExplicitLegacyDowngrade)
+    {
+        for (size_t i = 3U; i <= 9U; ++i) {
+            for (const EntryFlags flags : { EntryFlags::None,
+                                            EntryFlags::Dirty }) {
+                MetaStore store;
+                native_wire(store, 0x9000U, bytes(store, "0300"), 7U, 4U);
+                const std::string original("same\0", 5U);
+                native_wire(store, kFieldTags[i],
+                            make_text(store.arena(), original,
+                                      TextEncoding::Utf8),
+                            129U, static_cast<uint32_t>(original.size()),
+                            "exififd", flags);
+                native_wire(
+                    store, 0x013bU,
+                    make_text(store.arena(), "Artist", TextEncoding::Ascii),
+                    2U, 7U, "ifd0");
+                native_wire(
+                    store, 0x0131U,
+                    make_text(store.arena(), "Software", TextEncoding::Ascii),
+                    2U, 9U, "ifd0");
+                xmp(store, "ExifVersion", "0232");
+                xmp(store, kFieldNames[i], "same", true);
+                expect_failure(store,
+                               MetadataCaptureTranslationStatus::NativeConflict,
+                               { .conflict_policy = kReplace });
+            }
+        }
+    }
+
+    TEST(MetadataExifText, DisabledAndDirtyOnlySourcesLeaveNativeValuesUntouched)
+    {
+        MetaStore disabled;
+        const std::string retained("native");
+        native_wire(disabled, 0xa436U,
+                    make_text(disabled.arena(), retained, TextEncoding::Ascii),
+                    2U, static_cast<uint32_t>(retained.size() + 1U));
+        xmp(disabled, "ImageTitle", "replacement", true);
+        xmp(disabled, "CameraOwnerName", "", true,
+            EntryFlags::Dirty | EntryFlags::Deleted);
+        disabled.finalize();
+        const Entry* before = find(disabled, 0xa436U);
+        ASSERT_NE(before, nullptr);
+        const auto before_span = disabled.arena().span(before->value.data.span);
+        const std::string before_raw(
+            reinterpret_cast<const char*>(before_span.data()), before_span.size());
+
+        const auto result = translate_xmp_exif_text_metadata(
+            disabled,
+            { .image_title_to_exif = false,
+              .camera_owner_name_to_exif = false },
+            &disabled);
+        EXPECT_EQ(result.status, kOk);
+        EXPECT_EQ(result.source_properties, 0U);
+        EXPECT_EQ(result.groups_translated, 0U);
+        EXPECT_EQ(result.entries_added, 0U);
+        EXPECT_EQ(result.entries_updated, 0U);
+        EXPECT_EQ(result.entries_removed, 0U);
+        const Entry* after = find(disabled, 0xa436U);
+        ASSERT_NE(after, nullptr);
+        const auto after_span = disabled.arena().span(after->value.data.span);
+        EXPECT_EQ(std::string(reinterpret_cast<const char*>(after_span.data()),
+                              after_span.size()),
+                  before_raw);
+        EXPECT_FALSE(any(after->flags, EntryFlags::Dirty));
+        EXPECT_EQ(stored_entry(disabled, 0xa430U), nullptr);
+
+        MetaStore clean_source;
+        native_wire(clean_source, 0xa436U,
+                    make_text(clean_source.arena(), "native",
+                              TextEncoding::Ascii),
+                    2U, 7U);
+        xmp(clean_source, "ImageTitle", "clean", true, EntryFlags::None);
+        clean_source.finalize();
+        const auto omitted = translate_xmp_exif_text_metadata(
+            clean_source, {}, &clean_source);
+        EXPECT_EQ(omitted.status, kOk);
+        EXPECT_EQ(omitted.source_properties, 0U);
+        EXPECT_EQ(omitted.entries_updated, 0U);
+        EXPECT_EQ(raw(clean_source, 0xa436U), "native");
+    }
+
+    TEST(MetadataExifText, PromotionAndDeletionBudgetsRollbackAliasedAndDistinct)
+    {
+        MetaStore promotion_alias;
+        native_wire(promotion_alias, 0x9000U,
+                    bytes(promotion_alias, "0300"), 7U, 4U);
+        native_wire(promotion_alias, 0xa436U,
+                    make_text(promotion_alias.arena(), "same",
+                              TextEncoding::Ascii),
+                    2U, 5U);
+        xmp(promotion_alias, "ImageTitle", "same", true);
+        expect_failure(promotion_alias,
+                       MetadataCaptureTranslationStatus::OperationLimitExceeded,
+                       { .max_operations = 0U });
+
+        MetaStore promotion_distinct;
+        native_wire(promotion_distinct, 0x9000U,
+                    bytes(promotion_distinct, "0300"), 7U, 4U);
+        native_wire(promotion_distinct, 0xa436U,
+                    make_text(promotion_distinct.arena(), "same",
+                              TextEncoding::Ascii),
+                    2U, 5U);
+        xmp(promotion_distinct, "ImageTitle", "same", true);
+        expect_failure_distinct(
+            promotion_distinct,
+            MetadataCaptureTranslationStatus::OperationLimitExceeded,
+            { .max_operations = 0U });
+
+        MetaStore marker_alias;
+        native_wire(marker_alias, 0xa436U,
+                    make_text(marker_alias.arena(), "clean-marker",
+                              TextEncoding::Ascii),
+                    2U, 13U, "exififd", EntryFlags::Deleted);
+        xmp(marker_alias, "ImageTitle", "", true,
+            EntryFlags::Dirty | EntryFlags::Deleted);
+        expect_failure(marker_alias,
+                       MetadataCaptureTranslationStatus::OperationLimitExceeded,
+                       { .max_operations = 0U });
+
+        MetaStore marker_distinct;
+        native_wire(marker_distinct, 0xa436U,
+                    make_text(marker_distinct.arena(), "clean-marker",
+                              TextEncoding::Ascii),
+                    2U, 13U, "exififd", EntryFlags::Deleted);
+        xmp(marker_distinct, "ImageTitle", "", true,
+            EntryFlags::Dirty | EntryFlags::Deleted);
+        expect_failure_distinct(
+            marker_distinct,
+            MetadataCaptureTranslationStatus::OperationLimitExceeded,
+            { .max_operations = 0U });
+
+        MetaStore deletion_alias;
+        xmp(deletion_alias, "ImageTitle", "", true,
+            EntryFlags::Dirty | EntryFlags::Deleted);
+        expect_failure(deletion_alias,
+                       MetadataCaptureTranslationStatus::EntryLimitExceeded,
+                       { .max_added_entries = 0U });
+
+        MetaStore deletion_distinct;
+        xmp(deletion_distinct, "ImageTitle", "", true,
+            EntryFlags::Dirty | EntryFlags::Deleted);
+        expect_failure_distinct(
+            deletion_distinct,
+            MetadataCaptureTranslationStatus::EntryLimitExceeded,
+            { .max_added_entries = 0U });
+
+        MetaStore deletion_ops;
+        xmp(deletion_ops, "ImageTitle", "", true,
+            EntryFlags::Dirty | EntryFlags::Deleted);
+        expect_failure_distinct(
+            deletion_ops,
+            MetadataCaptureTranslationStatus::OperationLimitExceeded,
+            { .max_operations = 0U });
     }
 
     TEST(MetadataExifText, LegacyAsciiUtf16AndVersionTransition)
@@ -279,6 +890,17 @@ namespace {
     TEST(MetadataExifText, CompanionVersionAndShapeFailuresRollbackTogether)
     {
         using S = MetadataCaptureTranslationStatus;
+        for (size_t i = 4U; i <= 9U; ++i) {
+            MetaStore exact_native;
+            native_wire(exact_native, 0x9000U,
+                        bytes(exact_native, "0300"), 7U, 4U);
+            native_wire(
+                exact_native, kFieldTags[i],
+                make_text(exact_native.arena(), "same", TextEncoding::Ascii),
+                2U, 5U);
+            xmp(exact_native, kFieldNames[i], "same", true);
+            expect_failure(exact_native, S::IncompleteSource);
+        }
         for (const auto name :
              { "ImageTitle", "CameraOwnerName", "LensMake", "LensModel" }) {
             MetaStore store;
@@ -364,6 +986,12 @@ namespace {
                       .status,
                   kOk);
         EXPECT_EQ(find(deletion, 0x9286), nullptr);
+        const Entry* deleted_comment = stored_entry(deletion, 0x9286U);
+        ASSERT_NE(deleted_comment, nullptr);
+        EXPECT_EQ(deleted_comment->value.kind, MetaValueKind::Bytes);
+        EXPECT_EQ(deleted_comment->value.elem_type, MetaElementType::U8);
+        EXPECT_TRUE(any(deleted_comment->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(deleted_comment->flags, EntryFlags::Deleted));
     }
 
     TEST(MetadataExifText, EmptyValuesAndNativeVersionValidation)

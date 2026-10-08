@@ -1243,7 +1243,7 @@ with tempfile.TemporaryDirectory() as temporary:
     translated = document.translate_exif_text_metadata(source_mode=mode)
     assert translated.entry_count == count + 7
     assert translated.translate_exif_text_metadata(source_mode=mode).entry_count == translated.entry_count
-    assert openmeta.METADATA_EXIF_TEXT_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_EXIF_TEXT_TRANSLATION_CONTRACT_VERSION == 2
     assert openmeta.METADATA_EXIF_TEXT_TRANSLATION_MAX_ADDED_ENTRIES == 13
     assert openmeta.MetadataCaptureTranslationMapping.XmpUserComment.name == 'XmpUserComment'
     for bound, limit in [('max_added_entries', 6), ('max_operations', 6), ('max_text_bytes_per_property', 1), ('max_total_text_bytes', 1)]:
@@ -1256,6 +1256,30 @@ with tempfile.TemporaryDirectory() as temporary:
     payload, _ = translated.dump_xmp_portable(include_existing_xmp=True,
         existing_standard_namespace_policy=openmeta.XmpExistingStandardNamespacePolicy.CanonicalizeManaged)
     assert b'Kommentar' in payload and b'&#13;&#10;&#9;' in payload
+    native_probe = openmeta.unsafe_transfer_snapshot_probe(
+        translated.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='exif_text.tiff',
+        target_bytes=bytes([73, 73, 42, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        include_edited_bytes=True,
+    )
+    assert native_probe['overall_status'] == openmeta.TransferStatus.Ok, native_probe
+    assert native_probe['tiff_merge_existing_exif'] is True, native_probe
+    native_path = Path(temporary) / 'exif_text.tiff'
+    native_path.write_bytes(bytes(native_probe['edited_bytes']))
+    clean_native = openmeta.read(str(native_path))
+    promoted = clean_native.translate_exif_text_metadata(source_mode=mode)
+    assert promoted.entry_count == clean_native.entry_count
+    assert promoted.translate_exif_text_metadata(source_mode=mode).entry_count == promoted.entry_count
+    promoted_probe = openmeta.unsafe_transfer_snapshot_probe(
+        promoted.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='exif_text.tiff',
+        target_bytes=bytes(native_probe['edited_bytes']),
+        include_edited_bytes=True,
+    )
+    assert promoted_probe['overall_status'] == openmeta.TransferStatus.Ok, promoted_probe
+    assert promoted_probe['tiff_merge_existing_exif'] is True, promoted_probe
     packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
     path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet)+2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
     restored = openmeta.read(str(path)).translate_exif_text_metadata(source_mode=mode)

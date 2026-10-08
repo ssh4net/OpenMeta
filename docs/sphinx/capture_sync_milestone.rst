@@ -8,6 +8,20 @@ Seventeen explicit reverse APIs now cover **81 distinct ExifIFD tags**,
 including camera text and excluding GPS, dates, geometry, IPTC and MakerNotes.
 This count does not measure all-EXIF or competitor coverage.
 
+Native EXIF text/version lifecycle in 0.8.10
+--------------------------------------------
+
+The 13 existing text/version fields now have translation contract 2. Exact
+clean native matches gain Dirty while retaining bytes, encoding and wire
+provenance, including comment BOMs/padding and valid ASCII type 129. Complete
+eligible deletion retains typed intent even for absent keys. All 13 use the
+native TIFF/BigTIFF/DNG merge/removal path; the shared allowlist grows from 66
+to 77. Explicit version changes still enforce charset and companion rules.
+Existing/template DNG preparation retains the target DNGVersion unless an
+eligible dirty version requests replacement. Fresh scaffolds retain their
+version-generation policy. ABI 4, snapshot v1 and host synchronization remain
+unchanged. See :doc:`translation`.
+
 Native structured capture lifecycle in 0.8.9
 --------------------------------------------
 

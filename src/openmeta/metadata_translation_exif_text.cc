@@ -53,8 +53,11 @@ namespace {
         EntryId source        = kInvalidEntryId;
         const Entry* native   = nullptr;
         uint32_t native_count = 0U;
+        EntryId clean_deleted = kInvalidEntryId;
+        bool dirty_deleted    = false;
         bool deleted          = false;
         bool apply            = false;
+        bool promote          = false;
         bool ascii            = true;
         uint16_t type         = 7U;
         std::string_view text;
@@ -65,6 +68,14 @@ namespace {
     {
         const auto raw = arena.span(span);
         return { reinterpret_cast<const char*>(raw.data()), raw.size() };
+    }
+
+    bool exif_text_entry(const ByteArena& arena, const Entry& entry,
+                         uint16_t tag) noexcept
+    {
+        return entry.key.kind == MetaKeyKind::ExifTag
+               && entry.key.data.exif_tag.tag == tag
+               && arena_text(arena, entry.key.data.exif_tag.ifd) == "exififd";
     }
 
     bool comment_equals(const ByteArena& arena, const Entry& native,
@@ -87,14 +98,23 @@ namespace {
     bool equivalent(const MetaStore& source, size_t index, const TextPlan& plan,
                     uint32_t version) noexcept
     {
-        if (plan.deleted)
-            return plan.native_count == 0U;
         if (plan.native_count != 1U)
             return false;
         const Entry& e = *plan.native;
-        if (e.origin.wire_type.family == WireFamily::Tiff
-            && e.origin.wire_type.code != plan.type)
+        const bool native_type129
+            = e.origin.wire_type.family == WireFamily::Tiff
+              && e.origin.wire_type.code == 129U;
+        if (version < 300U
+            && (detail::exif3_text_tag(kFields[index].tag) || native_type129))
             return false;
+        if (e.origin.wire_type.family == WireFamily::Tiff
+            && e.origin.wire_type.code != plan.type) {
+            const bool utf8_ascii
+                = index >= 3U && plan.type == 2U
+                  && native_type129 && version >= 300U;
+            if (!utf8_ascii)
+                return false;
+        }
         if (index == 2U)
             return comment_equals(source.arena(), e, version, plan.text);
         if (index < 2U) {
@@ -113,10 +133,32 @@ namespace {
                      uint32_t version, TextPlan* plan,
                      MetadataCaptureTranslationResult* result) noexcept
     {
+        if (plan->deleted) {
+            if (plan->native_count != 0U
+                && policy == Policy::PreserveExisting) {
+                ++result->groups_preserved;
+                return Status::Ok;
+            }
+            if (plan->native_count != 0U && policy == Policy::FailOnConflict)
+                return Status::NativeConflict;
+            if (plan->native_count == 0U && plan->dirty_deleted) {
+                ++result->groups_unchanged;
+                return Status::Ok;
+            }
+            plan->apply = true;
+            return Status::Ok;
+        }
         if (policy == Policy::PreserveExisting && plan->native_count != 0U) {
             ++result->groups_preserved;
-        } else if (equivalent(source, index, *plan, version)) {
-            ++result->groups_unchanged;
+            return Status::Ok;
+        }
+        if (equivalent(source, index, *plan, version)) {
+            if (any(plan->native->flags, EntryFlags::Dirty)) {
+                ++result->groups_unchanged;
+                return Status::Ok;
+            }
+            plan->apply   = true;
+            plan->promote = true;
         } else if (policy == Policy::FailOnConflict
                    && plan->native_count != 0U) {
             return Status::NativeConflict;
@@ -124,6 +166,38 @@ namespace {
             plan->apply = true;
         }
         return Status::Ok;
+    }
+
+    MetaValue copy_value_to_edit(const MetaStore& source, MetaEdit* edit,
+                                 const MetaValue& value)
+    {
+        MetaValue copied = value;
+        if (value.kind == MetaValueKind::Array
+            || value.kind == MetaValueKind::Bytes
+            || value.kind == MetaValueKind::Text) {
+            copied.data.span
+                = edit->arena().append(source.arena().span(value.data.span));
+        }
+        return copied;
+    }
+
+    void append_delete_marker(size_t index, MetaEdit* edit)
+    {
+        Entry entry;
+        entry.key = make_exif_tag_key(edit->arena(), "exififd",
+                                      kFields[index].tag);
+        if (index < 3U) {
+            entry.value = make_bytes(edit->arena(),
+                                     std::span<const std::byte> {});
+            entry.origin.wire_type = { WireFamily::Tiff, 7U };
+            entry.origin.wire_count = 0U;
+        } else {
+            entry.value = make_text(edit->arena(), {}, TextEncoding::Utf8);
+            entry.origin.wire_type = { WireFamily::Tiff, 2U };
+            entry.origin.wire_count = 1U;
+        }
+        entry.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+        edit->add_entry(entry);
     }
 
     void append_u16(std::vector<std::byte>* out, uint32_t code)
@@ -214,8 +288,14 @@ translate_xmp_exif_text_metadata(
         const Entry& e = source.entries()[id];
         if (e.key.kind == MetaKeyKind::ExifTag) {
             for (size_t i = 0U; i < plans.size(); ++i) {
-                if (detail::primary_exif_entry(source.arena(), e,
-                                               kFields[i].tag)) {
+                if (!exif_text_entry(source.arena(), e, kFields[i].tag))
+                    continue;
+                if (any(e.flags, EntryFlags::Deleted)) {
+                    if (any(e.flags, EntryFlags::Dirty))
+                        plans[i].dirty_deleted = true;
+                    else if (plans[i].clean_deleted == kInvalidEntryId)
+                        plans[i].clean_deleted = static_cast<EntryId>(id);
+                } else {
                     if (plans[i].native_count++ == 0U)
                         plans[i].native = &e;
                 }
@@ -261,6 +341,7 @@ translate_xmp_exif_text_metadata(
             }
             plan.source  = static_cast<EntryId>(id);
             plan.deleted = deleted;
+            plan.type    = i < 3U ? 7U : 2U;
             ++result.source_properties;
             if (deleted)
                 break;
@@ -308,11 +389,14 @@ translate_xmp_exif_text_metadata(
                                   old_version, &plan, &result);
         if (result.status != Status::Ok)
             return result;
-        if (i == 2U && !plan.apply && !plan.deleted && plans[0].apply
+        if (i == 2U && !plan.deleted && plans[0].apply
             && (old_version >= 300U) != (version >= 300U)
-            && options.conflict_policy == Policy::ReplaceExisting) {
-            --result.groups_unchanged;
+            && options.conflict_policy == Policy::ReplaceExisting
+            && equivalent(source, i, plan, old_version)) {
+            if (!plan.apply)
+                --result.groups_unchanged;
             plan.apply = true;
+            plan.promote = false;
         }
         if (i == 0U && plan.apply) {
             version = 0U;
@@ -323,17 +407,30 @@ translate_xmp_exif_text_metadata(
                                            &version);
             }
         }
+        if (i >= 10U && !plan.deleted && plans[0].apply
+            && old_version >= 300U && version < 300U
+            && options.conflict_policy == Policy::ReplaceExisting
+            && plan.ascii && equivalent(source, i, plan, old_version)
+            && plan.native->origin.wire_type.family == WireFamily::Tiff
+            && plan.native->origin.wire_type.code == 129U) {
+            if (!plan.apply)
+                --result.groups_unchanged;
+            plan.apply   = true;
+            plan.promote = false;
+        }
         if (!plan.apply || plan.deleted)
             continue;
         if ((!old_valid && !plans[0].apply)
-            || ((detail::exif3_text_tag(kFields[i].tag) || plan.type == 129U)
+            || (!plan.promote
+                && (detail::exif3_text_tag(kFields[i].tag)
+                    || plan.type == 129U)
                 && version < 300U)
             || ((i == 4U || i == 5U) && !companion_present(source, 0x013bU))
             || ((i >= 6U && i <= 9U) && !companion_present(source, 0x0131U))) {
             result.status = Status::IncompleteSource;
             return result;
         }
-        if (i == 2U)
+        if (i == 2U && !plan.promote)
             encode_comment(&plan, version);
     }
     // Changing the declared character set must not reinterpret retained values.
@@ -346,7 +443,7 @@ translate_xmp_exif_text_metadata(
                 continue;
             bool replaced = false;
             for (size_t i = 0U; i < plans.size(); ++i)
-                if (plans[i].apply
+                if (plans[i].apply && !plans[i].promote
                     && detail::primary_exif_entry(source.arena(), e,
                                                   kFields[i].tag))
                     replaced = true;
@@ -387,10 +484,21 @@ translate_xmp_exif_text_metadata(
     for (const TextPlan& plan : plans) {
         if (!plan.apply)
             continue;
-        operations += plan.native_count != 0U ? plan.native_count
-                                              : (plan.deleted ? 0U : 1U);
-        if (!plan.deleted && plan.native_count == 0U)
-            ++additions;
+        if (plan.deleted) {
+            if (plan.native_count != 0U) {
+                operations += plan.native_count;
+            } else if (!plan.dirty_deleted) {
+                ++operations;
+                if (plan.clean_deleted == kInvalidEntryId)
+                    ++additions;
+            }
+        } else if (plan.promote) {
+            ++operations;
+        } else {
+            operations += plan.native_count != 0U ? plan.native_count : 1U;
+            if (plan.native_count == 0U)
+                ++additions;
+        }
     }
     if (additions > options.max_added_entries
         || source.entries().size() > kInvalidEntryId - additions) {
@@ -408,9 +516,31 @@ translate_xmp_exif_text_metadata(
         if (!plan.apply)
             continue;
         ++result.groups_translated;
+        if (plan.deleted) {
+            bool active = false;
+            for (size_t id = 0U; id < source.entries().size(); ++id) {
+                const Entry& e = source.entries()[id];
+                if (!exif_text_entry(source.arena(), e, kFields[i].tag)
+                    || any(e.flags, EntryFlags::Deleted))
+                    continue;
+                edit.tombstone(static_cast<EntryId>(id));
+                ++result.entries_removed;
+                active = true;
+            }
+            if (!active) {
+                if (plan.clean_deleted != kInvalidEntryId) {
+                    edit.tombstone(plan.clean_deleted);
+                    ++result.entries_updated;
+                } else if (!plan.dirty_deleted) {
+                    append_delete_marker(i, &edit);
+                    ++result.entries_added;
+                }
+            }
+            continue;
+        }
         MetaValue value;
         uint32_t wire_count = 0U;
-        if (!plan.deleted) {
+        if (!plan.promote) {
             if (i == 2U)
                 value = make_bytes(edit.arena(), plan.raw);
             else if (i < 2U)
@@ -425,11 +555,17 @@ translate_xmp_exif_text_metadata(
         }
         bool written = false;
         for (size_t id = 0U; id < source.entries().size(); ++id) {
-            if (!detail::primary_exif_entry(source.arena(),
-                                            source.entries()[id],
-                                            kFields[i].tag))
+            if (!exif_text_entry(source.arena(), source.entries()[id],
+                                 kFields[i].tag)
+                || any(source.entries()[id].flags, EntryFlags::Deleted))
                 continue;
-            if (!plan.deleted && !written) {
+            if (plan.promote && !written) {
+                edit.set_value(static_cast<EntryId>(id),
+                               copy_value_to_edit(source, &edit,
+                                                  source.entries()[id].value));
+                ++result.entries_updated;
+                written = true;
+            } else if (!plan.promote && !written) {
                 edit.set_value(static_cast<EntryId>(id), value,
                                { WireFamily::Tiff, plan.type }, wire_count);
                 ++result.entries_updated;
@@ -439,7 +575,11 @@ translate_xmp_exif_text_metadata(
                 ++result.entries_removed;
             }
         }
-        if (!plan.deleted && !written) {
+        if (!written) {
+            if (plan.promote) {
+                result.status = Status::InternalError;
+                return result;
+            }
             Entry e;
             e.key = make_exif_tag_key(edit.arena(), "exififd", kFields[i].tag);
             e.value             = value;

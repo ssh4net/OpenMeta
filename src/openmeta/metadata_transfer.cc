@@ -7238,7 +7238,8 @@ namespace {
         bool collect_patch_source_slots, bool explicit_empty_gps_ifd = false,
         bool explicit_empty_exif_ifd        = false,
         bool dirty_supported_gps_only       = false,
-        bool include_gps_version_for_update = false) noexcept
+        bool include_gps_version_for_update = false,
+        bool skip_clean_dng_version          = false) noexcept
     {
         ExifPackBuild out;
 
@@ -7289,6 +7290,11 @@ namespace {
             }
             if (!ifd_ref.is_page && !ifd_ref.is_subifd
                 && ifd_ref.slot == ExifIfdSlot::Ifd0 && tag == 0xC612U) {
+                if (skip_clean_dng_version
+                    && !any(e.flags, EntryFlags::Dirty)) {
+                    out.source_count -= 1U;
+                    continue;
+                }
                 saw_dng_version = true;
             }
             if (!ifd_ref.is_page && !ifd_ref.is_subifd
@@ -11035,17 +11041,18 @@ namespace {
         0x010EU, 0x010FU, 0x0110U, 0x0131U, 0x0132U, 0x013BU, 0x8298U,
     };
 
-    static constexpr std::array<uint16_t, 66U> kTiffExifRemovalTags = {
+    static constexpr std::array<uint16_t, 77U> kTiffExifRemovalTags = {
         0x829AU, 0x829DU, 0x8822U, 0x8827U, 0x8828U, 0x8830U, 0x8831U, 0x8832U,
-        0x8833U, 0x8834U, 0x8835U, 0x9003U, 0x9004U, 0x9010U, 0x9011U, 0x9012U,
-        0x9201U, 0x9202U, 0x9203U, 0x9204U, 0x9205U, 0x9206U, 0x9207U,
-        0x9209U, 0x920AU, 0x9214U, 0x9290U, 0x9291U, 0x9292U, 0x9400U, 0x9401U,
-        0x9402U, 0x9403U,
-        0x9404U, 0x9405U, 0xA20BU, 0xA20CU, 0xA20EU, 0xA20FU, 0xA210U, 0xA214U,
-        0xA215U, 0xA217U, 0xA300U, 0xA301U, 0xA302U, 0xA401U, 0xA402U, 0xA403U,
-        0xA404U, 0xA405U, 0xA406U, 0xA407U, 0xA408U, 0xA409U, 0xA40AU, 0xA40BU,
-        0xA40CU, 0xA420U, 0xA432U,
-        0xA433U, 0xA434U, 0xA435U, 0xA460U, 0xA461U, 0xA462U,
+        0x8833U, 0x8834U, 0x8835U, 0x9000U, 0x9003U, 0x9004U, 0x9010U,
+        0x9011U, 0x9012U, 0x9201U, 0x9202U, 0x9203U, 0x9204U, 0x9205U, 0x9206U,
+        0x9207U, 0x9209U, 0x920AU, 0x9214U, 0x9286U, 0x9290U, 0x9291U, 0x9292U,
+        0x9400U, 0x9401U, 0x9402U, 0x9403U,
+        0x9404U, 0x9405U, 0xA000U, 0xA20BU, 0xA20CU, 0xA20EU, 0xA20FU, 0xA210U,
+        0xA214U, 0xA215U, 0xA217U, 0xA300U, 0xA301U, 0xA302U, 0xA401U, 0xA402U,
+        0xA403U, 0xA404U, 0xA405U, 0xA406U, 0xA407U, 0xA408U, 0xA409U, 0xA40AU,
+        0xA40BU, 0xA40CU, 0xA420U, 0xA430U, 0xA432U,
+        0xA433U, 0xA434U, 0xA435U, 0xA436U, 0xA437U, 0xA438U, 0xA439U, 0xA43AU,
+        0xA43BU, 0xA43CU, 0xA460U, 0xA461U, 0xA462U,
     };
 
     static uint32_t tiff_ifd0_profile_removal_slot(uint16_t tag) noexcept
@@ -13730,13 +13737,22 @@ prepare_metadata_for_target_impl(const MetaStore& store,
     }
 
     if (request.include_exif_app1 && has_exif) {
+        const bool inject_minimal_dng_version
+            = request.target_format == TransferTargetFormat::Dng
+              && request.dng_target_mode
+                     == DngTargetMode::MinimalFreshScaffold;
+        const bool skip_clean_dng_version
+            = request.target_format == TransferTargetFormat::Dng
+              && (request.dng_target_mode == DngTargetMode::ExistingTarget
+                  || request.dng_target_mode == DngTargetMode::TemplateTarget);
         ExifPackBuild exif_build = build_exif_tiff_payload(
             prepared_store, effective_makernote,
             transfer_target_is_tiff_family(request.target_format),
-            request.target_format == TransferTargetFormat::Dng, true,
+            inject_minimal_dng_version, true,
             kMaxJpegExifTiffBytes, false, false, explicit_empty_exif_ifd,
             bundle.tiff_merge_existing_gps,
-            has_dirty_tiff_native_gps_update(store));
+            has_dirty_tiff_native_gps_update(store),
+            skip_clean_dng_version);
         if (exif_build.produced && !exif_build.tiff_payload.empty()) {
             const uint32_t block_index = static_cast<uint32_t>(
                 bundle.blocks.size());
@@ -13828,7 +13844,7 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                                    + " unsupported exif entries");
             }
         } else if (exif_build.source_count > 0U || explicit_empty_exif_ifd
-                   || request.target_format == TransferTargetFormat::Dng) {
+                   || inject_minimal_dng_version) {
             requested_present_but_unpacked = true;
             if (exif_build.decoded_only_makernote_skipped_count > 0U) {
                 if (r.code == PrepareTransferCode::None) {

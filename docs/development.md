@@ -62,6 +62,14 @@ work includes independently sourced quality expansion, designed
 Unicode/transliteration behavior, multilingual gates, and an optional immutable
 index for repeated searches over large stores.
 
+The 0.8.10 lifecycle batch completes the 13 existing EXIF text/version fields.
+Exact clean matches retain raw bytes and wire provenance when promoted to Dirty;
+eligible absent deletion creates typed intent. All 13 use TIFF/BigTIFF/DNG
+selective merge/removal. Existing/template DNG preparation retains the target
+DNGVersion when no eligible explicit dirty version change is supplied. Fresh
+scaffolds retain their version-generation policy. ABI 4 and host synchronization
+remain unchanged.
+
 The 0.8.9 lifecycle batch completes exact clean-value promotion and typed
 absent deletion for OECF, SpatialFrequencyResponse, CFAPattern and
 DeviceSettingDescription. Eligible native changes use the existing TIFF
