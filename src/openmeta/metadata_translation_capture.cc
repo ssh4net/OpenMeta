@@ -1178,6 +1178,14 @@ namespace {
                           == NativeCaptureField::SourceImageNumberOfCompositeImage
                    || group.field
                           == NativeCaptureField::SourceExposureTimesOfCompositeImage;
+        case MetadataCaptureTranslationMapping::XmpOecf:
+            return group.field == NativeCaptureField::Oecf;
+        case MetadataCaptureTranslationMapping::XmpSpatialFrequencyResponse:
+            return group.field == NativeCaptureField::SpatialFrequencyResponse;
+        case MetadataCaptureTranslationMapping::XmpCfaPattern:
+            return group.field == NativeCaptureField::CfaPattern;
+        case MetadataCaptureTranslationMapping::XmpDeviceSettingDescription:
+            return group.field == NativeCaptureField::DeviceSettingDescription;
         default: return false;
         }
     }
@@ -1251,6 +1259,10 @@ namespace {
         case NativeCaptureField::FileSource:
         case NativeCaptureField::SceneType:
         case NativeCaptureField::ComponentsConfiguration:
+        case NativeCaptureField::Oecf:
+        case NativeCaptureField::SpatialFrequencyResponse:
+        case NativeCaptureField::CfaPattern:
+        case NativeCaptureField::DeviceSettingDescription:
         case NativeCaptureField::SourceExposureTimesOfCompositeImage: {
             MetaValue value;
             value.kind      = MetaValueKind::Bytes;
@@ -4069,6 +4081,8 @@ translate_xmp_structured_capture_metadata(
             result.status = status;
             return result;
         }
+        group.synthesize_delete_intent
+            = !group.present && capture_lifecycle_mapping(group);
     }
     result.failed_mapping      = Mapping::None;
     result.failed_source_entry = kInvalidEntryId;

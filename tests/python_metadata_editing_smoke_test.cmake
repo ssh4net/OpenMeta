@@ -1184,7 +1184,7 @@ with tempfile.TemporaryDirectory() as temporary:
     translated = document.translate_structured_capture_metadata(source_mode=mode)
     assert translated.entry_count == count + 4
     assert translated.translate_structured_capture_metadata(source_mode=mode).entry_count == translated.entry_count
-    assert openmeta.METADATA_STRUCTURED_CAPTURE_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_STRUCTURED_CAPTURE_TRANSLATION_CONTRACT_VERSION == 2
     assert openmeta.METADATA_STRUCTURED_CAPTURE_TRANSLATION_MAX_VALUES == 4096
     for name in ('XmpOecf', 'XmpSpatialFrequencyResponse', 'XmpCfaPattern', 'XmpDeviceSettingDescription'):
         assert getattr(openmeta.MetadataCaptureTranslationMapping, name).name == name
@@ -1202,6 +1202,29 @@ with tempfile.TemporaryDirectory() as temporary:
     assert b'<rdf:li></rdf:li>' in payload
     packet = b'http://ns.adobe.com/xap/1.0/' + bytes([0]) + payload
     path.write_bytes(bytes.fromhex('ffd8ffe1') + (len(packet) + 2).to_bytes(2, 'big') + packet + bytes.fromhex('ffd9'))
+    probe = openmeta.unsafe_transfer_snapshot_probe(
+        translated.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='structured_capture.tiff',
+        target_bytes=bytes([73, 73, 42, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        include_edited_bytes=True,
+    )
+    assert probe['overall_status'] == openmeta.TransferStatus.Ok, probe
+    assert probe['tiff_merge_existing_exif'] is True, probe
+    native_path = Path(temporary) / 'structured_capture.tiff'
+    native_path.write_bytes(bytes(probe['edited_bytes']))
+    clean_native = openmeta.read(str(native_path))
+    promoted = clean_native.translate_structured_capture_metadata(source_mode=mode)
+    assert promoted.entry_count == clean_native.entry_count
+    promoted_probe = openmeta.unsafe_transfer_snapshot_probe(
+        promoted.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='structured_capture.tiff',
+        target_bytes=bytes(probe['edited_bytes']),
+        include_edited_bytes=True,
+    )
+    assert promoted_probe['overall_status'] == openmeta.TransferStatus.Ok, promoted_probe
+    assert promoted_probe['tiff_merge_existing_exif'] is True, promoted_probe
     restored = openmeta.read(str(path)).translate_structured_capture_metadata(source_mode=mode)
     again, _ = restored.dump_xmp_portable(include_existing_xmp=False)
     assert again == payload

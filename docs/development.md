@@ -62,6 +62,13 @@ work includes independently sourced quality expansion, designed
 Unicode/transliteration behavior, multilingual gates, and an optional immutable
 index for repeated searches over large stores.
 
+The 0.8.9 lifecycle batch completes exact clean-value promotion and typed
+absent deletion for OECF, SpatialFrequencyResponse, CFAPattern and
+DeviceSettingDescription. Eligible native changes use the existing TIFF
+merge/removal paths and endian conversion. Rendered-image source filtering
+remains distinct from an explicit destination deletion. ABI 4 and host
+synchronization remain unchanged.
+
 The 0.8.8 lifecycle batch completes exact clean-value promotion and typed
 absent deletion for the existing image-encoding/composite group. Composite native
 writeback uses the existing TIFF/BigTIFF/DNG merge and removal paths. Encoding

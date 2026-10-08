@@ -60403,6 +60403,886 @@ TEST(MetadataTransferApi,
     }
 }
 
+static void
+expect_structured_capture_tag_values(const openmeta::MetaStore& actual,
+                                     const openmeta::MetaStore& expected,
+                                     std::span<const uint16_t> tags,
+                                     bool expected_actual_big_endian,
+                                     bool expected_source_big_endian)
+{
+    for (uint16_t tag : tags) {
+        const std::span<const openmeta::EntryId> actual_ids
+            = actual.find_all(exif_key_view("exififd", tag));
+        const std::span<const openmeta::EntryId> expected_ids
+            = expected.find_all(exif_key_view("exififd", tag));
+        ASSERT_EQ(actual_ids.size(), 1U) << "tag=" << tag;
+        ASSERT_EQ(expected_ids.size(), 1U) << "tag=" << tag;
+        const openmeta::Entry& actual_entry = actual.entry(actual_ids[0U]);
+        const openmeta::Entry& expected_entry
+            = expected.entry(expected_ids[0U]);
+        const openmeta::MetaValue& actual_value = actual_entry.value;
+        const openmeta::MetaValue& expected_value = expected_entry.value;
+        ASSERT_EQ(actual_value.kind, openmeta::MetaValueKind::Bytes)
+            << "tag=" << tag;
+        ASSERT_EQ(expected_value.kind, openmeta::MetaValueKind::Bytes)
+            << "tag=" << tag;
+        EXPECT_EQ(actual_value.elem_type, openmeta::MetaElementType::U8)
+            << "tag=" << tag;
+        EXPECT_EQ(expected_value.elem_type, openmeta::MetaElementType::U8)
+            << "tag=" << tag;
+        EXPECT_EQ(actual_entry.origin.wire_type.family,
+                  openmeta::WireFamily::Tiff)
+            << "tag=" << tag;
+        EXPECT_EQ(expected_entry.origin.wire_type.family,
+                  openmeta::WireFamily::Tiff)
+            << "tag=" << tag;
+        EXPECT_EQ(actual_entry.origin.wire_type.code, 7U) << "tag=" << tag;
+        EXPECT_EQ(expected_entry.origin.wire_type.code, 7U)
+            << "tag=" << tag;
+        EXPECT_EQ(actual_entry.origin.wire_count, actual_value.count)
+            << "tag=" << tag;
+        EXPECT_EQ(expected_entry.origin.wire_count, expected_value.count)
+            << "tag=" << tag;
+        const std::span<const std::byte> actual_raw
+            = actual.arena().span(actual_value.data.span);
+        const std::span<const std::byte> expected_raw
+            = expected.arena().span(expected_value.data.span);
+        ASSERT_EQ(actual_value.count, actual_raw.size()) << "tag=" << tag;
+        ASSERT_EQ(expected_value.count, expected_raw.size()) << "tag=" << tag;
+        ASSERT_EQ(actual_raw.size(), expected_raw.size()) << "tag=" << tag;
+        ASSERT_GE(actual_raw.size(), 4U) << "tag=" << tag;
+        const bool actual_value_big_endian
+            = openmeta::any(actual_entry.flags,
+                            openmeta::EntryFlags::ValueBigEndian);
+        const bool source_value_big_endian
+            = openmeta::any(expected_entry.flags,
+                            openmeta::EntryFlags::ValueBigEndian);
+        EXPECT_EQ(openmeta::any(actual_entry.flags,
+                                openmeta::EntryFlags::ValueBigEndian),
+                  expected_actual_big_endian)
+            << "tag=" << tag;
+        EXPECT_EQ(openmeta::any(expected_entry.flags,
+                                openmeta::EntryFlags::ValueBigEndian),
+                  expected_source_big_endian)
+            << "tag=" << tag;
+        for (size_t offset = 0U; offset < 4U; offset += 2U) {
+            EXPECT_EQ(read_tiff_test_unsigned(actual_raw, offset, 2U,
+                                              actual_value_big_endian),
+                      read_tiff_test_unsigned(expected_raw, offset, 2U,
+                                              source_value_big_endian))
+                << "tag=" << tag << " offset=" << offset;
+        }
+
+        if (tag == 0x8828U || tag == 0xA20CU) {
+            const uint64_t columns = read_tiff_test_unsigned(
+                expected_raw, 0U, 2U, source_value_big_endian);
+            const uint64_t rows = read_tiff_test_unsigned(
+                expected_raw, 2U, 2U, source_value_big_endian);
+            size_t offset = 4U;
+            for (uint64_t column = 0U; column < columns; ++column) {
+                while (offset < expected_raw.size()
+                       && expected_raw[offset] != std::byte { 0U }) {
+                    ASSERT_LT(offset, actual_raw.size());
+                    EXPECT_EQ(actual_raw[offset], expected_raw[offset])
+                        << "tag=" << tag << " offset=" << offset;
+                    ++offset;
+                }
+                ASSERT_LT(offset, expected_raw.size()) << "tag=" << tag;
+                EXPECT_EQ(actual_raw[offset], expected_raw[offset])
+                    << "tag=" << tag << " offset=" << offset;
+                ++offset;
+            }
+            const uint64_t rational_words = columns * rows * 2U;
+            ASSERT_EQ(expected_raw.size() - offset, rational_words * 4U)
+                << "tag=" << tag;
+            for (; offset < expected_raw.size(); offset += 4U) {
+                EXPECT_EQ(read_tiff_test_unsigned(actual_raw, offset, 4U,
+                                                  actual_value_big_endian),
+                          read_tiff_test_unsigned(expected_raw, offset, 4U,
+                                                  source_value_big_endian))
+                    << "tag=" << tag << " offset=" << offset;
+            }
+        } else {
+            EXPECT_EQ(std::memcmp(actual_raw.data() + 4U,
+                                  expected_raw.data() + 4U,
+                                  actual_raw.size() - 4U),
+                      0)
+                << "tag=" << tag;
+        }
+    }
+}
+
+static bool
+structured_payload_as_big_endian(uint16_t tag,
+                                 std::span<const std::byte> source,
+                                 std::vector<std::byte>* output)
+{
+    if (!output || source.size() < 4U
+        || (tag != 0x8828U && tag != 0xA20CU && tag != 0xA302U
+            && tag != 0xA40BU))
+        return false;
+    output->assign(source.begin(), source.end());
+    for (size_t dimension_index = 0U; dimension_index < 2U;
+         ++dimension_index) {
+        const size_t offset = dimension_index * 2U;
+        const uint64_t value
+            = read_tiff_test_unsigned(source, offset, 2U, false);
+        (*output)[offset]
+            = static_cast<std::byte>((value >> 8U) & 0xffU);
+        (*output)[offset + 1U] = static_cast<std::byte>(value & 0xffU);
+    }
+    if (tag == 0x8828U || tag == 0xA20CU) {
+        const uint64_t columns
+            = read_tiff_test_unsigned(source, 0U, 2U, false);
+        size_t offset = 4U;
+        for (uint64_t column = 0U; column < columns; ++column) {
+            while (offset < source.size()
+                   && source[offset] != std::byte { 0U })
+                ++offset;
+            if (offset == source.size())
+                return false;
+            ++offset;
+        }
+        if ((source.size() - offset) % 4U != 0U)
+            return false;
+        for (; offset < source.size(); offset += 4U) {
+            const uint64_t value
+                = read_tiff_test_unsigned(source, offset, 4U, false);
+            for (size_t byte = 0U; byte < 4U; ++byte) {
+                const unsigned shift
+                    = static_cast<unsigned>((3U - byte) * 8U);
+                (*output)[offset + byte]
+                    = static_cast<std::byte>((value >> shift) & 0xffU);
+            }
+        }
+    }
+    return true;
+}
+
+static bool
+append_structured_capture_entries(const openmeta::MetaStore& source,
+                                  std::span<const uint16_t> tags,
+                                  openmeta::EntryFlags added_flags,
+                                  openmeta::MetaStore* output,
+                                  bool convert_to_big_endian = false)
+{
+    if (!output || output->is_finalized())
+        return false;
+    for (uint16_t tag : tags) {
+        const std::span<const openmeta::EntryId> ids
+            = source.find_all(exif_key_view("exififd", tag));
+        if (ids.size() != 1U)
+            return false;
+        const openmeta::Entry& source_entry = source.entry(ids[0U]);
+        if (source_entry.value.kind != openmeta::MetaValueKind::Bytes
+            || source_entry.value.count != source_entry.value.data.span.size)
+            return false;
+        const std::span<const std::byte> payload
+            = source.arena().span(source_entry.value.data.span);
+        std::vector<std::byte> converted_payload;
+        if (convert_to_big_endian
+            && !structured_payload_as_big_endian(tag, payload,
+                                                 &converted_payload))
+            return false;
+        const std::span<const std::byte> stored_payload
+            = convert_to_big_endian
+                  ? std::span<const std::byte>(converted_payload.data(),
+                                               converted_payload.size())
+                  : payload;
+        openmeta::Entry entry;
+        entry.key = openmeta::make_exif_tag_key(output->arena(), "exififd",
+                                                tag);
+        entry.value = openmeta::make_bytes(output->arena(), stored_payload);
+        entry.flags = source_entry.flags | added_flags;
+        if (convert_to_big_endian)
+            entry.flags |= openmeta::EntryFlags::ValueBigEndian;
+        entry.origin.wire_type.family = openmeta::WireFamily::Tiff;
+        entry.origin.wire_type.code   = 7U;
+        entry.origin.wire_count = static_cast<uint32_t>(stored_payload.size());
+        entry.origin.order_in_block  = source_entry.origin.order_in_block;
+        const std::span<const std::byte> type_name
+            = source.arena().span(source_entry.origin.wire_type_name);
+        if (!type_name.empty()) {
+            entry.origin.wire_type_name = output->arena().append_string(
+                std::string_view(reinterpret_cast<const char*>(type_name.data()),
+                                 type_name.size()));
+        }
+        if (output->add_entry(entry) == openmeta::kInvalidEntryId)
+            return false;
+    }
+    return true;
+}
+
+static bool
+mutate_structured_capture_payload(uint16_t tag,
+                                  std::vector<std::byte>* payload)
+{
+    if (!payload || payload->size() < 4U)
+        return false;
+    if (tag == 0x8828U || tag == 0xA20CU) {
+        const std::span<const std::byte> raw(payload->data(), payload->size());
+        const uint64_t columns
+            = read_tiff_test_unsigned(raw, 0U, 2U, true);
+        size_t offset = 4U;
+        for (uint64_t column = 0U; column < columns; ++column) {
+            while (offset < payload->size()
+                   && (*payload)[offset] != std::byte { 0U })
+                ++offset;
+            if (offset == payload->size())
+                return false;
+            ++offset;
+        }
+        if (offset + 4U > payload->size())
+            return false;
+        constexpr uint32_t numerator = 0x10203040U;
+        for (size_t byte = 0U; byte < 4U; ++byte) {
+            const unsigned shift = static_cast<unsigned>((3U - byte) * 8U);
+            (*payload)[offset + byte]
+                = static_cast<std::byte>((numerator >> shift) & 0xffU);
+        }
+        return true;
+    }
+    if (tag == 0xA302U) {
+        if (payload->size() == 4U)
+            return false;
+        const uint8_t original = std::to_integer<uint8_t>((*payload)[4U]);
+        (*payload)[4U] = static_cast<std::byte>(original == 6U ? 5U : 6U);
+        return true;
+    }
+    if (tag == 0xA40BU) {
+        constexpr std::array<std::byte, 20U> mixed_bom_settings = {
+            std::byte { 0x00U }, std::byte { 0x20U },
+            std::byte { 0x00U }, std::byte { 0x02U },
+            std::byte { 0xFFU }, std::byte { 0xFEU },
+            std::byte { 0x41U }, std::byte { 0x00U },
+            std::byte { 0x00U }, std::byte { 0x00U },
+            std::byte { 0xFEU }, std::byte { 0xFFU },
+            std::byte { 0x00U }, std::byte { 0x42U },
+            std::byte { 0x00U }, std::byte { 0x00U },
+            std::byte { 0xFFU }, std::byte { 0xFEU },
+            std::byte { 0x00U }, std::byte { 0x00U },
+        };
+        payload->assign(mixed_bom_settings.begin(), mixed_bom_settings.end());
+        return true;
+    }
+    return false;
+}
+
+static void
+expect_structured_tiff_target_carriers(std::span<const std::byte> input,
+                                       std::span<const std::byte> output,
+                                       bool big_tiff, bool big_endian)
+{
+    const size_t ifd0_offset_field = big_tiff ? 8U : 4U;
+    const size_t ifd0_pointer_width = big_tiff ? 8U : 4U;
+    const uint64_t input_ifd0 = read_tiff_test_unsigned(
+        input, ifd0_offset_field, ifd0_pointer_width, big_endian);
+    const uint64_t output_ifd0 = read_tiff_test_unsigned(
+        output, ifd0_offset_field, ifd0_pointer_width, big_endian);
+    uint64_t input_exif = 0U;
+    uint64_t output_exif = 0U;
+    ASSERT_TRUE(find_tiff_test_entry(input, input_ifd0, 0x8769U, big_tiff,
+                                     big_endian, nullptr, nullptr,
+                                     &input_exif));
+    ASSERT_TRUE(find_tiff_test_entry(output, output_ifd0, 0x8769U, big_tiff,
+                                     big_endian, nullptr, nullptr,
+                                     &output_exif));
+
+    uint16_t input_type = 0U;
+    uint64_t input_count = 0U;
+    uint64_t input_value = 0U;
+    uint16_t output_type = 0U;
+    uint64_t output_count = 0U;
+    uint64_t output_value = 0U;
+    ASSERT_TRUE(find_tiff_test_entry(input, input_ifd0, 0x0100U, big_tiff,
+                                     big_endian, &input_type, &input_count,
+                                     &input_value));
+    ASSERT_TRUE(find_tiff_test_entry(output, output_ifd0, 0x0100U, big_tiff,
+                                     big_endian, &output_type, &output_count,
+                                     &output_value));
+    EXPECT_EQ(input_type, 4U);
+    EXPECT_EQ(output_type, input_type);
+    EXPECT_EQ(input_count, 1U);
+    EXPECT_EQ(output_count, input_count);
+    EXPECT_EQ(output_value, input_value);
+    EXPECT_EQ(output_value, 640U);
+
+    ASSERT_TRUE(find_tiff_test_entry(input, input_exif, 0x9003U, big_tiff,
+                                     big_endian, &input_type, &input_count,
+                                     &input_value));
+    ASSERT_TRUE(find_tiff_test_entry(output, output_exif, 0x9003U, big_tiff,
+                                     big_endian, &output_type, &output_count,
+                                     &output_value));
+    EXPECT_EQ(input_type, 2U);
+    EXPECT_EQ(output_type, input_type);
+    EXPECT_EQ(output_count, input_count);
+    ASSERT_LE(input_value, input.size());
+    ASSERT_LE(input_count, input.size() - input_value);
+    ASSERT_LE(output_value, output.size());
+    ASSERT_LE(output_count, output.size() - output_value);
+    EXPECT_EQ(std::memcmp(input.data() + input_value,
+                          output.data() + output_value,
+                          static_cast<size_t>(input_count)),
+              0);
+
+    ASSERT_TRUE(find_tiff_test_entry(input, input_exif, 0x927CU, big_tiff,
+                                     big_endian, &input_type, &input_count,
+                                     &input_value));
+    ASSERT_TRUE(find_tiff_test_entry(output, output_exif, 0x927CU, big_tiff,
+                                     big_endian, &output_type, &output_count,
+                                     &output_value));
+    EXPECT_EQ(input_type, 7U);
+    EXPECT_EQ(output_type, input_type);
+    EXPECT_EQ(output_count, input_count);
+    EXPECT_EQ(input_count, kTestMakerNoteBytes.size());
+    ASSERT_LE(input_value, input.size());
+    ASSERT_LE(input_count, input.size() - input_value);
+    ASSERT_LE(output_value, output.size());
+    ASSERT_LE(output_count, output.size() - output_value);
+    EXPECT_EQ(std::memcmp(input.data() + input_value,
+                          output.data() + output_value,
+                          static_cast<size_t>(input_count)),
+              0);
+
+    ASSERT_TRUE(find_tiff_test_entry(input, input_ifd0, 0x0111U, big_tiff,
+                                     big_endian, &input_type, &input_count,
+                                     &input_value));
+    ASSERT_TRUE(find_tiff_test_entry(output, output_ifd0, 0x0111U, big_tiff,
+                                     big_endian, &output_type, &output_count,
+                                     &output_value));
+    EXPECT_EQ(input_type, 4U);
+    EXPECT_EQ(output_type, input_type);
+    EXPECT_EQ(output_count, input_count);
+    ASSERT_EQ(input_count, 1U);
+    const uint64_t input_strip_offset = input_value;
+    const uint64_t output_strip_offset = output_value;
+    EXPECT_EQ(output_strip_offset, input_strip_offset);
+    ASSERT_TRUE(find_tiff_test_entry(input, input_ifd0, 0x0117U, big_tiff,
+                                     big_endian, &input_type, &input_count,
+                                     &input_value));
+    ASSERT_TRUE(find_tiff_test_entry(output, output_ifd0, 0x0117U, big_tiff,
+                                     big_endian, &output_type, &output_count,
+                                     &output_value));
+    EXPECT_EQ(input_type, 4U);
+    EXPECT_EQ(output_type, input_type);
+    EXPECT_EQ(input_count, 1U);
+    EXPECT_EQ(output_count, 1U);
+    EXPECT_EQ(input_value, 4U);
+    EXPECT_EQ(output_value, input_value);
+    const uint64_t input_strip_size = input_value;
+    const uint64_t output_strip_size = output_value;
+    ASSERT_LE(input_strip_offset, input.size());
+    ASSERT_LE(input_strip_size, input.size() - input_strip_offset);
+    ASSERT_LE(output_strip_offset, output.size());
+    ASSERT_LE(output_strip_size, output.size() - output_strip_offset);
+    EXPECT_EQ(std::memcmp(input.data() + input_strip_offset,
+                          output.data() + output_strip_offset,
+                          static_cast<size_t>(input_strip_size)),
+              0);
+}
+
+TEST(MetadataTransferApi, StructuredCaptureDirtyTiffUpdateAndDeletionMerge)
+{
+    using namespace openmeta;
+    constexpr std::array<uint16_t, 4U> tags = {
+        0x8828U, 0xA20CU, 0xA302U, 0xA40BU,
+    };
+
+    const std::string_view xml = test::kCaptureSyncXml;
+    MetaStore structured_xmp;
+    ASSERT_EQ(decode_xmp_packet(std::as_bytes(std::span(xml.data(), xml.size())),
+                                structured_xmp)
+                  .status,
+              XmpDecodeStatus::Ok);
+    structured_xmp.finalize();
+    MetadataStructuredCaptureTranslationOptions structured_options;
+    structured_options.source_mode = MetadataCaptureTranslationSourceMode::All;
+    MetaStore projected;
+    const MetadataCaptureTranslationResult projected_result
+        = translate_xmp_structured_capture_metadata(
+            structured_xmp, structured_options, &projected);
+    ASSERT_EQ(projected_result.status, MetadataCaptureTranslationStatus::Ok);
+    EXPECT_EQ(projected_result.groups_translated, tags.size());
+
+    MetaStore clean_source;
+    ASSERT_EQ(decode_xmp_packet(std::as_bytes(std::span(xml.data(), xml.size())),
+                                clean_source)
+                  .status,
+              XmpDecodeStatus::Ok);
+    for (uint16_t tag : tags) {
+        const std::span<const EntryId> ids
+            = projected.find_all(exif_key_view("exififd", tag));
+        ASSERT_EQ(ids.size(), 1U) << "tag=" << tag;
+        const Entry& projected_entry = projected.entry(ids[0U]);
+        const std::span<const std::byte> raw
+            = projected.arena().span(projected_entry.value.data.span);
+        Entry entry;
+        entry.key = make_exif_tag_key(clean_source.arena(), "exififd", tag);
+        entry.value = make_bytes(clean_source.arena(), raw);
+        entry.origin.wire_type.family = WireFamily::Tiff;
+        entry.origin.wire_type.code   = 7U;
+        entry.origin.wire_count = static_cast<uint32_t>(raw.size());
+        ASSERT_NE(clean_source.add_entry(entry), kInvalidEntryId);
+    }
+    clean_source.finalize();
+    ASSERT_TRUE(validate_store(clean_source).ok());
+    const MetaStore clean_before = clean_source;
+    const MetadataCaptureTranslationResult promoted
+        = translate_xmp_structured_capture_metadata(
+            clean_source, structured_options, &clean_source);
+    ASSERT_EQ(promoted.status, MetadataCaptureTranslationStatus::Ok);
+    EXPECT_EQ(promoted.groups_translated, tags.size());
+    EXPECT_EQ(promoted.entries_added, 0U);
+    EXPECT_EQ(promoted.entries_updated, tags.size());
+    ASSERT_NO_FATAL_FAILURE(expect_structured_capture_tag_values(
+        clean_source, clean_before, tags, false, false));
+    for (uint16_t tag : tags) {
+        const std::span<const EntryId> ids
+            = clean_source.find_all(exif_key_view("exififd", tag));
+        ASSERT_EQ(ids.size(), 1U) << "tag=" << tag;
+        const Entry& entry = clean_source.entry(ids[0U]);
+        EXPECT_TRUE(any(entry.flags, EntryFlags::Dirty)) << "tag=" << tag;
+        EXPECT_FALSE(any(entry.flags, EntryFlags::ValueBigEndian))
+            << "tag=" << tag;
+        EXPECT_EQ(entry.origin.wire_type.family, WireFamily::Tiff)
+            << "tag=" << tag;
+        EXPECT_EQ(entry.origin.wire_type.code, 7U) << "tag=" << tag;
+    }
+    const MetadataCaptureTranslationResult promoted_repeat
+        = translate_xmp_structured_capture_metadata(
+            clean_source, structured_options, &clean_source);
+    ASSERT_EQ(promoted_repeat.status, MetadataCaptureTranslationStatus::Ok);
+    EXPECT_EQ(promoted_repeat.groups_unchanged, tags.size());
+    EXPECT_EQ(promoted_repeat.entries_added, 0U);
+    EXPECT_EQ(promoted_repeat.entries_updated, 0U);
+
+    MetaStore base_source;
+    ASSERT_TRUE(append_structured_capture_entries(
+        projected, tags, EntryFlags::Dirty, &base_source, true));
+    base_source.finalize();
+    ASSERT_TRUE(validate_store(base_source).ok());
+    EXPECT_EQ(base_source.entries().size(), tags.size());
+
+    MetaStore dirty_source;
+    for (uint16_t tag : tags) {
+        const std::span<const EntryId> ids
+            = base_source.find_all(exif_key_view("exififd", tag));
+        ASSERT_EQ(ids.size(), 1U) << "tag=" << tag;
+        const Entry& base_entry = base_source.entry(ids[0U]);
+        ASSERT_TRUE(any(base_entry.flags, EntryFlags::ValueBigEndian))
+            << "tag=" << tag;
+        const std::span<const std::byte> raw
+            = base_source.arena().span(base_entry.value.data.span);
+        std::vector<std::byte> payload(raw.begin(), raw.end());
+        ASSERT_TRUE(mutate_structured_capture_payload(tag, &payload))
+            << "tag=" << tag;
+        if (tag == 0xA40BU) {
+            ASSERT_EQ(payload.size(), 20U);
+            EXPECT_EQ(payload[4U], std::byte { 0xFFU });
+            EXPECT_EQ(payload[5U], std::byte { 0xFEU });
+            EXPECT_EQ(payload[10U], std::byte { 0xFEU });
+            EXPECT_EQ(payload[11U], std::byte { 0xFFU });
+            EXPECT_EQ(payload[16U], std::byte { 0xFFU });
+            EXPECT_EQ(payload[17U], std::byte { 0xFEU });
+        }
+        Entry entry;
+        entry.key = make_exif_tag_key(dirty_source.arena(), "exififd", tag);
+        entry.value = make_bytes(
+            dirty_source.arena(),
+            std::span<const std::byte>(payload.data(), payload.size()));
+        entry.flags = EntryFlags::Dirty | EntryFlags::ValueBigEndian;
+        entry.origin.wire_type = { WireFamily::Tiff, 7U };
+        entry.origin.wire_count = static_cast<uint32_t>(payload.size());
+        ASSERT_NE(dirty_source.add_entry(entry), kInvalidEntryId);
+    }
+    dirty_source.finalize();
+    ASSERT_TRUE(validate_store(dirty_source).ok());
+    EXPECT_EQ(dirty_source.entries().size(), tags.size());
+
+    struct Variant final {
+        bool big_tiff;
+        bool big_endian;
+        TransferTargetFormat target;
+    };
+    constexpr std::array<Variant, 6U> variants = { {
+        { false, false, TransferTargetFormat::Tiff },
+        { false, true, TransferTargetFormat::Tiff },
+        { true, false, TransferTargetFormat::Tiff },
+        { true, true, TransferTargetFormat::Tiff },
+        { true, false, TransferTargetFormat::Dng },
+        { true, true, TransferTargetFormat::Dng },
+    } };
+
+    for (size_t variant_index = 0U; variant_index < variants.size();
+         ++variant_index) {
+        const Variant& variant = variants[variant_index];
+        SCOPED_TRACE(variant_index);
+        PrepareTransferRequest request;
+        request.target_format      = variant.target;
+        request.include_exif_app1  = true;
+        request.include_xmp_app1   = false;
+        request.include_icc_app2   = false;
+        request.include_iptc_app13 = false;
+        const std::vector<std::byte> input
+            = make_timestamp_exif_target(variant.big_tiff,
+                                         variant.big_endian);
+        ASSERT_GE(input.size(), 2U);
+        EXPECT_EQ(input[0U], variant.big_endian ? std::byte { 0x4dU }
+                                                : std::byte { 0x49U });
+        EXPECT_EQ(input[1U], variant.big_endian ? std::byte { 0x4dU }
+                                                : std::byte { 0x49U });
+
+        PreparedTransferBundle seed_bundle;
+        ASSERT_EQ(prepare_metadata_for_target(base_source, request,
+                                              &seed_bundle)
+                      .status,
+                  TransferStatus::Ok);
+        EXPECT_TRUE(seed_bundle.tiff_merge_existing_exif);
+        EXPECT_TRUE(seed_bundle.tiff_exif_removals.empty());
+        const TiffEditPlan seed_plan
+            = plan_prepared_bundle_tiff_edit(input, seed_bundle);
+        ASSERT_EQ(seed_plan.status, TransferStatus::Ok) << seed_plan.message;
+        std::vector<std::byte> populated_target;
+        ASSERT_EQ(apply_prepared_bundle_tiff_edit(
+                      input, seed_bundle, seed_plan, &populated_target)
+                      .status,
+                  TransferStatus::Ok);
+        ASSERT_GE(populated_target.size(), 2U);
+        EXPECT_EQ(populated_target[0U], input[0U]);
+        EXPECT_EQ(populated_target[1U], input[1U]);
+        ASSERT_NO_FATAL_FAILURE(expect_structured_tiff_target_carriers(
+            input, populated_target, variant.big_tiff, variant.big_endian));
+        MetaStore decoded_populated;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(populated_target,
+                                                    &decoded_populated));
+        ASSERT_NO_FATAL_FAILURE(expect_structured_capture_tag_values(
+            decoded_populated, base_source, tags, variant.big_endian, true));
+
+        const TransferSourceSnapshot snapshot
+            = build_transfer_source_snapshot(dirty_source);
+        PreparedTransferBundle direct_bundle;
+        ASSERT_EQ(prepare_metadata_for_target(dirty_source, request,
+                                              &direct_bundle)
+                      .status,
+                  TransferStatus::Ok);
+        EXPECT_TRUE(direct_bundle.tiff_merge_existing_exif);
+        EXPECT_TRUE(direct_bundle.tiff_exif_removals.empty());
+        PreparedTransferBundle snapshot_bundle;
+        ASSERT_EQ(prepare_metadata_for_target_snapshot(snapshot, request,
+                                                       &snapshot_bundle)
+                      .status,
+                  TransferStatus::Ok);
+        EXPECT_EQ(snapshot_bundle.tiff_exif_removals,
+                  direct_bundle.tiff_exif_removals);
+        EXPECT_EQ(snapshot_bundle.tiff_merge_existing_exif,
+                  direct_bundle.tiff_merge_existing_exif);
+        ASSERT_EQ(snapshot_bundle.blocks.size(), direct_bundle.blocks.size());
+        for (size_t block_index = 0U;
+             block_index < direct_bundle.blocks.size(); ++block_index) {
+            EXPECT_EQ(snapshot_bundle.blocks[block_index].route,
+                      direct_bundle.blocks[block_index].route)
+                << "block=" << block_index;
+            EXPECT_EQ(snapshot_bundle.blocks[block_index].payload,
+                      direct_bundle.blocks[block_index].payload)
+                << "block=" << block_index;
+        }
+
+        const TiffEditPlan update_plan
+            = plan_prepared_bundle_tiff_edit(populated_target, direct_bundle);
+        ASSERT_EQ(update_plan.status, TransferStatus::Ok)
+            << update_plan.message;
+        std::vector<std::byte> updated_target;
+        ASSERT_EQ(apply_prepared_bundle_tiff_edit(
+                      populated_target, direct_bundle, update_plan,
+                      &updated_target)
+                      .status,
+                  TransferStatus::Ok);
+        BufferByteWriter update_stream;
+        ASSERT_EQ(write_prepared_bundle_tiff_edit(
+                      populated_target, direct_bundle, update_plan,
+                      update_stream)
+                      .status,
+                  TransferStatus::Ok);
+        EXPECT_EQ(update_stream.out, updated_target);
+        PreparedTransferPackagePlan update_package;
+        ASSERT_EQ(build_prepared_bundle_tiff_package(
+                      populated_target, direct_bundle, update_plan,
+                      &update_package)
+                      .status,
+                  TransferStatus::Ok);
+        BufferByteWriter package_writer;
+        ASSERT_EQ(write_prepared_transfer_package(
+                      populated_target, direct_bundle, update_package,
+                      package_writer)
+                      .status,
+                  TransferStatus::Ok);
+        EXPECT_EQ(package_writer.out, updated_target);
+
+        ExecutePreparedTransferSnapshotOptions snapshot_options;
+        snapshot_options.prepare = request;
+        snapshot_options.execute.edit_requested = true;
+        snapshot_options.execute.edit_apply     = true;
+        const auto snapshot_update
+            = execute_prepared_transfer_snapshot(snapshot, populated_target,
+                                                 snapshot_options);
+        ASSERT_EQ(snapshot_update.execute.edit_apply.status,
+                  TransferStatus::Ok)
+            << snapshot_update.execute.edit_apply.message;
+        EXPECT_EQ(snapshot_update.execute.edited_output, updated_target);
+        MetaStore decoded_update;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(updated_target,
+                                                    &decoded_update));
+        ASSERT_NO_FATAL_FAILURE(expect_structured_capture_tag_values(
+            decoded_update, dirty_source, tags, variant.big_endian, true));
+        ASSERT_NO_FATAL_FAILURE(expect_structured_tiff_target_carriers(
+            input, updated_target, variant.big_tiff, variant.big_endian));
+        const TiffEditPlan repeat_update_plan
+            = plan_prepared_bundle_tiff_edit(updated_target, direct_bundle);
+        ASSERT_EQ(repeat_update_plan.status, TransferStatus::Ok);
+        std::vector<std::byte> repeat_updated_target;
+        ASSERT_EQ(apply_prepared_bundle_tiff_edit(
+                      updated_target, direct_bundle, repeat_update_plan,
+                      &repeat_updated_target)
+                      .status,
+                  TransferStatus::Ok);
+        MetaStore decoded_repeat_update;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(repeat_updated_target,
+                                                    &decoded_repeat_update));
+        ASSERT_NO_FATAL_FAILURE(expect_structured_capture_tag_values(
+            decoded_repeat_update, dirty_source, tags, variant.big_endian,
+            true));
+        ASSERT_NO_FATAL_FAILURE(expect_structured_tiff_target_carriers(
+            input, repeat_updated_target, variant.big_tiff,
+            variant.big_endian));
+
+        for (size_t field_index = 0U; field_index < tags.size();
+             ++field_index) {
+            SCOPED_TRACE(field_index);
+            const uint16_t tag = tags[field_index];
+            const std::array<uint16_t, 1U> one_tag = { tag };
+            MetaStore field_source;
+            ASSERT_TRUE(append_structured_capture_entries(
+                dirty_source, one_tag, EntryFlags::None, &field_source));
+            field_source.finalize();
+            ASSERT_EQ(field_source.entries().size(), 1U);
+            ASSERT_TRUE(any(field_source.entries()[0U].flags,
+                            EntryFlags::Dirty));
+            ASSERT_EQ(field_source.entries()[0U].key.kind,
+                      MetaKeyKind::ExifTag);
+            ASSERT_EQ(field_source.entries()[0U].key.data.exif_tag.tag, tag);
+
+            PreparedTransferBundle field_bundle;
+            ASSERT_EQ(prepare_metadata_for_target(field_source, request,
+                                                  &field_bundle)
+                          .status,
+                      TransferStatus::Ok);
+            EXPECT_TRUE(field_bundle.tiff_exif_removals.empty());
+            const TiffEditPlan field_plan
+                = plan_prepared_bundle_tiff_edit(populated_target,
+                                                 field_bundle);
+            ASSERT_EQ(field_plan.status, TransferStatus::Ok);
+            std::vector<std::byte> field_updated_target;
+            ASSERT_EQ(apply_prepared_bundle_tiff_edit(
+                          populated_target, field_bundle, field_plan,
+                          &field_updated_target)
+                          .status,
+                      TransferStatus::Ok);
+            MetaStore decoded_field_update;
+            ASSERT_TRUE(decode_transfer_roundtrip_store(
+                field_updated_target, &decoded_field_update));
+            for (uint16_t checked_tag : tags) {
+                const std::array<uint16_t, 1U> checked = { checked_tag };
+                ASSERT_NO_FATAL_FAILURE(expect_structured_capture_tag_values(
+                    decoded_field_update,
+                    checked_tag == tag ? dirty_source : base_source, checked,
+                    variant.big_endian, true));
+            }
+            ASSERT_NO_FATAL_FAILURE(expect_structured_tiff_target_carriers(
+                input, field_updated_target, variant.big_tiff,
+                variant.big_endian));
+
+            MetaStore field_delete_source;
+            Entry field_tombstone;
+            field_tombstone.key = make_exif_tag_key(
+                field_delete_source.arena(), "exififd", tag);
+            field_tombstone.value.kind      = MetaValueKind::Bytes;
+            field_tombstone.value.elem_type = MetaElementType::U8;
+            field_tombstone.value.count     = 0U;
+            field_tombstone.value.data.span = {};
+            field_tombstone.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+            ASSERT_NE(field_delete_source.add_entry(field_tombstone),
+                      kInvalidEntryId);
+            field_delete_source.finalize();
+            PrepareTransferRequest field_delete_request = request;
+            if (tag == 0xA302U)
+                field_delete_request.profile.safety
+                    = TransferSafetyMode::RenderedImage;
+            PreparedTransferBundle field_delete_bundle;
+            ASSERT_EQ(prepare_metadata_for_target(
+                          field_delete_source, field_delete_request,
+                          &field_delete_bundle)
+                          .status,
+                      TransferStatus::Ok);
+            ASSERT_EQ(field_delete_bundle.tiff_exif_removals.size(), 1U);
+            EXPECT_EQ(field_delete_bundle.tiff_exif_removals[0U], tag);
+            const TiffEditPlan field_delete_plan
+                = plan_prepared_bundle_tiff_edit(field_updated_target,
+                                                 field_delete_bundle);
+            ASSERT_EQ(field_delete_plan.status, TransferStatus::Ok);
+            std::vector<std::byte> field_deleted_target;
+            ASSERT_EQ(apply_prepared_bundle_tiff_edit(
+                          field_updated_target, field_delete_bundle,
+                          field_delete_plan, &field_deleted_target)
+                          .status,
+                      TransferStatus::Ok);
+            MetaStore decoded_field_delete;
+            ASSERT_TRUE(decode_transfer_roundtrip_store(
+                field_deleted_target, &decoded_field_delete));
+            EXPECT_TRUE(decoded_field_delete
+                            .find_all(exif_key_view("exififd", tag))
+                            .empty());
+            for (size_t retained_index = 0U; retained_index < tags.size();
+                 ++retained_index) {
+                if (retained_index == field_index)
+                    continue;
+                const std::array<uint16_t, 1U> retained = {
+                    tags[retained_index],
+                };
+                ASSERT_NO_FATAL_FAILURE(expect_structured_capture_tag_values(
+                    decoded_field_delete, base_source, retained,
+                    variant.big_endian, true));
+            }
+            ASSERT_NO_FATAL_FAILURE(expect_structured_tiff_target_carriers(
+                input, field_deleted_target, variant.big_tiff,
+                variant.big_endian));
+            if (tag == 0xA302U)
+                EXPECT_FALSE(payload_contains_ascii(field_deleted_target,
+                                                    "CFAPattern"));
+        }
+
+        MetaStore deleted_source;
+        for (uint16_t tag : tags) {
+            Entry tombstone;
+            tombstone.key = make_exif_tag_key(deleted_source.arena(),
+                                              "exififd", tag);
+            tombstone.value.kind      = MetaValueKind::Bytes;
+            tombstone.value.elem_type = MetaElementType::U8;
+            tombstone.value.count     = 0U;
+            tombstone.value.data.span = {};
+            tombstone.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+            ASSERT_NE(deleted_source.add_entry(tombstone), kInvalidEntryId);
+        }
+        deleted_source.finalize();
+        ASSERT_TRUE(validate_store(deleted_source).ok());
+        PreparedTransferBundle deleted_bundle;
+        ASSERT_EQ(prepare_metadata_for_target(deleted_source, request,
+                                              &deleted_bundle)
+                      .status,
+                  TransferStatus::Ok);
+        ASSERT_EQ(deleted_bundle.tiff_exif_removals.size(), tags.size());
+        for (size_t i = 0U; i < tags.size(); ++i)
+            EXPECT_EQ(deleted_bundle.tiff_exif_removals[i], tags[i]);
+
+        const TiffEditPlan absent_plan
+            = plan_prepared_bundle_tiff_edit(input, deleted_bundle);
+        ASSERT_EQ(absent_plan.status, TransferStatus::Ok);
+        std::vector<std::byte> absent_delete_output;
+        ASSERT_EQ(apply_prepared_bundle_tiff_edit(
+                      input, deleted_bundle, absent_plan,
+                      &absent_delete_output)
+                      .status,
+                  TransferStatus::Ok);
+        MetaStore decoded_absent_delete;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(absent_delete_output,
+                                                    &decoded_absent_delete));
+        for (uint16_t tag : tags)
+            EXPECT_TRUE(decoded_absent_delete.find_all(
+                            exif_key_view("exififd", tag)).empty());
+        ASSERT_NO_FATAL_FAILURE(expect_structured_tiff_target_carriers(
+            input, absent_delete_output, variant.big_tiff,
+            variant.big_endian));
+
+        const TiffEditPlan delete_plan
+            = plan_prepared_bundle_tiff_edit(updated_target, deleted_bundle);
+        ASSERT_EQ(delete_plan.status, TransferStatus::Ok);
+        std::vector<std::byte> deleted_target;
+        ASSERT_EQ(apply_prepared_bundle_tiff_edit(
+                      updated_target, deleted_bundle, delete_plan,
+                      &deleted_target)
+                      .status,
+                  TransferStatus::Ok);
+        MetaStore decoded_delete;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(deleted_target,
+                                                    &decoded_delete));
+        for (uint16_t tag : tags)
+            EXPECT_TRUE(decoded_delete.find_all(exif_key_view("exififd", tag))
+                            .empty())
+                << "tag=" << tag;
+        ASSERT_NO_FATAL_FAILURE(expect_structured_tiff_target_carriers(
+            input, deleted_target, variant.big_tiff, variant.big_endian));
+        const TiffEditPlan repeat_delete_plan
+            = plan_prepared_bundle_tiff_edit(deleted_target, deleted_bundle);
+        ASSERT_EQ(repeat_delete_plan.status, TransferStatus::Ok);
+        std::vector<std::byte> repeat_deleted_target;
+        ASSERT_EQ(apply_prepared_bundle_tiff_edit(
+                      deleted_target, deleted_bundle, repeat_delete_plan,
+                      &repeat_deleted_target)
+                      .status,
+                  TransferStatus::Ok);
+        MetaStore decoded_repeat_delete;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(repeat_deleted_target,
+                                                    &decoded_repeat_delete));
+        for (uint16_t tag : tags)
+            EXPECT_TRUE(decoded_repeat_delete.find_all(
+                            exif_key_view("exififd", tag)).empty());
+        ASSERT_NO_FATAL_FAILURE(expect_structured_tiff_target_carriers(
+            input, repeat_deleted_target, variant.big_tiff,
+            variant.big_endian));
+
+        MetaStore cfa_render_source;
+        ASSERT_EQ(decode_xmp_packet(
+                      std::as_bytes(std::span(xml.data(), xml.size())),
+                      cfa_render_source)
+                      .status,
+                  XmpDecodeStatus::Ok);
+        const std::array<uint16_t, 1U> cfa_tag = { 0xA302U };
+        ASSERT_TRUE(append_structured_capture_entries(
+            dirty_source, cfa_tag, EntryFlags::None, &cfa_render_source));
+        cfa_render_source.finalize();
+        ExecutePreparedTransferSnapshotOptions rendered_options;
+        rendered_options.prepare = request;
+        rendered_options.prepare.profile.safety
+            = TransferSafetyMode::RenderedImage;
+        rendered_options.prepare.include_xmp_app1 = true;
+        rendered_options.prepare.xmp_include_existing = true;
+        rendered_options.execute.edit_requested = true;
+        rendered_options.execute.edit_apply     = true;
+        const TransferSourceSnapshot cfa_render_snapshot
+            = build_transfer_source_snapshot(cfa_render_source);
+        const auto rendered_preserve = execute_prepared_transfer_snapshot(
+            cfa_render_snapshot, populated_target, rendered_options);
+        ASSERT_EQ(rendered_preserve.execute.edit_apply.status,
+                  TransferStatus::Ok)
+            << rendered_preserve.execute.edit_apply.message;
+        EXPECT_TRUE(
+            rendered_preserve.prepared.bundle.tiff_merge_existing_exif);
+        EXPECT_TRUE(rendered_preserve.prepared.bundle.tiff_exif_removals
+                        .empty());
+        MetaStore decoded_rendered_preserve;
+        ASSERT_TRUE(decode_transfer_roundtrip_store(
+            rendered_preserve.execute.edited_output,
+            &decoded_rendered_preserve));
+        ASSERT_NO_FATAL_FAILURE(expect_structured_capture_tag_values(
+            decoded_rendered_preserve, decoded_populated, tags,
+            variant.big_endian, variant.big_endian));
+        EXPECT_FALSE(payload_contains_ascii(
+            rendered_preserve.execute.edited_output, "CFAPattern"));
+        ASSERT_NO_FATAL_FAILURE(expect_structured_tiff_target_carriers(
+            populated_target, rendered_preserve.execute.edited_output,
+            variant.big_tiff, variant.big_endian));
+    }
+}
+
 TEST(MetadataTransferApi, StructuredCaptureRenderedImageDropsNativeAndXmpCfa)
 {
     using namespace openmeta;

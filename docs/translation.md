@@ -1935,9 +1935,35 @@ Snapshots produced before 0.5.8 can lack byte-order provenance for these four
 fields. Reopen the original container with 0.5.8 when recovering those
 big-endian values; the old raw payload alone does not establish its byte order.
 
+In 0.8.9, the structured translation contract is version 2. Accepted exact
+clean native values gain `Dirty` while retaining their raw bytes, byte-order
+flags and wire provenance. Complete eligible deletion creates or reuses typed
+`Dirty|Deleted` native intent, including absent fields. `PreserveExisting`
+retains active native owners; omission and ineligible source mappings leave
+them unchanged. Existing entry, operation and payload budgets apply before
+publication. Partial deletion, malformed source or preflight failure leaves
+the source and output unchanged. Repeated calls reuse native intent.
+
+The shared TIFF ExifIFD merge/removal allowlist grows from 62 to 66 with these
+four tags. Native edits use the existing TIFF/BigTIFF/DNG, snapshot v1 and
+vector/stream/package paths. Byte-order conversion changes dimension and table
+rational words while preserving ASCII names and each UTF-16 string's BOM and
+bytes. Public signatures, options and storage layouts remain unchanged; ABI 4
+remains unfrozen and hosts synchronize shared objects.
+
 Compatible-file transfer retains these four fields. Rendered-image transfer
 removes CFAPattern from both EXIF and XMP under the existing calibration policy.
 It does not transform image samples or infer a replacement pattern.
+This filtering applies to prepared source metadata. During a selective TIFF
+merge, a pre-existing destination CFAPattern remains when no removal intent
+selects it. An explicit dirty native CFAPattern deletion removes it in either
+transfer safety mode. Filtering alone does not create destination deletion
+intent. For compatible-file editing of an existing DNG, retain its original
+DNGVersion as source context, as described for the encoding/composite lifecycle
+above. Rendered-image filtering also removes this source version; DNG preparation
+then generates a version. To preserve an existing DNG container during these
+rendered-source metadata probes, prepare through the TIFF native edit route.
+This does not qualify rendered DNG pixels or DNG scaffold generation.
 
 The combined fixture now covers 65 distinct ExifIFD tags across fifteen APIs;
 target transfer retains 62 after its existing three encoding-field exclusions.

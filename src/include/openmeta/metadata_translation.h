@@ -737,7 +737,7 @@ translate_xmp_composite_metadata(
     MetaStore* out_store);
 
 inline constexpr uint32_t kMetadataStructuredCaptureTranslationContractVersion
-    = 1U;
+    = 2U;
 inline constexpr uint32_t kMetadataStructuredCaptureTranslationMaxAddedEntries
     = 4U;
 inline constexpr uint32_t kMetadataStructuredCaptureTranslationMaxColumns = 256U;
@@ -786,12 +786,21 @@ struct MetadataStructuredCaptureTranslationOptions final {
  * Numeric Values may be typed arrays; text arrays use dense indexed children.
  * A root Bytes value supplies a validated little-endian native payload instead.
  * Any eligible member selects the complete structure, including clean siblings.
- * All-deleted structures remove native values; partial shapes fail atomically.
+ * An exact native byte payload promotes matching clean native entries to Dirty
+ * while retaining their bytes, ValueBigEndian flag and wire origin. An
+ * all-deleted structure removes active native values and creates or reuses a
+ * typed Dirty|Deleted native intent when no active value exists. Repeated calls
+ * reuse that intent. Partial shapes and late malformed sources fail atomically.
+ * PreserveExisting retains active native fields; omitted mappings and
+ * ineligible sources cause no edits.
  *
  * New payload headers/rationals use little-endian. Device strings each have a
  * UTF-16LE BOM and terminator. Decoded bytes retain their original content and
  * ValueBigEndian provenance; string BOMs determine their own byte order.
- * Preparation may allocate. Hosts synchronize conflicting object access.
+ * Promotion, absent deletion intents and duplicate removal use the existing
+ * max_added_entries and max_operations limits. Existing column, value, text and
+ * payload limits also apply. Preparation may allocate. Hosts synchronize
+ * conflicting object access.
  */
 MetadataCaptureTranslationResult
 translate_xmp_structured_capture_metadata(

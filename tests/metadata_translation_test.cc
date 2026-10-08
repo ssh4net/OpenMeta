@@ -14192,6 +14192,704 @@ namespace {
                   original);
     }
 
+    static std::vector<std::byte>
+    structured_big_endian_payload(uint16_t tag,
+                                  std::vector<std::byte> payload)
+    {
+        const uint16_t columns
+            = static_cast<uint16_t>(std::to_integer<uint8_t>(payload[0]))
+              | static_cast<uint16_t>(
+                    static_cast<uint16_t>(
+                        std::to_integer<uint8_t>(payload[1]))
+                    << 8U);
+        std::swap(payload[0], payload[1]);
+        std::swap(payload[2], payload[3]);
+        if (tag == 0x8828U || tag == 0xa20cU) {
+            size_t offset = 4U;
+            for (uint16_t i = 0U; i < columns; ++i) {
+                while (offset < payload.size()
+                       && payload[offset] != std::byte { 0 })
+                    ++offset;
+                ++offset;
+            }
+            for (; offset + 4U <= payload.size(); offset += 4U) {
+                std::swap(payload[offset], payload[offset + 3U]);
+                std::swap(payload[offset + 1U], payload[offset + 2U]);
+            }
+        }
+        return payload;
+    }
+
+    static void structured_add_native(MetaStore& store, uint16_t tag,
+                                      std::span<const std::byte> raw,
+                                      EntryFlags flags, uint32_t order = 77U,
+                                      std::string_view wire_name =
+                                          "b18-native-wire")
+    {
+        MetaEdit edit;
+        Entry entry;
+        entry.key   = make_exif_tag_key(edit.arena(), "exififd", tag);
+        entry.value = make_bytes(edit.arena(), raw);
+        entry.flags = flags;
+        entry.origin.wire_type      = { WireFamily::Tiff, 7U };
+        entry.origin.wire_count     = entry.value.count;
+        entry.origin.order_in_block = order;
+        entry.origin.wire_type_name = edit.arena().append_string(wire_name);
+        edit.add_entry(entry);
+        store = commit(store, std::span<const MetaEdit>(&edit, 1U));
+    }
+
+    static uint32_t structured_active_native_count(const MetaStore& store,
+                                                  uint16_t tag)
+    {
+        const auto ids = store.find_all(
+            make_exif_tag_key_view("exififd", tag));
+        uint32_t count = 0U;
+        for (EntryId id : ids)
+            if (!any(store.entry(id).flags, EntryFlags::Deleted))
+                ++count;
+        return count;
+    }
+
+    static std::vector<EntryId>
+    structured_native_history_ids(const MetaStore& store, uint16_t tag)
+    {
+        std::vector<EntryId> ids;
+        for (EntryId id = 0U; id < store.entries().size(); ++id) {
+            const Entry& entry = store.entry(id);
+            if (entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != tag) {
+                continue;
+            }
+            const auto ifd = store.arena().span(
+                entry.key.data.exif_tag.ifd);
+            if (std::string_view(reinterpret_cast<const char*>(ifd.data()),
+                                 ifd.size())
+                == "exififd") {
+                ids.push_back(id);
+            }
+        }
+        return ids;
+    }
+
+    static void structured_expect_delete_markers(const MetaStore& store,
+                                                 bool dirty)
+    {
+        for (uint16_t tag : kStructuredTags) {
+            const auto ids = structured_native_history_ids(store, tag);
+            ASSERT_EQ(ids.size(), 1U) << tag;
+            const Entry& marker = store.entry(ids.front());
+            EXPECT_TRUE(any(marker.flags, EntryFlags::Deleted)) << tag;
+            EXPECT_EQ(any(marker.flags, EntryFlags::Dirty), dirty) << tag;
+            EXPECT_EQ(marker.value.kind, MetaValueKind::Bytes) << tag;
+            EXPECT_EQ(marker.value.elem_type, MetaElementType::U8) << tag;
+            EXPECT_EQ(marker.value.count, 0U) << tag;
+            EXPECT_EQ(marker.value.data.span.size, 0U) << tag;
+            EXPECT_EQ(structured_active_native_count(store, tag), 0U) << tag;
+        }
+    }
+
+    static void structured_expect_native_state_equal(const MetaStore& expected,
+                                                     const MetaStore& actual)
+    {
+        for (uint16_t tag : kStructuredTags) {
+            const auto expected_ids
+                = expected.find_all(make_exif_tag_key_view("exififd", tag));
+            const auto actual_ids
+                = actual.find_all(make_exif_tag_key_view("exififd", tag));
+            ASSERT_EQ(expected_ids.size(), actual_ids.size()) << tag;
+            for (size_t i = 0U; i < expected_ids.size(); ++i) {
+                const Entry& left  = expected.entry(expected_ids[i]);
+                const Entry& right = actual.entry(actual_ids[i]);
+                EXPECT_EQ(left.flags, right.flags) << tag << ":" << i;
+                EXPECT_EQ(left.value.kind, right.value.kind) << tag << ":" << i;
+                EXPECT_EQ(left.value.elem_type, right.value.elem_type)
+                    << tag << ":" << i;
+                EXPECT_EQ(left.value.count, right.value.count) << tag << ":" << i;
+                const auto left_raw = expected.arena().span(
+                    left.value.data.span);
+                const auto right_raw = actual.arena().span(
+                    right.value.data.span);
+                EXPECT_EQ(std::vector<std::byte>(left_raw.begin(),
+                                                 left_raw.end()),
+                          std::vector<std::byte>(right_raw.begin(),
+                                                 right_raw.end()))
+                    << tag << ":" << i;
+                EXPECT_EQ(left.origin.wire_type.family,
+                          right.origin.wire_type.family)
+                    << tag << ":" << i;
+                EXPECT_EQ(left.origin.wire_type.code,
+                          right.origin.wire_type.code)
+                    << tag << ":" << i;
+                EXPECT_EQ(left.origin.wire_count, right.origin.wire_count)
+                    << tag << ":" << i;
+                EXPECT_EQ(left.origin.order_in_block,
+                          right.origin.order_in_block)
+                    << tag << ":" << i;
+                const auto left_name = expected.arena().span(
+                    left.origin.wire_type_name);
+                const auto right_name = actual.arena().span(
+                    right.origin.wire_type_name);
+                EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                               left_name.data()),
+                                           left_name.size()),
+                          std::string_view(reinterpret_cast<const char*>(
+                                               right_name.data()),
+                                           right_name.size()))
+                    << tag << ":" << i;
+            }
+        }
+    }
+
+    static bool structured_group_path(const MetaStore& store, const Entry& entry,
+                                      std::string_view name) noexcept
+    {
+        if (entry.key.kind != MetaKeyKind::XmpProperty)
+            return false;
+        const auto bytes = store.arena().span(
+            entry.key.data.xmp_property.property_path);
+        const std::string_view path(reinterpret_cast<const char*>(bytes.data()),
+                                    bytes.size());
+        return path == name
+               || (path.starts_with(name) && path.size() > name.size()
+                   && (path[name.size()] == '/' || path[name.size()] == '['));
+    }
+
+    static uint32_t structured_tombstone_children(MetaStore& store,
+                                                  std::string_view name)
+    {
+        MetaEdit edit;
+        uint32_t matched = 0U;
+        for (EntryId id = 0U; id < store.entries().size(); ++id) {
+            const Entry& entry = store.entry(id);
+            if (structured_group_path(store, entry, name)
+                && !any(entry.flags, EntryFlags::Deleted)) {
+                edit.tombstone(id);
+                ++matched;
+            }
+        }
+        if (matched > 0U)
+            store = commit(store, std::span<const MetaEdit>(&edit, 1U));
+        return matched;
+    }
+
+    static void structured_copy_property(MetaStore& output,
+                                        const MetaStore& source,
+                                        const Entry& source_entry)
+    {
+        const auto ns_bytes = source.arena().span(
+            source_entry.key.data.xmp_property.schema_ns);
+        const auto path_bytes = source.arena().span(
+            source_entry.key.data.xmp_property.property_path);
+        const std::string_view ns(reinterpret_cast<const char*>(ns_bytes.data()),
+                                  ns_bytes.size());
+        const std::string_view path(
+            reinterpret_cast<const char*>(path_bytes.data()),
+            path_bytes.size());
+        Entry entry          = source_entry;
+        entry.key            = make_xmp_property_key(output.arena(), ns, path);
+        entry.origin.block   = kInvalidBlockId;
+        if (entry.value.kind == MetaValueKind::Text
+            || entry.value.kind == MetaValueKind::Array
+            || entry.value.kind == MetaValueKind::Bytes)
+            entry.value.data.span = output.arena().append(
+                source.arena().span(source_entry.value.data.span));
+        if (entry.origin.wire_type_name.size > 0U)
+            entry.origin.wire_type_name = output.arena().append(
+                source.arena().span(entry.origin.wire_type_name));
+        output.add_entry(entry);
+    }
+
+    static MetaStore structured_child_subset(const MetaStore& source,
+                                             size_t omitted_index)
+    {
+        MetaStore subset;
+        for (const Entry& entry : source.entries()) {
+            bool belongs = false;
+            for (size_t i = 0U; i < kStructuredNames.size(); ++i) {
+                if (i != omitted_index
+                    && structured_group_path(source, entry,
+                                             kStructuredNames[i])) {
+                    belongs = true;
+                    break;
+                }
+            }
+            if (belongs)
+                structured_copy_property(subset, source, entry);
+        }
+        subset.finalize();
+        return subset;
+    }
+
+    static MetaStore structured_root_delete_source(const MetaStore& projected)
+    {
+        MetaStore source;
+        for (size_t i = 0U; i < kStructuredTags.size(); ++i) {
+            const std::vector<std::byte> raw
+                = structured_native_bytes(projected, kStructuredTags[i]);
+            add_xmp_value(
+                &source, kInvalidBlockId, kEncodingExif, kStructuredNames[i],
+                make_bytes(source.arena(), std::span<const std::byte>(
+                                               raw.data(), raw.size())),
+                EntryFlags::Dirty, static_cast<uint32_t>(i));
+        }
+        source.finalize();
+        if (!validate_store(source).ok())
+            ADD_FAILURE() << "invalid structured root source";
+        MetaEdit edit;
+        for (size_t i = 0U; i < kStructuredTags.size(); ++i) {
+            const auto ids = source.find_all(make_xmp_property_key_view(
+                kEncodingExif, kStructuredNames[i]));
+            if (ids.size() != 1U) {
+                ADD_FAILURE() << kStructuredNames[i];
+                continue;
+            }
+            edit.tombstone(ids.front());
+        }
+        return commit(source, std::span<const MetaEdit>(&edit, 1U));
+    }
+
+    static MetaStore structured_child_delete_source()
+    {
+        MetaStore source = encoding_source();
+        for (std::string_view name : kStructuredNames)
+            structured_tombstone_children(source, name);
+        return source;
+    }
+
+    static void structured_budget_failure(
+        const MetaStore& source_template, const MetaStore& output_template,
+        MetadataStructuredCaptureTranslationOptions options,
+        MetadataCaptureTranslationStatus expected)
+    {
+        MetaStore in_place = source_template;
+        MetaStore in_place_before = in_place;
+        const Entry* in_place_entries = in_place.entries().data();
+        const size_t in_place_arena_size = in_place.arena().bytes().size();
+        const auto in_place_result = translate_xmp_structured_capture_metadata(
+            in_place, options, &in_place);
+        EXPECT_EQ(in_place_result.status, expected);
+        EXPECT_EQ(in_place.entries().data(), in_place_entries);
+        EXPECT_EQ(in_place.arena().bytes().size(), in_place_arena_size);
+        structured_expect_native_state_equal(in_place_before, in_place);
+
+        MetaStore source = source_template;
+        MetaStore output = output_template;
+        const Entry* source_entries = source.entries().data();
+        const size_t source_arena_size = source.arena().bytes().size();
+        const Entry* output_entries = output.entries().data();
+        const size_t output_arena_size = output.arena().bytes().size();
+        MetaStore output_before = output;
+        const auto separate_result
+            = translate_xmp_structured_capture_metadata(source, options,
+                                                        &output);
+        EXPECT_EQ(separate_result.status, expected);
+        EXPECT_EQ(source.entries().data(), source_entries);
+        EXPECT_EQ(source.arena().bytes().size(), source_arena_size);
+        EXPECT_EQ(output.entries().data(), output_entries);
+        EXPECT_EQ(output.arena().bytes().size(), output_arena_size);
+        structured_expect_native_state_equal(output_before, output);
+    }
+
+    TEST(MetadataStructuredCapture,
+         ExactCleanBytesPromoteAndPreserveEndianWireOrigin)
+    {
+        MetaStore child_source = encoding_source();
+        MetaStore projected;
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                      child_source, { .source_mode = kEncodingAll },
+                      &projected)
+                      .status,
+                  kEncodingOk);
+        ASSERT_TRUE(validate_store(projected).ok());
+
+        constexpr std::array<bool, 2U> endian_modes = { false, true };
+        for (bool big_endian : endian_modes) {
+            SCOPED_TRACE(big_endian);
+            MetaStore source = encoding_source();
+            MetaEdit seed;
+            std::array<std::vector<std::byte>, 4> native_before;
+            for (size_t i = 0U; i < kStructuredTags.size(); ++i) {
+                std::vector<std::byte> raw
+                    = structured_native_bytes(projected, kStructuredTags[i]);
+                ASSERT_FALSE(raw.empty()) << kStructuredTags[i];
+                if (big_endian)
+                    raw = structured_big_endian_payload(kStructuredTags[i],
+                                                        std::move(raw));
+                Entry entry;
+                entry.key = make_exif_tag_key(seed.arena(), "exififd",
+                                              kStructuredTags[i]);
+                entry.value = make_bytes(seed.arena(),
+                                         std::span<const std::byte>(raw.data(),
+                                                                    raw.size()));
+                entry.flags = big_endian ? EntryFlags::ValueBigEndian
+                                         : EntryFlags::None;
+                entry.origin.wire_type = { WireFamily::Tiff, 7U };
+                entry.origin.wire_count = entry.value.count;
+                entry.origin.order_in_block = 77U;
+                entry.origin.wire_type_name
+                    = seed.arena().append_string("b18-native-wire");
+                seed.add_entry(entry);
+                native_before[i] = std::move(raw);
+            }
+            source = commit(source, std::span<const MetaEdit>(&seed, 1U));
+            ASSERT_TRUE(validate_store(source).ok());
+            const size_t arena_size_before = source.arena().bytes().size();
+
+            const auto promoted = translate_xmp_structured_capture_metadata(
+                source, { .source_mode = kEncodingAll }, &source);
+            ASSERT_EQ(promoted.status, kEncodingOk)
+                << metadata_capture_translation_status_name(promoted.status);
+            EXPECT_EQ(promoted.groups_translated, 4U);
+            EXPECT_EQ(promoted.entries_added, 0U);
+            EXPECT_EQ(promoted.entries_updated, 4U);
+            EXPECT_GT(source.arena().bytes().size(), arena_size_before);
+            for (size_t i = 0U; i < kStructuredTags.size(); ++i) {
+                const Entry* entry = active_exif_entry(
+                    source, "exififd", kStructuredTags[i]);
+                ASSERT_NE(entry, nullptr) << kStructuredTags[i];
+                EXPECT_TRUE(any(entry->flags, EntryFlags::Dirty)) << i;
+                EXPECT_EQ(any(entry->flags, EntryFlags::ValueBigEndian),
+                          big_endian)
+                    << i;
+                EXPECT_EQ(entry->origin.wire_type.family, WireFamily::Tiff)
+                    << i;
+                EXPECT_EQ(entry->origin.wire_type.code, 7U) << i;
+                EXPECT_EQ(entry->origin.wire_count, native_before[i].size())
+                    << i;
+                EXPECT_EQ(entry->origin.order_in_block, 77U) << i;
+                const auto wire_name
+                    = source.arena().span(entry->origin.wire_type_name);
+                EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(
+                                               wire_name.data()),
+                                           wire_name.size()),
+                          "b18-native-wire");
+                const auto raw = source.arena().span(entry->value.data.span);
+                EXPECT_EQ(std::vector<std::byte>(raw.begin(), raw.end()),
+                          native_before[i])
+                    << i;
+            }
+            const auto repeated = translate_xmp_structured_capture_metadata(
+                source, { .source_mode = kEncodingAll }, &source);
+            ASSERT_EQ(repeated.status, kEncodingOk);
+            EXPECT_EQ(repeated.groups_unchanged, 4U);
+            EXPECT_EQ(repeated.entries_added, 0U);
+            EXPECT_EQ(repeated.entries_updated, 0U);
+        }
+    }
+
+    TEST(MetadataStructuredCapture,
+         RootAndChildDeletionsCreateOrReuseTypedIntentsUnderPolicies)
+    {
+        using Policy = MetadataCaptureTranslationConflictPolicy;
+        MetaStore source = encoding_source();
+        MetaStore projected;
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                      source, { .source_mode = kEncodingAll }, &projected)
+                      .status,
+                  kEncodingOk);
+
+        MetaStore root_deleted = structured_root_delete_source(projected);
+        const auto root_result = translate_xmp_structured_capture_metadata(
+            root_deleted,
+            { .source_mode = MetadataCaptureTranslationSourceMode::DirtyOnly,
+              .conflict_policy = Policy::FailOnConflict },
+            &root_deleted);
+        ASSERT_EQ(root_result.status, kEncodingOk);
+        EXPECT_EQ(root_result.groups_translated, 4U);
+        EXPECT_EQ(root_result.entries_added, 4U);
+        structured_expect_delete_markers(root_deleted, true);
+        const auto root_repeat = translate_xmp_structured_capture_metadata(
+            root_deleted,
+            { .source_mode = MetadataCaptureTranslationSourceMode::DirtyOnly,
+              .conflict_policy = Policy::FailOnConflict },
+            &root_deleted);
+        ASSERT_EQ(root_repeat.status, kEncodingOk);
+        EXPECT_EQ(root_repeat.groups_unchanged, 4U);
+        EXPECT_EQ(root_repeat.entries_added, 0U);
+        EXPECT_EQ(root_repeat.entries_updated, 0U);
+
+        constexpr std::array<Policy, 3U> policies = {
+            Policy::PreserveExisting, Policy::FailOnConflict,
+            Policy::ReplaceExisting
+        };
+        for (Policy policy : policies) {
+            MetaStore children = encoding_source();
+            for (std::string_view name : kStructuredNames)
+                EXPECT_GT(structured_tombstone_children(children, name), 0U)
+                    << name;
+            ASSERT_TRUE(validate_store(children).ok());
+            const auto removed = translate_xmp_structured_capture_metadata(
+                children,
+                { .source_mode = MetadataCaptureTranslationSourceMode::All,
+                  .conflict_policy = policy },
+                &children);
+            ASSERT_EQ(removed.status, kEncodingOk)
+                << metadata_capture_translation_status_name(removed.status);
+            EXPECT_EQ(removed.groups_translated, 4U);
+            EXPECT_EQ(removed.entries_added, 4U);
+            structured_expect_delete_markers(children, true);
+
+            MetaStore clean_markers = encoding_source();
+            for (std::string_view name : kStructuredNames)
+                EXPECT_GT(structured_tombstone_children(clean_markers, name),
+                          0U)
+                    << name;
+            for (uint16_t tag : kStructuredTags)
+                structured_add_native(clean_markers, tag,
+                                      std::span<const std::byte> {},
+                                      EntryFlags::Deleted);
+            const auto reused = translate_xmp_structured_capture_metadata(
+                clean_markers,
+                { .source_mode = MetadataCaptureTranslationSourceMode::All,
+                  .conflict_policy = policy },
+                &clean_markers);
+            ASSERT_EQ(reused.status, kEncodingOk);
+            EXPECT_EQ(reused.entries_added, 0U);
+            EXPECT_EQ(reused.entries_updated, 4U);
+            structured_expect_delete_markers(clean_markers, true);
+            const auto repeated = translate_xmp_structured_capture_metadata(
+                clean_markers,
+                { .source_mode = MetadataCaptureTranslationSourceMode::All,
+                  .conflict_policy = policy },
+                &clean_markers);
+            ASSERT_EQ(repeated.status, kEncodingOk);
+            EXPECT_EQ(repeated.groups_unchanged, 4U);
+            EXPECT_EQ(repeated.entries_added, 0U);
+            EXPECT_EQ(repeated.entries_updated, 0U);
+        }
+    }
+
+    TEST(MetadataStructuredCapture,
+         DuplicateNativeOwnersFollowStructuredConflictPolicies)
+    {
+        using Policy = MetadataCaptureTranslationConflictPolicy;
+        MetaStore fixture = encoding_source();
+        MetaStore projected;
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                      fixture, { .source_mode = kEncodingAll }, &projected)
+                      .status,
+                  kEncodingOk);
+        MetaStore source = encoding_source();
+        std::array<std::vector<std::byte>, 4U> raw_values;
+        for (size_t i = 0U; i < kStructuredTags.size(); ++i) {
+            raw_values[i] = structured_native_bytes(projected,
+                                                    kStructuredTags[i]);
+            for (uint32_t duplicate = 0U; duplicate < 2U; ++duplicate)
+                structured_add_native(
+                    source, kStructuredTags[i],
+                    std::span<const std::byte>(raw_values[i].data(),
+                                               raw_values[i].size()),
+                    EntryFlags::None,
+                    77U + duplicate);
+        }
+
+        MetaStore conflicted = source;
+        MetaStore conflict_before = conflicted;
+        const auto failure = translate_xmp_structured_capture_metadata(
+            conflicted,
+            { .source_mode = kEncodingAll,
+              .conflict_policy = Policy::FailOnConflict },
+            &conflicted);
+        EXPECT_EQ(failure.status,
+                  MetadataCaptureTranslationStatus::NativeConflict);
+        structured_expect_native_state_equal(conflict_before, conflicted);
+
+        MetaStore preserved = source;
+        MetaStore preserved_before = preserved;
+        const auto keep = translate_xmp_structured_capture_metadata(
+            preserved,
+            { .source_mode = kEncodingAll,
+              .conflict_policy = Policy::PreserveExisting },
+            &preserved);
+        ASSERT_EQ(keep.status, kEncodingOk);
+        EXPECT_EQ(keep.groups_preserved, 4U);
+        EXPECT_EQ(keep.entries_updated, 0U);
+        structured_expect_native_state_equal(preserved_before, preserved);
+
+        MetaStore replaced = source;
+        const auto replace = translate_xmp_structured_capture_metadata(
+            replaced,
+            { .source_mode = kEncodingAll,
+              .conflict_policy = Policy::ReplaceExisting },
+            &replaced);
+        ASSERT_EQ(replace.status, kEncodingOk);
+        EXPECT_EQ(replace.groups_translated, 4U);
+        EXPECT_EQ(replace.entries_removed, 4U);
+        EXPECT_EQ(replace.entries_updated, 4U);
+        for (size_t i = 0U; i < kStructuredTags.size(); ++i) {
+            const auto ids = structured_native_history_ids(
+                replaced, kStructuredTags[i]);
+            ASSERT_EQ(ids.size(), 2U) << kStructuredTags[i];
+            uint32_t deleted = 0U;
+            for (EntryId id : ids)
+                if (any(replaced.entry(id).flags, EntryFlags::Deleted))
+                    ++deleted;
+            EXPECT_EQ(deleted, 1U) << kStructuredTags[i];
+            ASSERT_EQ(structured_active_native_count(replaced,
+                                                     kStructuredTags[i]),
+                      1U);
+            const Entry* active = active_exif_entry(
+                replaced, "exififd", kStructuredTags[i]);
+            ASSERT_NE(active, nullptr) << kStructuredTags[i];
+            EXPECT_TRUE(any(active->flags, EntryFlags::Dirty)) << i;
+            const auto raw = replaced.arena().span(active->value.data.span);
+            EXPECT_EQ(std::vector<std::byte>(raw.begin(), raw.end()),
+                      raw_values[i])
+                << i;
+        }
+    }
+
+    TEST(MetadataStructuredCapture,
+         DeleteIntentEntryAndOperationLimitsPreserveBothOutputs)
+    {
+        MetaStore fixture = encoding_source();
+        MetaStore output_template;
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                      fixture, { .source_mode = kEncodingAll },
+                      &output_template)
+                      .status,
+                  kEncodingOk);
+        const MetaStore source_template = structured_child_delete_source();
+
+        MetadataStructuredCaptureTranslationOptions entry_limit;
+        entry_limit.source_mode       = MetadataCaptureTranslationSourceMode::All;
+        entry_limit.max_added_entries = 3U;
+        structured_budget_failure(
+            source_template, output_template, entry_limit,
+            MetadataCaptureTranslationStatus::EntryLimitExceeded);
+
+        MetadataStructuredCaptureTranslationOptions operation_limit;
+        operation_limit.source_mode = MetadataCaptureTranslationSourceMode::All;
+        operation_limit.max_operations = 3U;
+        structured_budget_failure(
+            source_template, output_template, operation_limit,
+            MetadataCaptureTranslationStatus::OperationLimitExceeded);
+    }
+
+    TEST(MetadataStructuredCapture,
+         SourceModesOmissionAndDisabledMappingsAreScoped)
+    {
+        MetaStore clean = encoding_source();
+        const auto dirty_only = translate_xmp_structured_capture_metadata(
+            clean, {}, &clean);
+        EXPECT_EQ(dirty_only.status, kEncodingOk);
+        EXPECT_EQ(dirty_only.source_properties, 0U);
+        EXPECT_EQ(dirty_only.entries_added, 0U);
+        EXPECT_EQ(dirty_only.entries_updated, 0U);
+        for (uint16_t tag : kStructuredTags)
+            EXPECT_EQ(structured_active_native_count(clean, tag), 0U) << tag;
+
+        MetaStore fixture = encoding_source();
+        MetaStore projected;
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                      fixture, { .source_mode = kEncodingAll }, &projected)
+                      .status,
+                  kEncodingOk);
+        MetaStore omitted = structured_child_subset(fixture, 0U);
+        const auto omitted_result = translate_xmp_structured_capture_metadata(
+            omitted, { .source_mode = kEncodingAll }, &omitted);
+        ASSERT_EQ(omitted_result.status, kEncodingOk);
+        EXPECT_EQ(omitted_result.groups_translated, 3U);
+        EXPECT_EQ(omitted_result.entries_added, 3U);
+        EXPECT_EQ(structured_active_native_count(omitted, kStructuredTags[0]),
+                  0U);
+        for (size_t i = 1U; i < kStructuredTags.size(); ++i)
+            EXPECT_EQ(structured_active_native_count(omitted,
+                                                    kStructuredTags[i]),
+                      1U)
+                << i;
+
+        MetaStore disabled = encoding_source();
+        const std::vector<std::byte> cfa
+            = structured_native_bytes(projected, kStructuredTags[2]);
+        structured_add_native(disabled, kStructuredTags[2],
+                              std::span<const std::byte>(cfa.data(),
+                                                         cfa.size()),
+                              EntryFlags::None);
+        MetadataStructuredCaptureTranslationOptions options;
+        options.source_mode = MetadataCaptureTranslationSourceMode::All;
+        options.cfa_pattern_to_exif = false;
+        const auto disabled_result
+            = translate_xmp_structured_capture_metadata(disabled, options,
+                                                        &disabled);
+        ASSERT_EQ(disabled_result.status, kEncodingOk);
+        EXPECT_EQ(disabled_result.groups_translated, 3U);
+        EXPECT_EQ(disabled_result.entries_added, 3U);
+        for (size_t i = 0U; i < kStructuredTags.size(); ++i) {
+            const uint16_t tag = kStructuredTags[i];
+            ASSERT_EQ(structured_active_native_count(disabled, tag), 1U) << i;
+            const Entry* entry = active_exif_entry(disabled, "exififd", tag);
+            ASSERT_NE(entry, nullptr) << i;
+            EXPECT_EQ(any(entry->flags, EntryFlags::Dirty), i != 2U) << i;
+            if (i == 2U) {
+                const auto raw = disabled.arena().span(entry->value.data.span);
+                EXPECT_EQ(std::vector<std::byte>(raw.begin(), raw.end()), cfa);
+            }
+        }
+    }
+
+    TEST(MetadataStructuredCapture,
+         PartialAndLateFailuresPreserveDistinctAndInPlaceOutputs)
+    {
+        MetaStore fixture = encoding_source();
+        MetaStore output_template;
+        ASSERT_EQ(translate_xmp_structured_capture_metadata(
+                      fixture, { .source_mode = kEncodingAll },
+                      &output_template)
+                      .status,
+                  kEncodingOk);
+        constexpr std::array<std::string_view, 2U> failing_paths = {
+            "OECF/Names[1]", "DeviceSettingDescription/Values[2]"
+        };
+        constexpr std::array<MetadataCaptureTranslationStatus, 2U> statuses = {
+            MetadataCaptureTranslationStatus::IncompleteSource,
+            MetadataCaptureTranslationStatus::InvalidSourceValue
+        };
+        for (size_t i = 0U; i < failing_paths.size(); ++i) {
+            MetaStore source = encoding_source();
+            if (i == 0U)
+                encoding_change(source, failing_paths[i], "", true,
+                                kEncodingExif);
+            else
+                encoding_change(source, failing_paths[i],
+                                std::string_view("bad\0setting", 11U), false,
+                                kEncodingExif);
+            MetaStore in_place = source;
+            const Entry* in_place_entries = in_place.entries().data();
+            const size_t in_place_arena_size = in_place.arena().bytes().size();
+            const auto in_place_result
+                = translate_xmp_structured_capture_metadata(
+                    in_place,
+                    { .source_mode = kEncodingAll,
+                      .conflict_policy
+                      = MetadataCaptureTranslationConflictPolicy::ReplaceExisting },
+                    &in_place);
+            EXPECT_EQ(in_place_result.status, statuses[i]) << failing_paths[i];
+            EXPECT_EQ(in_place.entries().data(), in_place_entries)
+                << failing_paths[i];
+            EXPECT_EQ(in_place.arena().bytes().size(), in_place_arena_size)
+                << failing_paths[i];
+
+            MetaStore output = output_template;
+            MetaStore output_before = output;
+            const Entry* output_entries = output.entries().data();
+            const size_t output_arena_size = output.arena().bytes().size();
+            const auto separate_result
+                = translate_xmp_structured_capture_metadata(
+                    source,
+                    { .source_mode = kEncodingAll,
+                      .conflict_policy
+                      = MetadataCaptureTranslationConflictPolicy::ReplaceExisting },
+                    &output);
+            EXPECT_EQ(separate_result.status, statuses[i]) << failing_paths[i];
+            EXPECT_EQ(output.entries().data(), output_entries) << failing_paths[i];
+            EXPECT_EQ(output.arena().bytes().size(), output_arena_size)
+                << failing_paths[i];
+            structured_expect_native_state_equal(output_before, output);
+        }
+    }
+
     TEST(MetadataStructuredCapture, ExactTablesUnicodeAndPortableRoundTrip)
     {
         MetaStore source = encoding_source();
@@ -14713,10 +15411,26 @@ namespace {
             make_exif_tag_key_view("exififd", 0xa40bU));
         native.tombstone(ids[0]);
         restored = commit(restored, std::span(&native, 1U));
-        EXPECT_EQ(translate_xmp_structured_capture_metadata(
-                      restored, { .source_mode = kEncodingAll }, &restored)
-                      .groups_unchanged,
-                  1U);
+        const auto promoted = translate_xmp_structured_capture_metadata(
+            restored, { .source_mode = kEncodingAll }, &restored);
+        ASSERT_EQ(promoted.status, kEncodingOk);
+        EXPECT_EQ(promoted.groups_translated, 1U);
+        EXPECT_EQ(promoted.entries_updated, 1U);
+        const Entry* promoted_native = active_exif_entry(
+            restored, "exififd", 0xa40bU);
+        ASSERT_NE(promoted_native, nullptr);
+        EXPECT_TRUE(any(promoted_native->flags, EntryFlags::Dirty));
+        EXPECT_TRUE(any(promoted_native->flags, EntryFlags::ValueBigEndian));
+        const auto promoted_raw
+            = restored.arena().span(promoted_native->value.data.span);
+        EXPECT_EQ(std::vector<std::byte>(promoted_raw.begin(),
+                                         promoted_raw.end()),
+                  std::vector<std::byte>(big.begin(), big.end()));
+        const auto repeated = translate_xmp_structured_capture_metadata(
+            restored, { .source_mode = kEncodingAll }, &restored);
+        ASSERT_EQ(repeated.status, kEncodingOk);
+        EXPECT_EQ(repeated.groups_unchanged, 1U);
+        EXPECT_EQ(repeated.entries_updated, 0U);
         MetadataTypedEditingOperation set;
         set.kind        = MetadataEditingOperationKind::Set;
         set.entry.key   = make_exif_tag_key_view("exififd", 0xa40bU);

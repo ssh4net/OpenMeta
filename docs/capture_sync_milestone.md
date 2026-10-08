@@ -4,6 +4,17 @@ Audit date: 2026-09-14. The original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing API signatures, ABI 3, or host synchronization responsibilities.
 
+## Native structured capture lifecycle in 0.8.9
+
+The four existing structured fields now have translation contract 2: exact
+clean native values gain Dirty, and complete eligible absent deletion retains
+typed intent. All four enter the native TIFF/BigTIFF/DNG merge/removal allowlist.
+Existing numeric endian conversion preserves string bytes and per-string BOMs.
+Rendered-image source filtering of CFA remains; filtering alone does not
+remove unselected destination metadata during selective merge. Explicit dirty
+native deletion supplies that intent. ABI 4, snapshot v1 and host
+synchronization remain unchanged. See [the contract](translation.md#structured-capture-data-058).
+
 ## Native encoding and composite lifecycle in 0.8.8
 
 The six existing fields now have translation contract 2: exact clean native

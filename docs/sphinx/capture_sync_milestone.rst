@@ -8,6 +8,18 @@ Seventeen explicit reverse APIs now cover **81 distinct ExifIFD tags**,
 including camera text and excluding GPS, dates, geometry, IPTC and MakerNotes.
 This count does not measure all-EXIF or competitor coverage.
 
+Native structured capture lifecycle in 0.8.9
+--------------------------------------------
+
+The four existing structured fields now have translation contract 2: exact
+clean native values gain Dirty, and complete eligible absent deletion retains
+typed intent. All four enter the native TIFF/BigTIFF/DNG merge/removal allowlist.
+Existing numeric endian conversion preserves string bytes and per-string BOMs.
+Rendered-image source filtering of CFA remains; filtering alone does not
+remove unselected destination metadata during selective merge. Explicit dirty
+native deletion supplies that intent. ABI 4, snapshot v1 and host
+synchronization remain unchanged. See :doc:`translation`.
+
 Typed editing and new fields in 0.5.6
 -------------------------------------
 
