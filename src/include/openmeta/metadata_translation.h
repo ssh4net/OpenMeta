@@ -828,7 +828,7 @@ translate_xmp_structured_capture_metadata(
 
 /// EXIF 3.1 development and correction writeback contract version.
 inline constexpr uint32_t kMetadataDevelopmentCorrectionTranslationContractVersion
-    = 1U;
+    = 2U;
 inline constexpr uint32_t
     kMetadataDevelopmentCorrectionTranslationMaxAddedEntries = 6U;
 inline constexpr uint32_t
@@ -852,6 +852,20 @@ inline constexpr uint64_t
  * creates, changes or infers ExifVersion. A zero value therefore rejects a
  * selected source with IncompleteSource. Preparation allocates; the commit is
  * one transaction and hosts synchronize conflicting object access.
+ *
+ * Under FailOnConflict and ReplaceExisting, an exact valid singleton native
+ * value is promoted to Dirty by a same-value update that retains its value,
+ * wire hints, wire count, origin and endian flag. Dirty exact matches remain
+ * unchanged; PreserveExisting does not promote native values. A complete
+ * eligible source deletion preserves active values under PreserveExisting,
+ * conflicts under FailOnConflict, and tombstones all active values under
+ * ReplaceExisting. With no active native value, ReplaceExisting promotes a
+ * clean tombstone, reuses a dirty tombstone, or adds a typed Dirty|Deleted
+ * intent. Scalar fields use SHORT; DevelopmentTypeDescription uses UTF-8 Text
+ * with TIFF type 129.
+ * Promotions, tombstones and new intents consume max_operations; new intents
+ * also consume max_added_entries. Source masks, duplicate handling, limits and
+ * rollback follow the capture translation contract.
  */
 struct MetadataDevelopmentCorrectionTranslationOptions final {
     MetadataCaptureTranslationSourceMode source_mode
@@ -883,7 +897,7 @@ translate_xmp_development_correction_metadata(
 
 /// Experimental bounded EXIF 3.1 LearningOptOutIn translation contract.
 inline constexpr uint32_t kMetadataLearningOptOutInTranslationContractVersion
-    = 1U;
+    = 2U;
 inline constexpr uint32_t kMetadataLearningOptOutInTranslationMaxSets = 64U;
 inline constexpr uint32_t kMetadataLearningOptOutInTranslationMaxAddedEntries
     = 1U;
@@ -895,9 +909,19 @@ inline constexpr uint32_t kMetadataLearningOptOutInTranslationMaxAddedEntries
  * shape is `LearningOptOutIn/NumberOfSets` plus the ordered scalar leaves
  * `LearningOptOutIn/Values[1]` through `[2*n]`. Values are usage/intention
  * pairs. The first usage value is zero, usage values are unique, and all
- * values use the published bounded choices. A dirty tombstone removes the
- * native tag only under ReplaceExisting. Preparation may allocate; the
- * commit is one transaction and hosts synchronize conflicting object access.
+ * values use the published bounded choices. Under FailOnConflict and
+ * ReplaceExisting, an exact valid singleton native value is promoted to Dirty
+ * by a same-value update that retains its bytes, wire hints, wire count, origin
+ * and endian flag. Dirty exact matches remain unchanged; PreserveExisting does
+ * not promote native values. A complete eligible deletion preserves active
+ * values under PreserveExisting, conflicts under FailOnConflict, and tombstones
+ * active values under ReplaceExisting. If no active native value exists,
+ * ReplaceExisting promotes a clean tombstone, reuses a dirty tombstone, or
+ * adds an empty Bytes value with TIFF type 7 as Dirty|Deleted intent.
+ * Promotions, tombstones and new intents consume max_operations; new intents
+ * also consume max_added_entries. Source masks, duplicates, limits and
+ * rollback follow the capture translation contract. Preparation may allocate;
+ * the commit is one transaction and hosts synchronize conflicting object access.
  */
 struct MetadataLearningOptOutInTranslationOptions final {
     MetadataCaptureTranslationSourceMode source_mode

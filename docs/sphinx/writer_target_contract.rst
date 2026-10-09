@@ -11,6 +11,16 @@ byte-for-byte preservation of rewritten metadata structures.
 For generated XMP merge, precedence, sidecar output, and sidecar cleanup
 rules, see :doc:`xmp_sync_policy`.
 
+The 0.8.11 native lifecycle adds selective TIFF/BigTIFF/DNG merge and removal
+for DevelopmentType, DevelopmentTypeDescription, DistortionCorrection,
+ChromaticAberrationCorrection, ShadingCorrection, NoiseReduction and
+LearningOptOutIn. The seven fields retain processing history or learning intent
+in both safety modes. Dirty native intent is explicit; omitted fields retain
+destination values. Version policy remains host supplied, with no inferred
+ExifVersion upgrade or complete-file profile conformance claim.
+LearningOptOutIn numeric words follow target TIFF byte order. Canonical encoding
+validates them before copying; other UNDEFINED fields keep their existing behavior.
+
 Common Rules
 ------------
 

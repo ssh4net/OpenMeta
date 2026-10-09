@@ -1,5 +1,28 @@
 # Capture synchronization milestones: 0.5.4–0.5.12
 
+## Development/correction and learning lifecycle in 0.8.11
+
+The six existing development/correction fields A40D-A412 and LearningOptOutIn
+9287 now use translation contract 2. Exact valid clean native matches gain Dirty
+while retaining values, wire hints/counts, origin and endian provenance. Dirty
+matches remain unchanged. Complete ReplaceExisting deletion retains typed native
+intent even when a key is absent; clean tombstones are promoted and dirty ones
+reused. Promotions and deletion intents consume operation limits, and new intents
+also consume entry limits. Conflict, source-mask and rollback rules remain.
+
+Selected sources still require explicit host exif_version 300 or 310; translation
+never infers or changes ExifVersion or processing history. These APIs do not
+validate a complete destination EXIF profile. All seven fields use selective
+TIFF/BigTIFF/DNG merge and removal in both safety modes, including restored
+snapshots. The shared native allowlist grows from 77 to 84. Existing/template
+DNG version retention, source-pixel filters, ABI 4, snapshot v1 and host-owned
+synchronization remain unchanged.
+
+LearningOptOutIn uses checked 16-bit word conversion from native provenance
+to canonical little endian and then to the target TIFF byte order. Unrelated
+UNDEFINED payloads remain opaque. Canonical encoding validates learning values
+before copying them.
+
 Audit date: 2026-09-14. The original observations below describe C++ 0.5.4.
 The 0.5.5 update closes the identified portable-output gaps without adding tags
 or changing API signatures, ABI 3, or host synchronization responsibilities.

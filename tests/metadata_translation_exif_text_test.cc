@@ -601,6 +601,9 @@ namespace {
             for (const EntryFlags flags : { EntryFlags::None,
                                             EntryFlags::Dirty }) {
                 MetaStore store;
+                // native_wire() retains provenance in block 7.
+                for (unsigned block = 0U; block < 8U; ++block)
+                    (void)store.add_block(BlockInfo {});
                 native_wire(store, 0x9000U, bytes(store, "0300"), 7U, 4U);
                 const std::string original("same\0", 5U);
                 native_wire(store, kFieldTags[i],
@@ -622,6 +625,9 @@ namespace {
                           original);
                 EXPECT_EQ(entry->origin.wire_type.code, 129U);
                 EXPECT_EQ(entry->value.text_encoding, TextEncoding::Utf8);
+                EXPECT_TRUE(validate_store(store).ok());
+                EXPECT_EQ(serialize_exif_tiff(store, {}).status,
+                          ExifTiffSerializeStatus::OutputTruncated);
                 if (flags == EntryFlags::None)
                     EXPECT_EQ(result.entries_updated, 1U);
                 else

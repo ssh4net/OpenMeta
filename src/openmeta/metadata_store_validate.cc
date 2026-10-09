@@ -839,6 +839,16 @@ namespace {
                   : inferred_tiff_type(entry.value);
         uint16_t type              = inferred;
         uint32_t count             = inferred_tiff_count(entry.value);
+        if (inferred == 129U && entry.value.kind == MetaValueKind::Text) {
+            std::string_view text;
+            if (detail::exif_text_view(store.arena(), entry.value, true,
+                                       &text)) {
+                // The UTF-8 serializer retains exactly one wire terminator.
+                count = text.size() >= UINT32_MAX
+                            ? UINT32_MAX
+                            : static_cast<uint32_t>(text.size()) + 1U;
+            }
+        }
         if (ifd == "exififd" && tag == 0xA420U
             && entry.value.kind == MetaValueKind::Text
             && entry.value.count == 33U

@@ -1306,7 +1306,30 @@ with tempfile.TemporaryDirectory() as temporary:
     translated = document.translate_development_correction_metadata(source_mode=mode, exif_version=310)
     assert translated.entry_count == count + 6
     assert translated.translate_development_correction_metadata(source_mode=mode, exif_version=310).entry_count == translated.entry_count
-    assert openmeta.METADATA_DEVELOPMENT_CORRECTION_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_DEVELOPMENT_CORRECTION_TRANSLATION_CONTRACT_VERSION == 2
+    native_probe = openmeta.unsafe_transfer_snapshot_probe(
+        translated.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='development.tiff',
+        target_bytes=bytes([73, 73, 42, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        include_edited_bytes=True,
+    )
+    assert native_probe['overall_status'] == openmeta.TransferStatus.Ok, native_probe
+    assert native_probe['tiff_merge_existing_exif'] is True, native_probe
+    native_path = Path(temporary) / 'development.tiff'
+    native_path.write_bytes(bytes(native_probe['edited_bytes']))
+    clean_native = openmeta.read(str(native_path))
+    promoted = clean_native.translate_development_correction_metadata(source_mode=mode, exif_version=310)
+    assert promoted.entry_count == clean_native.entry_count
+    promoted_probe = openmeta.unsafe_transfer_snapshot_probe(
+        promoted.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='development.tiff',
+        target_bytes=bytes(native_probe['edited_bytes']),
+        include_edited_bytes=True,
+    )
+    assert promoted_probe['overall_status'] == openmeta.TransferStatus.Ok, promoted_probe
+    assert promoted_probe['tiff_merge_existing_exif'] is True, promoted_probe
     assert openmeta.METADATA_DEVELOPMENT_CORRECTION_TRANSLATION_MAX_ADDED_ENTRIES == 6
     for name in ('XmpDevelopmentType', 'XmpDevelopmentTypeDescription', 'XmpDistortionCorrection', 'XmpChromaticAberrationCorrection', 'XmpShadingCorrection', 'XmpNoiseReduction'):
         assert getattr(openmeta.MetadataCaptureTranslationMapping, name).name == name
@@ -1340,7 +1363,30 @@ with tempfile.TemporaryDirectory() as temporary:
     translated = document.translate_learning_opt_out_in_metadata(source_mode=mode, exif_version=310)
     assert translated.entry_count == count + 1
     assert translated.translate_learning_opt_out_in_metadata(source_mode=mode, exif_version=310).entry_count == translated.entry_count
-    assert openmeta.METADATA_LEARNING_OPT_OUT_IN_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_LEARNING_OPT_OUT_IN_TRANSLATION_CONTRACT_VERSION == 2
+    native_probe = openmeta.unsafe_transfer_snapshot_probe(
+        translated.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='learning.tiff',
+        target_bytes=bytes([73, 73, 42, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        include_edited_bytes=True,
+    )
+    assert native_probe['overall_status'] == openmeta.TransferStatus.Ok, native_probe
+    assert native_probe['tiff_merge_existing_exif'] is True, native_probe
+    native_path = Path(temporary) / 'learning.tiff'
+    native_path.write_bytes(bytes(native_probe['edited_bytes']))
+    clean_native = openmeta.read(str(native_path))
+    promoted = clean_native.translate_learning_opt_out_in_metadata(source_mode=mode, exif_version=310)
+    assert promoted.entry_count == clean_native.entry_count
+    promoted_probe = openmeta.unsafe_transfer_snapshot_probe(
+        promoted.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='learning.tiff',
+        target_bytes=bytes(native_probe['edited_bytes']),
+        include_edited_bytes=True,
+    )
+    assert promoted_probe['overall_status'] == openmeta.TransferStatus.Ok, promoted_probe
+    assert promoted_probe['tiff_merge_existing_exif'] is True, promoted_probe
     assert openmeta.METADATA_LEARNING_OPT_OUT_IN_TRANSLATION_MAX_SETS == 64
     assert openmeta.MetadataCaptureTranslationMapping.XmpLearningOptOutIn.name == 'XmpLearningOptOutIn'
     for bound, limit in [('max_added_entries', 0), ('max_operations', 0), ('max_sets', 0), ('max_text_bytes_per_property', 0), ('max_total_text_bytes', 1)]:

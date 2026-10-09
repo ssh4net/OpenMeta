@@ -40,11 +40,14 @@ namespace {
         SourceValue characteristic;
         SourceValue factory_default;
         std::vector<EntryId> native;
+        EntryId clean_deleted = kInvalidEntryId;
+        bool dirty_deleted = false;
         bool present = false;
         uint16_t scalar = 0U;
         std::string_view text;
         EntryId source_entry = kInvalidEntryId;
         bool apply = false;
+        bool promote = false;
     };
 
     static MetadataCaptureTranslationResult error(Status status,
@@ -205,11 +208,18 @@ namespace {
     {
         for (EntryId id = 0U; id < source.entries().size(); ++id) {
             const Entry& entry = source.entry(id);
-            if (any(entry.flags, EntryFlags::Deleted)
-                || entry.key.kind != MetaKeyKind::ExifTag
+            if (entry.key.kind != MetaKeyKind::ExifTag
                 || arena_text(source.arena(), entry.key.data.exif_tag.ifd)
                        != "exififd"
                 || entry.key.data.exif_tag.tag != plan->tag) {
+                continue;
+            }
+            if (any(entry.flags, EntryFlags::Deleted)) {
+                if (any(entry.flags, EntryFlags::Dirty)) {
+                    plan->dirty_deleted = true;
+                } else if (plan->clean_deleted == kInvalidEntryId) {
+                    plan->clean_deleted = id;
+                }
                 continue;
             }
             plan->native.push_back(id);
@@ -224,17 +234,39 @@ namespace {
         const Entry& entry = source.entry(plan.native.front());
         if (plan.tag == 0xa40eU) {
             std::string_view text;
-            return detail::development_correction_value_valid(
-                       source.arena(), plan.tag, entry.value)
-                   && detail::exif_text_view(source.arena(), entry.value, true,
-                                             &text)
-                   && text == plan.text
-                   && entry.origin.wire_type.family == WireFamily::Tiff
-                   && entry.origin.wire_type.code == 129U;
+            if (!detail::development_correction_value_valid(
+                    source.arena(), plan.tag, entry.value)
+                || !detail::exif_text_view(source.arena(), entry.value, true,
+                                           &text)
+                || text != plan.text) {
+                return false;
+            }
+            const uint64_t expected_wire_count
+                = static_cast<uint64_t>(text.size()) + 1U;
+            return entry.origin.wire_type.family == WireFamily::Tiff
+                   && entry.origin.wire_type.code == 129U
+                   && entry.origin.wire_count == expected_wire_count;
         }
         return detail::development_correction_value_valid(
                    source.arena(), plan.tag, entry.value)
-               && entry.value.data.u64 == plan.scalar;
+               && entry.value.data.u64 == plan.scalar
+               && entry.origin.wire_type.family == WireFamily::Tiff
+               && entry.origin.wire_type.code == 3U
+               && entry.origin.wire_count == 1U;
+    }
+
+    static MetaValue copy_value_to_edit(const MetaStore& source,
+                                        MetaEdit* edit,
+                                        const MetaValue& value)
+    {
+        MetaValue copied = value;
+        if (value.kind == MetaValueKind::Array
+            || value.kind == MetaValueKind::Bytes
+            || value.kind == MetaValueKind::Text) {
+            copied.data.span
+                = edit->arena().append(source.arena().span(value.data.span));
+        }
+        return copied;
     }
 
     static MetaValue make_native_value(ByteArena& arena, const FieldPlan& plan)
@@ -254,6 +286,23 @@ namespace {
                                       const FieldPlan& plan) noexcept
     {
         return plan.tag == 0xa40eU ? value.count + 1U : 1U;
+    }
+
+    static void append_delete_marker(MetaEdit* edit, const FieldPlan& plan)
+    {
+        Entry entry;
+        entry.key = make_exif_tag_key(edit->arena(), "exififd", plan.tag);
+        if (plan.tag == 0xa40eU) {
+            entry.value = make_text(edit->arena(), {}, TextEncoding::Utf8);
+            entry.origin.wire_type = { WireFamily::Tiff, 129U };
+            entry.origin.wire_count = 1U;
+        } else {
+            entry.value = make_u16(plan.tag == 0xa40dU ? 0x0101U : 0U);
+            entry.origin.wire_type = { WireFamily::Tiff, 3U };
+            entry.origin.wire_count = 1U;
+        }
+        entry.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+        edit->add_entry(entry);
     }
 
     static Status collect_sources(const MetaStore& source, Mode mode,
@@ -428,13 +477,42 @@ namespace {
         if (!selected) {
             return Status::Ok;
         }
+        if (!plan->present) {
+            if (!plan->native.empty()) {
+                if (options.conflict_policy == Policy::PreserveExisting) {
+                    ++result->groups_preserved;
+                    return Status::Ok;
+                }
+                if (options.conflict_policy == Policy::FailOnConflict) {
+                    result->failed_mapping = plan->mapping;
+                    result->failed_source_entry = plan->source_entry;
+                    return Status::NativeConflict;
+                }
+                plan->apply = true;
+                return Status::Ok;
+            }
+            if (options.conflict_policy != Policy::ReplaceExisting
+                || plan->dirty_deleted) {
+                ++result->groups_unchanged;
+                return Status::Ok;
+            }
+            plan->apply = true;
+            plan->promote = plan->clean_deleted != kInvalidEntryId;
+            return Status::Ok;
+        }
         if (options.conflict_policy == Policy::PreserveExisting
             && !plan->native.empty()) {
             ++result->groups_preserved;
             return Status::Ok;
         }
         if (native_equals(source, *plan)) {
-            ++result->groups_unchanged;
+            if (any(source.entry(plan->native.front()).flags,
+                    EntryFlags::Dirty)) {
+                ++result->groups_unchanged;
+                return Status::Ok;
+            }
+            plan->promote = true;
+            plan->apply = true;
             return Status::Ok;
         }
         if (options.conflict_policy == Policy::FailOnConflict
@@ -573,8 +651,20 @@ translate_xmp_development_correction_metadata(
         if (!plan.apply) {
             continue;
         }
-        operations += plan.native.size();
-        if (plan.present && plan.native.empty()) {
+        if (plan.present) {
+            if (plan.promote)
+                ++operations;
+            else
+                operations += plan.native.size();
+            if (plan.native.empty()) {
+                ++operations;
+                ++additions;
+            }
+        } else if (!plan.native.empty()) {
+            operations += plan.native.size();
+        } else if (plan.promote) {
+            ++operations;
+        } else if (!plan.dirty_deleted) {
             ++operations;
             ++additions;
         }
@@ -604,13 +694,19 @@ translate_xmp_development_correction_metadata(
         ++result.groups_translated;
         MetaValue value;
         uint32_t wire_count = 0U;
-        if (plan.present) {
+        if (plan.present && !plan.promote) {
             value      = make_native_value(edit.arena(), plan);
             wire_count = native_wire_count(value, plan);
         }
         bool written = false;
         for (const EntryId id : plan.native) {
-            if (plan.present && !written) {
+            if (plan.present && plan.promote && !written) {
+                const MetaValue copied = copy_value_to_edit(
+                    source, &edit, source.entry(id).value);
+                edit.set_value(id, copied);
+                ++result.entries_updated;
+                written = true;
+            } else if (plan.present && !written) {
                 edit.set_value(id, value,
                                { WireFamily::Tiff, native_wire_type(plan) },
                                wire_count);
@@ -631,6 +727,14 @@ translate_xmp_development_correction_metadata(
             entry.flags = EntryFlags::Dirty;
             edit.add_entry(entry);
             ++result.entries_added;
+        } else if (!plan.present && plan.native.empty()) {
+            if (plan.promote) {
+                edit.tombstone(plan.clean_deleted);
+                ++result.entries_updated;
+            } else if (!plan.dirty_deleted) {
+                append_delete_marker(&edit, plan);
+                ++result.entries_added;
+            }
         }
     }
     if (edit.ops().size() != operations || edit.arena().limit_exceeded()) {

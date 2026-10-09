@@ -24,22 +24,14 @@ inline uint16_t learning_opt_out_in_u16(std::span<const std::byte> bytes,
 }
 
 inline bool
-learning_opt_out_in_value_valid(const ByteArena& arena, const MetaValue& value,
-                                EntryFlags flags,
+learning_opt_out_in_bytes_valid(std::span<const std::byte> bytes, bool little,
                                 uint32_t max_sets
                                 = kLearningOptOutInHardMaxSets) noexcept
 {
     if (max_sets == 0U || max_sets > kLearningOptOutInHardMaxSets
-        || value.kind != MetaValueKind::Bytes
-        || value.count != value.data.span.size) {
+        || bytes.size() < 6U || (bytes.size() & 1U) != 0U) {
         return false;
     }
-    const std::span<const std::byte> bytes = arena.span(value.data.span);
-    if (bytes.size() != value.count || bytes.size() < 6U
-        || (bytes.size() & 1U) != 0U) {
-        return false;
-    }
-    const bool little = !any(flags, EntryFlags::ValueBigEndian);
     const uint32_t sets = learning_opt_out_in_u16(bytes, 0U, little);
     if (sets == 0U || sets > max_sets
         || bytes.size() != static_cast<size_t>(sets) * 4U + 2U) {
@@ -63,6 +55,44 @@ learning_opt_out_in_value_valid(const ByteArena& arena, const MetaValue& value,
         usage_mask |= 1U << usage;
     }
     return true;
+}
+
+inline bool
+learning_opt_out_in_swap_words(std::span<std::byte> bytes, bool from_little,
+                               bool to_little,
+                               uint32_t max_sets
+                               = kLearningOptOutInHardMaxSets) noexcept
+{
+    const std::span<const std::byte> source(bytes.data(), bytes.size());
+    if (!learning_opt_out_in_bytes_valid(source, from_little, max_sets)) {
+        return false;
+    }
+    if (from_little == to_little) {
+        return true;
+    }
+    for (size_t i = 0U; i < bytes.size(); i += 2U) {
+        const std::byte first = bytes[i];
+        bytes[i] = bytes[i + 1U];
+        bytes[i + 1U] = first;
+    }
+    return true;
+}
+
+inline bool
+learning_opt_out_in_value_valid(const ByteArena& arena, const MetaValue& value,
+                                EntryFlags flags,
+                                uint32_t max_sets
+                                = kLearningOptOutInHardMaxSets) noexcept
+{
+    if (max_sets == 0U || max_sets > kLearningOptOutInHardMaxSets
+        || value.kind != MetaValueKind::Bytes
+        || value.count != value.data.span.size) {
+        return false;
+    }
+    const std::span<const std::byte> bytes = arena.span(value.data.span);
+    return bytes.size() == value.count
+           && learning_opt_out_in_bytes_valid(
+               bytes, !any(flags, EntryFlags::ValueBigEndian), max_sets);
 }
 
 }  // namespace openmeta::detail

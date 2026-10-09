@@ -42,12 +42,15 @@ namespace {
         std::array<SourceValue, kMaxValues> values {};
         uint32_t indexed_values = 0U;
         std::vector<EntryId> native;
+        EntryId clean_deleted = kInvalidEntryId;
+        bool dirty_deleted = false;
         std::array<uint16_t, kMaxValues + 1U> words {};
         uint16_t sets = 0U;
         uint32_t word_count = 0U;
         EntryId source_entry = kInvalidEntryId;
         bool present = false;
         bool apply = false;
+        bool promote = false;
     };
 
     static MetadataCaptureTranslationResult
@@ -274,12 +277,19 @@ namespace {
     {
         for (EntryId id = 0U; id < source.entries().size(); ++id) {
             const Entry& entry = source.entry(id);
-            if (any(entry.flags, EntryFlags::Deleted)
-                || entry.key.kind != MetaKeyKind::ExifTag
+            if (entry.key.kind != MetaKeyKind::ExifTag
                 || arena_text(source.arena(), entry.key.data.exif_tag.ifd)
                        != "exififd"
                 || entry.key.data.exif_tag.tag != detail::kLearningOptOutInTag)
                 continue;
+            if (any(entry.flags, EntryFlags::Deleted)) {
+                if (any(entry.flags, EntryFlags::Dirty)) {
+                    plan->dirty_deleted = true;
+                } else if (plan->clean_deleted == kInvalidEntryId) {
+                    plan->clean_deleted = id;
+                }
+                continue;
+            }
             plan->native.push_back(id);
         }
     }
@@ -308,6 +318,20 @@ namespace {
                && entry.origin.wire_count == raw.size();
     }
 
+    static MetaValue copy_value_to_edit(const MetaStore& source,
+                                        MetaEdit* edit,
+                                        const MetaValue& value)
+    {
+        MetaValue copied = value;
+        if (value.kind == MetaValueKind::Array
+            || value.kind == MetaValueKind::Bytes
+            || value.kind == MetaValueKind::Text) {
+            copied.data.span
+                = edit->arena().append(source.arena().span(value.data.span));
+        }
+        return copied;
+    }
+
     static MetaValue make_native_value(ByteArena& arena, const Plan& plan)
     {
         std::array<std::byte, 4U * kMetadataLearningOptOutInTranslationMaxSets
@@ -322,6 +346,18 @@ namespace {
         return make_bytes(arena,
                           std::span<const std::byte>(raw.data(),
                                                      plan.word_count * 2U));
+    }
+
+    static void append_delete_marker(MetaEdit* edit)
+    {
+        Entry entry;
+        entry.key = make_exif_tag_key(edit->arena(), "exififd",
+                                      detail::kLearningOptOutInTag);
+        entry.value = make_bytes(edit->arena(), std::span<const std::byte> {});
+        entry.origin.wire_type = { WireFamily::Tiff, 7U };
+        entry.origin.wire_count = 0U;
+        entry.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+        edit->add_entry(entry);
     }
 
     static Status collect_sources(const MetaStore& source, Mode mode, Plan* plan,
@@ -472,13 +508,41 @@ namespace {
                               || plan->indexed_values != 0U;
         if (!selected)
             return Status::Ok;
+        if (!plan->present) {
+            if (!plan->native.empty()) {
+                if (options.conflict_policy == Policy::PreserveExisting) {
+                    ++result->groups_preserved;
+                    return Status::Ok;
+                }
+                if (options.conflict_policy == Policy::FailOnConflict) {
+                    result->failed_source_entry = plan->source_entry;
+                    return Status::NativeConflict;
+                }
+                plan->apply = true;
+                return Status::Ok;
+            }
+            if (options.conflict_policy != Policy::ReplaceExisting
+                || plan->dirty_deleted) {
+                ++result->groups_unchanged;
+                return Status::Ok;
+            }
+            plan->apply = true;
+            plan->promote = plan->clean_deleted != kInvalidEntryId;
+            return Status::Ok;
+        }
         if (options.conflict_policy == Policy::PreserveExisting
             && !plan->native.empty()) {
             ++result->groups_preserved;
             return Status::Ok;
         }
         if (native_equals(source, *plan)) {
-            ++result->groups_unchanged;
+            if (any(source.entry(plan->native.front()).flags,
+                    EntryFlags::Dirty)) {
+                ++result->groups_unchanged;
+                return Status::Ok;
+            }
+            plan->promote = true;
+            plan->apply = true;
             return Status::Ok;
         }
         if (options.conflict_policy == Policy::FailOnConflict
@@ -564,10 +628,22 @@ translate_xmp_learning_opt_out_in_metadata(
     uint64_t operations = 0U;
     uint32_t additions = 0U;
     if (plan.apply) {
-        operations = plan.native.size();
+        if (plan.present) {
+            if (plan.promote)
+                ++operations;
+            else
+                operations += plan.native.size();
+        } else {
+            operations += plan.native.size();
+        }
         if (plan.present && plan.native.empty()) {
             ++operations;
             ++additions;
+        } else if (!plan.present && plan.native.empty()
+                   && (plan.promote || !plan.dirty_deleted)) {
+            ++operations;
+            if (!plan.promote)
+                ++additions;
         }
     }
     if (additions > options.max_added_entries
@@ -591,10 +667,16 @@ translate_xmp_learning_opt_out_in_metadata(
     edit.reserve_ops(static_cast<size_t>(operations));
     bool written = false;
     MetaValue value;
-    if (plan.present)
+    if (plan.present && !plan.promote)
         value = make_native_value(edit.arena(), plan);
     for (const EntryId id : plan.native) {
-        if (plan.present && !written) {
+        if (plan.present && plan.promote && !written) {
+            const MetaValue copied
+                = copy_value_to_edit(source, &edit, source.entry(id).value);
+            edit.set_value(id, copied);
+            ++result.entries_updated;
+            written = true;
+        } else if (plan.present && !written) {
             edit.set_value(id, value, { WireFamily::Tiff, 7U }, value.count);
             ++result.entries_updated;
             written = true;
@@ -613,6 +695,14 @@ translate_xmp_learning_opt_out_in_metadata(
         entry.flags = EntryFlags::Dirty;
         edit.add_entry(entry);
         ++result.entries_added;
+    } else if (!plan.present && plan.native.empty()) {
+        if (plan.promote) {
+            edit.tombstone(plan.clean_deleted);
+            ++result.entries_updated;
+        } else if (!plan.dirty_deleted) {
+            append_delete_marker(&edit);
+            ++result.entries_added;
+        }
     }
     if (edit.ops().size() != operations || edit.arena().limit_exceeded()) {
         result.status = Status::InternalError;

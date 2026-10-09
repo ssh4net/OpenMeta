@@ -2,6 +2,7 @@
 
 #include "metadata_text_fields_internal.h"
 #include "metadata_capture_fields_internal.h"
+#include "metadata_learning_fields_internal.h"
 
 #include "openmeta/metadata_transfer.h"
 
@@ -6955,6 +6956,31 @@ namespace {
             out->count = static_cast<uint32_t>(out->value.size());
             return true;
         }
+        if (detail::primary_exif_entry(store.arena(), e,
+                                       detail::kLearningOptOutInTag)) {
+            if (v.kind != MetaValueKind::Bytes
+                || v.count != v.data.span.size) {
+                return false;
+            }
+            const std::span<const std::byte> raw
+                = store.arena().span(v.data.span);
+            const bool source_little
+                = !any(e.flags, EntryFlags::ValueBigEndian);
+            if (raw.size() != v.count
+                || !detail::learning_opt_out_in_bytes_valid(raw,
+                                                            source_little)) {
+                return false;
+            }
+            out->value.assign(raw.begin(), raw.end());
+            if (!source_little && !detail::learning_opt_out_in_swap_words(
+                    std::span<std::byte>(out->value.data(), out->value.size()),
+                    false, true)) {
+                return false;
+            }
+            out->type  = 7U;
+            out->count = static_cast<uint32_t>(out->value.size());
+            return true;
+        }
         if (detail::primary_exif_entry(store.arena(), e, 0x9286U)) {
             // Unknown character sets remain raw when no endian conversion is needed.
             const auto raw = store.arena().span(v.data.span);
@@ -8861,6 +8887,17 @@ namespace {
         }
         for (size_t i = 0; i < ifd->entries.size(); ++i) {
             ParsedTiffIfdEntry& e = ifd->entries[i];
+            if (composite && e.tag == detail::kLearningOptOutInTag
+                && e.type == 7U && from_endian != to_endian) {
+                if (!detail::learning_opt_out_in_swap_words(
+                        std::span<std::byte>(e.payload.data(),
+                                             e.payload.size()),
+                        from_endian == TiffEndian::Little,
+                        to_endian == TiffEndian::Little)) {
+                    return false;
+                }
+                continue;
+            }
             if (composite && e.tag == 0x9286U && e.type == 7U
                 && from_endian != to_endian && e.payload.size() >= 8U
                 && std::memcmp(e.payload.data(), "UNICODE\0", 8U) == 0) {
@@ -11041,16 +11078,18 @@ namespace {
         0x010EU, 0x010FU, 0x0110U, 0x0131U, 0x0132U, 0x013BU, 0x8298U,
     };
 
-    static constexpr std::array<uint16_t, 77U> kTiffExifRemovalTags = {
+    static constexpr std::array<uint16_t, 84U> kTiffExifRemovalTags = {
         0x829AU, 0x829DU, 0x8822U, 0x8827U, 0x8828U, 0x8830U, 0x8831U, 0x8832U,
         0x8833U, 0x8834U, 0x8835U, 0x9000U, 0x9003U, 0x9004U, 0x9010U,
         0x9011U, 0x9012U, 0x9201U, 0x9202U, 0x9203U, 0x9204U, 0x9205U, 0x9206U,
-        0x9207U, 0x9209U, 0x920AU, 0x9214U, 0x9286U, 0x9290U, 0x9291U, 0x9292U,
+        0x9207U, 0x9209U, 0x920AU, 0x9214U, 0x9286U, 0x9287U, 0x9290U, 0x9291U,
+        0x9292U,
         0x9400U, 0x9401U, 0x9402U, 0x9403U,
         0x9404U, 0x9405U, 0xA000U, 0xA20BU, 0xA20CU, 0xA20EU, 0xA20FU, 0xA210U,
         0xA214U, 0xA215U, 0xA217U, 0xA300U, 0xA301U, 0xA302U, 0xA401U, 0xA402U,
         0xA403U, 0xA404U, 0xA405U, 0xA406U, 0xA407U, 0xA408U, 0xA409U, 0xA40AU,
-        0xA40BU, 0xA40CU, 0xA420U, 0xA430U, 0xA432U,
+        0xA40BU, 0xA40CU, 0xA40DU, 0xA40EU, 0xA40FU, 0xA410U, 0xA411U, 0xA412U,
+        0xA420U, 0xA430U, 0xA432U,
         0xA433U, 0xA434U, 0xA435U, 0xA436U, 0xA437U, 0xA438U, 0xA439U, 0xA43AU,
         0xA43BU, 0xA43CU, 0xA460U, 0xA461U, 0xA462U,
     };

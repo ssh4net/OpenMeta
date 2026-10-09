@@ -21,9 +21,38 @@ The APIs are experimental and versioned by
 ``kMetadataGpsTranslationContractVersion == 1`` and
 ``kMetadataStructuredLocationTranslationContractVersion == 1`` and
 ``kMetadataGpsNavigationTranslationContractVersion == 1`` and
-``kMetadataDevelopmentCorrectionTranslationContractVersion == 1`` and
-``kMetadataLearningOptOutInTranslationContractVersion == 1`` and
+``kMetadataDevelopmentCorrectionTranslationContractVersion == 2`` and
+``kMetadataLearningOptOutInTranslationContractVersion == 2`` and
 ``kMetadataProfileTranslationContractVersion == 1``.
+
+Development/correction and learning lifecycle (0.8.11)
+------------------------------------------------------
+
+The six existing development/correction fields A40D-A412 and LearningOptOutIn
+9287 now use translation contract 2. Exact valid clean native matches gain Dirty
+while retaining values, wire hints/counts, origin and endian provenance. Dirty
+matches remain unchanged. Complete ReplaceExisting deletion retains typed native
+intent even when a key is absent; clean tombstones are promoted and dirty ones
+reused. Promotions and deletion intents consume operation limits, and new intents
+also consume entry limits. Conflict, source-mask and rollback rules remain.
+
+Selected sources still require explicit host exif_version 300 or 310; translation
+never infers or changes ExifVersion or processing history. These APIs do not
+validate a complete destination EXIF profile. All seven fields use selective
+TIFF/BigTIFF/DNG merge and removal in both safety modes, including restored
+snapshots. The shared native allowlist grows from 77 to 84. Existing/template
+DNG version retention, source-pixel filters, ABI 4, snapshot v1 and host-owned
+synchronization remain unchanged.
+
+LearningOptOutIn uses checked 16-bit word conversion from native provenance
+to canonical little endian and then to the target TIFF byte order. Unrelated
+UNDEFINED payloads remain opaque. Canonical encoding validates learning values
+before copying them.
+
+For native TIFF type-129 text, a counted payload may retain one explicit wire
+NUL. Validation and serialization both use the logical UTF-8 byte length plus
+one terminator. Ordinary authored text and the reader's normalized text omit
+that NUL from their payload. Embedded NULs and mismatched wire counts still fail.
 
 Workflow
 --------
