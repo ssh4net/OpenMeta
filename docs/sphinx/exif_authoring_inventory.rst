@@ -1,6 +1,15 @@
 Standard EXIF Authoring Inventory
 =================================
 
+**0.8.12 lifecycle update:** the existing five profile routes use contract 2.
+Exact valid clean-native matches promote without re-encoding, and explicit
+replacement deletion carries native intent even for absent source keys.
+RelatedSoundFile joins selective TIFF-family merge/removal. ColorSpace remains
+host target-image authority: source omission/deletion preserves the target;
+explicit target ColorSpace replacement retains unselected companions. The
+historical field counts below are unchanged. See
+the current profile lifecycle.
+
 Audit date: 2026-09-17. Baseline: **C++ 0.5.9**, ABI 3, commit ``6d04da1``.
 This is an inventory and batch decision.
 

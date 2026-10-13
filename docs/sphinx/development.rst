@@ -1,6 +1,17 @@
 Developer Notes
 ===============
 
+Profile native lifecycle in 0.8.12
+----------------------------------
+
+The five existing profile fields now use contract 2 for exact clean-native
+promotion and typed deletion intent. RelatedSoundFile joins selective TIFF,
+BigTIFF and DNG merge/removal. Explicit host ColorSpace replacement preserves
+unselected destination ExifIFD companions, while source ColorSpace deletion
+preserves the destination value. ABI 4 and source snapshot v1 remain unchanged.
+This bounded editing/translation/writeback batch does not reassess broad stage
+percentages or establish complete-file EXIF profile conformance.
+
 Repository layout (public):
 
 - ``src/include/openmeta/``: public headers

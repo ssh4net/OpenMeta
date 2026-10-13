@@ -1,6 +1,15 @@
 Writer Target Contract
 ======================
 
+The 0.8.12 profile lifecycle adds RelatedSoundFile to the 85-tag ExifIFD
+merge/removal allowlist. ColorSpace is separately eligible for destination
+ExifIFD preservation, but is excluded from removal permission. Source
+ColorSpace is filtered; an explicit host target ColorSpace specification
+supplies replacement authority. Destination ExifVersion, Interop, ICC and other
+unselected values remain preserved without implying agreement among them.
+ImageDescription, Artist and scalar Copyright use the existing explicit IFD0
+removal path. Omission remains distinct from deletion.
+
 This page defines the bounded preserve/replace contract for OpenMeta transfer
 writers.
 

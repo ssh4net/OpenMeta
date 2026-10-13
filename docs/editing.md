@@ -8,6 +8,16 @@ host to work with namespace paths or entry IDs.
 The API is experimental and versioned by
 `kMetadataEditingContractVersion == 1`.
 
+## Profile native lifecycle (0.8.12)
+
+Profile translation contract 2 completes clean-native selection and typed
+absent-field deletion intent for ImageDescription, Artist, scalar Copyright,
+ColorSpace and RelatedSoundFile. Valid matching native values retain bytes,
+encoding and provenance when promoted for writeback; dirty matches are reused.
+TIFF-family selective merge/removal now includes RelatedSoundFile. Destination
+ColorSpace replacement requires an explicit host target image specification;
+source deletion does not remove it. See [the profile contract](translation.md#profile-native-lifecycle-0812).
+
 ## C++ Example
 
 ```cpp

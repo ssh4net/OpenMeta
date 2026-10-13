@@ -21,7 +21,38 @@ The APIs are experimental and versioned by
 `kMetadataGpsNavigationTranslationContractVersion == 1` and
 `kMetadataDevelopmentCorrectionTranslationContractVersion == 2` and
 `kMetadataLearningOptOutInTranslationContractVersion == 2` and
-`kMetadataProfileTranslationContractVersion == 1`.
+`kMetadataProfileTranslationContractVersion == 2`.
+
+## Profile native lifecycle (0.8.12)
+
+The five existing profile mappings use contract version 2. Selecting an exact,
+valid clean native match promotes it to Dirty while preserving its value,
+encoding, wire type/count, endian flags and origin. Exact dirty matches remain
+unchanged. Invalid native wire hints cannot establish matching write authority.
+Explicit `ReplaceExisting` deletion retains typed native intent even when the
+source native entry is absent; clean tombstones promote and dirty intents reuse.
+Selection, duplicates, conflicts and resource limits remain transactional.
+
+ImageDescription, Artist and scalar Copyright retain their bounded IFD0
+writeback path. RelatedSoundFile now participates in selective ExifIFD merge and
+removal for TIFF, BigTIFF and DNG. Source omission preserves destination values.
+No audio-file association or two-part Copyright authoring is inferred.
+
+Scalar UTF-8 Copyright now uses TIFF type 129 consistently in translation,
+detached validation and canonical serialization. The scalar gate validates the
+logical text, including the supported retained terminal NUL form. Legacy
+NUL-separated two-part Copyright keeps its existing ASCII representation and
+preserve/conflict behavior; arbitrary two-part authoring remains outside the
+profile translator.
+
+ColorSpace remains an image fact controlled by the host. Source native/XMP
+ColorSpace is filtered during transfer. Only an explicit
+`target_image_spec.has_exif_color_space` and `exif_color_space` replace the
+native destination value. Such a replacement preserves unrelated ExifIFD and
+Interop entries; source ColorSpace tombstones do not delete the destination
+value, and manual native ColorSpace removal requests are rejected. ICC,
+ExifVersion and Interop agreement are not inferred or certified. ABI 4, public
+option layouts and source snapshot v1 remain unchanged.
 
 ## Development/correction and learning lifecycle (0.8.11)
 

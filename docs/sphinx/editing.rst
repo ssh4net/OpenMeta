@@ -1,6 +1,17 @@
 Metadata Editing
 ================
 
+Profile native lifecycle (0.8.12)
+---------------------------------
+
+Profile translation contract 2 completes clean-native selection and typed
+absent-field deletion intent for ImageDescription, Artist, scalar Copyright,
+ColorSpace and RelatedSoundFile. Valid matching native values retain bytes,
+encoding and provenance when promoted for writeback; dirty matches are reused.
+TIFF-family selective merge/removal now includes RelatedSoundFile. Destination
+ColorSpace replacement requires an explicit host target image specification;
+source deletion does not remove it. See the profile contract.
+
 ``openmeta/metadata_editing.h`` provides a bounded transactional editing
 contract for the same logical fields accepted by Creation. It edits canonical
 portable-XMP entries in a finalized ``MetaStore`` without requiring namespace

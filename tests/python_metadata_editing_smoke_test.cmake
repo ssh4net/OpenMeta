@@ -1417,8 +1417,31 @@ with tempfile.TemporaryDirectory() as temporary:
     translated = document.translate_xmp_profile_metadata(source_mode=mode)
     assert translated.entry_count == count + 5
     assert translated.translate_xmp_profile_metadata(source_mode=mode).entry_count == translated.entry_count
-    assert openmeta.METADATA_PROFILE_TRANSLATION_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_PROFILE_TRANSLATION_CONTRACT_VERSION == 2
     assert openmeta.METADATA_PROFILE_TRANSLATION_MAX_ADDED_ENTRIES == 5
+    native_probe = openmeta.unsafe_transfer_snapshot_probe(
+        translated.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='profile.tiff',
+        target_bytes=bytes([73, 73, 42, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        include_edited_bytes=True,
+    )
+    assert native_probe['overall_status'] == openmeta.TransferStatus.Ok, native_probe
+    assert native_probe['tiff_merge_existing_exif'] is True, native_probe
+    native_path = Path(temporary) / 'profile.tiff'
+    native_path.write_bytes(bytes(native_probe['edited_bytes']))
+    clean_native = openmeta.read(str(native_path))
+    promoted = clean_native.translate_xmp_profile_metadata(source_mode=mode)
+    assert promoted.entry_count == clean_native.entry_count
+    promoted_probe = openmeta.unsafe_transfer_snapshot_probe(
+        promoted.build_transfer_source_snapshot(),
+        target_format=openmeta.TransferTargetFormat.Tiff,
+        edit_target_path='profile.tiff',
+        target_bytes=bytes(native_probe['edited_bytes']),
+        include_edited_bytes=True,
+    )
+    assert promoted_probe['overall_status'] == openmeta.TransferStatus.Ok, promoted_probe
+    assert promoted_probe['tiff_merge_existing_exif'] is True, promoted_probe
     for name in ('XmpTiffImageDescription', 'XmpTiffArtist', 'XmpTiffCopyright', 'XmpColorSpace', 'XmpRelatedSoundFile'):
         assert getattr(openmeta.MetadataCaptureTranslationMapping, name).name == name
     for bound, limit in [('max_added_entries', 4), ('max_operations', 4), ('max_text_bytes_per_property', 1), ('max_total_text_bytes', 1)]:

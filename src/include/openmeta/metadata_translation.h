@@ -948,7 +948,7 @@ translate_xmp_learning_opt_out_in_metadata(
     MetaStore* out_store);
 
 /// Experimental bounded profile/authoring translation contract.
-inline constexpr uint32_t kMetadataProfileTranslationContractVersion = 1U;
+inline constexpr uint32_t kMetadataProfileTranslationContractVersion = 2U;
 inline constexpr uint32_t kMetadataProfileTranslationMaxAddedEntries = 5U;
 inline constexpr uint32_t kMetadataProfileTranslationMaxTextBytesPerProperty
     = 65536U;
@@ -964,9 +964,24 @@ inline constexpr uint64_t kMetadataProfileTranslationMaxTotalTextBytes
  * ASCII 8.3 filename and targets ExifIFD 0xa004. No ICC, image dimensions,
  * or audio-file association is inferred. A scalar Copyright source writes a
  * single native part; an existing legacy two-part NUL value is preserved by
- * PreserveExisting and conflicts under FailOnConflict. Preparation may
+ * PreserveExisting and conflicts under FailOnConflict. Non-ASCII descriptive
+ * text, including scalar Copyright, uses UTF-8 TIFF type 129. Preparation may
  * allocate; the commit is one transaction and hosts synchronize shared-object
- * access.
+ * access. When reconciled, an exact valid match promotes a clean native entry
+ * to Dirty without changing its value bytes, value shape or encoding, wire
+ * type or count, endian flags, or origin; an exact Dirty match is unchanged.
+ * Text matches require serializer-compatible TIFF types and wire counts; a
+ * clean type-129 native entry must also declare `TextEncoding::Utf8`.
+ * Type 2 counts stored text bytes plus one wire terminator. For type 129, a
+ * retained terminal NUL is excluded by the serializer's logical text view
+ * before the single wire terminator is counted. ReplaceExisting source
+ * tombstones remove active native entries and leave typed native deletion
+ * intent. When no active entry exists, ReplaceExisting creates an intent,
+ * promotes one clean tombstone, or reuses an existing Dirty tombstone. The
+ * source ColorSpace mapping changes the native store, but does not authorize
+ * a destination image ColorSpace. Only the explicit host
+ * `target_image_spec.exif_color_space` value controls destination image
+ * ColorSpace.
  */
 struct MetadataProfileTranslationOptions final {
     MetadataCaptureTranslationSourceMode source_mode

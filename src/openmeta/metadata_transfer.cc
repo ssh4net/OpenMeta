@@ -11115,14 +11115,15 @@ namespace {
         0x010EU, 0x010FU, 0x0110U, 0x0131U, 0x0132U, 0x013BU, 0x8298U,
     };
 
-    static constexpr std::array<uint16_t, 84U> kTiffExifRemovalTags = {
+    static constexpr std::array<uint16_t, 85U> kTiffExifRemovalTags = {
         0x829AU, 0x829DU, 0x8822U, 0x8827U, 0x8828U, 0x8830U, 0x8831U, 0x8832U,
         0x8833U, 0x8834U, 0x8835U, 0x9000U, 0x9003U, 0x9004U, 0x9010U,
         0x9011U, 0x9012U, 0x9201U, 0x9202U, 0x9203U, 0x9204U, 0x9205U, 0x9206U,
         0x9207U, 0x9209U, 0x920AU, 0x9214U, 0x9286U, 0x9287U, 0x9290U, 0x9291U,
         0x9292U,
         0x9400U, 0x9401U, 0x9402U, 0x9403U,
-        0x9404U, 0x9405U, 0xA000U, 0xA20BU, 0xA20CU, 0xA20EU, 0xA20FU, 0xA210U,
+        0x9404U, 0x9405U, 0xA000U, 0xA004U, 0xA20BU, 0xA20CU,
+        0xA20EU, 0xA20FU, 0xA210U,
         0xA214U, 0xA215U, 0xA217U, 0xA300U, 0xA301U, 0xA302U, 0xA401U, 0xA402U,
         0xA403U, 0xA404U, 0xA405U, 0xA406U, 0xA407U, 0xA408U, 0xA409U, 0xA40AU,
         0xA40BU, 0xA40CU, 0xA40DU, 0xA40EU, 0xA40FU, 0xA410U, 0xA411U, 0xA412U,
@@ -11149,6 +11150,14 @@ namespace {
             }
         }
         return static_cast<uint32_t>(kTiffExifRemovalTags.size());
+    }
+
+    // ColorSpace preserves target companions but does not grant deletion authority.
+    static bool is_tiff_exif_profile_merge_tag(uint16_t tag) noexcept
+    {
+        return tag == 0xA001U
+               || tiff_exif_profile_removal_slot(tag)
+                      < kTiffExifRemovalTags.size();
     }
 
     static std::vector<TiffTagUpdate>
@@ -13182,9 +13191,7 @@ has_dirty_tiff_native_edit(const MetaStore& store) noexcept
                                                   entry.key.data.exif_tag.ifd);
         const uint16_t tag         = entry.key.data.exif_tag.tag;
         if ((ifd == "ifd0" && tag == 0x0132U)
-            || (ifd == "exififd"
-                && tiff_exif_profile_removal_slot(tag)
-                       < kTiffExifRemovalTags.size())) {
+            || (ifd == "exififd" && is_tiff_exif_profile_merge_tag(tag))) {
             return true;
         }
     }
@@ -13257,7 +13264,9 @@ prepare_metadata_for_target_impl(const MetaStore& store,
     collect_tiff_gps_profile_removals(store, native_tiff_exif_enabled,
                                       &bundle.tiff_gps_removals);
     bundle.tiff_merge_existing_exif = native_tiff_exif_enabled
-                                      && has_dirty_tiff_native_edit(store);
+                                      && (has_dirty_tiff_native_edit(store)
+                                          || request.target_image_spec
+                                                 .has_exif_color_space);
     bundle.tiff_merge_existing_gps = native_tiff_exif_enabled
                                      && has_dirty_tiff_native_gps_edit(store);
 

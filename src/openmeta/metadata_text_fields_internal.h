@@ -70,7 +70,12 @@ exif_text_wire_type(const ByteArena& arena, const Entry& e) noexcept
     const auto ifd_raw = arena.span(e.key.data.exif_tag.ifd);
     const std::string_view ifd(reinterpret_cast<const char*>(ifd_raw.data()),
                                ifd_raw.size());
-    if (!exif_utf8_tag(ifd, e.key.data.exif_tag.tag))
+    std::string_view copyright;
+    const bool scalar_copyright
+        = ifd == "ifd0" && e.key.data.exif_tag.tag == 0x8298U
+          && exif_text_view(arena, e.value, true, &copyright);
+    // Legacy NUL-separated Copyright retains its ASCII representation.
+    if (!exif_utf8_tag(ifd, e.key.data.exif_tag.tag) && !scalar_copyright)
         return 2U;
     if (e.key.data.exif_tag.tag == 0xa40eU)
         return 129U;

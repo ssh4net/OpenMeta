@@ -25,6 +25,15 @@ validation. The profile transaction also covers IFD0 `ImageDescription`,
 These routes define source encoding, conflict and limit behavior; they do not
 create a mandatory complete-file profile or infer ICC, image or audio facts.
 
+**0.8.12 lifecycle update:** the existing five profile routes use contract 2.
+Exact valid clean-native matches promote without re-encoding, and explicit
+replacement deletion carries native intent even for absent source keys.
+RelatedSoundFile joins selective TIFF-family merge/removal. ColorSpace remains
+host target-image authority: source omission/deletion preserves the target;
+explicit target ColorSpace replacement retains unselected companions. The
+historical field counts below are unchanged. See
+[the current profile lifecycle](translation.md#profile-native-lifecycle-0812).
+
 ## Scope and sources
 
 The denominator is the primary-image data fields in CIPA Tables 6, 8, 9, 14

@@ -1,6 +1,18 @@
 API Stability
 =============
 
+Profile native lifecycle update (0.8.12)
+----------------------------------------
+
+``kMetadataProfileTranslationContractVersion == 2`` adds validated clean-native
+promotion and explicit typed deletion intent for the existing five mappings.
+Public signatures and option layouts, ABI 4 and source snapshot v1 remain
+unchanged. RelatedSoundFile supports selective TIFF-family merge/removal.
+ColorSpace is merge-eligible without granting source deletion authority;
+explicit host target ColorSpace replacement preserves unselected companions.
+No ICC/audio association or complete destination profile is inferred. See
+the current profile contract.
+
 This page defines the adoption status for public OpenMeta APIs.
 Python bindings mirror these labels unless a Python wrapper documents a
 different status.

@@ -67,12 +67,15 @@ namespace {
         const FieldSpec* spec = nullptr;
         SourceValue source;
         std::vector<EntryId> native;
+        EntryId clean_deleted = kInvalidEntryId;
+        bool dirty_deleted = false;
         bool present = false;
         uint16_t scalar = 0U;
         std::string_view text;
         uint16_t wire_type = 2U;
         EntryId source_entry = kInvalidEntryId;
         bool apply = false;
+        bool promote = false;
     };
 
     static MetadataCaptureTranslationResult
@@ -236,38 +239,26 @@ namespace {
     static bool native_text_view(const ByteArena& arena, const Entry& entry,
                                  std::string_view* out) noexcept
     {
-        if (!out)
-            return false;
-        if (entry.value.kind == MetaValueKind::Text)
-            return detail::exif_text_view(arena, entry.value, true, out);
-        if (entry.value.kind != MetaValueKind::Bytes
-            || entry.value.count != entry.value.data.span.size)
-            return false;
-        std::span<const std::byte> raw = arena.span(entry.value.data.span);
-        if (!raw.empty() && raw.back() == std::byte { 0 })
-            raw = raw.first(raw.size() - 1U);
-        for (std::byte b : raw)
-            if (b == std::byte { 0 })
-                return false;
-        const std::string_view text(reinterpret_cast<const char*>(raw.data()),
-                                    raw.size());
-        bool ascii = true;
-        if (!detail::exif_text_valid(text, &ascii))
-            return false;
-        *out = text;
-        return true;
+        return out && detail::exif_text_view(arena, entry.value, true, out);
     }
 
     static void add_native_ids(const MetaStore& source, FieldPlan* plan)
     {
         for (EntryId id = 0U; id < source.entries().size(); ++id) {
             const Entry& entry = source.entry(id);
-            if (any(entry.flags, EntryFlags::Deleted)
-                || entry.key.kind != MetaKeyKind::ExifTag
+            if (entry.key.kind != MetaKeyKind::ExifTag
                 || arena_text(source.arena(), entry.key.data.exif_tag.ifd)
                        != plan->spec->ifd
                 || entry.key.data.exif_tag.tag != plan->spec->tag)
                 continue;
+            if (any(entry.flags, EntryFlags::Deleted)) {
+                if (any(entry.flags, EntryFlags::Dirty)) {
+                    plan->dirty_deleted = true;
+                } else if (plan->clean_deleted == kInvalidEntryId) {
+                    plan->clean_deleted = id;
+                }
+                continue;
+            }
             plan->native.push_back(id);
         }
     }
@@ -277,17 +268,73 @@ namespace {
         if (!plan.present || plan.native.size() != 1U)
             return false;
         const Entry& entry = source.entry(plan.native.front());
-        if (entry.origin.wire_type.family != WireFamily::Tiff
-            || entry.origin.wire_type.code != plan.wire_type)
+        if (entry.origin.wire_type.family != WireFamily::Tiff)
             return false;
-        if (plan.spec->kind == FieldKind::ColorSpace)
+        if (plan.spec->kind == FieldKind::ColorSpace) {
+            if (entry.origin.wire_type.code != plan.wire_type)
+                return false;
             return entry.value.kind == MetaValueKind::Scalar
                    && entry.value.count == 1U
                    && entry.value.elem_type == MetaElementType::U16
-                   && entry.value.data.u64 == plan.scalar;
+                   && entry.value.data.u64 == plan.scalar
+                   && entry.origin.wire_count == 1U;
+        }
+        const uint16_t native_wire_type = entry.origin.wire_type.code;
+        if (native_wire_type == 129U
+            && entry.value.text_encoding != TextEncoding::Utf8)
+            return false;
+        if ((plan.spec->kind == FieldKind::RelatedSoundFile
+             && native_wire_type != 2U)
+            || (plan.spec->kind == FieldKind::Text
+                && native_wire_type != 2U && native_wire_type != 129U))
+            return false;
         std::string_view native;
-        return native_text_view(source.arena(), entry, &native)
-               && native == plan.text;
+        if (!native_text_view(source.arena(), entry, &native)
+            || native != plan.text
+            || detail::exif_text_wire_type(source.arena(), entry)
+                   != native_wire_type)
+            return false;
+        const uint64_t expected_wire_count
+            = native_wire_type == 129U
+                  ? static_cast<uint64_t>(native.size()) + 1U
+                  : static_cast<uint64_t>(entry.value.count) + 1U;
+        return entry.origin.wire_count == expected_wire_count;
+    }
+
+    static MetaValue copy_value_to_edit(const MetaStore& source, MetaEdit* edit,
+                                        const MetaValue& value)
+    {
+        MetaValue copied = value;
+        if (value.kind == MetaValueKind::Array
+            || value.kind == MetaValueKind::Bytes
+            || value.kind == MetaValueKind::Text) {
+            copied.data.span
+                = edit->arena().append(source.arena().span(value.data.span));
+        }
+        return copied;
+    }
+
+    static void append_delete_marker(MetaEdit* edit, const FieldPlan& plan)
+    {
+        Entry entry;
+        entry.key = make_exif_tag_key(edit->arena(), plan.spec->ifd,
+                                      plan.spec->tag);
+        if (plan.spec->kind == FieldKind::ColorSpace) {
+            entry.value = make_u16(1U);
+            entry.origin.wire_type = { WireFamily::Tiff, 3U };
+        } else {
+            const TextEncoding encoding
+                = plan.spec->kind == FieldKind::RelatedSoundFile
+                          || plan.spec->mapping == Mapping::XmpTiffCopyright
+                      ? TextEncoding::Ascii
+                      : TextEncoding::Utf8;
+            entry.value = make_text(edit->arena(), std::string_view {},
+                                    encoding);
+            entry.origin.wire_type = { WireFamily::Tiff, 2U };
+        }
+        entry.origin.wire_count = 1U;
+        entry.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+        edit->add_entry(entry);
     }
 
     static Status prepare_plan(
@@ -391,13 +438,42 @@ namespace {
     {
         if (!plan->source.found)
             return Status::Ok;
+        if (!plan->present) {
+            if (!plan->native.empty()) {
+                if (options.conflict_policy == Policy::PreserveExisting) {
+                    ++result->groups_preserved;
+                    return Status::Ok;
+                }
+                if (options.conflict_policy == Policy::FailOnConflict) {
+                    result->failed_mapping = plan->spec->mapping;
+                    result->failed_source_entry = plan->source_entry;
+                    return Status::NativeConflict;
+                }
+                plan->apply = true;
+                return Status::Ok;
+            }
+            if (options.conflict_policy != Policy::ReplaceExisting
+                || plan->dirty_deleted) {
+                ++result->groups_unchanged;
+                return Status::Ok;
+            }
+            plan->apply = true;
+            plan->promote = plan->clean_deleted != kInvalidEntryId;
+            return Status::Ok;
+        }
         if (options.conflict_policy == Policy::PreserveExisting
             && !plan->native.empty()) {
             ++result->groups_preserved;
             return Status::Ok;
         }
         if (native_equals(source, *plan)) {
-            ++result->groups_unchanged;
+            const Entry& entry = source.entry(plan->native.front());
+            if (any(entry.flags, EntryFlags::Dirty)) {
+                ++result->groups_unchanged;
+                return Status::Ok;
+            }
+            plan->promote = true;
+            plan->apply = true;
             return Status::Ok;
         }
         if (options.conflict_policy == Policy::FailOnConflict
@@ -485,8 +561,20 @@ translate_xmp_profile_metadata(const MetaStore& source,
     for (const FieldPlan& plan : plans) {
         if (!plan.apply)
             continue;
-        operations += plan.native.size();
-        if (plan.present && plan.native.empty()) {
+        if (plan.present) {
+            if (plan.promote)
+                ++operations;
+            else
+                operations += plan.native.size();
+            if (plan.native.empty()) {
+                ++operations;
+                ++additions;
+            }
+        } else if (!plan.native.empty()) {
+            operations += plan.native.size();
+        } else if (plan.promote) {
+            ++operations;
+        } else if (!plan.dirty_deleted) {
             ++operations;
             ++additions;
         }
@@ -508,10 +596,11 @@ translate_xmp_profile_metadata(const MetaStore& source,
     for (const FieldPlan& plan : plans) {
         if (!plan.apply)
             continue;
+        ++result.groups_translated;
         bool written = false;
         MetaValue value;
         uint32_t wire_count = 0U;
-        if (plan.present) {
+        if (plan.present && !plan.promote) {
             if (plan.spec->kind == FieldKind::ColorSpace) {
                 value = make_u16(plan.scalar);
                 wire_count = 1U;
@@ -523,7 +612,13 @@ translate_xmp_profile_metadata(const MetaStore& source,
             }
         }
         for (EntryId id : plan.native) {
-            if (plan.present && !written) {
+            if (plan.present && plan.promote && !written) {
+                const MetaValue copied = copy_value_to_edit(
+                    source, &edit, source.entry(id).value);
+                edit.set_value(id, copied);
+                ++result.entries_updated;
+                written = true;
+            } else if (plan.present && !written) {
                 edit.set_value(id, value, { WireFamily::Tiff, plan.wire_type },
                                wire_count);
                 ++result.entries_updated;
@@ -543,8 +638,15 @@ translate_xmp_profile_metadata(const MetaStore& source,
             entry.flags = EntryFlags::Dirty;
             edit.add_entry(entry);
             ++result.entries_added;
+        } else if (!plan.present && plan.native.empty()) {
+            if (plan.promote) {
+                edit.tombstone(plan.clean_deleted);
+                ++result.entries_updated;
+            } else if (!plan.dirty_deleted) {
+                append_delete_marker(&edit, plan);
+                ++result.entries_added;
+            }
         }
-        ++result.groups_translated;
     }
     if (edit.ops().size() != operations || edit.arena().limit_exceeded()) {
         result.status = Status::InternalError;

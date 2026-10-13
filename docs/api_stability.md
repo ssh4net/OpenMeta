@@ -175,6 +175,17 @@ Public signatures, contract versions, ABI 3, snapshot v1 layout and host-owned
 synchronization remain unchanged. No mandatory complete-file profile is imposed.
 See [generic validation](generic_authoring.md#validation) for scope and limits.
 
+## Profile native lifecycle update (0.8.12)
+
+`kMetadataProfileTranslationContractVersion == 2` adds validated clean-native
+promotion and explicit typed deletion intent for the existing five mappings.
+Public signatures and option layouts, ABI 4 and source snapshot v1 remain
+unchanged. RelatedSoundFile supports selective TIFF-family merge/removal.
+ColorSpace is merge-eligible without granting source deletion authority;
+explicit host target ColorSpace replacement preserves unselected companions.
+No ICC/audio association or complete destination profile is inferred. See
+[the current profile contract](translation.md#profile-native-lifecycle-0812).
+
 ## EXIF 3.1 LearningOptOutIn and profile authoring update (0.5.12)
 
 The experimental LearningOptOutIn and profile translation contracts are
