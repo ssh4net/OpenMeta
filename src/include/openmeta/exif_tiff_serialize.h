@@ -5,6 +5,7 @@
 #include "openmeta/api.h"
 
 #include "openmeta/meta_store.h"
+#include "openmeta/validate.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -47,6 +48,8 @@ struct ExifTiffSerializeOptions final {
     bool honor_wire_type_hints               = true;
     ExifTiffMakerNotePolicy makernote_policy = ExifTiffMakerNotePolicy::Drop;
     uint64_t max_output_bytes                = 64ULL * 1024ULL * 1024ULL;
+    /// Shared detached/optional target-profile checks, when validate is true.
+    MetadataValidationOptions validation;
 };
 
 /// Size and coverage details from canonical TIFF/EXIF serialization.

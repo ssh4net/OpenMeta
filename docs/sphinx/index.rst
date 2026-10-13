@@ -49,6 +49,7 @@ and must not be used as an asset-authenticity or trust gate.
    fuzzy_search
    creation
    generic_authoring
+   target_profile_validation
    editing
    translation
    capture_sync_milestone

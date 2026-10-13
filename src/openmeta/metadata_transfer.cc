@@ -12840,7 +12840,10 @@ serialize_exif_tiff(const MetaStore& store, std::span<std::byte> output,
     ExifTiffSerializeResult result;
     if (options.max_output_bytes == 0U || options.max_output_bytes > UINT32_MAX
         || static_cast<uint8_t>(options.makernote_policy)
-               > static_cast<uint8_t>(ExifTiffMakerNotePolicy::PreserveOpaque)) {
+               > static_cast<uint8_t>(ExifTiffMakerNotePolicy::PreserveOpaque)
+        || (!options.validate
+            && options.validation.target_profile.profile
+                   != MetadataTargetProfile::None)) {
         result.status = ExifTiffSerializeStatus::InvalidOptions;
         return result;
     }
@@ -12849,12 +12852,15 @@ serialize_exif_tiff(const MetaStore& store, std::span<std::byte> output,
         return result;
     }
     if (options.validate) {
-        MetadataValidationOptions validation;
+        MetadataValidationOptions validation   = options.validation;
         validation.require_finalized           = true;
         const MetadataValidationResult checked = validate_store(store,
                                                                 validation);
         if (!checked.ok()) {
-            result.status = ExifTiffSerializeStatus::InvalidMetadata;
+            result.status = checked.status
+                                    == MetadataValidationStatus::InvalidArgument
+                                ? ExifTiffSerializeStatus::InvalidOptions
+                                : ExifTiffSerializeStatus::InvalidMetadata;
             return result;
         }
     }

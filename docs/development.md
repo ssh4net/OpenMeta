@@ -1,5 +1,13 @@
 # Development
 
+## Shared target-profile validation (0.8.13)
+
+Opt-in primary-image EXIF checks now share explicit host target facts across
+creation, typed editing and canonical serialization. Default detached behavior
+is preserved. Option layouts grow under unfrozen ABI 4; rebuild consumers with
+matching headers and binaries. See [the target-profile contract](target_profile_validation.md)
+for profiles, required and forbidden fields, transaction behavior and limits.
+
 See also: `docs/metadata_support.md` for current container/block/decode support
 and `docs/interpretation_status.md` for the semantic interpretation matrix.
 If you are looking for the shortest practical entry path, start with

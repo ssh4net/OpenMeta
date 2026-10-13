@@ -237,3 +237,11 @@ edits. Bounded removal also accepts ``829A``, ``829D``, ``8827``, ``8830``--``88
 ``9209``, ``920A`` and ``A433``--``A435``. Retained external MakerNotes keep
 their original bytes and offsets. Standard pointers and media remain intact;
 private relocation or checksum repair is not provided. See :doc:`migration_0_7` for the unfrozen development ABI-4 policy.
+
+Shared target-profile validation in 0.8.13
+------------------------------------------
+
+Opt-in primary-image checks share host facts across creation, typed editing and
+canonical serialization. Default detached behavior remains available. Public
+option layouts grow under unfrozen ABI 4; rebuild matching headers and binaries.
+See :doc:`target_profile_validation` for the contract and limitations.

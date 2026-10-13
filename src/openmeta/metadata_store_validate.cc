@@ -4,6 +4,7 @@
 #include "metadata_gps_fields_internal.h"
 #include "metadata_learning_fields_internal.h"
 #include "metadata_text_fields_internal.h"
+#include "metadata_validation_options_internal.h"
 
 #include "openmeta/validate.h"
 
@@ -37,6 +38,48 @@ namespace {
         uint32_t min_count = 0U;
         uint32_t max_count = 0U;
         bool singleton     = true;
+    };
+
+    enum class TargetField : uint8_t {
+        Width,
+        Height,
+        BitsPerSample,
+        Compression,
+        PhotometricInterpretation,
+        StripOffsets,
+        SamplesPerPixel,
+        RowsPerStrip,
+        StripByteCounts,
+        PlanarConfiguration,
+        JpegInterchangeFormat,
+        JpegInterchangeFormatLength,
+        YCbCrCoefficients,
+        YCbCrSubSampling,
+        YCbCrPositioning,
+        ExifVersion,
+        ComponentsConfiguration,
+        CompressedBitsPerPixel,
+        ColorSpace,
+        PixelXDimension,
+        PixelYDimension,
+        InteroperabilityPointer,
+        InteroperabilityIndex,
+        Count,
+    };
+
+    static constexpr size_t kTargetFieldCount = static_cast<size_t>(
+        TargetField::Count);
+
+    struct TargetFieldState final {
+        EntryId first  = kInvalidEntryId;
+        EntryId second = kInvalidEntryId;
+        uint32_t count = 0U;
+    };
+
+    struct TargetFieldCollection final {
+        std::array<TargetFieldState, kTargetFieldCount> fields {};
+        EntryId first_interop = kInvalidEntryId;
+        bool has_interop      = false;
     };
 
     static constexpr uint16_t type_bit(uint16_t type) noexcept
@@ -1216,6 +1259,967 @@ namespace {
         }
     }
 
+    static TargetField target_field_for(std::string_view ifd,
+                                        uint16_t tag) noexcept
+    {
+        if (ifd == "ifd0") {
+            switch (tag) {
+            case 0x0100U: return TargetField::Width;
+            case 0x0101U: return TargetField::Height;
+            case 0x0102U: return TargetField::BitsPerSample;
+            case 0x0103U: return TargetField::Compression;
+            case 0x0106U: return TargetField::PhotometricInterpretation;
+            case 0x0111U: return TargetField::StripOffsets;
+            case 0x0115U: return TargetField::SamplesPerPixel;
+            case 0x0116U: return TargetField::RowsPerStrip;
+            case 0x0117U: return TargetField::StripByteCounts;
+            case 0x011cU: return TargetField::PlanarConfiguration;
+            case 0x0201U: return TargetField::JpegInterchangeFormat;
+            case 0x0202U: return TargetField::JpegInterchangeFormatLength;
+            case 0x0211U: return TargetField::YCbCrCoefficients;
+            case 0x0212U: return TargetField::YCbCrSubSampling;
+            case 0x0213U: return TargetField::YCbCrPositioning;
+            default: break;
+            }
+        } else if (ifd == "exififd") {
+            switch (tag) {
+            case 0x9000U: return TargetField::ExifVersion;
+            case 0x9101U: return TargetField::ComponentsConfiguration;
+            case 0x9102U: return TargetField::CompressedBitsPerPixel;
+            case 0xa001U: return TargetField::ColorSpace;
+            case 0xa002U: return TargetField::PixelXDimension;
+            case 0xa003U: return TargetField::PixelYDimension;
+            case 0xa005U: return TargetField::InteroperabilityPointer;
+            default: break;
+            }
+        } else if (ifd == "interopifd") {
+            if (tag == 0x0001U) {
+                return TargetField::InteroperabilityIndex;
+            }
+        }
+        return TargetField::Count;
+    }
+
+    static void collect_target_fields(const MetaStore& store,
+                                      const MetadataValidationOptions& options,
+                                      TargetFieldCollection* out) noexcept
+    {
+        if (!out) {
+            return;
+        }
+        for (EntryId id = 0U; id < store.entries().size(); ++id) {
+            const Entry& entry = store.entry(id);
+            if (entry.key.kind != MetaKeyKind::ExifTag
+                || any(entry.flags, EntryFlags::Deleted)) {
+                continue;
+            }
+            const ByteSpan ifd_span = entry.key.data.exif_tag.ifd;
+            if (!span_is_valid(ifd_span, store.arena().bytes().size())
+                || ifd_span.size == 0U
+                || ifd_span.size > options.max_key_bytes) {
+                continue;
+            }
+            const std::string_view ifd = arena_string(store.arena(), ifd_span);
+            if (ifd == "interopifd") {
+                out->has_interop = true;
+                if (out->first_interop == kInvalidEntryId) {
+                    out->first_interop = id;
+                }
+            }
+            const TargetField field
+                = target_field_for(ifd, entry.key.data.exif_tag.tag);
+            if (field == TargetField::Count) {
+                continue;
+            }
+            TargetFieldState& state = out->fields[static_cast<size_t>(field)];
+            if (state.count == 0U) {
+                state.first = id;
+            } else if (state.count == 1U) {
+                state.second = id;
+            }
+            if (state.count != UINT32_MAX) {
+                state.count += 1U;
+            }
+            if (field == TargetField::InteroperabilityPointer) {
+                out->has_interop = true;
+                if (out->first_interop == kInvalidEntryId) {
+                    out->first_interop = id;
+                }
+            }
+        }
+    }
+
+    static void target_issue(const MetadataValidationOptions& options,
+                             MetadataValidationResult* out,
+                             MetadataValidationIssueCode code, EntryId entry,
+                             EntryId related, uint16_t tag) noexcept
+    {
+        append_issue(out, options, ValidateIssueSeverity::Error, code, entry,
+                     related, MetaKeyKind::ExifTag, tag);
+    }
+
+    static void
+    target_context_conflict(const MetadataValidationOptions& options,
+                            MetadataValidationResult* out, EntryId entry,
+                            EntryId related = kInvalidEntryId,
+                            uint16_t tag    = 0U) noexcept
+    {
+        target_issue(options, out,
+                     MetadataValidationIssueCode::TargetProfileContextConflict,
+                     entry, related, tag);
+    }
+
+    static EntryId
+    target_required_entry(const TargetFieldCollection& fields,
+                          TargetField field, uint16_t tag,
+                          const MetadataValidationOptions& options,
+                          MetadataValidationResult* out) noexcept
+    {
+        const TargetFieldState& state
+            = fields.fields[static_cast<size_t>(field)];
+        if (state.count == 0U) {
+            target_issue(
+                options, out,
+                MetadataValidationIssueCode::TargetProfileMissingRequiredField,
+                kInvalidEntryId, kInvalidEntryId, tag);
+            return kInvalidEntryId;
+        }
+        if (state.count != 1U) {
+            target_context_conflict(options, out, state.first, state.second,
+                                    tag);
+            return kInvalidEntryId;
+        }
+        return state.first;
+    }
+
+    static EntryId
+    target_optional_entry(const TargetFieldCollection& fields,
+                          TargetField field, uint16_t tag,
+                          const MetadataValidationOptions& options,
+                          MetadataValidationResult* out) noexcept
+    {
+        const TargetFieldState& state
+            = fields.fields[static_cast<size_t>(field)];
+        if (state.count == 0U) {
+            return kInvalidEntryId;
+        }
+        if (state.count != 1U) {
+            target_context_conflict(options, out, state.first, state.second,
+                                    tag);
+            return kInvalidEntryId;
+        }
+        return state.first;
+    }
+
+    static void target_forbid_field(const TargetFieldCollection& fields,
+                                    TargetField field, uint16_t tag,
+                                    const MetadataValidationOptions& options,
+                                    MetadataValidationResult* out) noexcept
+    {
+        const TargetFieldState& state
+            = fields.fields[static_cast<size_t>(field)];
+        if (state.count == 0U) {
+            return;
+        }
+        target_issue(options, out,
+                     MetadataValidationIssueCode::TargetProfileForbiddenField,
+                     state.first, kInvalidEntryId, tag);
+        if (state.second != kInvalidEntryId) {
+            target_issue(
+                options, out,
+                MetadataValidationIssueCode::TargetProfileForbiddenField,
+                state.second, state.first, tag);
+        }
+    }
+
+    static uint8_t target_unsigned_type_mask(MetaElementType type) noexcept
+    {
+        switch (type) {
+        case MetaElementType::U16: return 1U;
+        case MetaElementType::U32: return 2U;
+        default: return 0U;
+        }
+    }
+
+    static uint32_t target_unsigned_width(MetaElementType type) noexcept
+    {
+        switch (type) {
+        case MetaElementType::U16: return 2U;
+        case MetaElementType::U32: return 4U;
+        default: return 0U;
+        }
+    }
+
+    static bool target_unsigned_shape(const MetaStore& store,
+                                      const Entry& entry, uint8_t type_mask,
+                                      uint32_t count) noexcept
+    {
+        if (any(entry.flags, EntryFlags::Truncated | EntryFlags::Unreadable)
+            || entry.value.count != count
+            || (target_unsigned_type_mask(entry.value.elem_type) & type_mask)
+                   == 0U) {
+            return false;
+        }
+        if (entry.value.kind == MetaValueKind::Scalar) {
+            return count == 1U;
+        }
+        if (entry.value.kind != MetaValueKind::Array) {
+            return false;
+        }
+        const uint32_t width = target_unsigned_width(entry.value.elem_type);
+        return width != 0U
+               && span_is_valid(entry.value.data.span,
+                                store.arena().bytes().size())
+               && static_cast<uint64_t>(entry.value.count) * width
+                      == entry.value.data.span.size;
+    }
+
+    static bool target_unsigned_at(const MetaStore& store, const Entry& entry,
+                                   uint32_t index, uint64_t* out) noexcept
+    {
+        if (!out
+            || any(entry.flags, EntryFlags::Truncated | EntryFlags::Unreadable)
+            || target_unsigned_type_mask(entry.value.elem_type) == 0U) {
+            return false;
+        }
+        if (entry.value.kind == MetaValueKind::Scalar) {
+            if (index != 0U || entry.value.count != 1U) {
+                return false;
+            }
+            *out = entry.value.data.u64;
+            return entry.value.elem_type == MetaElementType::U16
+                       ? *out <= UINT16_MAX
+                       : *out <= UINT32_MAX;
+        }
+        if (entry.value.kind != MetaValueKind::Array
+            || index >= entry.value.count) {
+            return false;
+        }
+        const uint32_t width = target_unsigned_width(entry.value.elem_type);
+        if (width == 0U
+            || !span_is_valid(entry.value.data.span,
+                              store.arena().bytes().size())
+            || static_cast<uint64_t>(entry.value.count) * width
+                   != entry.value.data.span.size) {
+            return false;
+        }
+        const std::span<const std::byte> bytes = store.arena().span(
+            entry.value.data.span);
+        const size_t offset = static_cast<size_t>(index) * width;
+        if (entry.value.elem_type == MetaElementType::U16) {
+            uint16_t value = 0U;
+            std::memcpy(&value, bytes.data() + offset, sizeof(value));
+            *out = value;
+            return true;
+        }
+        uint32_t value = 0U;
+        std::memcpy(&value, bytes.data() + offset, sizeof(value));
+        *out = value;
+        return true;
+    }
+
+    static bool target_bytes_value(const MetaStore& store, const Entry& entry,
+                                   uint32_t count,
+                                   std::span<const std::byte>* out) noexcept
+    {
+        if (!out
+            || any(entry.flags, EntryFlags::Truncated | EntryFlags::Unreadable)
+            || entry.value.kind != MetaValueKind::Bytes
+            || entry.value.count != count || entry.value.data.span.size != count
+            || !span_is_valid(entry.value.data.span,
+                              store.arena().bytes().size())) {
+            return false;
+        }
+        *out = store.arena().span(entry.value.data.span);
+        return out->size() == count;
+    }
+
+    static bool target_text_value(const MetaStore& store, const Entry& entry,
+                                  std::string_view* out) noexcept
+    {
+        return out
+               && !any(entry.flags,
+                       EntryFlags::Truncated | EntryFlags::Unreadable)
+               && entry.value.kind == MetaValueKind::Text
+               && entry.value.text_encoding == TextEncoding::Ascii
+               && entry.value.count == entry.value.data.span.size
+               && span_is_valid(entry.value.data.span,
+                                store.arena().bytes().size())
+               && detail::exif_text_view(store.arena(), entry.value, true, out);
+    }
+
+    static void
+    target_validate_wire_consistency(const MetaStore& store, EntryId id,
+                                     const MetadataValidationOptions& options,
+                                     MetadataValidationResult* out) noexcept
+    {
+        if (id == kInvalidEntryId) {
+            return;
+        }
+        const Entry& entry      = store.entry(id);
+        const WireType wire     = entry.origin.wire_type;
+        uint32_t expected_count = inferred_tiff_count(entry.value);
+        if (entry.key.kind == MetaKeyKind::ExifTag
+            && entry.key.data.exif_tag.tag == 0x0001U
+            && arena_string(store.arena(), entry.key.data.exif_tag.ifd)
+                   == "interopifd") {
+            std::string_view text;
+            if (target_text_value(store, entry, &text)) {
+                expected_count = text.size() >= UINT32_MAX
+                                     ? UINT32_MAX
+                                     : static_cast<uint32_t>(text.size()) + 1U;
+            }
+        }
+        const uint16_t expected_type = inferred_tiff_type(entry.value);
+        if (options.validate_wire_hints
+            && (options.validate_schema || wire.family != WireFamily::Tiff
+                || entry.value.kind != MetaValueKind::Bytes
+                || wire.code == expected_type)) {
+            return;
+        }
+        bool valid = true;
+        if (wire.family == WireFamily::Tiff) {
+            valid = expected_type != 0U && wire.code == expected_type
+                    && (entry.origin.wire_count == 0U
+                        || entry.origin.wire_count == expected_count);
+        } else if (wire.family == WireFamily::None) {
+            valid = wire.code == 0U && entry.origin.wire_count == 0U;
+        }
+        if (!valid) {
+            target_context_conflict(options, out, id, kInvalidEntryId,
+                                    entry.key.data.exif_tag.tag);
+        }
+    }
+
+    static bool target_rational_shape(const MetaStore& store,
+                                      const Entry& entry,
+                                      uint32_t count) noexcept
+    {
+        if (any(entry.flags, EntryFlags::Truncated | EntryFlags::Unreadable)
+            || entry.value.count != count
+            || entry.value.elem_type != MetaElementType::URational) {
+            return false;
+        }
+        if (entry.value.kind == MetaValueKind::Scalar) {
+            return count == 1U;
+        }
+        return entry.value.kind == MetaValueKind::Array
+               && span_is_valid(entry.value.data.span,
+                                store.arena().bytes().size())
+               && static_cast<uint64_t>(count) * sizeof(URational)
+                      == entry.value.data.span.size;
+    }
+
+    static void target_check_shape(EntryId id, bool valid, uint16_t tag,
+                                   const MetadataValidationOptions& options,
+                                   MetadataValidationResult* out) noexcept
+    {
+        if (id != kInvalidEntryId && !valid) {
+            target_context_conflict(options, out, id, kInvalidEntryId, tag);
+        }
+    }
+
+    static const char*
+    target_interop_code(MetadataTargetInteropIndex index) noexcept
+    {
+        switch (index) {
+        case MetadataTargetInteropIndex::R98: return "R98";
+        case MetadataTargetInteropIndex::R03: return "R03";
+        case MetadataTargetInteropIndex::THM: return "THM";
+        case MetadataTargetInteropIndex::Unspecified: break;
+        }
+        return "";
+    }
+
+    static EntryId target_required_unsigned_scalar(
+        const MetaStore& store, const TargetFieldCollection& fields,
+        TargetField field, uint16_t tag, uint8_t type_mask, uint64_t expected,
+        const MetadataValidationOptions& options,
+        MetadataValidationResult* out) noexcept
+    {
+        const EntryId id = target_required_entry(fields, field, tag, options,
+                                                 out);
+        if (id == kInvalidEntryId) {
+            return id;
+        }
+        const Entry& entry = store.entry(id);
+        uint64_t value     = 0U;
+        target_validate_wire_consistency(store, id, options, out);
+        if (!target_unsigned_shape(store, entry, type_mask, 1U)
+            || !target_unsigned_at(store, entry, 0U, &value)) {
+            target_context_conflict(options, out, id, kInvalidEntryId, tag);
+            return kInvalidEntryId;
+        }
+        if (value != expected) {
+            target_context_conflict(options, out, id, kInvalidEntryId, tag);
+            return kInvalidEntryId;
+        }
+        return id;
+    }
+
+    static void
+    target_forbid_interop_entries(const MetaStore& store,
+                                  const MetadataValidationOptions& options,
+                                  MetadataValidationResult* out) noexcept
+    {
+        for (EntryId id = 0U; id < store.entries().size(); ++id) {
+            const Entry& entry = store.entry(id);
+            if (entry.key.kind != MetaKeyKind::ExifTag
+                || any(entry.flags, EntryFlags::Deleted)) {
+                continue;
+            }
+            const ByteSpan ifd_span = entry.key.data.exif_tag.ifd;
+            if (!span_is_valid(ifd_span, store.arena().bytes().size())
+                || ifd_span.size != 10U) {
+                continue;
+            }
+            if (arena_string(store.arena(), ifd_span) != "interopifd") {
+                continue;
+            }
+            target_issue(
+                options, out,
+                MetadataValidationIssueCode::TargetProfileForbiddenField, id,
+                kInvalidEntryId, entry.key.data.exif_tag.tag);
+            if (out->status == MetadataValidationStatus::LimitExceeded) {
+                return;
+            }
+        }
+    }
+
+    static void
+    target_validate_forbidden_fields(const MetaStore& store,
+                                     const TargetFieldCollection& fields,
+                                     const MetadataTargetProfileContext& target,
+                                     const MetadataValidationOptions& options,
+                                     MetadataValidationResult* out) noexcept
+    {
+        if (target.profile == MetadataTargetProfile::ExifJpeg) {
+            target_forbid_field(fields, TargetField::Width, 0x0100U, options,
+                                out);
+            target_forbid_field(fields, TargetField::Height, 0x0101U, options,
+                                out);
+            target_forbid_field(fields, TargetField::BitsPerSample, 0x0102U,
+                                options, out);
+            target_forbid_field(fields, TargetField::Compression, 0x0103U,
+                                options, out);
+            target_forbid_field(fields, TargetField::PhotometricInterpretation,
+                                0x0106U, options, out);
+            target_forbid_field(fields, TargetField::StripOffsets, 0x0111U,
+                                options, out);
+            target_forbid_field(fields, TargetField::SamplesPerPixel, 0x0115U,
+                                options, out);
+            target_forbid_field(fields, TargetField::RowsPerStrip, 0x0116U,
+                                options, out);
+            target_forbid_field(fields, TargetField::StripByteCounts, 0x0117U,
+                                options, out);
+            target_forbid_field(fields, TargetField::PlanarConfiguration,
+                                0x011cU, options, out);
+            target_forbid_field(fields, TargetField::JpegInterchangeFormat,
+                                0x0201U, options, out);
+            target_forbid_field(fields,
+                                TargetField::JpegInterchangeFormatLength,
+                                0x0202U, options, out);
+            target_forbid_field(fields, TargetField::YCbCrSubSampling, 0x0212U,
+                                options, out);
+            return;
+        }
+
+        target_forbid_field(fields, TargetField::JpegInterchangeFormat, 0x0201U,
+                            options, out);
+        target_forbid_field(fields, TargetField::JpegInterchangeFormatLength,
+                            0x0202U, options, out);
+        target_forbid_field(fields, TargetField::ComponentsConfiguration,
+                            0x9101U, options, out);
+        target_forbid_field(fields, TargetField::CompressedBitsPerPixel,
+                            0x9102U, options, out);
+        target_forbid_field(fields, TargetField::PixelXDimension, 0xa002U,
+                            options, out);
+        target_forbid_field(fields, TargetField::PixelYDimension, 0xa003U,
+                            options, out);
+        target_forbid_field(fields, TargetField::InteroperabilityPointer,
+                            0xa005U, options, out);
+        target_forbid_interop_entries(store, options, out);
+        if (target.profile != MetadataTargetProfile::ExifTiffYCbCr) {
+            target_forbid_field(fields, TargetField::YCbCrCoefficients, 0x0211U,
+                                options, out);
+            target_forbid_field(fields, TargetField::YCbCrSubSampling, 0x0212U,
+                                options, out);
+            target_forbid_field(fields, TargetField::YCbCrPositioning, 0x0213U,
+                                options, out);
+        }
+    }
+
+    static void
+    target_validate_dimensions(const MetaStore& store,
+                               const TargetFieldCollection& fields, bool jpeg,
+                               const MetadataValidationOptions& options,
+                               MetadataValidationResult* out) noexcept
+    {
+        if (jpeg) {
+            target_required_unsigned_scalar(store, fields,
+                                            TargetField::PixelXDimension,
+                                            0xa002U, 3U, options.context.width,
+                                            options, out);
+            target_required_unsigned_scalar(store, fields,
+                                            TargetField::PixelYDimension,
+                                            0xa003U, 3U, options.context.height,
+                                            options, out);
+        } else {
+            target_required_unsigned_scalar(store, fields, TargetField::Width,
+                                            0x0100U, 3U, options.context.width,
+                                            options, out);
+            target_required_unsigned_scalar(store, fields, TargetField::Height,
+                                            0x0101U, 3U, options.context.height,
+                                            options, out);
+        }
+    }
+
+    static void
+    target_validate_bits_per_sample(const MetaStore& store,
+                                    const TargetFieldCollection& fields,
+                                    const MetadataValidationOptions& options,
+                                    MetadataValidationResult* out) noexcept
+    {
+        const EntryId id = target_required_entry(fields,
+                                                 TargetField::BitsPerSample,
+                                                 0x0102U, options, out);
+        if (id == kInvalidEntryId) {
+            return;
+        }
+        const Entry& entry = store.entry(id);
+        uint64_t first     = 0U;
+        uint64_t second    = 0U;
+        uint64_t third     = 0U;
+        target_validate_wire_consistency(store, id, options, out);
+        if (!target_unsigned_shape(store, entry, 1U, 3U)
+            || !target_unsigned_at(store, entry, 0U, &first)
+            || !target_unsigned_at(store, entry, 1U, &second)
+            || !target_unsigned_at(store, entry, 2U, &third) || first != 8U
+            || second != 8U || third != 8U) {
+            target_context_conflict(options, out, id, kInvalidEntryId, 0x0102U);
+        }
+    }
+
+    static void
+    target_validate_exif_version(const MetaStore& store,
+                                 const TargetFieldCollection& fields,
+                                 const MetadataValidationOptions& options,
+                                 MetadataValidationResult* out) noexcept
+    {
+        const EntryId id = target_required_entry(fields,
+                                                 TargetField::ExifVersion,
+                                                 0x9000U, options, out);
+        if (id == kInvalidEntryId) {
+            return;
+        }
+        const Entry& entry = store.entry(id);
+        uint32_t version   = 0U;
+        target_validate_wire_consistency(store, id, options, out);
+        std::span<const std::byte> bytes;
+        if (!target_bytes_value(store, entry, 4U, &bytes)
+            || !detail::exif_version(bytes, &version)
+            || version != options.target_profile.exif_version) {
+            target_context_conflict(options, out, id, kInvalidEntryId, 0x9000U);
+        }
+    }
+
+    static void
+    target_validate_color_space(const MetaStore& store,
+                                const TargetFieldCollection& fields,
+                                const MetadataValidationOptions& options,
+                                MetadataValidationResult* out) noexcept
+    {
+        const EntryId id = target_required_entry(fields,
+                                                 TargetField::ColorSpace,
+                                                 0xa001U, options, out);
+        if (id == kInvalidEntryId) {
+            return;
+        }
+        const Entry& entry   = store.entry(id);
+        uint64_t color_space = 0U;
+        target_validate_wire_consistency(store, id, options, out);
+        if (!target_unsigned_shape(store, entry, 1U, 1U)
+            || !target_unsigned_at(store, entry, 0U, &color_space)
+            || (color_space != 1U && color_space != 0xffffU)
+            || (options.target_profile.has_color_space
+                && color_space != options.target_profile.color_space)) {
+            target_context_conflict(options, out, id, kInvalidEntryId, 0xa001U);
+        }
+    }
+
+    static void target_validate_components_configuration(
+        const MetaStore& store, const TargetFieldCollection& fields,
+        const MetadataValidationOptions& options,
+        MetadataValidationResult* out) noexcept
+    {
+        const EntryId id
+            = target_required_entry(fields,
+                                    TargetField::ComponentsConfiguration,
+                                    0x9101U, options, out);
+        if (id == kInvalidEntryId) {
+            return;
+        }
+        constexpr std::array<std::byte, 4> expected { std::byte { 1U },
+                                                      std::byte { 2U },
+                                                      std::byte { 3U },
+                                                      std::byte { 0U } };
+        std::span<const std::byte> bytes;
+        const Entry& entry = store.entry(id);
+        target_validate_wire_consistency(store, id, options, out);
+        if (!target_bytes_value(store, entry, 4U, &bytes)
+            || !std::equal(bytes.begin(), bytes.end(), expected.begin())) {
+            target_context_conflict(options, out, id, kInvalidEntryId, 0x9101U);
+        }
+    }
+
+    static void target_validate_planar_configuration(
+        const MetaStore& store, const TargetFieldCollection& fields,
+        const MetadataValidationOptions& options, MetadataValidationResult* out,
+        uint64_t* value_out) noexcept
+    {
+        if (value_out) {
+            *value_out = 1U;
+        }
+        const bool required = options.target_profile.profile
+                              == MetadataTargetProfile::ExifTiffRgbPlanar;
+        const bool ycbcr = options.target_profile.profile
+                           == MetadataTargetProfile::ExifTiffYCbCr;
+        const EntryId id
+            = required ? target_required_entry(fields,
+                                               TargetField::PlanarConfiguration,
+                                               0x011cU, options, out)
+                       : target_optional_entry(fields,
+                                               TargetField::PlanarConfiguration,
+                                               0x011cU, options, out);
+        if (id == kInvalidEntryId) {
+            return;
+        }
+        const Entry& entry = store.entry(id);
+        uint64_t value     = 0U;
+        target_validate_wire_consistency(store, id, options, out);
+        if (!target_unsigned_shape(store, entry, 1U, 1U)
+            || !target_unsigned_at(store, entry, 0U, &value)
+            || (required ? value != 2U
+                : ycbcr  ? value != 1U && value != 2U
+                         : value != 1U)) {
+            target_context_conflict(options, out, id, kInvalidEntryId, 0x011cU);
+            return;
+        }
+        if (value_out) {
+            *value_out = value;
+        }
+    }
+
+    static void
+    target_validate_ycbcr_tags(const MetaStore& store,
+                               const TargetFieldCollection& fields,
+                               const MetadataValidationOptions& options,
+                               MetadataValidationResult* out) noexcept
+    {
+        if (options.target_profile.profile
+            == MetadataTargetProfile::ExifTiffYCbCr) {
+            const EntryId subsampling
+                = target_required_entry(fields, TargetField::YCbCrSubSampling,
+                                        0x0212U, options, out);
+            if (subsampling != kInvalidEntryId) {
+                const Entry& entry  = store.entry(subsampling);
+                uint64_t horizontal = 0U;
+                uint64_t vertical   = 0U;
+                target_validate_wire_consistency(store, subsampling, options,
+                                                 out);
+                const bool valid
+                    = target_unsigned_shape(store, entry, 1U, 2U)
+                      && target_unsigned_at(store, entry, 0U, &horizontal)
+                      && target_unsigned_at(store, entry, 1U, &vertical)
+                      && horizontal == 2U && (vertical == 1U || vertical == 2U);
+                if (!valid) {
+                    target_context_conflict(options, out, subsampling,
+                                            kInvalidEntryId, 0x0212U);
+                }
+            }
+            const EntryId positioning
+                = target_required_entry(fields, TargetField::YCbCrPositioning,
+                                        0x0213U, options, out);
+            if (positioning != kInvalidEntryId) {
+                const Entry& entry = store.entry(positioning);
+                uint64_t value     = 0U;
+                target_validate_wire_consistency(store, positioning, options,
+                                                 out);
+                if (!target_unsigned_shape(store, entry, 1U, 1U)
+                    || !target_unsigned_at(store, entry, 0U, &value)
+                    || (value != 1U && value != 2U)) {
+                    target_context_conflict(options, out, positioning,
+                                            kInvalidEntryId, 0x0213U);
+                }
+            }
+            const EntryId coefficients
+                = target_optional_entry(fields, TargetField::YCbCrCoefficients,
+                                        0x0211U, options, out);
+            if (coefficients != kInvalidEntryId) {
+                target_validate_wire_consistency(store, coefficients, options,
+                                                 out);
+                if (!target_rational_shape(store, store.entry(coefficients),
+                                           3U)) {
+                    target_context_conflict(options, out, coefficients,
+                                            kInvalidEntryId, 0x0211U);
+                }
+            }
+        } else if (options.target_profile.profile
+                   == MetadataTargetProfile::ExifJpeg) {
+            const EntryId positioning
+                = target_required_entry(fields, TargetField::YCbCrPositioning,
+                                        0x0213U, options, out);
+            if (positioning != kInvalidEntryId) {
+                const Entry& entry = store.entry(positioning);
+                uint64_t value     = 0U;
+                target_validate_wire_consistency(store, positioning, options,
+                                                 out);
+                if (!target_unsigned_shape(store, entry, 1U, 1U)
+                    || !target_unsigned_at(store, entry, 0U, &value)
+                    || (value != 1U && value != 2U)) {
+                    target_context_conflict(options, out, positioning,
+                                            kInvalidEntryId, 0x0213U);
+                }
+            }
+            const EntryId coefficients
+                = target_optional_entry(fields, TargetField::YCbCrCoefficients,
+                                        0x0211U, options, out);
+            if (coefficients != kInvalidEntryId) {
+                target_validate_wire_consistency(store, coefficients, options,
+                                                 out);
+                if (!target_rational_shape(store, store.entry(coefficients),
+                                           3U)) {
+                    target_context_conflict(options, out, coefficients,
+                                            kInvalidEntryId, 0x0211U);
+                }
+            }
+            const EntryId compressed_bits
+                = target_optional_entry(fields,
+                                        TargetField::CompressedBitsPerPixel,
+                                        0x9102U, options, out);
+            if (compressed_bits != kInvalidEntryId) {
+                target_validate_wire_consistency(store, compressed_bits,
+                                                 options, out);
+                if (!target_rational_shape(store, store.entry(compressed_bits),
+                                           1U)) {
+                    target_context_conflict(options, out, compressed_bits,
+                                            kInvalidEntryId, 0x9102U);
+                }
+            }
+        }
+    }
+
+    static bool target_positive_unsigned_sequence(const MetaStore& store,
+                                                  const Entry& entry) noexcept
+    {
+        if (entry.value.count == 0U
+            || !target_unsigned_shape(store, entry, 3U, entry.value.count)) {
+            return false;
+        }
+        for (uint32_t i = 0U; i < entry.value.count; ++i) {
+            uint64_t value = 0U;
+            if (!target_unsigned_at(store, entry, i, &value) || value == 0U) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static void target_validate_storage(
+        const MetaStore& store, const TargetFieldCollection& fields,
+        const MetadataValidationOptions& options, MetadataValidationResult* out,
+        uint64_t planar_configuration) noexcept
+    {
+        const bool required = options.target_profile.require_storage_tags;
+        const EntryId rows
+            = required
+                  ? target_required_entry(fields, TargetField::RowsPerStrip,
+                                          0x0116U, options, out)
+                  : target_optional_entry(fields, TargetField::RowsPerStrip,
+                                          0x0116U, options, out);
+        const EntryId offsets
+            = required
+                  ? target_required_entry(fields, TargetField::StripOffsets,
+                                          0x0111U, options, out)
+                  : target_optional_entry(fields, TargetField::StripOffsets,
+                                          0x0111U, options, out);
+        const EntryId byte_counts
+            = required
+                  ? target_required_entry(fields, TargetField::StripByteCounts,
+                                          0x0117U, options, out)
+                  : target_optional_entry(fields, TargetField::StripByteCounts,
+                                          0x0117U, options, out);
+        uint64_t rows_per_strip = 0U;
+        bool rows_valid         = true;
+        if (rows != kInvalidEntryId) {
+            const Entry& entry = store.entry(rows);
+            target_validate_wire_consistency(store, rows, options, out);
+            rows_valid = target_unsigned_shape(store, entry, 3U, 1U)
+                         && target_unsigned_at(store, entry, 0U,
+                                               &rows_per_strip)
+                         && rows_per_strip != 0U;
+            target_check_shape(rows, rows_valid, 0x0116U, options, out);
+        }
+        if (offsets == kInvalidEntryId && byte_counts == kInvalidEntryId) {
+            return;
+        }
+        if (offsets == kInvalidEntryId || byte_counts == kInvalidEntryId) {
+            target_context_conflict(options, out,
+                                    offsets != kInvalidEntryId ? offsets
+                                                               : byte_counts,
+                                    kInvalidEntryId,
+                                    offsets == kInvalidEntryId ? 0x0117U
+                                                               : 0x0111U);
+            return;
+        }
+        const Entry& offset_entry = store.entry(offsets);
+        const Entry& count_entry  = store.entry(byte_counts);
+        target_validate_wire_consistency(store, offsets, options, out);
+        target_validate_wire_consistency(store, byte_counts, options, out);
+        const bool offset_valid
+            = target_positive_unsigned_sequence(store, offset_entry);
+        const bool count_valid = target_positive_unsigned_sequence(store,
+                                                                   count_entry);
+        if (!offset_valid || !count_valid
+            || offset_entry.value.count != count_entry.value.count) {
+            target_context_conflict(options, out, offsets, byte_counts,
+                                    0x0111U);
+            return;
+        }
+        if (!required) {
+            return;
+        }
+        if (rows == kInvalidEntryId || !rows_valid) {
+            return;
+        }
+        const uint64_t image_height = options.context.height;
+        const uint64_t strips_per_plane
+            = image_height / rows_per_strip
+              + (image_height % rows_per_strip != 0U ? 1U : 0U);
+        const bool three_planes = options.target_profile.profile
+                                      == MetadataTargetProfile::ExifTiffRgbPlanar
+                                  || planar_configuration == 2U;
+        const uint64_t expected_count = strips_per_plane
+                                        * (three_planes ? 3U : 1U);
+        if (offset_entry.value.count != expected_count) {
+            target_context_conflict(options, out, offsets, byte_counts,
+                                    0x0111U);
+        }
+    }
+
+    static void
+    target_validate_interoperability(const MetaStore& store,
+                                     const TargetFieldCollection& fields,
+                                     const MetadataValidationOptions& options,
+                                     MetadataValidationResult* out) noexcept
+    {
+        const MetadataTargetInteropIndex expected
+            = options.target_profile.interoperability;
+        if (expected == MetadataTargetInteropIndex::Unspecified) {
+            if (fields.has_interop) {
+                const uint16_t tag = fields.first_interop == kInvalidEntryId
+                                         ? 0U
+                                         : store.entry(fields.first_interop)
+                                               .key.data.exif_tag.tag;
+                target_issue(
+                    options, out,
+                    MetadataValidationIssueCode::TargetProfileMissingAuthority,
+                    fields.first_interop, kInvalidEntryId, tag);
+            }
+            const EntryId id
+                = target_optional_entry(fields,
+                                        TargetField::InteroperabilityIndex,
+                                        0x0001U, options, out);
+            if (id != kInvalidEntryId) {
+                target_validate_wire_consistency(store, id, options, out);
+                std::string_view text;
+                if (!target_text_value(store, store.entry(id), &text)
+                    || store.entry(id).value.count != 3U || text.size() != 3U
+                    || (text != "R98" && text != "R03" && text != "THM")) {
+                    target_context_conflict(options, out, id, kInvalidEntryId,
+                                            0x0001U);
+                }
+            }
+            return;
+        }
+        const EntryId id
+            = target_required_entry(fields, TargetField::InteroperabilityIndex,
+                                    0x0001U, options, out);
+        if (id == kInvalidEntryId) {
+            return;
+        }
+        target_validate_wire_consistency(store, id, options, out);
+        std::string_view text;
+        if (!target_text_value(store, store.entry(id), &text)
+            || store.entry(id).value.count != 3U || text.size() != 3U
+            || text != target_interop_code(expected)) {
+            target_context_conflict(options, out, id, kInvalidEntryId, 0x0001U);
+        }
+    }
+
+    static void validate_target_profile(const MetaStore& store,
+                                        const MetadataValidationOptions& options,
+                                        MetadataValidationResult* out) noexcept
+    {
+        const MetadataTargetProfileContext& target = options.target_profile;
+        if (target.profile == MetadataTargetProfile::None) {
+            return;
+        }
+        TargetFieldCollection fields;
+        collect_target_fields(store, options, &fields);
+
+        target_validate_forbidden_fields(store, fields, target, options, out);
+        if (out->status == MetadataValidationStatus::LimitExceeded) {
+            return;
+        }
+        if (target.profile == MetadataTargetProfile::ExifJpeg) {
+            target_validate_exif_version(store, fields, options, out);
+            target_validate_color_space(store, fields, options, out);
+            target_validate_dimensions(store, fields, true, options, out);
+            target_validate_components_configuration(store, fields, options,
+                                                     out);
+            target_validate_ycbcr_tags(store, fields, options, out);
+            const EntryId pointer
+                = target_optional_entry(fields,
+                                        TargetField::InteroperabilityPointer,
+                                        0xa005U, options, out);
+            if (pointer != kInvalidEntryId) {
+                target_validate_wire_consistency(store, pointer, options, out);
+                if (!target_unsigned_shape(store, store.entry(pointer), 2U,
+                                           1U)) {
+                    target_context_conflict(options, out, pointer,
+                                            kInvalidEntryId, 0xa005U);
+                }
+            }
+            target_validate_interoperability(store, fields, options, out);
+            return;
+        }
+
+        target_validate_exif_version(store, fields, options, out);
+        target_validate_color_space(store, fields, options, out);
+        target_validate_dimensions(store, fields, false, options, out);
+        target_validate_bits_per_sample(store, fields, options, out);
+        target_required_unsigned_scalar(store, fields, TargetField::Compression,
+                                        0x0103U, 1U, 1U, options, out);
+        target_required_unsigned_scalar(store, fields,
+                                        TargetField::SamplesPerPixel, 0x0115U,
+                                        1U, 3U, options, out);
+        const uint64_t expected_photometric
+            = target.profile == MetadataTargetProfile::ExifTiffYCbCr ? 6U : 2U;
+        target_required_unsigned_scalar(store, fields,
+                                        TargetField::PhotometricInterpretation,
+                                        0x0106U, 1U, expected_photometric,
+                                        options, out);
+        uint64_t planar_configuration = 1U;
+        target_validate_planar_configuration(store, fields, options, out,
+                                             &planar_configuration);
+        if (target.profile == MetadataTargetProfile::ExifTiffYCbCr) {
+            target_validate_ycbcr_tags(store, fields, options, out);
+        }
+        target_validate_storage(store, fields, options, out,
+                                planar_configuration);
+    }
+
     static void
     validate_duplicate_singletons(const MetaStore& store,
                                   const MetadataValidationOptions& options,
@@ -1280,24 +2284,6 @@ namespace {
         }
     }
 
-    static bool validation_options_are_valid(
-        const MetadataValidationOptions& options) noexcept
-    {
-        return options.max_issues != 0U && options.max_key_bytes != 0U
-               && options.max_entries != 0U && options.max_arena_bytes != 0U
-               && options.max_value_bytes != 0U
-               && options.max_value_bytes <= options.max_arena_bytes
-               && static_cast<uint8_t>(options.unknown_exif_tags)
-                      <= static_cast<uint8_t>(MetadataUnknownTagPolicy::Error)
-               && (!options.context.has_dimensions
-                   || (options.context.width != 0U
-                       && options.context.height != 0U))
-               && (!options.context.has_samples_per_pixel
-                   || options.context.samples_per_pixel != 0U)
-               && (!options.context.has_color_planes
-                   || options.context.color_planes != 0U);
-    }
-
 }  // namespace
 
 
@@ -1306,7 +2292,7 @@ validate_entry(const MetaStore& store, EntryId entry,
                const MetadataValidationOptions& options) noexcept
 {
     MetadataValidationResult out;
-    if (!validation_options_are_valid(options)) {
+    if (!detail::metadata_validation_options_are_valid(options)) {
         out.status = MetadataValidationStatus::InvalidArgument;
         return out;
     }
@@ -1345,7 +2331,7 @@ validate_store(const MetaStore& store,
                const MetadataValidationOptions& options) noexcept
 {
     MetadataValidationResult out;
-    if (!validation_options_are_valid(options)) {
+    if (!detail::metadata_validation_options_are_valid(options)) {
         out.status = MetadataValidationStatus::InvalidArgument;
         return out;
     }
@@ -1394,6 +2380,9 @@ validate_store(const MetaStore& store,
 
     if (store.is_finalized()) {
         validate_image_context(store, options, &out);
+    }
+    if (out.status != MetadataValidationStatus::LimitExceeded) {
+        validate_target_profile(store, options, &out);
     }
     finalize_result(options, &out);
     return out;
@@ -1454,6 +2443,14 @@ metadata_validation_issue_code_name(MetadataValidationIssueCode code) noexcept
         return "inconsistent_related_entries";
     case MetadataValidationIssueCode::IssueLimitExceeded:
         return "issue_limit_exceeded";
+    case MetadataValidationIssueCode::TargetProfileMissingRequiredField:
+        return "target_profile_missing_required_field";
+    case MetadataValidationIssueCode::TargetProfileForbiddenField:
+        return "target_profile_forbidden_field";
+    case MetadataValidationIssueCode::TargetProfileContextConflict:
+        return "target_profile_context_conflict";
+    case MetadataValidationIssueCode::TargetProfileMissingAuthority:
+        return "target_profile_missing_authority";
     }
     return "unknown";
 }

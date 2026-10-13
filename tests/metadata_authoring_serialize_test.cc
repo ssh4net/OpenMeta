@@ -3,6 +3,7 @@
 #include "openmeta/exif_tiff_decode.h"
 #include "openmeta/exif_tiff_serialize.h"
 #include "openmeta/metadata_authoring.h"
+#include "openmeta/metadata_editing.h"
 #include "openmeta/metadata_transfer.h"
 #include "openmeta/xmp_dump.h"
 
@@ -87,6 +88,268 @@ namespace {
                                                                      &store);
         EXPECT_EQ(result.status, MetadataAuthoringStatus::Ok);
         return store;
+    }
+
+    static MetadataValidationOptions
+    target_options(MetadataTargetProfile profile)
+    {
+        MetadataValidationOptions options;
+        options.context.has_dimensions         = true;
+        options.context.width                  = 640U;
+        options.context.height                 = 480U;
+        options.context.has_samples_per_pixel  = true;
+        options.context.samples_per_pixel      = 3U;
+        options.target_profile.profile         = profile;
+        options.target_profile.exif_version    = 300U;
+        options.target_profile.has_color_space = true;
+        options.target_profile.color_space     = 1U;
+        return options;
+    }
+
+    static std::vector<MetadataAuthoringEntry>
+    target_entries(MetadataTargetProfile profile)
+    {
+        static constexpr std::array version
+            = { std::byte { '0' }, std::byte { '3' }, std::byte { '0' },
+                std::byte { '0' } };
+        static constexpr std::array components = {
+            std::byte { 1 }, std::byte { 2 }, std::byte { 3 }, std::byte { 0 }
+        };
+        static constexpr std::array<uint16_t, 3> bits        = { 8U, 8U, 8U };
+        static constexpr std::array<uint16_t, 2> subsampling = { 2U, 2U };
+        std::vector<MetadataAuthoringEntry> entries          = {
+            authoring_entry(make_exif_tag_key_view("exififd", 0x9000U),
+                                     make_value_view_bytes(version), tiff_wire(7U), 4U),
+            authoring_entry(make_exif_tag_key_view("exififd", 0xA001U),
+                                     make_value_view_u16(1U), tiff_wire(3U), 1U),
+        };
+        if (profile == MetadataTargetProfile::ExifJpeg) {
+            entries.push_back(
+                authoring_entry(make_exif_tag_key_view("exififd", 0xA002U),
+                                make_value_view_u32(640U), tiff_wire(4U), 1U));
+            entries.push_back(
+                authoring_entry(make_exif_tag_key_view("exififd", 0xA003U),
+                                make_value_view_u32(480U), tiff_wire(4U), 1U));
+            entries.push_back(
+                authoring_entry(make_exif_tag_key_view("exififd", 0x9101U),
+                                make_value_view_bytes(components),
+                                tiff_wire(7U), 4U));
+        } else {
+            entries.push_back(
+                authoring_entry(make_exif_tag_key_view("ifd0", 0x0100U),
+                                make_value_view_u32(640U), tiff_wire(4U), 1U));
+            entries.push_back(
+                authoring_entry(make_exif_tag_key_view("ifd0", 0x0101U),
+                                make_value_view_u32(480U), tiff_wire(4U), 1U));
+            entries.push_back(authoring_entry(
+                make_exif_tag_key_view("ifd0", 0x0102U),
+                make_value_view_array(MetaElementType::U16,
+                                      std::as_bytes(std::span(bits)), 3U),
+                tiff_wire(3U), 3U));
+            entries.push_back(
+                authoring_entry(make_exif_tag_key_view("ifd0", 0x0103U),
+                                make_value_view_u16(1U), tiff_wire(3U), 1U));
+            entries.push_back(
+                authoring_entry(make_exif_tag_key_view("ifd0", 0x0115U),
+                                make_value_view_u16(3U), tiff_wire(3U), 1U));
+            entries.push_back(authoring_entry(
+                make_exif_tag_key_view("ifd0", 0x0106U),
+                make_value_view_u16(
+                    profile == MetadataTargetProfile::ExifTiffYCbCr ? 6U : 2U),
+                tiff_wire(3U), 1U));
+            if (profile == MetadataTargetProfile::ExifTiffRgbPlanar) {
+                entries.push_back(
+                    authoring_entry(make_exif_tag_key_view("ifd0", 0x011CU),
+                                    make_value_view_u16(2U), tiff_wire(3U),
+                                    1U));
+            }
+            if (profile == MetadataTargetProfile::ExifTiffYCbCr) {
+                entries.push_back(authoring_entry(
+                    make_exif_tag_key_view("ifd0", 0x0212U),
+                    make_value_view_array(MetaElementType::U16,
+                                          std::as_bytes(std::span(subsampling)),
+                                          2U),
+                    tiff_wire(3U), 2U));
+            }
+        }
+        if (profile == MetadataTargetProfile::ExifJpeg
+            || profile == MetadataTargetProfile::ExifTiffYCbCr) {
+            entries.push_back(
+                authoring_entry(make_exif_tag_key_view("ifd0", 0x0213U),
+                                make_value_view_u16(1U), tiff_wire(3U), 1U));
+        }
+        return entries;
+    }
+
+    TEST(MetadataTargetIntegration, CreatesSerializesAndRevalidatesFourProfiles)
+    {
+        static constexpr std::array profiles = {
+            MetadataTargetProfile::ExifJpeg,
+            MetadataTargetProfile::ExifTiffRgbChunky,
+            MetadataTargetProfile::ExifTiffRgbPlanar,
+            MetadataTargetProfile::ExifTiffYCbCr,
+        };
+        for (MetadataTargetProfile profile : profiles) {
+            SCOPED_TRACE(static_cast<unsigned>(profile));
+            const auto entries = target_entries(profile);
+            MetadataAuthoringOptions options;
+            options.validation = target_options(profile);
+            MetaStore store;
+            ASSERT_TRUE(create_metadata_store(entries, &store, options).ok());
+            ExifTiffSerializeOptions serialization;
+            serialization.validation = options.validation;
+            const auto measured = serialize_exif_tiff(store, {}, serialization);
+            ASSERT_EQ(measured.status,
+                      ExifTiffSerializeStatus::OutputTruncated);
+            std::vector<std::byte> bytes(measured.needed);
+            ASSERT_TRUE(serialize_exif_tiff(store, bytes, serialization).ok());
+            MetaStore decoded;
+            ASSERT_EQ(decode_exif_tiff(bytes, decoded, {}, {}).status,
+                      ExifDecodeStatus::Ok);
+            decoded.finalize();
+            EXPECT_TRUE(validate_store(decoded, options.validation).ok());
+        }
+    }
+
+    TEST(MetadataTargetIntegration,
+         FailedConstructionAndSerializationPreserveOutputs)
+    {
+        const auto entries = target_entries(MetadataTargetProfile::ExifJpeg);
+        MetadataAuthoringOptions options;
+        options.validation = target_options(MetadataTargetProfile::ExifJpeg);
+        MetaStore output   = make_datetime_store();
+        const auto failed  = create_metadata_store(std::span(entries).first(
+                                                      entries.size() - 1U),
+                                                   &output, options);
+        EXPECT_EQ(failed.status, MetadataAuthoringStatus::ValidationFailed);
+        EXPECT_EQ(
+            failed.validation_issue,
+            MetadataValidationIssueCode::TargetProfileMissingRequiredField);
+        EXPECT_EQ(output.entries().size(), 2U);
+        EXPECT_EQ(arena_text(output, output.entry(0U).value), "Example");
+
+        std::array<std::byte, 512> bytes;
+        bytes.fill(std::byte { 0xA5 });
+        const auto before = bytes;
+        ExifTiffSerializeOptions serialization;
+        serialization.validation = options.validation;
+        const auto rejected = serialize_exif_tiff(output, bytes, serialization);
+        EXPECT_EQ(rejected.status, ExifTiffSerializeStatus::InvalidMetadata);
+        EXPECT_EQ(rejected.written, 0U);
+        EXPECT_EQ(bytes, before);
+        EXPECT_TRUE(serialize_exif_tiff(output, bytes).ok());
+    }
+
+    TEST(MetadataTargetIntegration, TypedEditValidatesWholeTransaction)
+    {
+        const auto entries = target_entries(MetadataTargetProfile::ExifJpeg);
+        MetadataAuthoringOptions authoring;
+        authoring.validation = target_options(MetadataTargetProfile::ExifJpeg);
+        MetaStore base;
+        ASSERT_TRUE(create_metadata_store(entries, &base, authoring).ok());
+        MetadataTypedEditingOptions options;
+        options.validation = authoring.validation;
+        MetadataTypedEditingOperation removal;
+        removal.kind      = MetadataEditingOperationKind::Remove;
+        removal.entry.key = make_exif_tag_key_view("exififd", 0xA001U);
+        MetadataTypedEditingOperation addition;
+        addition.kind            = MetadataEditingOperationKind::Add;
+        addition.entry           = authoring_entry(removal.entry.key,
+                                                   make_value_view_u16(1U), tiff_wire(3U),
+                                                   1U);
+        MetaStore output         = make_datetime_store();
+        const std::array invalid = { removal };
+        EXPECT_EQ(edit_metadata_typed(base, invalid, &output, options).status,
+                  MetadataTypedEditingStatus::ValidationFailed);
+        EXPECT_EQ(output.entries().size(), 2U);
+        const std::array repair = { removal, addition };
+        ASSERT_TRUE(edit_metadata_typed(base, repair, &output, options).ok());
+        EXPECT_TRUE(validate_store(output, options.validation).ok());
+        EXPECT_EQ(base.find_all(removal.entry.key).size(), 1U);
+    }
+
+    TEST(MetadataTargetIntegration, PropagatesInteropAndStoragePolicies)
+    {
+        for (bool jpeg : { true, false }) {
+            const auto profile = jpeg
+                                     ? MetadataTargetProfile::ExifJpeg
+                                     : MetadataTargetProfile::ExifTiffRgbChunky;
+            auto entries       = target_entries(profile);
+            MetadataAuthoringOptions options;
+            options.validation = target_options(profile);
+            if (jpeg) {
+                options.validation.target_profile.interoperability
+                    = MetadataTargetInteropIndex::R98;
+                // Index authority does not imply an expected ColorSpace.
+                options.validation.target_profile.has_color_space = false;
+            } else {
+                options.validation.target_profile.require_storage_tags = true;
+            }
+            MetaStore output = make_datetime_store();
+            EXPECT_EQ(create_metadata_store(entries, &output, options).status,
+                      MetadataAuthoringStatus::ValidationFailed);
+            EXPECT_EQ(output.entries().size(), 2U);
+            if (jpeg) {
+                entries.push_back(authoring_entry(
+                    make_exif_tag_key_view("interopifd", 0x0001U),
+                    make_value_view_text("R98", TextEncoding::Ascii),
+                    tiff_wire(2U), 4U));
+            } else {
+                entries.push_back(
+                    authoring_entry(make_exif_tag_key_view("ifd0", 0x0116U),
+                                    make_value_view_u32(480U), tiff_wire(4U),
+                                    1U));
+                entries.push_back(
+                    authoring_entry(make_exif_tag_key_view("ifd0", 0x0111U),
+                                    make_value_view_u32(65536U), tiff_wire(4U),
+                                    1U));
+                entries.push_back(
+                    authoring_entry(make_exif_tag_key_view("ifd0", 0x0117U),
+                                    make_value_view_u32(921600U), tiff_wire(4U),
+                                    1U));
+            }
+            ASSERT_TRUE(create_metadata_store(entries, &output, options).ok());
+            ExifTiffSerializeOptions serial;
+            serial.validation   = options.validation;
+            const auto measured = serialize_exif_tiff(output, {}, serial);
+            ASSERT_EQ(measured.status,
+                      ExifTiffSerializeStatus::OutputTruncated);
+            std::vector<std::byte> bytes(measured.needed);
+            ASSERT_TRUE(serialize_exif_tiff(output, bytes, serial).ok());
+            MetaStore decoded;
+            ASSERT_EQ(decode_exif_tiff(bytes, decoded, {}, {}).status,
+                      ExifDecodeStatus::Ok);
+            decoded.finalize();
+            EXPECT_TRUE(validate_store(decoded, options.validation).ok());
+        }
+    }
+
+    TEST(MetadataTargetIntegration, RejectsDisabledValidationAndInvalidContext)
+    {
+        const auto entries = target_entries(MetadataTargetProfile::ExifJpeg);
+        MetadataAuthoringOptions options;
+        options.validation = target_options(MetadataTargetProfile::ExifJpeg);
+        options.validate   = false;
+        MetaStore output   = make_datetime_store();
+        EXPECT_EQ(create_metadata_store(entries, &output, options).status,
+                  MetadataAuthoringStatus::InvalidOptions);
+        ExifTiffSerializeOptions serialization;
+        serialization.validation = options.validation;
+        serialization.validate   = false;
+        EXPECT_EQ(serialize_exif_tiff(output, {}, serialization).status,
+                  ExifTiffSerializeStatus::InvalidOptions);
+        options.validate                          = true;
+        options.validation.context.has_dimensions = false;
+        serialization.validate                    = true;
+        serialization.validation                  = options.validation;
+        EXPECT_EQ(create_metadata_store(entries, &output, options).status,
+                  MetadataAuthoringStatus::InvalidOptions);
+        EXPECT_EQ(serialize_exif_tiff(output, {}, serialization).status,
+                  ExifTiffSerializeStatus::InvalidOptions);
+        MetadataTypedEditingOptions editing;
+        editing.validation = options.validation;
+        EXPECT_EQ(edit_metadata_typed(output, {}, &output, editing).status,
+                  MetadataTypedEditingStatus::InvalidOptions);
     }
 
     TEST(MetadataAuthoring, BuildsValidatedMixedStoreAndCopiesBorrowedData)

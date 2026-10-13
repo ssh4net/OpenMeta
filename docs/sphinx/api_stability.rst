@@ -876,3 +876,11 @@ This is a validation behavior change; public signatures, ABI 3, snapshot v1
 layout and host synchronization responsibilities are unchanged. Detached
 validation does not enforce mandatory complete-file companions. See
 :doc:`generic_authoring` for the bounded validation contract.
+
+Shared target-profile validation in 0.8.13
+------------------------------------------
+
+Opt-in primary-image checks share host facts across creation, typed editing and
+canonical serialization. Default detached behavior remains available. Public
+option layouts grow under unfrozen ABI 4; rebuild matching headers and binaries.
+See :doc:`target_profile_validation` for the contract and limitations.

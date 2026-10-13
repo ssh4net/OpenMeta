@@ -1,5 +1,13 @@
 # Generic Typed Metadata Authoring
 
+## Shared target-profile validation (0.8.13)
+
+Opt-in primary-image EXIF checks now share explicit host target facts across
+creation, typed editing and canonical serialization. Default detached behavior
+is preserved. Option layouts grow under unfrozen ABI 4; rebuild consumers with
+matching headers and binaries. See [the target-profile contract](target_profile_validation.md)
+for profiles, required and forbidden fields, transaction behavior and limits.
+
 `openmeta/metadata_authoring.h` provides the C++ v1 construction path for
 applications that already know the exact metadata keys and types they need to
 write. It complements the logical-field API in `metadata_creation.h`; it does

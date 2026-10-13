@@ -690,3 +690,11 @@ Prepared bundles carry bounded GPS value removals and merge authority through
 TIFF/BigTIFF edit, stream and package paths. Omitted destination fields survive;
 GPSVersionID cleanup depends on final destination contents. Active version
 conflicts fail before output. See :doc:`migration_0_8` for scope and rebuild rules.
+
+Shared target-profile validation in 0.8.13
+------------------------------------------
+
+Opt-in primary-image checks share host facts across creation, typed editing and
+canonical serialization. Default detached behavior remains available. Public
+option layouts grow under unfrozen ABI 4; rebuild matching headers and binaries.
+See :doc:`target_profile_validation` for the contract and limitations.

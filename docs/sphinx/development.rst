@@ -584,3 +584,11 @@ writeback; no version is inferred or changed. Shared validators cover editing,
 translation, portable XMP and serialization. Present standard values remain in
 transfer output, including rendered-image output; RAW and MakerNote history is
 not inferred. See :doc:`translation`.
+
+Shared target-profile validation in 0.8.13
+------------------------------------------
+
+Opt-in primary-image checks share host facts across creation, typed editing and
+canonical serialization. Default detached behavior remains available. Public
+option layouts grow under unfrozen ABI 4; rebuild matching headers and binaries.
+See :doc:`target_profile_validation` for the contract and limitations.

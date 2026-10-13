@@ -24,6 +24,8 @@ namespace openmeta {
 
 /// Stable detached entry/store validation contract version.
 inline constexpr uint32_t kMetadataValidationContractVersion = 1U;
+/// Stable optional destination-profile validation contract version.
+inline constexpr uint32_t kMetadataTargetProfileValidationContractVersion = 1U;
 
 /// Top-level validation status for \ref validate_file.
 enum class ValidateStatus : uint8_t {
@@ -54,6 +56,23 @@ enum class MetadataUnknownTagPolicy : uint8_t {
     Error,
 };
 
+/// Bounded, host-selected EXIF primary-image destination profile.
+enum class MetadataTargetProfile : uint8_t {
+    None,
+    ExifJpeg,
+    ExifTiffRgbChunky,
+    ExifTiffRgbPlanar,
+    ExifTiffYCbCr,
+};
+
+/// Host-declared native EXIF interoperability index.
+enum class MetadataTargetInteropIndex : uint8_t {
+    Unspecified,
+    R98,
+    R03,
+    THM,
+};
+
 /// Stable detached metadata validation issue code.
 enum class MetadataValidationIssueCode : uint16_t {
     None = 0,
@@ -79,6 +98,10 @@ enum class MetadataValidationIssueCode : uint16_t {
     ImageContextMismatch,
     InconsistentRelatedEntries,
     IssueLimitExceeded,
+    TargetProfileMissingRequiredField,
+    TargetProfileForbiddenField,
+    TargetProfileContextConflict,
+    TargetProfileMissingAuthority,
 };
 
 /// Optional destination/raw-image facts used for cross-entry validation.
@@ -94,6 +117,17 @@ struct MetadataValidationContext final {
     uint16_t color_planes = 0U;
 };
 
+/// Optional host-owned destination facts for primary-image EXIF validation.
+struct MetadataTargetProfileContext final {
+    MetadataTargetProfile profile = MetadataTargetProfile::None;
+    uint32_t exif_version         = 0U;
+    bool has_color_space          = false;
+    uint16_t color_space          = 1U;
+    MetadataTargetInteropIndex interoperability
+        = MetadataTargetInteropIndex::Unspecified;
+    bool require_storage_tags = false;
+};
+
 /// Policy and resource bounds for detached entry/store validation.
 struct MetadataValidationOptions final {
     bool validate_schema     = true;
@@ -107,6 +141,7 @@ struct MetadataValidationOptions final {
     uint64_t max_value_bytes = 64ULL * 1024ULL * 1024ULL;
     MetadataUnknownTagPolicy unknown_exif_tags = MetadataUnknownTagPolicy::Allow;
     MetadataValidationContext context;
+    MetadataTargetProfileContext target_profile;
 };
 
 /// One fixed-field structured issue from detached validation.

@@ -5,6 +5,8 @@
 #include "openmeta/meta_edit.h"
 #include "openmeta/metadata_editing.h"
 
+#include "metadata_validation_options_internal.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <limits>
@@ -141,23 +143,6 @@ namespace {
         return result;
     }
 
-    static bool validation_options_are_valid(
-        const MetadataValidationOptions& options) noexcept
-    {
-        return options.max_issues != 0U && options.max_key_bytes != 0U
-               && options.max_entries != 0U && options.max_arena_bytes != 0U
-               && options.max_value_bytes != 0U
-               && options.max_value_bytes <= options.max_arena_bytes
-               && static_cast<uint8_t>(options.unknown_exif_tags)
-                      <= static_cast<uint8_t>(MetadataUnknownTagPolicy::Error)
-               && (!options.context.has_dimensions
-                   || (options.context.width != 0U
-                       && options.context.height != 0U))
-               && (!options.context.has_samples_per_pixel
-                   || options.context.samples_per_pixel != 0U)
-               && (!options.context.has_color_planes
-                   || options.context.color_planes != 0U);
-    }
 
 }  // namespace
 
@@ -178,8 +163,12 @@ create_metadata_store(std::span<const MetadataAuthoringEntry> entries,
         || static_cast<uint8_t>(options.duplicate_policy)
                > static_cast<uint8_t>(
                    MetadataAuthoringDuplicatePolicy::RejectExactKeys)
+        || (!options.validate
+            && options.validation.target_profile.profile
+                   != MetadataTargetProfile::None)
         || (options.validate
-            && !validation_options_are_valid(options.validation))) {
+            && !detail::metadata_validation_options_are_valid(
+                options.validation))) {
         return error(MetadataAuthoringStatus::InvalidOptions,
                      kInvalidMetadataAuthoringEntry);
     }
@@ -370,7 +359,7 @@ edit_metadata_typed(const MetaStore& base,
         || options.max_request_bytes > UINT32_MAX
         || static_cast<uint8_t>(options.add_policy)
                > static_cast<uint8_t>(MetadataTypedEditingAddPolicy::Append)
-        || !validation_options_are_valid(options.validation))
+        || !detail::metadata_validation_options_are_valid(options.validation))
         return typed_edit_error(Status::InvalidOptions);
     if (operations.size() > options.max_operations)
         return typed_edit_error(Status::TooManyOperations);

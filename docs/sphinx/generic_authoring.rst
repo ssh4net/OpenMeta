@@ -80,3 +80,11 @@ must be 7-bit. Pointer schemas check type/count, not target existence.
 
 Unknown/private policy, host synchronization, ABI 3 and snapshot v1 layout
 remain unchanged. These rules do not establish full EXIF file conformance.
+
+Shared target-profile validation in 0.8.13
+------------------------------------------
+
+Opt-in primary-image checks share host facts across creation, typed editing and
+canonical serialization. Default detached behavior remains available. Public
+option layouts grow under unfrozen ABI 4; rebuild matching headers and binaries.
+See :doc:`target_profile_validation` for the contract and limitations.
