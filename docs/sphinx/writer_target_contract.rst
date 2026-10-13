@@ -395,6 +395,14 @@ TIFF And DNG
 
 TIFF-family editing supports classic TIFF and BigTIFF.
 
+With ``PlanTiffEditOptions::require_updates = false``, an empty semantic update
+produces a byte-identical no-op after bounded TIFF layout and directory
+validation. Vector, stream and package paths retain the original source bytes
+without a new root pointer or metadata tail. The default still requires an
+update. A preservation-only merge flag does not count as an update. Malformed
+inspected directory counts are rejected before multiplication or allocation;
+this is not full-file TIFF or camera RAW conformance validation.
+
 Managed updates include:
 
 - root IFD metadata tags such as XMP tag 700, IPTC tag 33723, and ICC tag

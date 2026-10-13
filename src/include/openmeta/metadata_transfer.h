@@ -1020,6 +1020,7 @@ struct JpegEditPlan final {
 /// Options for TIFF edit planning.
 struct PlanTiffEditOptions final {
     /// If true, fail planning when the bundle has no TIFF-applicable updates.
+    /// If false, a valid bounded TIFF input may produce a byte-identical no-op.
     bool require_updates    = true;
     bool strip_existing_xmp = false;
 };

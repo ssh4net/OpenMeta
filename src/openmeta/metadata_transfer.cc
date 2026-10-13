@@ -9239,7 +9239,26 @@ namespace {
             count_u64 = read_u64_tiff(input, static_cast<size_t>(ifd_off_u64),
                                       endian);
         }
-        const uint64_t entries_off_u64 = ifd_off_u64 + layout.ifd_count_size;
+        const uint64_t entries_off_u64
+            = ifd_off_u64 + layout.ifd_count_size;
+        if (entries_off_u64 > static_cast<uint64_t>(input.size())
+            || layout.ifd_next_offset_size
+                   > static_cast<uint64_t>(input.size()) - entries_off_u64) {
+            if (err) {
+                *err = "ifd next offset field out of range";
+            }
+            return false;
+        }
+        const uint64_t available_entry_bytes
+            = static_cast<uint64_t>(input.size()) - entries_off_u64
+              - layout.ifd_next_offset_size;
+        if (count_u64
+            > available_entry_bytes / layout.ifd_entry_size) {
+            if (err) {
+                *err = "ifd next offset field out of range";
+            }
+            return false;
+        }
         const uint64_t entries_end_u64 = entries_off_u64
                                          + count_u64 * layout.ifd_entry_size;
         const uint64_t next_field_end_u64 = entries_end_u64
@@ -9371,6 +9390,24 @@ namespace {
         }
 
         const uint64_t entries_off_u64 = ifd_off_u64 + layout.ifd_count_size;
+        if (entries_off_u64 > static_cast<uint64_t>(input.size())
+            || layout.ifd_next_offset_size
+                   > static_cast<uint64_t>(input.size()) - entries_off_u64) {
+            if (err) {
+                *err = "target TIFF IFD entries truncated";
+            }
+            return false;
+        }
+        const uint64_t available_entry_bytes
+            = static_cast<uint64_t>(input.size()) - entries_off_u64
+              - layout.ifd_next_offset_size;
+        if (count_u64
+            > available_entry_bytes / layout.ifd_entry_size) {
+            if (err) {
+                *err = "target TIFF IFD entries truncated";
+            }
+            return false;
+        }
         const uint64_t entries_end_u64 = entries_off_u64
                                          + count_u64 * layout.ifd_entry_size;
         const uint64_t next_field_end_u64 = entries_end_u64
@@ -11293,6 +11330,16 @@ namespace {
         return {};
     }
 
+    static bool has_tiff_semantic_updates(
+        const std::vector<TiffTagUpdate>& updates,
+        std::span<const std::byte> exif_app1_payload,
+        const std::vector<uint16_t>& exif_removals,
+        const std::vector<uint16_t>& gps_removals) noexcept
+    {
+        return !updates.empty() || !exif_app1_payload.empty()
+               || !exif_removals.empty() || !gps_removals.empty();
+    }
+
     static bool
     bundle_has_tiff_removals(const PreparedTransferBundle& bundle) noexcept
     {
@@ -11681,13 +11728,6 @@ namespace {
         out->new_ifd0_off = 0U;
         out->layout       = TiffLayout {};
 
-        if (updates.empty() && exif_app1_payload.empty()
-            && exif_removals.empty() && gps_removals.empty()) {
-            if (err) {
-                *err = "no tiff updates";
-            }
-            return false;
-        }
         TiffEndian endian = TiffEndian::Little;
         TiffLayout layout;
         uint64_t ifd0_off_u64 = 0U;
@@ -11724,8 +11764,26 @@ namespace {
             }
             return false;
         }
-        const size_t count             = static_cast<size_t>(count_u64);
         const uint64_t entries_off_u64 = ifd0_off_u64 + layout.ifd_count_size;
+        if (entries_off_u64 > static_cast<uint64_t>(input.size())
+            || layout.ifd_next_offset_size
+                   > static_cast<uint64_t>(input.size()) - entries_off_u64) {
+            if (err) {
+                *err = "ifd0 entries truncated";
+            }
+            return false;
+        }
+        const uint64_t available_entry_bytes
+            = static_cast<uint64_t>(input.size()) - entries_off_u64
+              - layout.ifd_next_offset_size;
+        if (count_u64
+            > available_entry_bytes / layout.ifd_entry_size) {
+            if (err) {
+                *err = "ifd0 entries truncated";
+            }
+            return false;
+        }
+        const size_t count             = static_cast<size_t>(count_u64);
         const uint64_t table_bytes     = count_u64 * layout.ifd_entry_size;
         const uint64_t entries_end_u64 = entries_off_u64 + table_bytes;
         const uint64_t next_field_end_u64 = entries_end_u64
@@ -20866,10 +20924,13 @@ plan_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
                         || !bundle.tiff_exif_removals.empty()
                         || !bundle.tiff_gps_removals.empty();
     plan.strip_existing_xmp = options.strip_existing_xmp;
+    const std::span<const std::byte> exif_payload_span(
+        exif_app1_payload.data(), exif_app1_payload.size());
+    const bool has_semantic_updates = has_tiff_semantic_updates(
+        updates, exif_payload_span, bundle.tiff_exif_removals,
+        bundle.tiff_gps_removals);
 
-    if (options.require_updates && updates.empty() && exif_app1_payload.empty()
-        && bundle.tiff_exif_removals.empty()
-        && bundle.tiff_gps_removals.empty()) {
+    if (options.require_updates && !has_semantic_updates) {
         plan.status  = TransferStatus::Unsupported;
         plan.message = "no tiff updates";
         return plan;
@@ -20878,9 +20939,7 @@ plan_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
     TiffRewriteTail rewrite;
     std::string err;
     if (!build_tiff_rewrite_tail(
-            input_tiff, updates,
-            std::span<const std::byte>(exif_app1_payload.data(),
-                                       exif_app1_payload.size()),
+            input_tiff, updates, exif_payload_span,
             bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
             bundle.tiff_gps_removals, bundle.tiff_merge_existing_gps, &rewrite,
             &err)) {
@@ -20888,8 +20947,10 @@ plan_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         plan.message = err;
         return plan;
     }
-    plan.output_size = static_cast<uint64_t>(input_tiff.size())
-                       + static_cast<uint64_t>(rewrite.tail_bytes.size());
+    plan.output_size = static_cast<uint64_t>(input_tiff.size());
+    if (has_semantic_updates) {
+        plan.output_size += static_cast<uint64_t>(rewrite.tail_bytes.size());
+    }
     plan.status = TransferStatus::Ok;
     return plan;
 }
@@ -20947,6 +21008,39 @@ apply_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         out.code    = EmitTransferCode::PlanMismatch;
         out.errors  = 1U;
         out.message = "tiff edit plan no longer matches bundle";
+        return out;
+    }
+
+    const std::span<const std::byte> exif_payload_span(
+        exif_app1_payload.data(), exif_app1_payload.size());
+    if (!has_tiff_semantic_updates(updates, exif_payload_span,
+                                   bundle.tiff_exif_removals,
+                                   bundle.tiff_gps_removals)) {
+        if (plan.input_size != static_cast<uint64_t>(input_tiff.size())
+            || plan.output_size != static_cast<uint64_t>(input_tiff.size())) {
+            out.status  = TransferStatus::InvalidArgument;
+            out.code    = EmitTransferCode::PlanMismatch;
+            out.errors  = 1U;
+            out.message = "tiff no-op edit plan size mismatch";
+            return out;
+        }
+        TiffRewriteTail validation;
+        std::string err;
+        if (!build_tiff_rewrite_tail(
+                input_tiff, updates, exif_payload_span,
+                bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
+                bundle.tiff_gps_removals, bundle.tiff_merge_existing_gps,
+                &validation, &err)) {
+            out.status  = tiff_edit_status_from_error(err);
+            out.code    = EmitTransferCode::PlanMismatch;
+            out.errors  = 1U;
+            out.message = err;
+            return out;
+        }
+        std::vector<std::byte> unchanged(input_tiff.begin(), input_tiff.end());
+        out_tiff->swap(unchanged);
+        out.status = TransferStatus::Ok;
+        out.code   = EmitTransferCode::None;
         return out;
     }
 
@@ -21482,12 +21576,6 @@ build_prepared_bundle_tiff_package(
         out.message = "prepared TIFF removal list is invalid";
         return out;
     }
-    out_plan->contract_version = bundle.contract_version;
-    out_plan->target_format    = bundle.target_format;
-    out_plan->input_size       = static_cast<uint64_t>(input_tiff.size());
-    out_plan->output_size      = 0U;
-    out_plan->chunks.clear();
-
     if (plan.status != TransferStatus::Ok) {
         out.status  = TransferStatus::InvalidArgument;
         out.code    = EmitTransferCode::InvalidArgument;
@@ -21523,12 +21611,55 @@ build_prepared_bundle_tiff_package(
         return out;
     }
 
+    const std::span<const std::byte> exif_payload_span(
+        exif_app1_payload.data(), exif_app1_payload.size());
+    if (!has_tiff_semantic_updates(updates, exif_payload_span,
+                                   bundle.tiff_exif_removals,
+                                   bundle.tiff_gps_removals)) {
+        if (plan.input_size != static_cast<uint64_t>(input_tiff.size())
+            || plan.output_size != static_cast<uint64_t>(input_tiff.size())) {
+            out.status  = TransferStatus::InvalidArgument;
+            out.code    = EmitTransferCode::PlanMismatch;
+            out.errors  = 1U;
+            out.message = "tiff no-op edit plan size mismatch";
+            return out;
+        }
+        TiffRewriteTail validation;
+        std::string err;
+        if (!build_tiff_rewrite_tail(
+                input_tiff, updates, exif_payload_span,
+                bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
+                bundle.tiff_gps_removals, bundle.tiff_merge_existing_gps,
+                &validation, &err)) {
+            out.status  = tiff_edit_status_from_error(err);
+            out.code    = EmitTransferCode::PlanMismatch;
+            out.errors  = 1U;
+            out.message = err;
+            return out;
+        }
+        PreparedTransferPackagePlan unchanged;
+        unchanged.contract_version = bundle.contract_version;
+        unchanged.target_format    = bundle.target_format;
+        unchanged.input_size       = static_cast<uint64_t>(input_tiff.size());
+        unchanged.output_size      = static_cast<uint64_t>(input_tiff.size());
+        append_package_source_chunk(&unchanged, 0U,
+                                    static_cast<uint64_t>(input_tiff.size()));
+        *out_plan = std::move(unchanged);
+        out.status = TransferStatus::Ok;
+        out.code   = EmitTransferCode::None;
+        return out;
+    }
+
+    out_plan->contract_version = bundle.contract_version;
+    out_plan->target_format    = bundle.target_format;
+    out_plan->input_size       = static_cast<uint64_t>(input_tiff.size());
+    out_plan->output_size      = 0U;
+    out_plan->chunks.clear();
+
     TiffRewriteTail rewrite;
     std::string err;
     if (!build_tiff_rewrite_tail(
-            input_tiff, updates,
-            std::span<const std::byte>(exif_app1_payload.data(),
-                                       exif_app1_payload.size()),
+            input_tiff, updates, exif_payload_span,
             bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
             bundle.tiff_gps_removals, bundle.tiff_merge_existing_gps, &rewrite,
             &err)) {

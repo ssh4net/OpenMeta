@@ -8164,6 +8164,42 @@ make_timestamp_exif_target(bool big_tiff, bool big_endian)
 }
 
 static std::vector<std::byte>
+make_noop_test_bigtiff_root_count(uint64_t count)
+{
+    std::vector<std::byte> tiff;
+    append_bytes(&tiff, "II");
+    append_u16le(&tiff, 43U);
+    append_u16le(&tiff, 8U);
+    append_u16le(&tiff, 0U);
+    append_u64le(&tiff, 16U);
+    append_u64le(&tiff, count);
+    tiff.resize(36U, std::byte { 0U });
+    return tiff;
+}
+
+static std::vector<std::byte>
+make_noop_test_bigtiff_bad_aux_ifd(uint16_t pointer_tag,
+                                    uint64_t auxiliary_count,
+                                    size_t total_size)
+{
+    std::vector<std::byte> tiff;
+    append_bytes(&tiff, "II");
+    append_u16le(&tiff, 43U);
+    append_u16le(&tiff, 8U);
+    append_u16le(&tiff, 0U);
+    append_u64le(&tiff, 16U);
+    append_u64le(&tiff, 1U);
+    append_u16le(&tiff, pointer_tag);
+    append_u16le(&tiff, 18U);
+    append_u64le(&tiff, 1U);
+    append_u64le(&tiff, 52U);
+    append_u64le(&tiff, 0U);
+    append_u64le(&tiff, auxiliary_count);
+    tiff.resize(total_size, std::byte { 0U });
+    return tiff;
+}
+
+static std::vector<std::byte>
 make_minimal_tiff_timestamp_exif_target_little_endian()
 {
     return make_timestamp_exif_target(false, false);
@@ -49312,6 +49348,335 @@ TEST(MetadataTransferApi, PlanTiffEditRejectsNoUpdates)
         std::span<const std::byte>(input.data(), input.size()), bundle);
     EXPECT_EQ(plan.status, openmeta::TransferStatus::Unsupported);
     EXPECT_TRUE(plan.message.find("no tiff updates") != std::string::npos);
+}
+
+TEST(MetadataTransferApi,
+     TiffNoOpIsByteIdenticalAcrossLayoutsAndPersistedPackages)
+{
+    using namespace openmeta;
+    struct Variant final {
+        bool big_tiff;
+        bool big_endian;
+    };
+    constexpr std::array<Variant, 4U> variants = {{
+        { false, false }, { false, true }, { true, false }, { true, true },
+    }};
+    PreparedTransferBundle bundle;
+    bundle.target_format = TransferTargetFormat::Tiff;
+    bundle.tiff_merge_existing_exif = true;
+    bundle.tiff_merge_existing_gps = true;
+    PlanTiffEditOptions options;
+    options.require_updates = false;
+
+    for (const Variant& variant : variants) {
+        const std::vector<std::byte> input = make_timestamp_exif_target(
+            variant.big_tiff, variant.big_endian);
+        const TiffEditPlan plan = plan_prepared_bundle_tiff_edit(input, bundle,
+                                                                 options);
+        ASSERT_EQ(plan.status, TransferStatus::Ok) << plan.message;
+        EXPECT_EQ(plan.tag_updates, 0U);
+        EXPECT_FALSE(plan.has_exif_ifd);
+        EXPECT_EQ(plan.input_size, input.size());
+        EXPECT_EQ(plan.output_size, input.size());
+
+        std::vector<std::byte> output;
+        ASSERT_EQ(apply_prepared_bundle_tiff_edit(input, bundle, plan, &output)
+                      .status,
+                  TransferStatus::Ok);
+        EXPECT_EQ(output, input);
+
+        std::vector<std::byte> aliased = input;
+        ASSERT_EQ(apply_prepared_bundle_tiff_edit(
+                      std::span<const std::byte>(aliased.data(), aliased.size()),
+                      bundle, plan, &aliased)
+                      .status,
+                  TransferStatus::Ok);
+        EXPECT_EQ(aliased, input);
+
+        BufferByteWriter stream_writer;
+        ASSERT_EQ(write_prepared_bundle_tiff_edit(input, bundle, plan,
+                                                  stream_writer)
+                      .status,
+                  TransferStatus::Ok);
+        EXPECT_EQ(stream_writer.out, input);
+
+        PreparedTransferPackagePlan package;
+        ASSERT_EQ(build_prepared_bundle_tiff_package(input, bundle, plan,
+                                                    &package)
+                      .status,
+                  TransferStatus::Ok);
+        ASSERT_EQ(package.input_size, input.size());
+        ASSERT_EQ(package.output_size, input.size());
+        ASSERT_EQ(package.chunks.size(), 1U);
+        EXPECT_EQ(package.chunks[0U].kind, TransferPackageChunkKind::SourceRange);
+        EXPECT_EQ(package.chunks[0U].source_offset, 0U);
+        EXPECT_EQ(package.chunks[0U].output_offset, 0U);
+        EXPECT_EQ(package.chunks[0U].size, input.size());
+
+        PreparedTransferPackageBatch batch;
+        ASSERT_EQ(build_prepared_transfer_package_batch(input, bundle, package,
+                                                       &batch)
+                      .status,
+                  TransferStatus::Ok);
+        std::vector<std::byte> encoded_batch;
+        ASSERT_EQ(serialize_prepared_transfer_package_batch(batch,
+                                                            &encoded_batch)
+                      .status,
+                  TransferStatus::Ok);
+        PreparedTransferPackageBatch decoded_batch;
+        ASSERT_EQ(deserialize_prepared_transfer_package_batch(encoded_batch,
+                                                              &decoded_batch)
+                      .status,
+                  TransferStatus::Ok);
+        BufferByteWriter package_writer;
+        ASSERT_EQ(write_prepared_transfer_package_batch(decoded_batch,
+                                                       package_writer)
+                      .status,
+                  TransferStatus::Ok);
+        EXPECT_EQ(package_writer.out, input);
+    }
+
+    const std::vector<std::byte> input = make_minimal_tiff_little_endian();
+    const TiffEditPlan default_plan = plan_prepared_bundle_tiff_edit(input,
+                                                                    bundle);
+    EXPECT_EQ(default_plan.status, TransferStatus::Unsupported);
+    EXPECT_NE(default_plan.message.find("no tiff updates"),
+              std::string::npos);
+}
+
+TEST(MetadataTransferApi, DngNoOpPreservesExistingTargetBytes)
+{
+    using namespace openmeta;
+    const std::vector<std::byte> input
+        = make_minimal_dng_like_tiff_little_endian();
+    PlanTiffEditOptions options;
+    options.require_updates = false;
+    constexpr std::array<DngTargetMode, 2U> modes = {
+        DngTargetMode::ExistingTarget, DngTargetMode::TemplateTarget,
+    };
+    for (DngTargetMode mode : modes) {
+        PreparedTransferBundle bundle;
+        bundle.target_format = TransferTargetFormat::Dng;
+        bundle.dng_target_mode = mode;
+        const TiffEditPlan plan = plan_prepared_bundle_tiff_edit(input, bundle,
+                                                                 options);
+        ASSERT_EQ(plan.status, TransferStatus::Ok) << plan.message;
+        EXPECT_EQ(plan.output_size, input.size());
+
+        std::vector<std::byte> output;
+        ASSERT_EQ(apply_prepared_bundle_tiff_edit(input, bundle, plan, &output)
+                      .status,
+                  TransferStatus::Ok);
+        EXPECT_EQ(output, input);
+
+        BufferByteWriter stream_writer;
+        ASSERT_EQ(write_prepared_bundle_tiff_edit(input, bundle, plan,
+                                                  stream_writer)
+                      .status,
+                  TransferStatus::Ok);
+        EXPECT_EQ(stream_writer.out, input);
+
+        PreparedTransferPackagePlan package;
+        ASSERT_EQ(build_prepared_bundle_tiff_package(input, bundle, plan,
+                                                    &package)
+                      .status,
+                  TransferStatus::Ok);
+        ASSERT_EQ(package.chunks.size(), 1U);
+        EXPECT_EQ(package.chunks[0U].kind, TransferPackageChunkKind::SourceRange);
+        PreparedTransferPackageBatch batch;
+        ASSERT_EQ(build_prepared_transfer_package_batch(input, bundle, package,
+                                                       &batch)
+                      .status,
+                  TransferStatus::Ok);
+        BufferByteWriter package_writer;
+        ASSERT_EQ(write_prepared_transfer_package_batch(batch, package_writer)
+                      .status,
+                  TransferStatus::Ok);
+        EXPECT_EQ(package_writer.out, input);
+    }
+}
+
+TEST(MetadataTransferApi,
+     TiffNoOpRejectsMalformedInputAndPreservesExistingDestinations)
+{
+    using namespace openmeta;
+    PreparedTransferBundle bundle;
+    bundle.target_format = TransferTargetFormat::Tiff;
+    PlanTiffEditOptions options;
+    options.require_updates = false;
+    const std::vector<std::byte> valid = make_minimal_tiff_little_endian();
+    const TiffEditPlan valid_plan = plan_prepared_bundle_tiff_edit(valid, bundle,
+                                                                  options);
+    ASSERT_EQ(valid_plan.status, TransferStatus::Ok) << valid_plan.message;
+
+    TiffEditPlan input_size_plan = valid_plan;
+    input_size_plan.input_size += 1U;
+    std::vector<std::byte> output = { std::byte { 0xA1U }, std::byte { 0xB2U } };
+    const std::vector<std::byte> original_output = output;
+    EmitTransferResult applied = apply_prepared_bundle_tiff_edit(
+        valid, bundle, input_size_plan, &output);
+    EXPECT_EQ(applied.code, EmitTransferCode::PlanMismatch);
+    EXPECT_EQ(output, original_output);
+
+    TiffEditPlan output_size_plan = valid_plan;
+    output_size_plan.output_size += 1U;
+    applied = apply_prepared_bundle_tiff_edit(valid, bundle, output_size_plan,
+                                              &output);
+    EXPECT_EQ(applied.code, EmitTransferCode::PlanMismatch);
+    EXPECT_EQ(output, original_output);
+
+    PreparedTransferBundle changed_bundle = bundle;
+    PreparedTransferBlock xmp;
+    xmp.route = "tiff:tag-700-xmp";
+    xmp.payload = { std::byte { 'x' } };
+    changed_bundle.blocks.push_back(xmp);
+    applied = apply_prepared_bundle_tiff_edit(valid, changed_bundle, valid_plan,
+                                              &output);
+    EXPECT_EQ(applied.code, EmitTransferCode::PlanMismatch);
+    EXPECT_EQ(output, original_output);
+
+    PreparedTransferPackagePlan unchanged_package;
+    unchanged_package.contract_version = 99U;
+    unchanged_package.target_format = TransferTargetFormat::Jpeg;
+    unchanged_package.input_size = 7U;
+    unchanged_package.output_size = 9U;
+    PreparedTransferPackageChunk unchanged_marker;
+    unchanged_marker.kind = TransferPackageChunkKind::InlineBytes;
+    unchanged_marker.output_offset = 3U;
+    unchanged_marker.size = 1U;
+    unchanged_marker.inline_bytes = { std::byte { 0x7FU } };
+    unchanged_package.chunks.push_back(unchanged_marker);
+    const EmitTransferResult rejected_package
+        = build_prepared_bundle_tiff_package(valid, bundle, output_size_plan,
+                                             &unchanged_package);
+    EXPECT_EQ(rejected_package.code, EmitTransferCode::PlanMismatch);
+    ASSERT_EQ(unchanged_package.contract_version, 99U);
+    EXPECT_EQ(unchanged_package.target_format, TransferTargetFormat::Jpeg);
+    EXPECT_EQ(unchanged_package.input_size, 7U);
+    EXPECT_EQ(unchanged_package.output_size, 9U);
+    ASSERT_EQ(unchanged_package.chunks.size(), 1U);
+    EXPECT_EQ(unchanged_package.chunks[0U].kind,
+              TransferPackageChunkKind::InlineBytes);
+    EXPECT_EQ(unchanged_package.chunks[0U].inline_bytes,
+              (std::vector<std::byte> { std::byte { 0x7FU } }));
+
+    std::vector<std::byte> truncated;
+    append_bytes(&truncated, "II");
+    append_u16le(&truncated, 42U);
+    append_u32le(&truncated, 8U);
+    append_u16le(&truncated, 0U);
+    ASSERT_EQ(truncated.size(), 10U);
+    TiffEditPlan truncated_plan = valid_plan;
+    truncated_plan.input_size = truncated.size();
+    truncated_plan.output_size = truncated.size();
+    applied = apply_prepared_bundle_tiff_edit(truncated, bundle, truncated_plan,
+                                              &output);
+    EXPECT_EQ(applied.status, TransferStatus::Malformed);
+    EXPECT_EQ(output, original_output);
+
+    PreparedTransferPackagePlan package;
+    package.contract_version = 99U;
+    package.target_format = TransferTargetFormat::Jpeg;
+    package.input_size = 7U;
+    package.output_size = 9U;
+    PreparedTransferPackageChunk marker;
+    marker.kind = TransferPackageChunkKind::InlineBytes;
+    marker.output_offset = 3U;
+    marker.size = 1U;
+    marker.inline_bytes = { std::byte { 0x7FU } };
+    package.chunks.push_back(marker);
+    const EmitTransferResult packaged = build_prepared_bundle_tiff_package(
+        truncated, bundle, truncated_plan, &package);
+    EXPECT_EQ(packaged.status, TransferStatus::Malformed);
+    ASSERT_EQ(package.contract_version, 99U);
+    EXPECT_EQ(package.target_format, TransferTargetFormat::Jpeg);
+    EXPECT_EQ(package.input_size, 7U);
+    EXPECT_EQ(package.output_size, 9U);
+    ASSERT_EQ(package.chunks.size(), 1U);
+    EXPECT_EQ(package.chunks[0U].kind, TransferPackageChunkKind::InlineBytes);
+    EXPECT_EQ(package.chunks[0U].inline_bytes,
+              (std::vector<std::byte> { std::byte { 0x7FU } }));
+
+    BufferByteWriter writer;
+    writer.out = original_output;
+    const EmitTransferResult streamed = write_prepared_bundle_tiff_edit(
+        truncated, bundle, truncated_plan, writer);
+    EXPECT_EQ(streamed.status, TransferStatus::Malformed);
+    EXPECT_EQ(writer.writes, 0U);
+    EXPECT_EQ(writer.out, original_output);
+}
+
+TEST(MetadataTransferApi,
+     TiffBigTiffNoOpAndUpdateRejectWrappedIfdCounts)
+{
+    using namespace openmeta;
+    PreparedTransferBundle no_op_bundle;
+    no_op_bundle.target_format = TransferTargetFormat::Tiff;
+    PlanTiffEditOptions options;
+    options.require_updates = false;
+    const std::vector<std::byte> valid = make_noop_test_bigtiff_root_count(0U);
+    const TiffEditPlan valid_plan = plan_prepared_bundle_tiff_edit(valid,
+                                                                  no_op_bundle,
+                                                                  options);
+    ASSERT_EQ(valid_plan.status, TransferStatus::Ok) << valid_plan.message;
+
+    constexpr std::array<uint64_t, 2U> bad_counts = {
+        std::numeric_limits<uint64_t>::max(),
+        std::numeric_limits<uint64_t>::max() / 20U + 1U,
+    };
+    for (uint64_t count : bad_counts) {
+        const std::vector<std::byte> malformed
+            = make_noop_test_bigtiff_root_count(count);
+        const TiffEditPlan plan = plan_prepared_bundle_tiff_edit(
+            malformed, no_op_bundle, options);
+        EXPECT_EQ(plan.status, TransferStatus::Malformed);
+
+        std::vector<std::byte> output = {
+            std::byte { 0xA1U }, std::byte { 0xB2U },
+        };
+        const std::vector<std::byte> original_output = output;
+        const EmitTransferResult applied = apply_prepared_bundle_tiff_edit(
+            malformed, no_op_bundle, valid_plan, &output);
+        EXPECT_EQ(applied.status, TransferStatus::Malformed);
+        EXPECT_EQ(output, original_output);
+    }
+
+    PreparedTransferBundle update_bundle;
+    update_bundle.target_format = TransferTargetFormat::Tiff;
+    PreparedTransferBlock xmp;
+    xmp.route = "tiff:tag-700-xmp";
+    xmp.payload = { std::byte { 'x' } };
+    update_bundle.blocks.push_back(xmp);
+    const std::vector<std::byte> wrapped
+        = make_noop_test_bigtiff_root_count(bad_counts[1U]);
+    const TiffEditPlan update_plan = plan_prepared_bundle_tiff_edit(
+        wrapped, update_bundle);
+    EXPECT_EQ(update_plan.status, TransferStatus::Malformed);
+
+    PreparedTransferBundle exif_merge_bundle;
+    exif_merge_bundle.target_format = TransferTargetFormat::Tiff;
+    exif_merge_bundle.tiff_merge_existing_exif = true;
+    const std::vector<std::byte> malformed_exif
+        = make_noop_test_bigtiff_bad_aux_ifd(
+            0x8769U, std::numeric_limits<uint64_t>::max(), 72U);
+    const TiffEditPlan exif_plan = plan_prepared_bundle_tiff_edit(
+        malformed_exif, exif_merge_bundle, options);
+    EXPECT_EQ(exif_plan.status, TransferStatus::Malformed);
+
+    PreparedTransferBundle gps_merge_bundle;
+    gps_merge_bundle.target_format = TransferTargetFormat::Tiff;
+    gps_merge_bundle.tiff_merge_existing_gps = true;
+    const std::vector<std::byte> malformed_gps
+        = make_noop_test_bigtiff_bad_aux_ifd(0x8825U, bad_counts[1U], 72U);
+    const TiffEditPlan gps_plan = plan_prepared_bundle_tiff_edit(
+        malformed_gps, gps_merge_bundle, options);
+    EXPECT_EQ(gps_plan.status, TransferStatus::Malformed);
+
+    const std::vector<std::byte> truncated_exif_next
+        = make_noop_test_bigtiff_bad_aux_ifd(0x8769U, 0U, 60U);
+    const TiffEditPlan truncated_exif_plan = plan_prepared_bundle_tiff_edit(
+        truncated_exif_next, exif_merge_bundle, options);
+    EXPECT_EQ(truncated_exif_plan.status, TransferStatus::Malformed);
 }
 
 TEST(MetadataTransferApi, PrepareUnsupportedWhenExifOnlyUnsupportedIfd)
