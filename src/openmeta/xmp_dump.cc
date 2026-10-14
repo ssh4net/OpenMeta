@@ -13,8 +13,10 @@
 #include "openmeta/geotiff_key_names.h"
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_value.h"
+#include "openmeta/metadata_xmp_editing.h"
 
 #include "xmp_patch_internal.h"
+#include "metadata_xmp_editing_internal.h"
 
 #include <algorithm>
 #include <array>
@@ -15040,6 +15042,435 @@ dump_xmp_portable(const MetaStore& store, std::span<std::byte> out,
                   const XmpPortableOptions& options) noexcept
 {
     return dump_xmp_portable_impl(store, out, options, {});
+}
+
+namespace {
+
+    static bool xmp_editing_root_kind(
+        std::string_view prefix, std::string_view root,
+        detail::XmpStructuredEditScopeKind* kind) noexcept
+    {
+        if (!kind)
+            return false;
+        PortablePropertyShape required = PortablePropertyShape::Scalar;
+        if (!standard_existing_xmp_required_base_shape(prefix, root,
+                                                       &required))
+            return false;
+        if (prefix == "Iptc4xmpCore"
+            && (root == "CreatorContactInfo" || root == "LocationCreated")
+            && required == PortablePropertyShape::Structured) {
+            *kind = detail::XmpStructuredEditScopeKind::CoreStructure;
+            return true;
+        }
+        if (prefix == "Iptc4xmpExt" && root == "LocationShown"
+            && required == PortablePropertyShape::StructuredIndexed) {
+            *kind = detail::XmpStructuredEditScopeKind::StructuredArray;
+            return true;
+        }
+        if (prefix == "plus" && root == "Licensee"
+            && required == PortablePropertyShape::StructuredIndexed) {
+            *kind = detail::XmpStructuredEditScopeKind::StructuredArray;
+            return true;
+        }
+        if (((prefix == "dc"
+              && (root == "title" || root == "description" || root == "rights"))
+             || (prefix == "xmpRights" && root == "UsageTerms"))
+            && required == PortablePropertyShape::LangAlt) {
+            *kind = detail::XmpStructuredEditScopeKind::LangAlt;
+            return true;
+        }
+        if (prefix == "xmpRights" && root == "Owner"
+            && required == PortablePropertyShape::Indexed) {
+            *kind = detail::XmpStructuredEditScopeKind::IndexedTextArray;
+            return true;
+        }
+        return false;
+    }
+
+    static bool xmp_editing_indices_are_canonical(
+        std::string_view path) noexcept
+    {
+        for (size_t i = 0U; i < path.size(); ++i) {
+            if (path[i] != '[')
+                continue;
+            if (i + 1U < path.size() && path[i + 1U] == '@') {
+                const size_t close = path.find(']', i + 2U);
+                if (close == std::string_view::npos)
+                    return false;
+                i = close;
+                continue;
+            }
+            const size_t close = path.find(']', i + 1U);
+            if (close == std::string_view::npos || close == i + 1U
+                || path[i + 1U] < '1' || path[i + 1U] > '9')
+                return false;
+            uint32_t index = 0U;
+            for (size_t digit = i + 1U; digit < close; ++digit) {
+                const char c = path[digit];
+                if (c < '0' || c > '9')
+                    return false;
+                const uint32_t next = index * 10U
+                                      + static_cast<uint32_t>(c - '0');
+                if (next > kMetadataXmpEditingMaxArrayIndex)
+                    return false;
+                index = next;
+            }
+            i = close;
+        }
+        return true;
+    }
+
+    static std::string_view xmp_editing_shape_path(
+        std::string_view path,
+        detail::XmpStructuredEditLeafShape shape) noexcept
+    {
+        if (shape == detail::XmpStructuredEditLeafShape::Scalar)
+            return path;
+        const size_t selector
+            = shape == detail::XmpStructuredEditLeafShape::LangAlt
+                  ? path.rfind("[@xml:lang=")
+                  : path.rfind('[');
+        return selector == std::string_view::npos
+                   ? std::string_view {}
+                   : path.substr(0U, selector);
+    }
+
+    static bool xmp_editing_component_is_canonical(
+        std::string_view prefix, std::string_view base,
+        std::string_view component,
+        detail::XmpStructuredEditLeafShape shape) noexcept
+    {
+        std::string_view raw_prefix;
+        std::string_view raw_name;
+        if (!split_qualified_xmp_property_name(component, &raw_prefix,
+                                               &raw_name)
+            || raw_prefix == prefix)
+            return false;
+        std::string_view portable_prefix;
+        std::string_view portable_name;
+        bool normalized = false;
+        if (!resolve_existing_xmp_structured_child_to_portable(
+                prefix, base, component, &portable_prefix, &portable_name,
+                &normalized)
+            || portable_name != raw_name)
+            return false;
+        const PortableStructuredChildShape child_shape
+            = shape == detail::XmpStructuredEditLeafShape::Scalar
+                  ? PortableStructuredChildShape::Scalar
+              : shape == detail::XmpStructuredEditLeafShape::Indexed
+                  ? PortableStructuredChildShape::Indexed
+                  : PortableStructuredChildShape::LangAlt;
+        if (!standard_existing_xmp_structured_child_accepts_shape(
+                prefix, base, portable_prefix, portable_name, child_shape))
+            return false;
+        PortableStructuredChildShape declared_shape
+            = PortableStructuredChildShape::Scalar;
+        const bool declared
+            = standard_existing_xmp_required_structured_child_shape(
+                prefix, base, portable_prefix, portable_name,
+                &declared_shape);
+        if ((!raw_prefix.empty() && !declared)
+            || (normalized && raw_prefix.empty()))
+            return false;
+        return true;
+    }
+
+    static bool xmp_editing_nested_is_canonical(
+        std::string_view prefix, std::string_view base,
+        std::string_view child, std::string_view grandchild,
+        detail::XmpStructuredEditLeafShape shape) noexcept
+    {
+        std::string_view child_raw_prefix;
+        std::string_view child_raw_name;
+        std::string_view grandchild_raw_prefix;
+        std::string_view grandchild_raw_name;
+        if (!split_qualified_xmp_property_name(
+                child, &child_raw_prefix, &child_raw_name)
+            || !split_qualified_xmp_property_name(
+                grandchild, &grandchild_raw_prefix, &grandchild_raw_name)
+            || !child_raw_prefix.empty() || !grandchild_raw_prefix.empty())
+            return false;
+        std::string_view child_prefix;
+        std::string_view child_name;
+        bool child_normalized = false;
+        if (!resolve_existing_xmp_structured_child_to_portable(
+                prefix, base, child, &child_prefix, &child_name,
+                &child_normalized)
+            || child_normalized || child_prefix != prefix)
+            return false;
+        PortableStructuredChildShape child_shape
+            = PortableStructuredChildShape::Scalar;
+        const bool has_required_child_shape
+            = standard_existing_xmp_required_structured_child_shape(
+                prefix, base, child_prefix, child_name, &child_shape);
+        if ((has_required_child_shape
+             && child_shape != PortableStructuredChildShape::Resource)
+            || !standard_existing_xmp_structured_child_accepts_shape(
+                prefix, base, child_prefix, child_name,
+                PortableStructuredChildShape::Resource))
+            return false;
+        std::string_view grandchild_prefix;
+        std::string_view grandchild_name;
+        bool grandchild_normalized = false;
+        if (!resolve_existing_xmp_nested_grandchild_to_portable(
+                prefix, base, child_prefix, child_name, grandchild,
+                &grandchild_prefix, &grandchild_name, &grandchild_normalized)
+            || grandchild_normalized || grandchild_prefix != prefix)
+            return false;
+        PortableStructuredChildShape required_shape
+            = PortableStructuredChildShape::Scalar;
+        const bool has_required_shape
+            = standard_existing_xmp_required_nested_child_shape(
+                prefix, base, child_name, grandchild_name, &required_shape);
+        const PortableStructuredChildShape actual_shape
+            = shape == detail::XmpStructuredEditLeafShape::Scalar
+                  ? PortableStructuredChildShape::Scalar
+              : shape == detail::XmpStructuredEditLeafShape::Indexed
+                  ? PortableStructuredChildShape::Indexed
+                  : PortableStructuredChildShape::LangAlt;
+        return (!has_required_shape || required_shape == actual_shape)
+               && standard_existing_xmp_nested_child_accepts_shape(
+                   prefix, base, child_name, grandchild_name, actual_shape);
+    }
+
+    static bool xmp_editing_set_leaf(
+        std::string_view path, std::string_view root, uint32_t item_index,
+        bool has_item_index, detail::XmpStructuredEditLeafShape shape,
+        uint8_t depth, std::string_view language, bool has_language,
+        detail::XmpStructuredEditLeaf* out) noexcept
+    {
+        if (!out || depth == 0U
+            || depth > kMetadataXmpEditingMaxPathDepth)
+            return false;
+        const std::string_view shape_path = xmp_editing_shape_path(path, shape);
+        if (shape_path.empty())
+            return false;
+        out->root            = root;
+        out->shape_path      = shape_path;
+        out->language        = language;
+        out->item_index      = item_index;
+        out->shape           = shape;
+        out->path_depth      = depth;
+        out->has_item_index  = has_item_index;
+        out->has_language    = has_language;
+        return true;
+    }
+
+}  // namespace
+
+bool
+detail::parse_xmp_structured_edit_scope(
+    std::string_view schema_ns, std::string_view property_path,
+    detail::XmpStructuredEditScope* out) noexcept
+{
+    if (!out || schema_ns.empty() || schema_ns.size() > 4096U
+        || property_path.empty() || property_path.size() > 4096U
+        || !xmp_editing_indices_are_canonical(property_path))
+        return false;
+    std::string_view prefix;
+    if (!xmp_ns_to_portable_prefix(schema_ns, &prefix))
+        return false;
+
+    std::string_view root = property_path;
+    std::string_view parsed_root;
+    std::string_view language;
+    uint32_t item_index = 0U;
+    bool has_item_index = false;
+    bool has_language = false;
+    if (parse_indexed_xmp_property_name(property_path, &parsed_root,
+                                        &item_index)) {
+        root = parsed_root;
+        has_item_index = true;
+    } else if (parse_lang_alt_xmp_property_name(property_path, &parsed_root,
+                                               &language)) {
+        root = parsed_root;
+        has_language = true;
+    }
+    detail::XmpStructuredEditScopeKind kind
+        = detail::XmpStructuredEditScopeKind::CoreStructure;
+    if (!is_simple_xmp_property_name(root)
+        || !xmp_editing_root_kind(prefix, root, &kind))
+        return false;
+    if (has_item_index
+        && kind != detail::XmpStructuredEditScopeKind::StructuredArray
+        && kind != detail::XmpStructuredEditScopeKind::IndexedTextArray)
+        return false;
+    if (has_language && kind != detail::XmpStructuredEditScopeKind::LangAlt)
+        return false;
+    if (kind == detail::XmpStructuredEditScopeKind::CoreStructure
+        && (has_item_index || has_language))
+        return false;
+
+    out->schema_ns      = schema_ns;
+    out->property_path  = property_path;
+    out->root           = root;
+    out->language       = language;
+    out->item_index     = item_index;
+    out->kind           = kind;
+    out->has_item_index = has_item_index;
+    out->has_language   = has_language;
+    return true;
+}
+
+bool
+detail::parse_xmp_structured_edit_leaf(
+    std::string_view schema_ns, std::string_view property_path,
+    detail::XmpStructuredEditLeaf* out) noexcept
+{
+    if (!out || property_path.empty() || property_path.size() > 4096U
+        || !xmp_editing_indices_are_canonical(property_path))
+        return false;
+    std::string_view prefix;
+    if (!xmp_ns_to_portable_prefix(schema_ns, &prefix))
+        return false;
+
+    XmpStructuredEditScopeKind root_kind
+        = XmpStructuredEditScopeKind::CoreStructure;
+    std::string_view root;
+    std::string_view language;
+    uint32_t item_index = 0U;
+    if (parse_lang_alt_xmp_property_name(property_path, &root, &language)
+        && is_simple_xmp_property_name(root)
+        && xmp_editing_root_kind(prefix, root, &root_kind)
+        && root_kind == XmpStructuredEditScopeKind::LangAlt) {
+        return xmp_editing_set_leaf(
+            property_path, root, 0U, false,
+            XmpStructuredEditLeafShape::LangAlt, 1U, language, true, out);
+    }
+
+    if (prefix == "xmpRights"
+        && parse_indexed_xmp_property_name(property_path, &root, &item_index)
+        && root == "Owner"
+        && xmp_editing_root_kind(prefix, root, &root_kind)
+        && root_kind == XmpStructuredEditScopeKind::IndexedTextArray) {
+        return xmp_editing_set_leaf(
+            property_path, root, item_index, true,
+            XmpStructuredEditLeafShape::Indexed, 1U, {}, false, out);
+    }
+
+    const bool is_core = prefix == "Iptc4xmpCore";
+    const bool is_structured_array
+        = prefix == "Iptc4xmpExt" || prefix == "plus";
+    std::string_view base;
+    std::string_view child;
+    std::string_view grandchild;
+    std::string_view leaf_language;
+    uint32_t root_index = 0U;
+    uint32_t child_index = 0U;
+    uint8_t depth = 0U;
+    bool has_root_index = false;
+    XmpStructuredEditLeafShape shape = XmpStructuredEditLeafShape::Scalar;
+
+    if (is_core) {
+        if (parse_nested_structured_lang_alt_xmp_property_name(
+                property_path, &base, &child, &grandchild, &leaf_language)) {
+            shape = XmpStructuredEditLeafShape::LangAlt;
+            depth = 3U;
+        } else if (parse_nested_structured_indexed_xmp_property_name(
+                       property_path, &base, &child, &grandchild,
+                       &child_index)) {
+            shape = XmpStructuredEditLeafShape::Indexed;
+            depth = 3U;
+        } else if (parse_nested_structured_xmp_property_name(
+                       property_path, &base, &child, &grandchild)) {
+            shape = XmpStructuredEditLeafShape::Scalar;
+            depth = 3U;
+        }
+        if (depth == 3U) {
+            if (!xmp_editing_root_kind(prefix, base, &root_kind)
+                || root_kind != XmpStructuredEditScopeKind::CoreStructure
+                || !xmp_editing_nested_is_canonical(prefix, base, child,
+                                                   grandchild, shape))
+                return false;
+            return xmp_editing_set_leaf(
+                property_path, base, 0U, false, shape, depth, leaf_language,
+                shape == XmpStructuredEditLeafShape::LangAlt, out);
+        }
+    }
+
+    if (is_structured_array) {
+        if (parse_indexed_structured_lang_alt_xmp_property_name(
+                property_path, &base, &root_index, &child, &leaf_language)) {
+            shape = XmpStructuredEditLeafShape::LangAlt;
+            depth = 2U;
+            has_root_index = true;
+        } else if (parse_indexed_structured_indexed_xmp_property_name(
+                       property_path, &base, &root_index, &child,
+                       &child_index)) {
+            shape = XmpStructuredEditLeafShape::Indexed;
+            depth = 2U;
+            has_root_index = true;
+        } else if (parse_indexed_structured_xmp_property_name(
+                       property_path, &base, &root_index, &child)) {
+            shape = XmpStructuredEditLeafShape::Scalar;
+            depth = 2U;
+            has_root_index = true;
+        }
+        if (has_root_index &&
+            ((prefix == "Iptc4xmpExt" && base == "LocationShown")
+             || (prefix == "plus" && base == "Licensee"))) {
+            if (!xmp_editing_root_kind(prefix, base, &root_kind)
+                || root_kind != XmpStructuredEditScopeKind::StructuredArray
+                || !xmp_editing_component_is_canonical(prefix, base, child,
+                                                       shape))
+                return false;
+            return xmp_editing_set_leaf(
+                property_path, base, root_index, true, shape, depth,
+                leaf_language,
+                shape == XmpStructuredEditLeafShape::LangAlt, out);
+        }
+    }
+
+    if (is_core) {
+        if (parse_structured_lang_alt_xmp_property_name(
+                property_path, &base, &child, &leaf_language)) {
+            shape = XmpStructuredEditLeafShape::LangAlt;
+            depth = 2U;
+        } else if (parse_structured_indexed_xmp_property_name(
+                       property_path, &base, &child, &child_index)) {
+            shape = XmpStructuredEditLeafShape::Indexed;
+            depth = 2U;
+        } else if (parse_structured_xmp_property_name(
+                       property_path, &base, &child)) {
+            shape = XmpStructuredEditLeafShape::Scalar;
+            depth = 2U;
+        }
+        if (depth == 2U) {
+            if (!xmp_editing_root_kind(prefix, base, &root_kind)
+                || root_kind != XmpStructuredEditScopeKind::CoreStructure
+                || !xmp_editing_component_is_canonical(prefix, base, child,
+                                                       shape))
+                return false;
+            return xmp_editing_set_leaf(
+                property_path, base, 0U, false, shape, depth, leaf_language,
+                shape == XmpStructuredEditLeafShape::LangAlt, out);
+        }
+    }
+    return false;
+}
+
+bool
+detail::xmp_structured_edit_path_has_root(std::string_view schema_ns,
+                                          std::string_view property_path,
+                                          std::string_view root) noexcept
+{
+    if (property_path.empty() || root.empty())
+        return false;
+    std::string_view prefix;
+    detail::XmpStructuredEditScopeKind kind
+        = detail::XmpStructuredEditScopeKind::CoreStructure;
+    if (!xmp_ns_to_portable_prefix(schema_ns, &prefix)
+        || !xmp_editing_root_kind(prefix, root, &kind))
+        return false;
+    const size_t slash = property_path.find('/');
+    std::string_view first = property_path.substr(0U, slash);
+    const size_t selector = first.find('[');
+    if (selector != std::string_view::npos)
+        first = first.substr(0U, selector);
+    const size_t colon = first.rfind(':');
+    if (colon != std::string_view::npos)
+        first = first.substr(colon + 1U);
+    return first == root;
 }
 
 XmpDumpResult

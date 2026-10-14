@@ -419,6 +419,7 @@ set(OPENMETA_SOURCES
   src/openmeta/metadata_authoring.cc
   src/openmeta/metadata_creation.cc
   src/openmeta/metadata_editing.cc
+  src/openmeta/metadata_xmp_editing.cc
   src/openmeta/metadata_translation.cc
   src/openmeta/metadata_translation_exif_text.cc
   src/openmeta/metadata_translation_development.cc
@@ -1036,6 +1037,8 @@ if(OPENMETA_BUILD_TESTS)
     tests/metadata_creation_test.cc
     tests/metadata_editing_test.cc
     tests/metadata_editing_transfer_test.cc
+    tests/metadata_xmp_editing_test.cc
+    tests/metadata_xmp_editing_transfer_test.cc
     tests/metadata_translation_exif_text_test.cc
     tests/metadata_translation_development_test.cc
     tests/metadata_translation_learning_test.cc

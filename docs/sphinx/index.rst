@@ -50,6 +50,7 @@ and must not be used as an asset-authenticity or trust gate.
    creation
    generic_authoring
    target_profile_validation
+   structured_xmp_editing
    editing
    translation
    capture_sync_milestone

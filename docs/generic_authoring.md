@@ -1,5 +1,12 @@
 # Generic Typed Metadata Authoring
 
+## Structured XMP transactions (0.8.14)
+
+Bounded whole-record, array-item and language-alternative creation/editing now
+reuse canonical portable-XMP paths and one transactional typed edit. ABI 4 and
+existing public layouts remain unchanged. See [structured XMP editing](structured_xmp_editing.md)
+for supported scopes, preservation, limits and serialization behavior.
+
 ## Shared target-profile validation (0.8.13)
 
 Opt-in primary-image EXIF checks now share explicit host target facts across

@@ -245,3 +245,10 @@ Opt-in primary-image checks share host facts across creation, typed editing and
 canonical serialization. Default detached behavior remains available. Public
 option layouts grow under unfrozen ABI 4; rebuild matching headers and binaries.
 See :doc:`target_profile_validation` for the contract and limitations.
+
+Structured XMP transactions in 0.8.14
+-------------------------------------
+
+Bounded whole-record, array-item and language-alternative operations use canonical
+portable-XMP paths and one transactional typed edit. ABI4 and existing layouts
+remain unchanged. See :doc:`structured_xmp_editing` for scopes and limits.
