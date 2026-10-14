@@ -1044,7 +1044,7 @@ decode_nikon_colorbalancea_table(std::string_view mk_prefix,
                                  std::span<char> sub_ifd_buf,
                                  uint32_t* idx_colorbalance,
                                  std::span<const std::byte> raw_src,
-                                 std::string_view model, MetaStore& store,
+                                 bool model_is_e8700, MetaStore& store,
                                  const ExifDecodeOptions& options,
                                  ExifDecodeResult* status_out) noexcept
 {
@@ -1063,7 +1063,7 @@ decode_nikon_colorbalancea_table(std::string_view mk_prefix,
         { 0x02A4, 14, 0x0548ULL }, { 0x02B2, 14, 0x0564ULL },
     };
     static constexpr size_t kTagCount = sizeof(kTags) / sizeof(kTags[0]);
-    const size_t out_count = model == "E8700" ? kTagCount - 1U : kTagCount;
+    const size_t out_count = model_is_e8700 ? kTagCount - 1U : kTagCount;
     if (!nikon_derived_ifd_limit_allows(out_count, options, status_out)) {
         return true;
     }
@@ -1079,7 +1079,7 @@ decode_nikon_colorbalancea_table(std::string_view mk_prefix,
     std::array<MetaValue, kTagCount> vals_out {};
     size_t write_idx = 0U;
     for (size_t i = 0; i < kTagCount; ++i) {
-        if (model == "E8700" && kTags[i].tag == 0x02B2U) {
+        if (model_is_e8700 && kTags[i].tag == 0x02B2U) {
             continue;
         }
         std::array<uint16_t, 14> levels {};
@@ -1497,7 +1497,8 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
     std::string_view model;
     (void)ctx.find_first_text("ifd0", 0x0110 /* Model */, &model);
     // Resolve model-dependent choices before derived values grow the arena.
-    const bool model_is_d50 = model == "NIKON D50";
+    const bool model_is_e8700 = model == "E8700";
+    const bool model_is_d50   = model == "NIKON D50";
     const bool model_has_d40 = model.find("NIKON D40")
                                != std::string_view::npos;
     const bool model_has_d80 = model.find("NIKON D80")
@@ -1681,7 +1682,7 @@ decode_nikon_binary_subdirs(std::string_view mk_ifd0, MetaStore& store, bool le,
             if (is_undefined && wire_count == 2560U
                 && decode_nikon_colorbalancea_table(
                     mk_prefix, std::span<char>(sub_ifd_buf), &idx_colorbalance,
-                    raw_src, model, store, options, status_out)) {
+                    raw_src, model_is_e8700, store, options, status_out)) {
                 continue;
             }
             if (is_undefined
