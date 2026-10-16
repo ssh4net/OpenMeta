@@ -756,6 +756,13 @@ struct PreparedTransferBundle final {
     /// adapter views reject it because they cannot express destination state.
     /// With no merge intent, GPS payloads retain whole-IFD replacement behavior.
     bool tiff_merge_existing_gps = false;
+    /// Remove the managed IPTC carrier (JPEG APP13 0x0404 resources or TIFF/
+    /// DNG tag 33723) during an edit. Preparation derives this only when IPTC
+    /// output is enabled, no active native IPTC datasets remain, and at least
+    /// one native IPTC dataset is marked Dirty|Deleted. It is mutually
+    /// exclusive with prepared IPTC blocks and is not representable by fresh
+    /// emit, adapter, payload, or codec handoff APIs.
+    bool remove_existing_iptc = false;
     std::vector<TimePatchSlot> time_patch_map;
     std::vector<std::byte> generated_xmp_sidecar;
 };

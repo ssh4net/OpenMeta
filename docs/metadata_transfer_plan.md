@@ -21,8 +21,9 @@ Version 0.8.18 adds both native IPTC creation-date/time pairs to materialized XM
 including year/month precision, explicit timezone absence and transactional conflicts.
 Version 0.8.19 preserves that precision through reverse XMP-to-IPTC translation
 and verifies removal of stale time fields by nonempty JPEG/TIFF payload replacement.
-Next synchronization candidate: explicit IPTC carrier removal when the last active
-dataset is deleted. An omitted/empty prepared IPTC route does not clear a target.
+Version 0.8.20 adds explicit IPTC carrier removal after the last native dataset
+is deleted. Omission and disabled IPTC output preserve the target. Active charset
+and version records retain the carrier. See [canonical_serialization.md](canonical_serialization.md).
 Full RDF authoring, fresh ICC construction and prepared IPTC patching remain open.
 
 Date: March 5, 2026

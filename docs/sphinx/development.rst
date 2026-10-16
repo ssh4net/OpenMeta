@@ -1,6 +1,30 @@
 Developer Notes
 ===============
 
+IPTC carrier removal (0.8.20)
+-----------------------------
+
+Prepared bundles now carry explicit ``remove_existing_iptc`` edit intent. Preparation
+sets it for JPEG/TIFF/DNG only when IPTC output is enabled, no active native IPTC
+dataset remains, and at least one native dataset is marked dirty and deleted.
+Omission, clean tombstones and disabled IPTC output do not request removal.
+All datasets count, including charset/version records; delete those explicitly
+when clearing the complete carrier. No automatic pruning is performed.
+
+JPEG edits remove managed IPTC resources from leading Photoshop APP13 streams,
+preserving unrelated resources byte for byte. TIFF/BigTIFF/DNG edits remove IFD0
+tag 33723 and preserve other tags and pixel data. This does not erase every
+possible embedded copy. Removal conflicts with a prepared IPTC payload. Fresh
+emission and payload-only handoffs reject the edit-only intent; exact-output
+packages and complete C2PA binding requests carry the edited bytes. Automatic
+C2PA signing-context preparation from an edited source snapshot remains
+unsupported; removal does not bypass that independent requirement. Snapshot
+wire v1 is unchanged.
+
+The bundle layout changes within unfrozen ABI 4. Rebuild consumers with matching
+0.8.20 headers and binaries. Preparation may allocate; hosts synchronize shared
+objects. General transfer and existing handoff wire versions remain unchanged.
+
 Reverse partial-date precision (0.8.19)
 ---------------------------------------
 

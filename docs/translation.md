@@ -273,8 +273,11 @@ ReplaceExisting removes stale source time when the new value has no time.
 Serialization builds a complete nonempty IPTC payload; JPEG/TIFF replacement
 therefore also removes target-only stale times. Retain other desired IPTC
 datasets in the source store. Under ReplaceExisting, a dirty XMP deletion can
-remove an existing native pair while another active dataset remains. Clearing the last active IPTC dataset
-needs a future explicit carrier-removal contract; omission does not clear it.
+remove an existing native pair. Since 0.8.20, deleting the last native dataset
+derives explicit carrier removal when IPTC output is enabled. Active charset and
+version records still retain the carrier; delete them explicitly to clear it.
+Omission and disabled output preserve the destination. See
+[canonical_serialization.md](canonical_serialization.md).
 
 ## Technical EXIF Mappings
 

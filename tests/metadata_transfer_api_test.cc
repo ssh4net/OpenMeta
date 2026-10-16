@@ -64726,3 +64726,345 @@ TEST(MetadataTransferApi,
     ASSERT_EQ(actual.size(), malformed.size());
     EXPECT_TRUE(std::equal(actual.begin(), actual.end(), malformed.begin()));
 }
+
+TEST(MetadataTransferApi,
+     IptcCarrierRemovalDerivesFromNativeTombstonesAndSnapshots)
+{
+    using namespace openmeta;
+    // Absent, clean deletion, dirty deletion, retained caption/version/charset.
+    for (unsigned state = 0U; state < 7U; ++state) {
+        SCOPED_TRACE(state);
+        MetaStore source;
+        if (state != 0U && state != 6U) {
+            Entry deleted;
+            deleted.key   = make_iptc_dataset_key(2U, 55U);
+            deleted.value = make_text(source.arena(), "20240102",
+                                      TextEncoding::Ascii);
+            deleted.flags = EntryFlags::Deleted;
+            if (state >= 2U)
+                deleted.flags |= EntryFlags::Dirty;
+            ASSERT_NE(source.add_entry(deleted), kInvalidEntryId);
+        }
+        if (state >= 3U && state <= 5U) {
+            Entry active;
+            active.key = make_iptc_dataset_key(state == 5U ? 1U : 2U,
+                                               state == 3U   ? 120U
+                                               : state == 4U ? 0U
+                                                             : 90U);
+            static constexpr std::array<std::byte, 3U> charset = {
+                std::byte { 0x1BU }, std::byte { 0x25U }, std::byte { 0x47U }
+            };
+            static constexpr std::array<std::byte, 2U> version
+                = { std::byte { 0U }, std::byte { 4U } };
+            active.value = state == 5U   ? make_bytes(source.arena(), charset)
+                           : state == 4U ? make_bytes(source.arena(), version)
+                                         : make_text(source.arena(), "keep",
+                                                     TextEncoding::Ascii);
+            ASSERT_NE(source.add_entry(active), kInvalidEntryId);
+        }
+        if (state == 2U) {
+            // A stale opaque resource must not resurrect the deleted dataset.
+            Entry opaque;
+            opaque.key = make_photoshop_irb_key(0x0404U);
+            static constexpr std::array<std::byte, 6U> iim
+                = { std::byte { 0x1CU }, std::byte { 2U }, std::byte { 5U },
+                    std::byte { 0U },    std::byte { 1U }, std::byte { 'X' } };
+            opaque.value = make_bytes(source.arena(), iim);
+            ASSERT_NE(source.add_entry(opaque), kInvalidEntryId);
+        }
+        if (state == 6U) {
+            Entry xmp;
+            xmp.key   = make_xmp_property_key(source.arena(),
+                                              "http://ns.adobe.com/xap/1.0/",
+                                              "CreateDate");
+            xmp.value = make_text(source.arena(), "2024-01-02",
+                                  TextEncoding::Utf8);
+            xmp.flags = EntryFlags::Dirty | EntryFlags::Deleted;
+            ASSERT_NE(source.add_entry(xmp), kInvalidEntryId);
+        }
+        source.finalize();
+        const auto snapshot = build_transfer_source_snapshot(source);
+        std::vector<std::byte> encoded;
+        ASSERT_EQ(serialize_transfer_source_snapshot(snapshot, &encoded).status,
+                  TransferStatus::Ok);
+        TransferSourceSnapshot restored;
+        ASSERT_EQ(
+            deserialize_transfer_source_snapshot(encoded, &restored).status,
+            TransferStatus::Ok);
+        for (const auto target :
+             { TransferTargetFormat::Jpeg, TransferTargetFormat::Tiff,
+               TransferTargetFormat::Dng }) {
+            for (const bool enabled : { false, true }) {
+                PrepareTransferRequest request;
+                request.target_format      = target;
+                request.include_exif_app1  = false;
+                request.include_xmp_app1   = false;
+                request.include_icc_app2   = false;
+                request.include_iptc_app13 = enabled;
+                PreparedTransferBundle direct, snap, decoded;
+                ASSERT_EQ(prepare_metadata_for_target(source, request, &direct)
+                              .status,
+                          TransferStatus::Ok);
+                ASSERT_EQ(prepare_metadata_for_target_snapshot(snapshot,
+                                                               request, &snap)
+                              .status,
+                          TransferStatus::Ok);
+                ASSERT_EQ(prepare_metadata_for_target_snapshot(restored,
+                                                               request,
+                                                               &decoded)
+                              .status,
+                          TransferStatus::Ok);
+                const bool remove = enabled && state == 2U;
+                EXPECT_EQ(direct.remove_existing_iptc, remove);
+                EXPECT_EQ(snap.remove_existing_iptc, remove);
+                EXPECT_EQ(decoded.remove_existing_iptc, remove);
+                EXPECT_EQ(snap.blocks.size(), direct.blocks.size());
+                EXPECT_EQ(decoded.blocks.size(), direct.blocks.size());
+                if (remove)
+                    EXPECT_TRUE(direct.blocks.empty());
+                if (enabled && state >= 3U && state <= 5U)
+                    EXPECT_FALSE(direct.blocks.empty());
+            }
+        }
+    }
+}
+
+TEST(MetadataTransferApi,
+     IptcCarrierRemovalPreservesTiffVariantsAndPackageReplay)
+{
+    using namespace openmeta;
+    MetaStore native;
+    Entry caption;
+    caption.key   = make_iptc_dataset_key(2U, 120U);
+    caption.value = make_text(native.arena(), "old caption",
+                              TextEncoding::Ascii);
+    caption.flags = EntryFlags::Dirty;
+    ASSERT_NE(native.add_entry(caption), kInvalidEntryId);
+    native.finalize();
+    for (const bool big_tiff : { false, true }) {
+        for (const bool big_endian : { false, true }) {
+            for (const auto target :
+                 { TransferTargetFormat::Tiff, TransferTargetFormat::Dng }) {
+                SCOPED_TRACE(big_tiff);
+                SCOPED_TRACE(big_endian);
+                SCOPED_TRACE(static_cast<int>(target));
+                PrepareTransferRequest request;
+                request.target_format     = target;
+                request.profile.safety    = TransferSafetyMode::CompatibleFile;
+                request.include_exif_app1 = false;
+                request.include_xmp_app1  = false;
+                request.include_icc_app2  = false;
+                PreparedTransferBundle replacement;
+                ASSERT_EQ(prepare_metadata_for_target(native, request,
+                                                      &replacement)
+                              .status,
+                          TransferStatus::Ok);
+                const auto original = make_timestamp_exif_target(big_tiff,
+                                                                 big_endian);
+                const auto put_plan
+                    = plan_prepared_bundle_tiff_edit(original, replacement);
+                ASSERT_EQ(put_plan.status, TransferStatus::Ok)
+                    << put_plan.message;
+                std::vector<std::byte> input;
+                ASSERT_EQ(apply_prepared_bundle_tiff_edit(original, replacement,
+                                                          put_plan, &input)
+                              .status,
+                          TransferStatus::Ok);
+                uint64_t value = 0U;
+                const uint64_t input_ifd
+                    = read_tiff_test_unsigned(input, big_tiff ? 8U : 4U,
+                                              big_tiff ? 8U : 4U, big_endian);
+                ASSERT_TRUE(find_tiff_test_entry(input, input_ifd, 33723U,
+                                                 big_tiff, big_endian, nullptr,
+                                                 nullptr, &value));
+                PreparedTransferBundle removal;
+                removal.target_format        = target;
+                removal.remove_existing_iptc = true;
+                const auto plan = plan_prepared_bundle_tiff_edit(input,
+                                                                 removal);
+                ASSERT_EQ(plan.status, TransferStatus::Ok) << plan.message;
+                std::vector<std::byte> output;
+                ASSERT_EQ(apply_prepared_bundle_tiff_edit(input, removal, plan,
+                                                          &output)
+                              .status,
+                          TransferStatus::Ok);
+                const uint64_t output_ifd
+                    = read_tiff_test_unsigned(output, big_tiff ? 8U : 4U,
+                                              big_tiff ? 8U : 4U, big_endian);
+                EXPECT_FALSE(find_tiff_test_entry(output, output_ifd, 33723U,
+                                                  big_tiff, big_endian, nullptr,
+                                                  nullptr, nullptr));
+                ASSERT_NO_FATAL_FAILURE(expect_structured_tiff_target_carriers(
+                    input, output, big_tiff, big_endian));
+                BufferByteWriter direct;
+                ASSERT_EQ(write_prepared_bundle_tiff_edit(input, removal, plan,
+                                                          direct)
+                              .status,
+                          TransferStatus::Ok);
+                EXPECT_EQ(direct.out, output);
+                PreparedTransferPackagePlan package;
+                ASSERT_EQ(build_prepared_bundle_tiff_package(input, removal,
+                                                             plan, &package)
+                              .status,
+                          TransferStatus::Ok);
+                PreparedTransferPackageBatch batch;
+                ASSERT_EQ(build_prepared_transfer_package_batch(input, removal,
+                                                                package, &batch)
+                              .status,
+                          TransferStatus::Ok);
+                std::vector<std::byte> wire;
+                ASSERT_EQ(serialize_prepared_transfer_package_batch(batch, &wire)
+                              .status,
+                          TransferStatus::Ok);
+                PreparedTransferPackageBatch restored;
+                ASSERT_EQ(deserialize_prepared_transfer_package_batch(wire,
+                                                                      &restored)
+                              .status,
+                          TransferStatus::Ok);
+                BufferByteWriter replay;
+                ASSERT_EQ(write_prepared_transfer_package_batch(restored, replay)
+                              .status,
+                          TransferStatus::Ok);
+                EXPECT_EQ(replay.out, output);
+                const auto noop = plan_prepared_bundle_tiff_edit(original,
+                                                                 removal);
+                ASSERT_EQ(noop.status, TransferStatus::Ok);
+                std::vector<std::byte> noop_output;
+                ASSERT_EQ(apply_prepared_bundle_tiff_edit(original, removal,
+                                                          noop, &noop_output)
+                              .status,
+                          TransferStatus::Ok);
+                ASSERT_NO_FATAL_FAILURE(expect_structured_tiff_target_carriers(
+                    original, noop_output, big_tiff, big_endian));
+                // Decoded EXIF may still carry tag33723. Explicit removal wins.
+                auto read = read_transfer_source_snapshot_bytes(input);
+                ASSERT_EQ(read.status, TransferStatus::Ok);
+                MetaEdit edit;
+                for (EntryId id = 0U; id < read.snapshot.store.entries().size();
+                     ++id) {
+                    if (read.snapshot.store.entry(id).key.kind
+                        == MetaKeyKind::IptcDataset)
+                        edit.tombstone(id);
+                }
+                read.snapshot.store
+                    = commit(read.snapshot.store,
+                             std::span<const MetaEdit>(&edit, 1U));
+                request.include_exif_app1 = true;
+                PreparedTransferBundle copied;
+                ASSERT_EQ(prepare_metadata_for_target_snapshot(read.snapshot,
+                                                               request, &copied)
+                              .status,
+                          TransferStatus::Ok);
+                ASSERT_TRUE(copied.remove_existing_iptc);
+                bool copied_iptc_tag = false;
+                for (const auto& block : copied.blocks) {
+                    if (block.route == "tiff:ifd-exif-app1")
+                        copied_iptc_tag
+                            |= prepared_exif_block_contains_ifd0_tag(block,
+                                                                     33723U);
+                }
+                ASSERT_TRUE(copied_iptc_tag);
+                const auto copied_plan = plan_prepared_bundle_tiff_edit(input,
+                                                                        copied);
+                ASSERT_EQ(copied_plan.status, TransferStatus::Ok)
+                    << copied_plan.message;
+                std::vector<std::byte> copied_output;
+                ASSERT_EQ(apply_prepared_bundle_tiff_edit(input, copied,
+                                                          copied_plan,
+                                                          &copied_output)
+                              .status,
+                          TransferStatus::Ok);
+                const uint64_t copied_ifd
+                    = read_tiff_test_unsigned(copied_output, big_tiff ? 8U : 4U,
+                                              big_tiff ? 8U : 4U, big_endian);
+                EXPECT_FALSE(find_tiff_test_entry(copied_output, copied_ifd,
+                                                  33723U, big_tiff, big_endian,
+                                                  nullptr, nullptr, nullptr));
+            }
+        }
+    }
+}
+
+TEST(MetadataTransferApi,
+     IptcCarrierRemovalRejectsPayloadOnlyConsumersAndConflicts)
+{
+    using namespace openmeta;
+    for (const auto target :
+         { TransferTargetFormat::Jpeg, TransferTargetFormat::Tiff,
+           TransferTargetFormat::Dng }) {
+        PreparedTransferBundle removal;
+        removal.target_format        = target;
+        removal.remove_existing_iptc = true;
+        PreparedTransferAdapterView adapter;
+        EXPECT_EQ(build_prepared_transfer_adapter_view(removal, &adapter).status,
+                  TransferStatus::Unsupported);
+        PreparedTransferPayloadBatch payload;
+        EXPECT_EQ(
+            build_prepared_transfer_payload_batch(removal, &payload).status,
+            TransferStatus::Unsupported);
+        PreparedTransferPackagePlan fresh;
+        EXPECT_EQ(build_prepared_transfer_emit_package(removal, &fresh).status,
+                  TransferStatus::Unsupported);
+        if (target == TransferTargetFormat::Jpeg) {
+            PreparedJpegEmitPlan compiled;
+            EXPECT_EQ(compile_prepared_bundle_jpeg(removal, &compiled).status,
+                      TransferStatus::Unsupported);
+            BufferByteWriter writer;
+            EXPECT_EQ(write_prepared_bundle_jpeg(removal, writer).status,
+                      TransferStatus::Unsupported);
+            EXPECT_TRUE(writer.out.empty());
+        } else {
+            PreparedTiffEmitPlan compiled;
+            EXPECT_EQ(compile_prepared_bundle_tiff(removal, &compiled).status,
+                      TransferStatus::Unsupported);
+        }
+        for (unsigned conflict = 0U; conflict < 4U; ++conflict) {
+            auto invalid = removal;
+            PreparedTransferBlock block;
+            block.kind  = conflict == 0U ? TransferBlockKind::IptcIim
+                                         : TransferBlockKind::Exif;
+            block.route = conflict == 1U   ? "jpeg:app13-iptc"
+                          : conflict == 2U ? "tiff:tag-33723-iptc"
+                                           : "unknown";
+            if (conflict == 3U) {
+                block.kind  = TransferBlockKind::IptcIim;
+                block.route = target == TransferTargetFormat::Jpeg
+                                  ? "jpeg:app13-iptc"
+                                  : "tiff:tag-33723-iptc";
+            }
+            invalid.blocks.push_back(
+                block);  // Empty payload is still contradictory.
+            std::vector<std::byte> output = { std::byte { 0xA5U } };
+            if (target == TransferTargetFormat::Jpeg) {
+                const auto input      = make_jpeg_with_segments({});
+                const auto valid_plan = plan_prepared_bundle_jpeg_edit(input,
+                                                                       removal);
+                ASSERT_EQ(valid_plan.status, TransferStatus::Ok);
+                EXPECT_NE(plan_prepared_bundle_jpeg_edit(input, invalid).status,
+                          TransferStatus::Ok);
+                EXPECT_NE(apply_prepared_bundle_jpeg_edit(input, invalid,
+                                                          valid_plan, &output)
+                              .status,
+                          TransferStatus::Ok);
+            } else {
+                const auto input      = make_minimal_tiff_little_endian();
+                const auto valid_plan = plan_prepared_bundle_tiff_edit(input,
+                                                                       removal);
+                ASSERT_EQ(valid_plan.status, TransferStatus::Ok);
+                EXPECT_NE(plan_prepared_bundle_tiff_edit(input, invalid).status,
+                          TransferStatus::Ok);
+                EXPECT_NE(apply_prepared_bundle_tiff_edit(input, invalid,
+                                                          valid_plan, &output)
+                              .status,
+                          TransferStatus::Ok);
+            }
+            EXPECT_EQ(output, (std::vector<std::byte> { std::byte { 0xA5U } }));
+        }
+    }
+    PreparedTransferBundle wrong;
+    wrong.target_format        = TransferTargetFormat::Jxl;
+    wrong.remove_existing_iptc = true;
+    PreparedJxlEncoderHandoffView handoff;
+    EXPECT_NE(build_prepared_jxl_encoder_handoff_view(wrong, &handoff).status,
+              TransferStatus::Ok);
+}

@@ -4196,11 +4196,12 @@ main(int argc, char** argv)
                     xmp_status_name(prepared.read.xmp.status),
                     jumbf_status_name(prepared.read.jumbf.status));
         std::printf(
-            "  prepare: status=%s code=%s blocks=%u warnings=%u errors=%u\n",
+            "  prepare: status=%s code=%s blocks=%u warnings=%u errors=%u remove_existing_iptc=%s\n",
             transfer_status_name(prepared.prepare.status),
             prepare_transfer_code_name(prepared.prepare.code),
             static_cast<unsigned>(prepared.bundle.blocks.size()),
-            prepared.prepare.warnings, prepared.prepare.errors);
+            prepared.prepare.warnings, prepared.prepare.errors,
+            prepared.bundle.remove_existing_iptc ? "yes" : "no");
         if (!prepared.prepare.message.empty()) {
             std::printf("  prepare_message=%s\n",
                         prepared.prepare.message.c_str());

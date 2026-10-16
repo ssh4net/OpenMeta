@@ -1261,7 +1261,8 @@ def main(argv: list[str]) -> int:
         )
         print(
             f"  prepare: status={probe['prepare_status_name']} blocks={len(probe['blocks'])} "
-            f"warnings={probe['prepare_warnings']} errors={probe['prepare_errors']}"
+            f"warnings={probe['prepare_warnings']} errors={probe['prepare_errors']} "
+            f"remove_existing_iptc={probe['remove_existing_iptc']}"
         )
         if args.xmp_include_existing_sidecar:
             print(

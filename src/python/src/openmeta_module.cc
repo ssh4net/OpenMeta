@@ -3223,6 +3223,7 @@ namespace {
             blocks.append(std::move(one));
         }
         out["blocks"] = std::move(blocks);
+        out["remove_existing_iptc"] = prepared.bundle.remove_existing_iptc;
 
         nb::list tiff_ifd0_removals;
         for (uint16_t tag : prepared.bundle.tiff_ifd0_removals) {
@@ -4430,6 +4431,7 @@ namespace {
             blocks.append(std::move(one));
         }
         out["blocks"] = std::move(blocks);
+        out["remove_existing_iptc"] = prepared.bundle.remove_existing_iptc;
 
         nb::list policy_decisions;
         for (size_t i = 0; i < prepared.bundle.policy_decisions.size(); ++i) {

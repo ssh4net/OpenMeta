@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "openmeta/meta_edit.h"
+#include "openmeta/meta_key.h"
 #include "openmeta/metadata_transfer.h"
 
 #include <gtest/gtest.h>
@@ -562,3 +564,133 @@ TEST(JpegIptcC2pa,
 }
 
 }  // namespace
+
+
+TEST(JpegIptcC2pa, RemovalOnlyBindsExactResidualAndRejectsChangedIntent)
+{
+    using namespace openmeta;
+    const auto input = make_source_jpeg();
+    ReadTransferSourceSnapshotOptions read_options;
+    read_options.preserve_raw_carriers = true;
+    auto read = read_transfer_source_snapshot_bytes(input, read_options);
+    ASSERT_EQ(read.status, TransferStatus::Ok);
+    MetaEdit edit;
+    uint32_t tombstones = 0U;
+    for (EntryId id = 0U; id < read.snapshot.store.entries().size(); ++id) {
+        if (read.snapshot.store.entry(id).key.kind
+            == MetaKeyKind::IptcDataset) {
+            edit.tombstone(id);
+            ++tombstones;
+        }
+    }
+    ASSERT_GT(tombstones, 0U);
+    read.snapshot.store = commit(read.snapshot.store,
+                                 std::span<const MetaEdit>(&edit, 1U));
+    PrepareTransferRequest snapshot_request;
+    snapshot_request.target_format     = TransferTargetFormat::Jpeg;
+    snapshot_request.include_exif_app1 = false;
+    snapshot_request.include_xmp_app1  = false;
+    snapshot_request.include_icc_app2  = false;
+    snapshot_request.profile.jumbf     = TransferPolicyAction::Drop;
+    snapshot_request.profile.c2pa      = TransferPolicyAction::Rewrite;
+    PreparedTransferBundle unsupported_snapshot;
+    // Store/snapshot preparation has no target binding context. Removal must
+    // not hide this independently unavailable signing operation.
+    EXPECT_EQ(prepare_metadata_for_target_snapshot(read.snapshot,
+                                                   snapshot_request,
+                                                   &unsupported_snapshot)
+                  .status,
+              TransferStatus::Unsupported);
+    EXPECT_TRUE(unsupported_snapshot.remove_existing_iptc);
+    EXPECT_TRUE(unsupported_snapshot.blocks.empty());
+
+    PreparedJpegFixture fixture;
+    ASSERT_TRUE(prepare_source_fixture(&fixture));
+    ASSERT_EQ(fixture.prepare_status, TransferStatus::Ok);
+    auto bundle = fixture.bundle;
+    ASSERT_EQ(bundle.blocks.size(), 1U);
+    ASSERT_EQ(bundle.blocks.front().route, "jpeg:app13-iptc");
+    // This manually authored complete binding contract removes the one old
+    // prepared IPTC segment. The public binder independently recomputes the
+    // canonical output from target bytes and must agree with this contract.
+    // It does not claim automatic snapshot-to-signing-context preparation.
+    bundle.blocks.clear();
+    bundle.remove_existing_iptc = true;
+    auto& chunks                = bundle.c2pa_rewrite.content_binding_chunks;
+    uint32_t removed_prepared_chunks = 0U;
+    for (size_t i = 0U; i < chunks.size();) {
+        if (chunks[i].kind
+            == TransferC2paRewriteChunkKind::PreparedJpegSegment) {
+            ASSERT_EQ(chunks[i].block_index, 0U);
+            ASSERT_LE(chunks[i].size,
+                      bundle.c2pa_rewrite.content_binding_bytes);
+            bundle.c2pa_rewrite.content_binding_bytes -= chunks[i].size;
+            chunks.erase(chunks.begin() + static_cast<std::ptrdiff_t>(i));
+            ++removed_prepared_chunks;
+        } else {
+            ++i;
+        }
+    }
+    ASSERT_EQ(removed_prepared_chunks, 1U);
+    ExecutePreparedTransferOptions execute;
+    execute.edit_requested = true;
+    execute.edit_apply     = true;
+    const auto result      = execute_prepared_transfer(&bundle, input, execute);
+    ASSERT_EQ(result.edit_apply.status, TransferStatus::Ok)
+        << result.edit_apply.message;
+    PreparedTransferC2paSignRequest request;
+    ASSERT_EQ(build_prepared_c2pa_sign_request(bundle, &request),
+              TransferStatus::Ok);
+    const size_t residual_index = find_preserved_chunk(
+        request.content_binding_chunks);
+    ASSERT_LT(residual_index, request.content_binding_chunks.size());
+    EXPECT_EQ(request.content_binding_chunks[residual_index].source_offset, 8U);
+    EXPECT_EQ(request.content_binding_chunks[residual_index].size,
+              4U + kPhotoshopHeader.size() + kOtherPhotoshopResource.size());
+    std::vector<std::byte> binding;
+    ASSERT_EQ(build_prepared_c2pa_sign_request_binding(bundle, input, request,
+                                                       &binding)
+                  .status,
+              TransferStatus::Ok);
+    std::vector<std::byte> expected          = { std::byte { 0xFFU },
+                                                 std::byte { 0xD8U } };
+    constexpr std::array<std::byte, 2U> app0 = { std::byte { 0x11U },
+                                                 std::byte { 0x12U } };
+    append_jpeg_segment(&expected, 0xE0U, app0);
+    std::vector<std::byte> residual(kPhotoshopHeader.begin(),
+                                    kPhotoshopHeader.end());
+    residual.insert(residual.end(), kOtherPhotoshopResource.begin(),
+                    kOtherPhotoshopResource.end());
+    append_jpeg_segment(&expected, 0xEDU, residual);
+    constexpr std::array<std::byte, 3U> comment
+        = { std::byte { 'C' }, std::byte { 'M' }, std::byte { 'T' } };
+    append_jpeg_segment(&expected, 0xFEU, comment);
+    constexpr std::array<std::byte, 8U> tail
+        = { std::byte { 0xFFU }, std::byte { 0xDAU }, std::byte { 0U },
+            std::byte { 2U },    std::byte { 0x31U }, std::byte { 0x32U },
+            std::byte { 0xFFU }, std::byte { 0xD9U } };
+    expected.insert(expected.end(), tail.begin(), tail.end());
+    EXPECT_EQ(binding, expected);
+    EXPECT_EQ(result.edited_output, expected);
+    PreparedTransferC2paHandoffPackage handoff;
+    ASSERT_EQ(build_prepared_c2pa_handoff_package(bundle, input, &handoff),
+              TransferStatus::Ok);
+    std::vector<std::byte> wire;
+    ASSERT_EQ(serialize_prepared_c2pa_handoff_package(handoff, &wire).status,
+              TransferStatus::Ok);
+    ASSERT_GE(wire.size(), 12U);
+    EXPECT_EQ(read_u32le(wire, 8U), 2U);
+    PreparedTransferC2paHandoffPackage restored;
+    ASSERT_EQ(deserialize_prepared_c2pa_handoff_package(wire, &restored).status,
+              TransferStatus::Ok);
+    EXPECT_EQ(restored.binding_bytes, expected);
+    auto changed                     = bundle;
+    changed.remove_existing_iptc     = false;
+    std::vector<std::byte> untouched = { std::byte { 0xA5U } };
+    EXPECT_NE(build_prepared_c2pa_sign_request_binding(changed, input, request,
+                                                       &untouched)
+                  .status,
+              TransferStatus::Ok);
+    // Binding materialization retains its existing clear-on-error contract.
+    EXPECT_TRUE(untouched.empty());
+}

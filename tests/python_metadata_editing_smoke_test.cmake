@@ -522,6 +522,29 @@ with tempfile.TemporaryDirectory() as temporary:
     assert b'<photoshop:DateCreated>2024-02-29T23:59:59-00:00</photoshop:DateCreated>' in packet
     assert b'<xmp:CreateDate>2026-10-16T12:34:56+05:45</xmp:CreateDate>' in packet
     assert native.entry_count == count and translated.entry_count == count + 2
+    # Removing the final native fields must clear the carrier, not restore its opaque bytes.
+    deletion_source = native_dates([(62, '20261016'), (63, '123456+0545')])
+    deleted_dates = deletion_source.translate_iptc_dates_to_xmp().edit_metadata([
+        openmeta.metadata_edit_remove_all(K.CreateDate),
+    ]).translate_creation_dates(
+        create_date_to_exif_digitized=False,
+        date_time_original_to_exif_original=False,
+        conflict_policy=openmeta.MetadataDateTranslationConflictPolicy.ReplaceExisting)
+    for enabled in [True, False]:
+        removed = openmeta.unsafe_transfer_snapshot_probe(
+            deleted_dates.build_transfer_source_snapshot(),
+            target_format=openmeta.TransferTargetFormat.Jpeg,
+            include_exif_app1=False, include_xmp_app1=False, include_icc_app2=False,
+            include_iptc_app13=enabled, edit_target_path='memory_iptc.jpg',
+            target_bytes=native_path.read_bytes(), include_edited_bytes=True)
+        assert removed['prepare_status'] == openmeta.TransferStatus.Ok, removed
+        assert removed['remove_existing_iptc'] is enabled, removed
+        assert removed['edit_apply_status'] == openmeta.TransferStatus.Ok, removed
+        if enabled:
+            assert removed['blocks'] == [], removed
+            assert bytes(removed['edited_bytes']) == bytes.fromhex('ffd8ffd9'), removed
+        else:
+            assert bytes(removed['edited_bytes']) == native_path.read_bytes(), removed
     assert native.translate_iptc_dates_to_xmp(created=False).entry_count == count + 1
     assert native.translate_iptc_dates_to_xmp(digital_creation=False).entry_count == count + 1
     assert native.translate_iptc_dates_to_xmp(created=False, digital_creation=False).entry_count == count

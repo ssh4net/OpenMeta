@@ -64,6 +64,73 @@ struct CountingByteWriter final : openmeta::TransferByteWriter {
     std::vector<std::byte> output;
 };
 
+struct CountingJpegEmitter final : openmeta::JpegTransferEmitter {
+    openmeta::TransferStatus
+    write_app_marker(uint8_t marker_code,
+                     std::span<const std::byte> payload) noexcept override
+    {
+        calls += 1U;
+        last_marker = marker_code;
+        last_payload.assign(payload.begin(), payload.end());
+        return openmeta::TransferStatus::Ok;
+    }
+
+    uint32_t calls      = 0U;
+    uint8_t last_marker = 0U;
+    std::vector<std::byte> last_payload;
+};
+
+struct PackageReplayBytes final {
+    openmeta::TransferTargetFormat target = openmeta::TransferTargetFormat::Jpeg;
+    uint32_t expected_chunks = 0U;
+    uint32_t begin_calls     = 0U;
+    uint32_t emitted_chunks  = 0U;
+    uint32_t end_calls       = 0U;
+    std::vector<std::byte> output;
+};
+
+static openmeta::TransferStatus
+replay_begin(void* user, openmeta::TransferTargetFormat target,
+             uint32_t chunk_count) noexcept
+{
+    if (!user) {
+        return openmeta::TransferStatus::InvalidArgument;
+    }
+    PackageReplayBytes* replay = static_cast<PackageReplayBytes*>(user);
+    replay->target             = target;
+    replay->expected_chunks    = chunk_count;
+    replay->begin_calls += 1U;
+    return openmeta::TransferStatus::Ok;
+}
+
+static openmeta::TransferStatus
+replay_emit(void* user,
+            const openmeta::PreparedTransferPackageView* view) noexcept
+{
+    if (!user || !view) {
+        return openmeta::TransferStatus::InvalidArgument;
+    }
+    PackageReplayBytes* replay = static_cast<PackageReplayBytes*>(user);
+    replay->output.insert(replay->output.end(), view->bytes.begin(),
+                          view->bytes.end());
+    replay->emitted_chunks += 1U;
+    return openmeta::TransferStatus::Ok;
+}
+
+static openmeta::TransferStatus
+replay_end(void* user, openmeta::TransferTargetFormat target) noexcept
+{
+    if (!user) {
+        return openmeta::TransferStatus::InvalidArgument;
+    }
+    PackageReplayBytes* replay = static_cast<PackageReplayBytes*>(user);
+    if (target != replay->target) {
+        return openmeta::TransferStatus::InvalidArgument;
+    }
+    replay->end_calls += 1U;
+    return openmeta::TransferStatus::Ok;
+}
+
 template<size_t N>
 static void
 append_array(std::vector<std::byte>* output,
@@ -184,6 +251,15 @@ make_iptc_bundle(std::span<const std::byte> payload)
     iptc.route = "jpeg:app13-iptc";
     iptc.payload.assign(payload.begin(), payload.end());
     bundle.blocks.push_back(std::move(iptc));
+    return bundle;
+}
+
+static openmeta::PreparedTransferBundle
+make_iptc_removal_bundle()
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format        = openmeta::TransferTargetFormat::Jpeg;
+    bundle.remove_existing_iptc = true;
     return bundle;
 }
 
@@ -596,4 +672,257 @@ TEST(JpegIptcResourceEdit, KeepsNearCeilingIptcAndPhotoshopResidualSeparate)
           - 2U;
     EXPECT_EQ(second_payload_size, expected_residual.size());
     EXPECT_LE(second_payload_size, 65533U);
+}
+
+
+TEST(JpegIptcResourceEdit,
+     RemovesManagedIptcAndPreservesPhotoshopResidualPlacement)
+{
+    const std::vector<std::byte> mixed     = make_mixed_source_one();
+    const std::vector<std::byte> pure_iptc = make_photoshop_payload(
+        kIptcRecord);
+    const std::vector<std::byte> pure_photoshop = make_photoshop_payload(
+        kOtherPaddedNameOddData);
+    const openmeta::PreparedTransferBundle bundle = make_iptc_removal_bundle();
+
+    std::vector<std::byte> input = { std::byte { 0xFFU }, std::byte { 0xD8U } };
+    constexpr std::array<std::byte, 2U> app0_payload = { std::byte { 0x11U },
+                                                         std::byte { 0x12U } };
+    constexpr std::array<std::byte, 3U> comment_payload
+        = { std::byte { 'C' }, std::byte { 'O' }, std::byte { 'M' } };
+    append_jpeg_segment(&input, 0xE0U, app0_payload);
+    append_jpeg_segment(&input, 0xEDU, mixed);
+    append_jpeg_segment(&input, 0xFEU, comment_payload);
+    append_jpeg_segment(&input, 0xEDU, pure_iptc);
+    append_jpeg_segment(&input, 0xEDU, pure_photoshop);
+    append_jpeg_tail(&input);
+
+    std::vector<std::byte> residual(kPhotoshopHeader.begin(),
+                                    kPhotoshopHeader.end());
+    append_array(&residual, kOtherPaddedNameOddData);
+    append_array(&residual, kOtherDuplicateId);
+    std::vector<std::byte> expected = { std::byte { 0xFFU },
+                                        std::byte { 0xD8U } };
+    append_jpeg_segment(&expected, 0xE0U, app0_payload);
+    append_jpeg_segment(&expected, 0xEDU, residual);
+    append_jpeg_segment(&expected, 0xFEU, comment_payload);
+    append_jpeg_segment(&expected, 0xEDU, pure_photoshop);
+    append_jpeg_tail(&expected);
+
+    const openmeta::JpegEditPlan plan
+        = openmeta::plan_prepared_bundle_jpeg_edit(input, bundle);
+    ASSERT_EQ(plan.status, openmeta::TransferStatus::Ok);
+    EXPECT_FALSE(plan.in_place_possible);
+    EXPECT_EQ(plan.selected_mode, openmeta::JpegEditMode::MetadataRewrite);
+    EXPECT_EQ(plan.removed_existing_segments, 2U);
+    EXPECT_EQ(plan.output_size, expected.size());
+
+    std::vector<std::byte> output;
+    const openmeta::EmitTransferResult applied
+        = openmeta::apply_prepared_bundle_jpeg_edit(input, bundle, plan,
+                                                    &output);
+    ASSERT_EQ(applied.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(applied.skipped, 2U);
+    EXPECT_EQ(applied.emitted, 1U);
+    EXPECT_EQ(output, expected);
+
+    CountingByteWriter writer;
+    const openmeta::EmitTransferResult written
+        = openmeta::write_prepared_bundle_jpeg_edit(input, bundle, plan,
+                                                    writer);
+    ASSERT_EQ(written.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(writer.output, expected);
+
+    std::vector<std::byte> aliased = input;
+    const std::span<const std::byte> input_alias(aliased.data(),
+                                                 aliased.size());
+    const openmeta::EmitTransferResult alias_result
+        = openmeta::apply_prepared_bundle_jpeg_edit(input_alias, bundle, plan,
+                                                    &aliased);
+    ASSERT_EQ(alias_result.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(aliased, expected);
+
+    openmeta::JpegEditPlan tampered_plan = plan;
+    tampered_plan.output_size            = std::numeric_limits<uint64_t>::max();
+    std::vector<std::byte> sentinel = { std::byte { 'o' }, std::byte { 'k' } };
+    const std::vector<std::byte> original_sentinel = sentinel;
+    EXPECT_EQ(openmeta::apply_prepared_bundle_jpeg_edit(input, bundle,
+                                                        tampered_plan,
+                                                        &sentinel)
+                  .status,
+              openmeta::TransferStatus::InvalidArgument);
+    EXPECT_EQ(sentinel, original_sentinel);
+
+    openmeta::PreparedTransferPackagePlan package;
+    ASSERT_EQ(openmeta::build_prepared_bundle_jpeg_package(input, bundle, plan,
+                                                           &package)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(package.output_size, expected.size());
+    CountingByteWriter package_writer;
+    ASSERT_EQ(openmeta::write_prepared_transfer_package(input, bundle, package,
+                                                        package_writer)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(package_writer.output, expected);
+
+    openmeta::PreparedTransferPackageBatch batch;
+    ASSERT_EQ(openmeta::build_prepared_transfer_package_batch(input, bundle,
+                                                              package, &batch)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    std::vector<std::byte> encoded_batch;
+    ASSERT_EQ(openmeta::serialize_prepared_transfer_package_batch(batch,
+                                                                  &encoded_batch)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    openmeta::PreparedTransferPackageBatch restored_batch;
+    ASSERT_EQ(openmeta::deserialize_prepared_transfer_package_batch(
+                  encoded_batch, &restored_batch)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    CountingByteWriter batch_writer;
+    ASSERT_EQ(openmeta::write_prepared_transfer_package_batch(restored_batch,
+                                                              batch_writer)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(batch_writer.output, expected);
+
+    PackageReplayBytes replay_bytes;
+    openmeta::PreparedTransferPackageReplayCallbacks callbacks;
+    callbacks.begin_batch = replay_begin;
+    callbacks.emit_chunk  = replay_emit;
+    callbacks.end_batch   = replay_end;
+    callbacks.user        = &replay_bytes;
+    const openmeta::PreparedTransferPackageReplayResult replay
+        = openmeta::replay_prepared_transfer_package_batch(restored_batch,
+                                                           callbacks);
+    ASSERT_EQ(replay.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(replay.replayed, restored_batch.chunks.size());
+    EXPECT_EQ(replay_bytes.begin_calls, 1U);
+    EXPECT_EQ(replay_bytes.end_calls, 1U);
+    EXPECT_EQ(replay_bytes.emitted_chunks, replay_bytes.expected_chunks);
+    EXPECT_EQ(replay_bytes.output, expected);
+}
+
+
+TEST(JpegIptcResourceEdit,
+     RemovalWithoutManagedIptcIsNoOpAndFreshEmitRejectsIntent)
+{
+    const std::vector<std::byte> pure_photoshop = make_photoshop_payload(
+        kOtherPaddedNameOddData);
+    std::vector<std::byte> input = { std::byte { 0xFFU }, std::byte { 0xD8U } };
+    append_jpeg_segment(&input, 0xEDU, pure_photoshop);
+    append_jpeg_tail(&input);
+    const openmeta::PreparedTransferBundle removal = make_iptc_removal_bundle();
+
+    const openmeta::JpegEditPlan plan
+        = openmeta::plan_prepared_bundle_jpeg_edit(input, removal);
+    ASSERT_EQ(plan.status, openmeta::TransferStatus::Ok);
+    EXPECT_TRUE(plan.in_place_possible);
+    EXPECT_EQ(plan.selected_mode, openmeta::JpegEditMode::InPlace);
+    EXPECT_EQ(plan.output_size, input.size());
+    EXPECT_EQ(plan.removed_existing_segments, 0U);
+
+    std::vector<std::byte> output;
+    const openmeta::EmitTransferResult applied
+        = openmeta::apply_prepared_bundle_jpeg_edit(input, removal, plan,
+                                                    &output);
+    ASSERT_EQ(applied.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(output, input);
+
+    CountingByteWriter edit_writer;
+    ASSERT_EQ(openmeta::write_prepared_bundle_jpeg_edit(input, removal, plan,
+                                                        edit_writer)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(edit_writer.output, input);
+
+    CountingJpegEmitter emitter;
+    EXPECT_EQ(openmeta::emit_prepared_bundle_jpeg(removal, emitter).status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(emitter.calls, 0U);
+    openmeta::PreparedTransferBundle ordinary_bundle;
+    ordinary_bundle.target_format = openmeta::TransferTargetFormat::Jpeg;
+    openmeta::PreparedJpegEmitPlan compiled;
+    ASSERT_EQ(openmeta::compile_prepared_bundle_jpeg(ordinary_bundle, &compiled)
+                  .status,
+              openmeta::TransferStatus::Ok);
+    EXPECT_EQ(openmeta::compile_prepared_bundle_jpeg(removal, &compiled).status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(openmeta::emit_prepared_bundle_jpeg_compiled(removal, compiled,
+                                                           emitter)
+                  .status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(emitter.calls, 0U);
+    CountingByteWriter fresh_writer;
+    EXPECT_EQ(openmeta::write_prepared_bundle_jpeg(removal, fresh_writer).status,
+              openmeta::TransferStatus::Unsupported);
+    EXPECT_EQ(fresh_writer.calls, 0U);
+}
+
+
+TEST(JpegIptcResourceEdit,
+     RejectsMalformedOrContradictoryRemovalWithoutPublishingOutput)
+{
+    const openmeta::PreparedTransferBundle bundle = make_iptc_removal_bundle();
+    const std::vector<std::byte> mixed            = make_mixed_source_one();
+    std::vector<std::byte> valid_input            = { std::byte { 0xFFU },
+                                                      std::byte { 0xD8U } };
+    append_jpeg_segment(&valid_input, 0xEDU, mixed);
+    append_jpeg_tail(&valid_input);
+    const openmeta::JpegEditPlan good_plan
+        = openmeta::plan_prepared_bundle_jpeg_edit(valid_input, bundle);
+    ASSERT_EQ(good_plan.status, openmeta::TransferStatus::Ok);
+
+    std::vector<std::byte> malformed_payload = mixed;
+    malformed_payload[14U]                   = std::byte { 'X' };
+    std::vector<std::byte> malformed_input   = { std::byte { 0xFFU },
+                                                 std::byte { 0xD8U } };
+    append_jpeg_segment(&malformed_input, 0xEDU, malformed_payload);
+    append_jpeg_tail(&malformed_input);
+    EXPECT_EQ(openmeta::plan_prepared_bundle_jpeg_edit(malformed_input, bundle)
+                  .status,
+              openmeta::TransferStatus::Malformed);
+
+    std::vector<std::byte> sentinel = { std::byte { 'o' }, std::byte { 'k' } };
+    const std::vector<std::byte> original_sentinel = sentinel;
+    EXPECT_EQ(openmeta::apply_prepared_bundle_jpeg_edit(malformed_input, bundle,
+                                                        good_plan, &sentinel)
+                  .status,
+              openmeta::TransferStatus::Malformed);
+    EXPECT_EQ(sentinel, original_sentinel);
+    CountingByteWriter writer;
+    EXPECT_EQ(openmeta::write_prepared_bundle_jpeg_edit(malformed_input, bundle,
+                                                        good_plan, writer)
+                  .status,
+              openmeta::TransferStatus::Malformed);
+    EXPECT_EQ(writer.calls, 0U);
+
+    openmeta::PreparedTransferBundle contradictory = bundle;
+    openmeta::PreparedTransferBlock empty_iptc_kind;
+    empty_iptc_kind.kind  = openmeta::TransferBlockKind::IptcIim;
+    empty_iptc_kind.route = "jpeg:app2-icc";
+    contradictory.blocks.push_back(empty_iptc_kind);
+    EXPECT_EQ(openmeta::plan_prepared_bundle_jpeg_edit(valid_input,
+                                                       contradictory)
+                  .status,
+              openmeta::TransferStatus::InvalidArgument);
+
+    contradictory = bundle;
+    openmeta::PreparedTransferBlock empty_iptc_route;
+    empty_iptc_route.kind  = openmeta::TransferBlockKind::Other;
+    empty_iptc_route.route = "tiff:tag-33723-iptc";
+    contradictory.blocks.push_back(empty_iptc_route);
+    EXPECT_EQ(openmeta::plan_prepared_bundle_jpeg_edit(valid_input,
+                                                       contradictory)
+                  .status,
+              openmeta::TransferStatus::InvalidArgument);
+
+    contradictory               = bundle;
+    contradictory.target_format = openmeta::TransferTargetFormat::Jxl;
+    EXPECT_EQ(openmeta::plan_prepared_bundle_jpeg_edit(valid_input,
+                                                       contradictory)
+                  .status,
+              openmeta::TransferStatus::InvalidArgument);
 }

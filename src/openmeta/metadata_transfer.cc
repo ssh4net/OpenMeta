@@ -1373,6 +1373,15 @@ namespace {
         return out;
     }
 
+    static bool prepared_iptc_removal_intent_is_valid(
+        const PreparedTransferBundle& bundle) noexcept;
+
+    static EmitTransferResult
+    compile_prepared_bundle_jpeg_internal(const PreparedTransferBundle& bundle,
+                                          PreparedJpegEmitPlan* out_plan,
+                                          const EmitTransferOptions& options,
+                                          bool allow_destination_edit) noexcept;
+
     static EmitTransferResult
     collect_planned_jpeg_segments(const PreparedTransferBundle& bundle,
                                   bool skip_empty_payloads,
@@ -1392,7 +1401,8 @@ namespace {
         opts.skip_empty_payloads = skip_empty_payloads;
         opts.stop_on_error       = true;
         PreparedJpegEmitPlan compiled;
-        status = compile_prepared_bundle_jpeg(bundle, &compiled, opts);
+        status = compile_prepared_bundle_jpeg_internal(bundle, &compiled, opts,
+                                                       true);
         if (status.status != TransferStatus::Ok) {
             return status;
         }
@@ -1467,26 +1477,30 @@ namespace {
     static TransferStatus
     prepare_jpeg_iptc_resources(std::span<const std::byte> input,
                                 const std::vector<PlannedJpegSegment>& desired,
-                                JpegScanResult* scan,
+                                bool remove_existing_iptc, JpegScanResult* scan,
                                 std::string* message) noexcept
     {
-        if (!route_in_desired("jpeg:app13-iptc", desired)) {
+        const bool desired_iptc = route_in_desired("jpeg:app13-iptc", desired);
+        if (!desired_iptc && !remove_existing_iptc) {
             return TransferStatus::Ok;
         }
-        for (const PlannedJpegSegment& segment : desired) {
-            if (segment.route != "jpeg:app13-iptc") {
-                continue;
-            }
-            detail::JpegPhotoshopIptcInfo info;
-            if (!detail::inspect_jpeg_photoshop_iptc(segment.payload, &info)) {
-                *message
-                    = "prepared IPTC APP13 is not a complete Photoshop resource stream";
-                return TransferStatus::Malformed;
-            }
-            if (info.iptc_resources == 0U || info.other_resources != 0U) {
-                *message
-                    = "prepared IPTC APP13 must contain only IPTC resources";
-                return TransferStatus::Unsupported;
+        if (desired_iptc) {
+            for (const PlannedJpegSegment& segment : desired) {
+                if (segment.route != "jpeg:app13-iptc") {
+                    continue;
+                }
+                detail::JpegPhotoshopIptcInfo info;
+                if (!detail::inspect_jpeg_photoshop_iptc(segment.payload,
+                                                         &info)) {
+                    *message
+                        = "prepared IPTC APP13 is not a complete Photoshop resource stream";
+                    return TransferStatus::Malformed;
+                }
+                if (info.iptc_resources == 0U || info.other_resources != 0U) {
+                    *message
+                        = "prepared IPTC APP13 must contain only IPTC resources";
+                    return TransferStatus::Unsupported;
+                }
             }
         }
         for (ExistingJpegSegment& segment : scan->leading_segments) {
@@ -1535,6 +1549,10 @@ namespace {
         if (route_in_desired(existing.route, desired)) {
             return true;
         }
+        if (bundle.remove_existing_iptc
+            && existing.route == "jpeg:app13-iptc") {
+            return true;
+        }
         if (strip_existing_xmp && existing.route == "jpeg:app1-xmp") {
             return true;
         }
@@ -1545,7 +1563,7 @@ namespace {
                    && decision->matched_entries > 0U;
         }
         if (existing.route == "jpeg:app11-c2pa") {
-            if (!desired.empty()) {
+            if (!desired.empty() || bundle.remove_existing_iptc) {
                 return true;
             }
             const PreparedTransferPolicyDecision* decision
@@ -1818,12 +1836,28 @@ namespace {
     static bool build_jpeg_c2pa_rewrite_chunks(
         std::span<const std::byte> input_jpeg,
         const PreparedTransferBundle& bundle,
-        PreparedTransferC2paRewriteRequirements* rewrite,
-        std::string* err) noexcept
+        PreparedTransferC2paRewriteRequirements* rewrite, std::string* err,
+        TransferStatus* failure_status = nullptr) noexcept
     {
+        if (failure_status) {
+            *failure_status = TransferStatus::Ok;
+        }
         if (!rewrite) {
+            if (failure_status) {
+                *failure_status = TransferStatus::InvalidArgument;
+            }
             if (err) {
                 *err = "c2pa rewrite output is null";
+            }
+            return false;
+        }
+        if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+            if (failure_status) {
+                *failure_status = TransferStatus::InvalidArgument;
+            }
+            if (err) {
+                *err
+                    = "prepared IPTC removal target or payload conflict is invalid";
             }
             return false;
         }
@@ -1835,12 +1869,18 @@ namespace {
             return true;
         }
         if (bundle.target_format != TransferTargetFormat::Jpeg) {
+            if (failure_status) {
+                *failure_status = TransferStatus::Unsupported;
+            }
             if (err) {
                 *err = "c2pa rewrite binding chunks currently require jpeg";
             }
             return false;
         }
         if (input_jpeg.size() < 2U) {
+            if (failure_status) {
+                *failure_status = TransferStatus::Malformed;
+            }
             if (err) {
                 *err = "jpeg input is too small";
             }
@@ -1852,8 +1892,12 @@ namespace {
         opts.stop_on_error       = true;
         PreparedJpegEmitPlan compiled;
         const EmitTransferResult compiled_status
-            = compile_prepared_bundle_jpeg(bundle, &compiled, opts);
+            = compile_prepared_bundle_jpeg_internal(bundle, &compiled, opts,
+                                                    true);
         if (compiled_status.status != TransferStatus::Ok) {
+            if (failure_status) {
+                *failure_status = compiled_status.status;
+            }
             if (err) {
                 *err = compiled_status.message.empty()
                            ? "failed to compile jpeg rewrite binding chunks"
@@ -1869,6 +1913,9 @@ namespace {
         for (size_t i = 0; i < compiled.ops.size(); ++i) {
             const PreparedJpegEmitOp& op = compiled.ops[i];
             if (op.block_index >= bundle.blocks.size()) {
+                if (failure_status) {
+                    *failure_status = TransferStatus::InvalidArgument;
+                }
                 if (err) {
                     *err = "compiled op block index out of range";
                 }
@@ -1889,6 +1936,9 @@ namespace {
 
         JpegScanResult scan = scan_leading_jpeg_segments(input_jpeg);
         if (scan.status != TransferStatus::Ok) {
+            if (failure_status) {
+                *failure_status = scan.status;
+            }
             if (err) {
                 *err = scan.message.empty() ? "jpeg scan failed" : scan.message;
             }
@@ -1896,9 +1946,14 @@ namespace {
         }
 
         std::string resource_message;
-        if (prepare_jpeg_iptc_resources(input_jpeg, desired, &scan,
-                                        &resource_message)
-            != TransferStatus::Ok) {
+        const TransferStatus resource_status
+            = prepare_jpeg_iptc_resources(input_jpeg, desired,
+                                          bundle.remove_existing_iptc, &scan,
+                                          &resource_message);
+        if (resource_status != TransferStatus::Ok) {
+            if (failure_status) {
+                *failure_status = resource_status;
+            }
             if (err) {
                 *err = resource_message;
             }
@@ -1939,6 +1994,9 @@ namespace {
 
             const size_t seg_end = e.payload_off + e.payload_len;
             if (seg_end > input_jpeg.size() || e.marker_off > seg_end) {
+                if (failure_status) {
+                    *failure_status = TransferStatus::Malformed;
+                }
                 if (err) {
                     *err = "existing jpeg segment range is invalid";
                 }
@@ -1961,6 +2019,9 @@ namespace {
         }
 
         if (scan.scan_end > input_jpeg.size()) {
+            if (failure_status) {
+                *failure_status = TransferStatus::Malformed;
+            }
             if (err) {
                 *err = "jpeg rewrite scan end is out of range";
             }
@@ -1969,6 +2030,9 @@ namespace {
         append_c2pa_rewrite_source_chunk(
             rewrite, static_cast<uint64_t>(scan.scan_end),
             static_cast<uint64_t>(input_jpeg.size() - scan.scan_end));
+        if (failure_status) {
+            *failure_status = TransferStatus::Ok;
+        }
         return true;
     }
 
@@ -8539,6 +8603,18 @@ namespace {
         return false;
     }
 
+    static bool has_dirty_deleted_iptc_dataset(const MetaStore& store) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (entry.key.kind == MetaKeyKind::IptcDataset
+                && any(entry.flags, EntryFlags::Dirty)
+                && any(entry.flags, EntryFlags::Deleted)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static bool
     first_photoshop_iptc_payload(const MetaStore& store,
                                  std::vector<std::byte>* out) noexcept
@@ -11324,6 +11400,51 @@ namespace {
                       < kTiffExifRemovalTags.size();
     }
 
+    static bool prepared_iptc_removal_intent_is_valid(
+        const PreparedTransferBundle& bundle) noexcept
+    {
+        if (!bundle.remove_existing_iptc) {
+            return true;
+        }
+        if (bundle.target_format != TransferTargetFormat::Jpeg
+            && !transfer_target_is_tiff_family(bundle.target_format)) {
+            return false;
+        }
+        for (size_t i = 0U; i < bundle.blocks.size(); ++i) {
+            const PreparedTransferBlock& block = bundle.blocks[i];
+            if (block.kind == TransferBlockKind::IptcIim
+                || block.route == "jpeg:app13-iptc"
+                || block.route == "tiff:tag-33723-iptc") {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool
+    reject_iptc_removal_for_non_edit(const PreparedTransferBundle& bundle,
+                                     EmitTransferResult* result) noexcept
+    {
+        if (!bundle.remove_existing_iptc) {
+            return false;
+        }
+        if (!result) {
+            return true;
+        }
+        result->code   = EmitTransferCode::InvalidArgument;
+        result->errors = 1U;
+        if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+            result->status = TransferStatus::InvalidArgument;
+            result->message
+                = "prepared IPTC removal target or payload conflict is invalid";
+        } else {
+            result->status = TransferStatus::Unsupported;
+            result->message
+                = "fresh emit cannot represent native IPTC destination removal";
+        }
+        return true;
+    }
+
     static std::vector<TiffTagUpdate>
     collect_tiff_tag_updates(const PreparedTransferBundle& bundle,
                              bool strip_existing_xmp) noexcept
@@ -11361,6 +11482,12 @@ namespace {
             u.remove = true;
             out.push_back(std::move(u));
         }
+        if (bundle.remove_existing_iptc) {
+            TiffTagUpdate u;
+            u.tag    = 33723U;
+            u.remove = true;
+            out.push_back(std::move(u));
+        }
         bool has_xmp_update = false;
         for (size_t i = 0; i < out.size(); ++i) {
             if (out[i].tag == 700U) {
@@ -11382,6 +11509,9 @@ namespace {
     static bool prepared_tiff_removals_are_valid(
         const PreparedTransferBundle& bundle) noexcept
     {
+        if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+            return false;
+        }
         if (bundle.tiff_ifd0_removals.size() > kTiffIfd0RemovalTags.size()) {
             return false;
         }
@@ -13525,6 +13655,13 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                                                          MetaKeyKind::ExifTag);
     const uint32_t iptc_dataset_count
         = count_kind_entries(prepared_store, MetaKeyKind::IptcDataset);
+    const bool native_iptc_carrier_target
+        = request.target_format == TransferTargetFormat::Jpeg
+          || transfer_target_is_tiff_family(request.target_format);
+    bundle.remove_existing_iptc
+        = request.include_iptc_app13 && native_iptc_carrier_target
+          && count_kind_entries(store, MetaKeyKind::IptcDataset) == 0U
+          && has_dirty_deleted_iptc_dataset(store);
     // Timestamp intents address individual tags, even when every source
     // ExifIFD member is deleted. Do not also request a whole-directory clear.
     const bool explicit_empty_exif_ifd
@@ -14466,7 +14603,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
             }
         }
     }
-    if (request.include_iptc_app13 && has_iptc) {
+    if (request.include_iptc_app13 && has_iptc
+        && !bundle.remove_existing_iptc) {
         if (request.target_format == TransferTargetFormat::Jpeg) {
             IptcPackBuild iptc_build = build_jpeg_iptc_app13_payload(
                 prepared_store);
@@ -18581,6 +18719,98 @@ namespace {
         return out;
     }
 
+    static EmitTransferResult
+    compile_prepared_bundle_jpeg_internal(const PreparedTransferBundle& bundle,
+                                          PreparedJpegEmitPlan* out_plan,
+                                          const EmitTransferOptions& options,
+                                          bool allow_destination_edit) noexcept
+    {
+        EmitTransferResult r;
+        if (!out_plan) {
+            r.status  = TransferStatus::InvalidArgument;
+            r.code    = EmitTransferCode::InvalidArgument;
+            r.errors  = 1U;
+            r.message = "out_plan is null";
+            return r;
+        }
+        out_plan->contract_version = bundle.contract_version;
+        out_plan->ops.clear();
+
+        if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+            r.status = TransferStatus::InvalidArgument;
+            r.code   = EmitTransferCode::InvalidArgument;
+            r.errors = 1U;
+            r.message
+                = "prepared IPTC removal target or payload conflict is invalid";
+            return r;
+        }
+        if (bundle.remove_existing_iptc && !allow_destination_edit) {
+            r.status = TransferStatus::Unsupported;
+            r.code   = EmitTransferCode::InvalidArgument;
+            r.errors = 1U;
+            r.message
+                = "fresh JPEG emit cannot represent native IPTC destination removal";
+            return r;
+        }
+        if (bundle.target_format != TransferTargetFormat::Jpeg) {
+            r.status  = TransferStatus::Unsupported;
+            r.code    = EmitTransferCode::BundleTargetNotJpeg;
+            r.errors  = 1U;
+            r.message = "bundle target format is not jpeg";
+            return r;
+        }
+
+        const EmitTransferResult c2pa_preflight
+            = validate_prepared_jpeg_c2pa_blocks_for_emit(bundle, options);
+        if (c2pa_preflight.status != TransferStatus::Ok) {
+            return c2pa_preflight;
+        }
+
+        for (uint32_t i = 0; i < bundle.blocks.size(); ++i) {
+            const PreparedTransferBlock& block = bundle.blocks[i];
+            if (options.skip_empty_payloads && block.payload.empty()) {
+                r.skipped += 1U;
+                continue;
+            }
+
+            uint8_t marker = 0;
+            if (!marker_from_jpeg_route(block.route, &marker)) {
+                r.status = TransferStatus::Unsupported;
+                if (r.code == EmitTransferCode::None) {
+                    r.code = EmitTransferCode::UnsupportedRoute;
+                }
+                r.errors += 1U;
+                r.failed_block_index = i;
+                r.message            = "unsupported jpeg route: " + block.route;
+                if (options.stop_on_error) {
+                    return r;
+                }
+                continue;
+            }
+
+            if (block.payload.size() > kMaxJpegSegmentPayload) {
+                set_jpeg_segment_limit_error(
+                    &r, "jpeg segment payload exceeds 64 KB limit");
+                r.failed_block_index = i;
+                if (options.stop_on_error) {
+                    return r;
+                }
+                continue;
+            }
+
+            PreparedJpegEmitOp op;
+            op.block_index = i;
+            op.marker_code = marker;
+            out_plan->ops.push_back(op);
+        }
+
+        if (r.errors == 0U) {
+            r.status = TransferStatus::Ok;
+            r.code   = EmitTransferCode::None;
+        }
+        return r;
+    }
+
 }  // namespace
 
 EmitTransferResult
@@ -18589,6 +18819,9 @@ emit_prepared_bundle_jpeg(const PreparedTransferBundle& bundle,
                           const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (bundle.target_format != TransferTargetFormat::Jpeg) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::BundleTargetNotJpeg;
@@ -18668,6 +18901,9 @@ emit_prepared_bundle_tiff(const PreparedTransferBundle& bundle,
                           const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (!transfer_target_is_tiff_family(bundle.target_format)) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -18761,6 +18997,9 @@ compile_prepared_bundle_tiff(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (!prepared_tiff_removals_are_valid(bundle)) {
         r.status = TransferStatus::InvalidArgument;
         r.code   = EmitTransferCode::InvalidArgument;
@@ -18830,6 +19069,9 @@ emit_prepared_bundle_tiff_compiled(const PreparedTransferBundle& bundle,
                                    const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (!transfer_target_is_tiff_family(bundle.target_format)) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -18925,6 +19167,9 @@ emit_prepared_bundle_jxl(const PreparedTransferBundle& bundle,
                          const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (bundle.target_format != TransferTargetFormat::Jxl) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -19055,6 +19300,9 @@ compile_prepared_bundle_jxl(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     out_plan->contract_version = bundle.contract_version;
     out_plan->ops.clear();
 
@@ -19138,6 +19386,9 @@ emit_prepared_bundle_jxl_compiled(const PreparedTransferBundle& bundle,
                                   const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (bundle.target_format != TransferTargetFormat::Jxl) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -19247,6 +19498,10 @@ build_prepared_jxl_encoder_handoff_view(
         r.code    = EmitTransferCode::InvalidArgument;
         r.errors  = 1U;
         r.message = "out_view is null";
+        return r;
+    }
+
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
         return r;
     }
 
@@ -19392,6 +19647,9 @@ emit_prepared_bundle_webp(const PreparedTransferBundle& bundle,
                           const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (bundle.target_format != TransferTargetFormat::Webp) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -19469,6 +19727,9 @@ compile_prepared_bundle_webp(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     out_plan->contract_version = bundle.contract_version;
     out_plan->ops.clear();
 
@@ -19519,6 +19780,9 @@ emit_prepared_bundle_webp_compiled(const PreparedTransferBundle& bundle,
                                    const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (bundle.target_format != TransferTargetFormat::Webp) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -19596,6 +19860,9 @@ emit_prepared_bundle_png(const PreparedTransferBundle& bundle,
                          const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (bundle.target_format != TransferTargetFormat::Png) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -19673,6 +19940,9 @@ compile_prepared_bundle_png(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     out_plan->contract_version = bundle.contract_version;
     out_plan->ops.clear();
 
@@ -19723,6 +19993,9 @@ emit_prepared_bundle_png_compiled(const PreparedTransferBundle& bundle,
                                   const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (bundle.target_format != TransferTargetFormat::Png) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -19800,6 +20073,9 @@ emit_prepared_bundle_jp2(const PreparedTransferBundle& bundle,
                          const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (bundle.target_format != TransferTargetFormat::Jp2) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -19878,6 +20154,9 @@ compile_prepared_bundle_jp2(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     out_plan->contract_version = bundle.contract_version;
     out_plan->ops.clear();
 
@@ -19928,6 +20207,9 @@ emit_prepared_bundle_jp2_compiled(const PreparedTransferBundle& bundle,
                                   const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (bundle.target_format != TransferTargetFormat::Jp2) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -20006,6 +20288,9 @@ emit_prepared_bundle_exr(const PreparedTransferBundle& bundle,
                          const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (bundle.target_format != TransferTargetFormat::Exr) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -20095,6 +20380,9 @@ compile_prepared_bundle_exr(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     out_plan->contract_version = bundle.contract_version;
     out_plan->ops.clear();
 
@@ -20161,6 +20449,9 @@ emit_prepared_bundle_exr_compiled(const PreparedTransferBundle& bundle,
                                   const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (bundle.target_format != TransferTargetFormat::Exr) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -20252,6 +20543,9 @@ emit_prepared_bundle_bmff(const PreparedTransferBundle& bundle,
                           const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (!transfer_target_is_bmff(bundle.target_format)) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -20349,6 +20643,9 @@ compile_prepared_bundle_bmff(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     out_plan->contract_version = bundle.contract_version;
     out_plan->ops.clear();
 
@@ -20413,6 +20710,9 @@ emit_prepared_bundle_bmff_compiled(const PreparedTransferBundle& bundle,
                                    const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (!transfer_target_is_bmff(bundle.target_format)) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::InvalidArgument;
@@ -20505,74 +20805,8 @@ compile_prepared_bundle_jpeg(const PreparedTransferBundle& bundle,
                              PreparedJpegEmitPlan* out_plan,
                              const EmitTransferOptions& options) noexcept
 {
-    EmitTransferResult r;
-    if (!out_plan) {
-        r.status  = TransferStatus::InvalidArgument;
-        r.code    = EmitTransferCode::InvalidArgument;
-        r.errors  = 1U;
-        r.message = "out_plan is null";
-        return r;
-    }
-    out_plan->contract_version = bundle.contract_version;
-    out_plan->ops.clear();
-
-    if (bundle.target_format != TransferTargetFormat::Jpeg) {
-        r.status  = TransferStatus::Unsupported;
-        r.code    = EmitTransferCode::BundleTargetNotJpeg;
-        r.errors  = 1U;
-        r.message = "bundle target format is not jpeg";
-        return r;
-    }
-
-    const EmitTransferResult c2pa_preflight
-        = validate_prepared_jpeg_c2pa_blocks_for_emit(bundle, options);
-    if (c2pa_preflight.status != TransferStatus::Ok) {
-        return c2pa_preflight;
-    }
-
-    for (uint32_t i = 0; i < bundle.blocks.size(); ++i) {
-        const PreparedTransferBlock& block = bundle.blocks[i];
-        if (options.skip_empty_payloads && block.payload.empty()) {
-            r.skipped += 1U;
-            continue;
-        }
-
-        uint8_t marker = 0;
-        if (!marker_from_jpeg_route(block.route, &marker)) {
-            r.status = TransferStatus::Unsupported;
-            if (r.code == EmitTransferCode::None) {
-                r.code = EmitTransferCode::UnsupportedRoute;
-            }
-            r.errors += 1U;
-            r.failed_block_index = i;
-            r.message            = "unsupported jpeg route: " + block.route;
-            if (options.stop_on_error) {
-                return r;
-            }
-            continue;
-        }
-
-        if (block.payload.size() > kMaxJpegSegmentPayload) {
-            set_jpeg_segment_limit_error(
-                &r, "jpeg segment payload exceeds 64 KB limit");
-            r.failed_block_index = i;
-            if (options.stop_on_error) {
-                return r;
-            }
-            continue;
-        }
-
-        PreparedJpegEmitOp op;
-        op.block_index = i;
-        op.marker_code = marker;
-        out_plan->ops.push_back(op);
-    }
-
-    if (r.errors == 0U) {
-        r.status = TransferStatus::Ok;
-        r.code   = EmitTransferCode::None;
-    }
-    return r;
+    return compile_prepared_bundle_jpeg_internal(bundle, out_plan, options,
+                                                 false);
 }
 
 EmitTransferResult
@@ -20582,6 +20816,9 @@ emit_prepared_bundle_jpeg_compiled(const PreparedTransferBundle& bundle,
                                    const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
+    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+        return r;
+    }
     if (bundle.target_format != TransferTargetFormat::Jpeg) {
         r.status  = TransferStatus::Unsupported;
         r.code    = EmitTransferCode::BundleTargetNotJpeg;
@@ -20761,6 +20998,12 @@ plan_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
     plan.requested_mode = options.mode;
     plan.input_size     = static_cast<uint64_t>(input_jpeg.size());
 
+    if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+        plan.status = TransferStatus::InvalidArgument;
+        plan.message
+            = "prepared IPTC removal target or payload conflict is invalid";
+        return plan;
+    }
     if (bundle.target_format != TransferTargetFormat::Jpeg) {
         plan.status  = TransferStatus::Unsupported;
         plan.message = "bundle target format is not jpeg";
@@ -20789,8 +21032,9 @@ plan_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
         return plan;
     }
 
-    plan.status = prepare_jpeg_iptc_resources(input_jpeg, desired, &scan,
-                                              &plan.message);
+    plan.status = prepare_jpeg_iptc_resources(input_jpeg, desired,
+                                              bundle.remove_existing_iptc,
+                                              &scan, &plan.message);
     if (plan.status != TransferStatus::Ok) {
         return plan;
     }
@@ -20809,6 +21053,14 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
         out.code    = EmitTransferCode::InvalidArgument;
         out.errors  = 1U;
         out.message = "out_jpeg is null";
+        return out;
+    }
+    if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+        out.status = TransferStatus::InvalidArgument;
+        out.code   = EmitTransferCode::InvalidArgument;
+        out.errors = 1U;
+        out.message
+            = "prepared IPTC removal target or payload conflict is invalid";
         return out;
     }
     if (bundle.contract_version != kMetadataTransferContractVersion) {
@@ -20849,7 +21101,8 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
         return out;
     }
 
-    out.status = prepare_jpeg_iptc_resources(input_jpeg, desired, &scan,
+    out.status = prepare_jpeg_iptc_resources(input_jpeg, desired,
+                                             bundle.remove_existing_iptc, &scan,
                                              &out.message);
     if (out.status != TransferStatus::Ok) {
         out.code   = EmitTransferCode::InvalidPayload;
@@ -21017,14 +21270,15 @@ plan_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
     TiffEditPlan plan;
     plan.input_size = static_cast<uint64_t>(input_tiff.size());
 
+    if (!prepared_tiff_removals_are_valid(bundle)) {
+        plan.status = TransferStatus::InvalidArgument;
+        plan.message
+            = "prepared TIFF removal list or replacement conflict is invalid";
+        return plan;
+    }
     if (!transfer_target_is_tiff_family(bundle.target_format)) {
         plan.status  = TransferStatus::Unsupported;
         plan.message = "bundle target format is not tiff/dng";
-        return plan;
-    }
-    if (!prepared_tiff_removals_are_valid(bundle)) {
-        plan.status  = TransferStatus::InvalidArgument;
-        plan.message = "prepared TIFF removal list is invalid";
         return plan;
     }
 
@@ -21084,6 +21338,14 @@ apply_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         out.message = "out_tiff is null";
         return out;
     }
+    if (!prepared_tiff_removals_are_valid(bundle)) {
+        out.status = TransferStatus::InvalidArgument;
+        out.code   = EmitTransferCode::InvalidArgument;
+        out.errors = 1U;
+        out.message
+            = "prepared TIFF removal list or replacement conflict is invalid";
+        return out;
+    }
     if (plan.status != TransferStatus::Ok) {
         out.status  = TransferStatus::InvalidArgument;
         out.code    = EmitTransferCode::InvalidArgument;
@@ -21098,14 +21360,6 @@ apply_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         out.message = "bundle target format is not tiff/dng";
         return out;
     }
-    if (!prepared_tiff_removals_are_valid(bundle)) {
-        out.status  = TransferStatus::InvalidArgument;
-        out.code    = EmitTransferCode::InvalidArgument;
-        out.errors  = 1U;
-        out.message = "prepared TIFF removal list is invalid";
-        return out;
-    }
-
     const std::vector<TiffTagUpdate> updates
         = collect_tiff_tag_updates(bundle, plan.strip_existing_xmp);
     const std::vector<std::byte> exif_app1_payload
@@ -21226,6 +21480,9 @@ build_prepared_transfer_emit_package(const PreparedTransferBundle& bundle,
         out.code    = EmitTransferCode::InvalidArgument;
         out.errors  = 1U;
         out.message = "out_plan is null";
+        return out;
+    }
+    if (reject_iptc_removal_for_non_edit(bundle, &out)) {
         return out;
     }
     if (!prepared_tiff_removals_are_valid(bundle)) {
@@ -21467,6 +21724,14 @@ build_prepared_bundle_jpeg_package(
         out.message = "out_plan is null";
         return out;
     }
+    if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+        out.status = TransferStatus::InvalidArgument;
+        out.code   = EmitTransferCode::InvalidArgument;
+        out.errors = 1U;
+        out.message
+            = "prepared IPTC removal target or payload conflict is invalid";
+        return out;
+    }
     PreparedTransferPackagePlan staged;
     PreparedTransferPackagePlan* destination = &staged;
     destination->contract_version            = bundle.contract_version;
@@ -21494,7 +21759,7 @@ build_prepared_bundle_jpeg_package(
     opts.skip_empty_payloads = true;
     opts.stop_on_error       = true;
     PreparedJpegEmitPlan compiled;
-    out = compile_prepared_bundle_jpeg(bundle, &compiled, opts);
+    out = compile_prepared_bundle_jpeg_internal(bundle, &compiled, opts, true);
     if (out.status != TransferStatus::Ok) {
         return out;
     }
@@ -21531,7 +21796,8 @@ build_prepared_bundle_jpeg_package(
         return out;
     }
 
-    out.status = prepare_jpeg_iptc_resources(input_jpeg, desired, &scan,
+    out.status = prepare_jpeg_iptc_resources(input_jpeg, desired,
+                                             bundle.remove_existing_iptc, &scan,
                                              &out.message);
     if (out.status != TransferStatus::Ok) {
         out.code   = EmitTransferCode::InvalidPayload;
@@ -24002,6 +24268,9 @@ build_prepared_c2pa_sign_request(
     if (!out_request) {
         return TransferStatus::InvalidArgument;
     }
+    if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+        return TransferStatus::InvalidArgument;
+    }
 
     PreparedTransferC2paSignRequest out;
     const PreparedTransferC2paRewriteRequirements& rewrite = bundle.c2pa_rewrite;
@@ -24212,6 +24481,15 @@ build_prepared_c2pa_sign_request_binding(
         out.code    = EmitTransferCode::InvalidArgument;
         out.errors  = 1U;
         out.message = "out_bytes is null";
+        return out;
+    }
+
+    if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+        out.status = TransferStatus::InvalidArgument;
+        out.code   = EmitTransferCode::InvalidArgument;
+        out.errors = 1U;
+        out.message
+            = "prepared IPTC removal target or payload conflict is invalid";
         return out;
     }
 
@@ -24521,6 +24799,41 @@ build_prepared_c2pa_sign_request_binding(
         out.message = "c2pa sign request emitted size no longer matches bundle";
         out_bytes->clear();
         return out;
+    }
+
+    if (is_jpeg
+        && rewrite.state == TransferC2paRewriteState::SigningMaterialRequired) {
+        PreparedTransferC2paRewriteRequirements recomputed = rewrite;
+        std::string recompute_error;
+        TransferStatus recompute_status = TransferStatus::Ok;
+        if (!build_jpeg_c2pa_rewrite_chunks(target_input, bundle, &recomputed,
+                                            &recompute_error,
+                                            &recompute_status)) {
+            out.status = recompute_status == TransferStatus::Ok
+                             ? TransferStatus::Malformed
+                             : recompute_status;
+            out.code   = out.status == TransferStatus::InvalidArgument
+                             ? EmitTransferCode::InvalidArgument
+                             : EmitTransferCode::InvalidPayload;
+            out.errors = 1U;
+            out.message
+                = recompute_error.empty()
+                      ? "failed to rebuild c2pa binding from current destination"
+                      : recompute_error;
+            out_bytes->clear();
+            return out;
+        }
+        if (recomputed.content_binding_bytes != rewrite.content_binding_bytes
+            || !c2pa_rewrite_chunks_match(recomputed.content_binding_chunks,
+                                          rewrite.content_binding_chunks)) {
+            out.status = TransferStatus::InvalidArgument;
+            out.code   = EmitTransferCode::PlanMismatch;
+            out.errors = 1U;
+            out.message
+                = "c2pa binding no longer matches current destination edit intent";
+            out_bytes->clear();
+            return out;
+        }
     }
 
     out.status  = TransferStatus::Ok;
@@ -25152,6 +25465,14 @@ namespace {
         ValidatePreparedC2paSignResult out;
         out.logical_payload_bytes = static_cast<uint64_t>(
             input.signed_c2pa_logical_payload.size());
+        if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+            out.status = TransferStatus::InvalidArgument;
+            out.code   = EmitTransferCode::InvalidArgument;
+            out.errors = 1U;
+            out.message
+                = "prepared IPTC removal target or payload conflict is invalid";
+            return out;
+        }
         if (out_staged_blocks) {
             out_staged_blocks->clear();
         }
@@ -33135,6 +33456,7 @@ namespace {
 
         const bool has_tiff_edit_only_intent
             = bundle_has_tiff_destination_edit_intent(*bundle);
+        const bool has_iptc_edit_only_intent = bundle->remove_existing_iptc;
         if (!prepared_tiff_removals_are_valid(*bundle)) {
             out.compile.status = TransferStatus::InvalidArgument;
             out.compile.code   = EmitTransferCode::InvalidArgument;
@@ -33152,14 +33474,21 @@ namespace {
             }
             return out;
         }
-        if (has_tiff_edit_only_intent && options.edit_requested
-            && (!transfer_target_is_tiff_family(bundle->target_format)
-                || options.emit_output_writer || compiled_plan)) {
+        const bool invalid_edit_target
+            = (has_tiff_edit_only_intent
+               && !transfer_target_is_tiff_family(bundle->target_format))
+              || (has_iptc_edit_only_intent
+                  && bundle->target_format != TransferTargetFormat::Jpeg
+                  && !transfer_target_is_tiff_family(bundle->target_format));
+        if ((has_tiff_edit_only_intent || has_iptc_edit_only_intent)
+            && options.edit_requested
+            && (invalid_edit_target || options.emit_output_writer
+                || compiled_plan)) {
             out.compile.status = TransferStatus::Unsupported;
             out.compile.code   = EmitTransferCode::InvalidArgument;
             out.compile.errors = 1U;
             out.compile.message
-                = "native TIFF destination editing cannot be combined with a fresh emit request";
+                = "native destination editing cannot be combined with a fresh emit request";
             out.emit               = out.compile;
             out.edit_plan_status   = TransferStatus::Unsupported;
             out.edit_plan_message  = out.compile.message;
@@ -33195,13 +33524,14 @@ namespace {
 
         PreparedTransferExecutionPlan local_plan;
         const PreparedTransferExecutionPlan* effective_plan = compiled_plan;
-        const bool tiff_destination_edit_only = has_tiff_edit_only_intent
-                                                && options.edit_requested;
-        if (tiff_destination_edit_only) {
+        const bool destination_edit_only = (has_tiff_edit_only_intent
+                                            || has_iptc_edit_only_intent)
+                                           && options.edit_requested;
+        if (destination_edit_only) {
             out.compile.status = TransferStatus::Ok;
             out.compile.code   = EmitTransferCode::None;
             out.compile.message
-                = "fresh TIFF emit skipped for native TIFF destination edit execution";
+                = "fresh emit skipped for native destination edit execution";
             out.emit         = out.compile;
             effective_plan   = nullptr;
             out.compiled_ops = 0U;
@@ -33685,7 +34015,7 @@ namespace {
                     "unsupported target format for emit");
                 break;
             }
-        } else if (!tiff_destination_edit_only) {
+        } else if (!destination_edit_only) {
             out.emit = skipped_emit_result(
                 "skipped emit due to compile failure");
         }
@@ -35041,6 +35371,9 @@ compile_prepared_transfer_execution(
         out.message = "out_plan is null";
         return out;
     }
+    if (reject_iptc_removal_for_non_edit(bundle, &out)) {
+        return out;
+    }
     if (!prepared_tiff_removals_are_valid(bundle)) {
         out.status = TransferStatus::InvalidArgument;
         out.code   = EmitTransferCode::InvalidArgument;
@@ -35126,6 +35459,9 @@ build_prepared_transfer_adapter_view(const PreparedTransferBundle& bundle,
         out.code    = EmitTransferCode::InvalidArgument;
         out.errors  = 1U;
         out.message = "out_view is null";
+        return out;
+    }
+    if (reject_iptc_removal_for_non_edit(bundle, &out)) {
         return out;
     }
     if (bundle_has_tiff_gps_destination_intent(bundle)) {
@@ -35371,6 +35707,9 @@ get_prepared_transfer_adapter_exr_attribute_view(
         out.code    = EmitTransferCode::InvalidArgument;
         out.errors  = 1U;
         out.message = "out_attribute is null";
+        return out;
+    }
+    if (reject_iptc_removal_for_non_edit(bundle, &out)) {
         return out;
     }
     if (!prepared_tiff_removals_are_valid(bundle)) {

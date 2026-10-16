@@ -315,10 +315,11 @@ The complete IPTC date/time pair follows the selected conflict policy.
 ReplaceExisting removes stale source time for a date without time. Complete
 nonempty IPTC payload replacement also removes target-only stale times in JPEG
 and TIFF. Retain other desired IPTC datasets in the source store. Under
-ReplaceExisting, dirty XMP removal of existing native pairs works when another
-active dataset remains.
-Clearing the last active IPTC dataset needs a future carrier-removal contract;
-an omitted route does not clear the destination carrier.
+ReplaceExisting, dirty XMP removal deletes existing native pairs. Since 0.8.20,
+deleting the last native dataset derives explicit carrier removal when IPTC
+output is enabled. Active charset and version records still retain the carrier;
+delete them explicitly to clear it. Omission and disabled output preserve the
+destination. See :doc:`canonical_serialization`.
 
 Technical EXIF mappings
 -----------------------
