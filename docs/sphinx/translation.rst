@@ -1,6 +1,68 @@
 Metadata Translation
 ====================
 
+Native IPTC to materialized XMP (0.8.17)
+----------------------------------------
+
+``translate_iptc_to_xmp(source, options, &output)`` adds the 20 flat text/priority
+mappings listed under combined IPTC writeback to a finalized store. Contract
+``kMetadataIptcToXmpContractVersion == 1`` uses ``MetadataIptcToXmpOptions`` and
+returns ``MetadataIptcToXmpResult``. Original IPTC and unrelated XMP remain in the
+result. This is an explicit store operation; portable export retains its existing
+ASCII byte policy. Dates and structured LocationCreated projection are separate.
+
+The default source mode is ``All``. ``DirtyOnly`` selects a group when a member or
+an active member's block charset marker is dirty. Active clean members then
+participate too. Dirty source tombstones can remove mapped XMP; clean tombstones
+are ignored. Duplicate active singleton datasets are ambiguous. Repeated values
+retain duplicates and sort by source block, order within that block, then entry
+ID. This explicit ordering can differ from portable export's entry-vector order.
+
+Encoding is resolved per source ``Origin.block``. Without an active 1:90 charset
+marker, selected bytes must be ASCII. Exactly one marker containing ESC % G
+permits strict UTF-8. Unsupported or duplicate declarations fail selected groups,
+even for ASCII values; declarations in unrelated blocks do not interfere. Both
+raw Bytes and explicitly Ascii/Utf8 Text are accepted. Text must be nonempty,
+valid UTF-8/XML and within the existing dataset byte ceiling. Category, CountryCode
+and Urgency retain the combined writeback field restrictions. No charset guessing,
+transcoding, truncation or normalization occurs.
+
+``MetadataIptcToXmpConflictPolicy::FailOnConflict`` is the default. Equal supported
+XMP groups remain unchanged; unequal existing groups fail. ``ReplaceExisting``
+updates supported groups and removes excess items. ``PreserveExisting`` keeps an
+existing destination root, including unsupported shapes, after source validation.
+The title, description and rights mappings own only x-default; other language
+alternatives are preserved. Repeated destinations require canonical contiguous
+positive indices. Duplicate paths, sparse/noncanonical indices and other shapes
+fail under FailOnConflict or ReplaceExisting. Deleted destinations are absent;
+new entries may be appended without resurrecting their old entry IDs.
+
+Options select each mapping independently with the flags ``title``, ``description``,
+``creators``, ``keywords``, ``copyright``, ``credit``, ``source``, ``city``, ``sublocation``,
+``state``, ``country``, ``country_code``, ``headline``, ``instructions``,
+``transmission_reference``, ``authors_position``, ``caption_writer``, ``category``,
+``supplemental_categories`` and ``urgency``. All default to true. Hard ceilings are
+1,024 source datasets, 1,024 added entries, 4,096 operations/destination entries,
+and 8 MiB of inspected source plus owned destination text. Preserved destination
+values are not scanned. Options can lower these positive limits. Preparation may
+allocate: the output clone scales with the input store, and DirtyOnly uses one bit
+per source block for charset selection. These limits do not bound total store size.
+Allocation failure is not a recoverable status. Hosts synchronize shared objects
+and must not change the source during the call.
+
+The output changes only after every selected mapping and limit succeeds. Passing
+the source as output is supported. Added XMP entries are Dirty UTF-8 with source
+block/order provenance and no copied IPTC wire hints. Updated destinations keep
+their own provenance. Status, failed mapping and source entry identify failures.
+This is a store transaction, not allocation-free prepared patching.
+
+Python provides ``Document.translate_iptc_to_xmp(...)`` with the same flags, limits,
+source mode and conflict policy. It returns a detached document and raises
+``ValueError`` on translation failure. Serialize the materialized XMP with native
+projection disabled (``include_iptc=False``, ``include_exif=False``) and stored XMP
+enabled (``include_existing_xmp=True``) when only these stored properties should
+be emitted.
+
 Profile native lifecycle (0.8.12)
 ---------------------------------
 
@@ -39,7 +101,8 @@ dates into native EXIF/IPTC date groups, exact technical XMP/TIFF properties
 into native EXIF fields, typed capture properties into native EXIF scalars,
 target-bound image geometry into native TIFF/EXIF groups, and exact descriptive,
 flat location, and editorial XMP properties into native IPTC-IIM datasets before
-transfer or writing.
+transfer or writing. Native IPTC text/priority groups can also become materialized
+XMP properties.
 
 The APIs are experimental and versioned by
 ``kMetadataDateTranslationContractVersion == 2`` and
@@ -50,7 +113,8 @@ The APIs are experimental and versioned by
 ``kMetadataLocationTranslationContractVersion == 1`` and
 ``kMetadataEditorialTranslationContractVersion == 1`` and
 ``kMetadataIptcTranslationContractVersion == 1`` and
-``kMetadataGpsTranslationContractVersion == 1`` and
+``kMetadataIptcToXmpContractVersion == 1`` and
+``kMetadataGpsTranslationContractVersion == 2`` and
 ``kMetadataStructuredLocationTranslationContractVersion == 1`` and
 ``kMetadataGpsNavigationTranslationContractVersion == 1`` and
 ``kMetadataDevelopmentCorrectionTranslationContractVersion == 2`` and

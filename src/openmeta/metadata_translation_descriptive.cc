@@ -3,6 +3,7 @@
 #include "openmeta/metadata_translation.h"
 
 #include "metadata_logical_field_internal.h"
+#include "metadata_translation_iptc_xmp_mapping_internal.h"
 
 #include "openmeta/meta_edit.h"
 #include "openmeta/meta_flags.h"
@@ -22,92 +23,14 @@
 namespace openmeta {
 namespace {
 
-    static constexpr std::string_view kXmpNsDc
-        = "http://purl.org/dc/elements/1.1/";
-    static constexpr std::string_view kXmpNsPhotoshop
-        = "http://ns.adobe.com/photoshop/1.0/";
-    static constexpr std::string_view kXmpNsIptcCore
-        = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/";
     static constexpr std::string_view kXmpNsIptcExt
         = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/";
 
-    struct MappingDescriptor final {
-        MetadataDescriptiveTranslationMapping mapping
-            = MetadataDescriptiveTranslationMapping::None;
-        std::string_view schema_ns;
-        std::string_view property_path;
-        uint16_t iptc_dataset = 0U;
-        uint16_t max_bytes    = 0U;
-        bool repeated         = false;
-    };
-
-    static constexpr std::array<MappingDescriptor, 7U> kMappings = {
-        MappingDescriptor { MetadataDescriptiveTranslationMapping::DcTitle,
-                            kXmpNsDc, "title[@xml:lang=x-default]", 5U, 64U,
-                            false },
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::DcDescription, kXmpNsDc,
-            "description[@xml:lang=x-default]", 120U, 2000U, false },
-        MappingDescriptor { MetadataDescriptiveTranslationMapping::DcCreator,
-                            kXmpNsDc, "creator", 80U, 32U, true },
-        MappingDescriptor { MetadataDescriptiveTranslationMapping::DcSubject,
-                            kXmpNsDc, "subject", 25U, 64U, true },
-        MappingDescriptor { MetadataDescriptiveTranslationMapping::DcRights,
-                            kXmpNsDc, "rights[@xml:lang=x-default]", 116U, 128U,
-                            false },
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::PhotoshopCredit,
-            kXmpNsPhotoshop, "Credit", 110U, 32U, false },
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::PhotoshopSource,
-            kXmpNsPhotoshop, "Source", 115U, 32U, false },
-    };
-
-    static constexpr std::array<MappingDescriptor, 5U> kLocationMappings = {
-        MappingDescriptor { MetadataDescriptiveTranslationMapping::PhotoshopCity,
-                            kXmpNsPhotoshop, "City", 90U, 32U, false },
-        MappingDescriptor { MetadataDescriptiveTranslationMapping::IptcLocation,
-                            kXmpNsIptcCore, "Location", 92U, 32U, false },
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::PhotoshopState,
-            kXmpNsPhotoshop, "State", 95U, 32U, false },
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::PhotoshopCountry,
-            kXmpNsPhotoshop, "Country", 101U, 64U, false },
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::IptcCountryCode,
-            kXmpNsIptcCore, "CountryCode", 100U, 3U, false },
-    };
-
-    static constexpr std::array<MappingDescriptor, 3U> kEditorialMappings = {
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::PhotoshopHeadline,
-            kXmpNsPhotoshop, "Headline", 105U, 256U, false },
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::PhotoshopInstructions,
-            kXmpNsPhotoshop, "Instructions", 40U, 256U, false },
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::PhotoshopTransmissionReference,
-            kXmpNsPhotoshop, "TransmissionReference", 103U, 32U, false },
-    };
-
-    static constexpr std::array<MappingDescriptor, 5U> kWorkflowMappings = {
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::PhotoshopAuthorsPosition,
-            kXmpNsPhotoshop, "AuthorsPosition", 85U, 32U, false },
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::PhotoshopCaptionWriter,
-            kXmpNsPhotoshop, "CaptionWriter", 122U, 32U, false },
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::PhotoshopCategory,
-            kXmpNsPhotoshop, "Category", 15U, 3U, false },
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::PhotoshopSupplementalCategories,
-            kXmpNsPhotoshop, "SupplementalCategories", 20U, 32U, true },
-        MappingDescriptor {
-            MetadataDescriptiveTranslationMapping::PhotoshopUrgency,
-            kXmpNsPhotoshop, "Urgency", 10U, 1U, false },
-    };
+    using MappingDescriptor                 = detail::IptcXmpMappingDescriptor;
+    static constexpr auto kMappings         = detail::kIptcXmpPrimaryMappings;
+    static constexpr auto kLocationMappings = detail::kIptcXmpLocationMappings;
+    static constexpr auto kEditorialMappings = detail::kIptcXmpEditorialMappings;
+    static constexpr auto kWorkflowMappings = detail::kIptcXmpWorkflowMappings;
 
     static constexpr size_t kIptcMappingCount = kMappings.size()
                                                 + kLocationMappings.size()

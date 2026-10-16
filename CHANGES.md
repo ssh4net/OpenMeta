@@ -1,5 +1,16 @@
 # OpenMeta Changes
 
+## 0.8.17 - 2026-10-16
+
+- Add bounded transactional native IPTC-to-XMP materialization for 20 flat
+  mappings, with per-block ASCII/declared UTF-8 handling and explicit conflicts.
+- Preserve repeated values, non-default languages, native data and provenance;
+  reject ambiguous encodings, unsupported shapes and resource-limit failures
+  before output publication. Expose the same transaction in Python.
+- Share mapping identities with reverse translation and portable projection
+  while retaining their existing policies. Keep development ABI 4 and existing
+  public layouts; new symbols require matching headers and binaries.
+
 ## 0.8.16 - 2026-10-16
 
 - Replace JPEG IPTC resource `0x0404` while preserving other Photoshop resource

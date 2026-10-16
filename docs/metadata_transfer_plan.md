@@ -14,9 +14,11 @@ streams are validated, all old IPTC records are replaced, and other records are
 preserved byte for byte in per-source residual APP13 segments. Buffered/package
 publication is transactional and C2PA binding includes the same residual bytes.
 
-Next synchronization candidate: materialized IPTC-to-XMP translation with
-explicit charset handling. The portable writer already maps 20 native IPTC groups;
-its ASCII-only raw-byte projection does not establish UTF-8 IPTC coverage.
+Version 0.8.17 adds materialized IPTC-to-XMP translation for the 20 flat groups,
+with per-block charset validation, destination conflicts and one store transaction.
+The portable writer retains its existing ASCII-only raw-byte projection.
+Next synchronization candidate: explicit native IPTC creation-date/time groups
+to materialized XMP, including timezone, partial-value and conflict rules.
 Full RDF authoring, fresh ICC construction and prepared IPTC patching remain open.
 
 Date: March 5, 2026

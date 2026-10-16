@@ -189,6 +189,24 @@ main()
                  == openmeta::MetadataDescriptiveTranslationStatus::Ok
           && iptc_translation.entries_added == 1U
           && iptc_translated.is_finalized();
+    const openmeta::MetadataAuthoringEntry native_title {
+        openmeta::make_iptc_dataset_key_view(2U, 5U),
+        openmeta::make_value_view_text("Native title", openmeta::TextEncoding::Ascii),
+    };
+    openmeta::MetaStore native_title_source;
+    const auto native_title_authored = openmeta::create_metadata_store(
+        std::span<const openmeta::MetadataAuthoringEntry>(&native_title, 1U),
+        &native_title_source);
+    openmeta::MetaStore native_title_translated;
+    const auto native_title_translation = openmeta::translate_iptc_to_xmp(
+        native_title_source, openmeta::MetadataIptcToXmpOptions {},
+        &native_title_translated);
+    const bool native_title_contract_matches
+        = native_title_authored.ok()
+          && openmeta::kMetadataIptcToXmpContractVersion == 1U
+          && native_title_translation.status == openmeta::MetadataIptcToXmpStatus::Ok
+          && native_title_translation.entries_added == 1U
+          && native_title_translated.is_finalized();
     openmeta::MetaStore authored;
     const openmeta::MetadataAuthoringEntry gps {
         openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
@@ -835,7 +853,8 @@ main()
                    || !translation_contract_matches
                    || !descriptive_translation_contract_matches
                    || !location_contract_matches || !editorial_contract_matches
-                   || !iptc_contract_matches || !gps_contract_matches
+                   || !iptc_contract_matches || !native_title_contract_matches
+                   || !gps_contract_matches
                    || !structured_location_contract_matches
                    || !navigation_contract_matches
                    || !destination_contract_matches || !quality_contract_matches

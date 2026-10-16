@@ -7770,6 +7770,75 @@ translate_iptc_metadata_document(
     return document;
 }
 
+static std::shared_ptr<PyDocument>
+translate_iptc_to_xmp_document(
+    std::shared_ptr<PyDocument> document_source,
+    MetadataDescriptiveTranslationSourceMode source_mode,
+    MetadataIptcToXmpConflictPolicy conflict_policy, bool title,
+    bool description, bool creators, bool keywords, bool copyright, bool credit,
+    bool source, bool city, bool sublocation, bool state, bool country,
+    bool country_code, bool headline, bool instructions,
+    bool transmission_reference, bool authors_position, bool caption_writer,
+    bool category, bool supplemental_categories, bool urgency,
+    uint32_t max_source_properties, uint32_t max_added_entries,
+    uint32_t max_operations, uint64_t max_total_text_bytes)
+{
+    MetadataIptcToXmpOptions options;
+    options.source_mode             = source_mode;
+    options.conflict_policy         = conflict_policy;
+    options.title                   = title;
+    options.description             = description;
+    options.creators                = creators;
+    options.keywords                = keywords;
+    options.copyright               = copyright;
+    options.credit                  = credit;
+    options.source                  = source;
+    options.city                    = city;
+    options.sublocation             = sublocation;
+    options.state                   = state;
+    options.country                 = country;
+    options.country_code            = country_code;
+    options.headline                = headline;
+    options.instructions            = instructions;
+    options.transmission_reference  = transmission_reference;
+    options.authors_position        = authors_position;
+    options.caption_writer          = caption_writer;
+    options.category                = category;
+    options.supplemental_categories = supplemental_categories;
+    options.urgency                 = urgency;
+    options.max_source_properties   = max_source_properties;
+    options.max_added_entries       = max_added_entries;
+    options.max_operations          = max_operations;
+    options.max_total_text_bytes    = max_total_text_bytes;
+    MetaStore translated;
+    MetadataIptcToXmpResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_iptc_to_xmp(document_source->store, options,
+                                       &translated);
+    }
+    if (result.status != MetadataIptcToXmpStatus::Ok) {
+        std::string message = "IPTC to XMP translation failed: ";
+        message += metadata_iptc_to_xmp_status_name(result.status);
+        if (result.failed_mapping
+            != MetadataDescriptiveTranslationMapping::None) {
+            message += " for ";
+            message += metadata_descriptive_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
 static std::string
 document_compatibility_dump(std::shared_ptr<PyDocument> d,
                             ExportNameStyle style, ExportNamePolicy name_policy,
@@ -10326,6 +10395,50 @@ NB_MODULE(_openmeta, m)
     m.def("metadata_descriptive_translation_mapping_name",
           &metadata_descriptive_translation_mapping_name, "mapping"_a);
 
+    nb::enum_<MetadataIptcToXmpConflictPolicy>(m,
+                                               "MetadataIptcToXmpConflictPolicy")
+        .value("PreserveExisting",
+               MetadataIptcToXmpConflictPolicy::PreserveExisting)
+        .value("FailOnConflict",
+               MetadataIptcToXmpConflictPolicy::FailOnConflict)
+        .value("ReplaceExisting",
+               MetadataIptcToXmpConflictPolicy::ReplaceExisting);
+    nb::enum_<MetadataIptcToXmpStatus>(m, "MetadataIptcToXmpStatus")
+        .value("Ok", MetadataIptcToXmpStatus::Ok)
+        .value("NullOutput", MetadataIptcToXmpStatus::NullOutput)
+        .value("SourceNotFinalized",
+               MetadataIptcToXmpStatus::SourceNotFinalized)
+        .value("InvalidOptions", MetadataIptcToXmpStatus::InvalidOptions)
+        .value("SourceLimitExceeded",
+               MetadataIptcToXmpStatus::SourceLimitExceeded)
+        .value("AmbiguousSource", MetadataIptcToXmpStatus::AmbiguousSource)
+        .value("InvalidSourceValue",
+               MetadataIptcToXmpStatus::InvalidSourceValue)
+        .value("ValueTooLong", MetadataIptcToXmpStatus::ValueTooLong)
+        .value("SourceEncodingConflict",
+               MetadataIptcToXmpStatus::SourceEncodingConflict)
+        .value("DestinationConflict",
+               MetadataIptcToXmpStatus::DestinationConflict)
+        .value("UnsupportedDestinationShape",
+               MetadataIptcToXmpStatus::UnsupportedDestinationShape)
+        .value("EntryLimitExceeded",
+               MetadataIptcToXmpStatus::EntryLimitExceeded)
+        .value("OperationLimitExceeded",
+               MetadataIptcToXmpStatus::OperationLimitExceeded)
+        .value("InternalError", MetadataIptcToXmpStatus::InternalError);
+    m.attr("METADATA_IPTC_TO_XMP_CONTRACT_VERSION") = nb::int_(
+        kMetadataIptcToXmpContractVersion);
+    m.attr("METADATA_IPTC_TO_XMP_MAX_SOURCE_PROPERTIES") = nb::int_(
+        kMetadataIptcToXmpMaxSourceProperties);
+    m.attr("METADATA_IPTC_TO_XMP_MAX_ADDED_ENTRIES") = nb::int_(
+        kMetadataIptcToXmpMaxAddedEntries);
+    m.attr("METADATA_IPTC_TO_XMP_MAX_OPERATIONS") = nb::int_(
+        kMetadataIptcToXmpMaxOperations);
+    m.attr("METADATA_IPTC_TO_XMP_MAX_TOTAL_TEXT_BYTES") = nb::int_(
+        kMetadataIptcToXmpMaxTotalTextBytes);
+    m.def("metadata_iptc_to_xmp_status_name", &metadata_iptc_to_xmp_status_name,
+          "status"_a);
+
     nb::enum_<MetadataFuzzySearchStatus>(m, "MetadataFuzzySearchStatus")
         .value("Ok", MetadataFuzzySearchStatus::Ok)
         .value("FeatureUnavailable",
@@ -11486,6 +11599,33 @@ NB_MODULE(_openmeta, m)
              "max_operations"_a = kMetadataDescriptiveTranslationMaxOperations,
              "max_total_text_bytes"_a
              = kMetadataDescriptiveTranslationMaxTotalTextBytes)
+        .def("translate_iptc_to_xmp", &translate_iptc_to_xmp_document,
+             "source_mode"_a = MetadataDescriptiveTranslationSourceMode::All,
+             "conflict_policy"_a = MetadataIptcToXmpConflictPolicy::FailOnConflict,
+             "title"_a = true,
+             "description"_a = true,
+             "creators"_a = true,
+             "keywords"_a = true,
+             "copyright"_a = true,
+             "credit"_a = true,
+             "source"_a = true,
+             "city"_a = true,
+             "sublocation"_a = true,
+             "state"_a = true,
+             "country"_a = true,
+             "country_code"_a = true,
+             "headline"_a = true,
+             "instructions"_a = true,
+             "transmission_reference"_a = true,
+             "authors_position"_a = true,
+             "caption_writer"_a = true,
+             "category"_a = true,
+             "supplemental_categories"_a = true,
+             "urgency"_a = true,
+             "max_source_properties"_a = kMetadataIptcToXmpMaxSourceProperties,
+             "max_added_entries"_a = kMetadataIptcToXmpMaxAddedEntries,
+             "max_operations"_a = kMetadataIptcToXmpMaxOperations,
+             "max_total_text_bytes"_a = kMetadataIptcToXmpMaxTotalTextBytes)
         .def("phaseone_raw_geometry", &document_phaseone_raw_geometry)
         .def("phaseone_raw_processing", &document_phaseone_raw_processing)
         .def("vendor_raw_processing", &document_vendor_raw_processing)

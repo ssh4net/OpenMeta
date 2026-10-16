@@ -420,6 +420,85 @@ xmlns:i=\"http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/\">
     assert batch.entry_count == count
 
 with tempfile.TemporaryDirectory() as temporary:
+    native_path = Path(temporary) / 'native_iptc.jpg'
+    fields = [
+        ('title', 5, 'Café'), ('description', 120, 'Caption'),
+        ('creators', 80, 'Alice'), ('keywords', 25, '京都'),
+        ('copyright', 116, 'Copyright'), ('credit', 110, 'Credit'),
+        ('source', 115, 'Source'), ('city', 90, 'Kyoto'),
+        ('sublocation', 92, 'Garden'), ('state', 95, 'Kyoto'),
+        ('country', 101, 'Japan'), ('country_code', 100, 'JP'),
+        ('headline', 105, 'Garden opens'), ('instructions', 40, 'Contact editor'),
+        ('transmission_reference', 103, 'JOB-42'),
+        ('authors_position', 85, 'Photographer'), ('caption_writer', 122, 'Editor'),
+        ('category', 15, 'ART'), ('supplemental_categories', 20, 'Painting'),
+        ('urgency', 10, '5'),
+    ]
+    def iim(record, dataset, value):
+        return bytes([28, record, dataset]) + len(value).to_bytes(2, 'big') + value
+    def write_iptc_jpeg(payload):
+        resource = (b'8BIM' + bytes.fromhex('04040000') +
+            len(payload).to_bytes(4, 'big') + payload + bytes(len(payload) % 2))
+        app13 = b'Photoshop 3.0' + bytes([0]) + resource
+        native_path.write_bytes(bytes.fromhex('ffd8ffed') +
+            (len(app13) + 2).to_bytes(2, 'big') + app13 + bytes.fromhex('ffd9'))
+    native_bytes = b''.join(iim(2, ds, value.encode('utf-8')) for _, ds, value in fields)
+    native_bytes += iim(2, 80, b'Bob') + iim(2, 25, '京都'.encode('utf-8')) + iim(2, 20, b'Gallery')
+    write_iptc_jpeg(iim(1, 90, bytes.fromhex('1b2547')) + native_bytes)
+    native = openmeta.read(str(native_path))
+    native_count = native.entry_count
+    materialized = native.translate_iptc_to_xmp()
+    assert materialized.entry_count == native_count + 23
+    assert native.entry_count == native_count
+    assert native.translate_iptc_to_xmp(
+        source_mode=openmeta.MetadataDescriptiveTranslationSourceMode.DirtyOnly).entry_count == native_count
+    assert openmeta.METADATA_IPTC_TO_XMP_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_IPTC_TO_XMP_MAX_SOURCE_PROPERTIES == 1024
+    assert openmeta.METADATA_IPTC_TO_XMP_MAX_ADDED_ENTRIES == 1024
+    assert openmeta.METADATA_IPTC_TO_XMP_MAX_OPERATIONS == 4096
+    assert openmeta.METADATA_IPTC_TO_XMP_MAX_TOTAL_TEXT_BYTES == 8 * 1024 * 1024
+    assert openmeta.metadata_iptc_to_xmp_status_name(
+        openmeta.MetadataIptcToXmpStatus.SourceEncodingConflict) == 'source_encoding_conflict'
+    packet, _ = materialized.dump_xmp_portable(include_exif=False, include_iptc=False, include_existing_xmp=True)
+    assert 'Café'.encode('utf-8') in packet and packet.count('京都'.encode('utf-8')) == 2
+    assert b'Alice' in packet and b'Bob' in packet and b'Gallery' in packet
+    repeated = materialized.translate_iptc_to_xmp()
+    assert repeated.entry_count == materialized.entry_count
+    assert repeated.dump_xmp_portable(include_exif=False, include_iptc=False, include_existing_xmp=True)[0] == packet
+    for selected, _, _ in fields:
+        one = native.translate_iptc_to_xmp(**{name: name == selected for name, _, _ in fields})
+        assert one.entry_count == native_count + (2 if selected in ('creators', 'keywords', 'supplemental_categories') else 1)
+    conflicting = materialized.edit_metadata([
+        openmeta.metadata_edit_set(openmeta.metadata_creation_text(K.Title, 'Changed'))])
+    try:
+        conflicting.translate_iptc_to_xmp()
+    except ValueError as exc:
+        assert 'destination_conflict for dc_title' in str(exc)
+    else:
+        raise AssertionError('IPTC destination conflict was ignored')
+    preserved = conflicting.translate_iptc_to_xmp(
+        conflict_policy=openmeta.MetadataIptcToXmpConflictPolicy.PreserveExisting)
+    assert b'Changed' in preserved.dump_xmp_portable(include_exif=False, include_iptc=False, include_existing_xmp=True)[0]
+    replaced = conflicting.translate_iptc_to_xmp(
+        conflict_policy=openmeta.MetadataIptcToXmpConflictPolicy.ReplaceExisting)
+    assert replaced.dump_xmp_portable(include_exif=False, include_iptc=False, include_existing_xmp=True)[0] == packet
+    try:
+        native.translate_iptc_to_xmp(max_added_entries=22)
+    except ValueError as exc:
+        assert 'entry_limit_exceeded' in str(exc)
+    else:
+        raise AssertionError('IPTC to XMP entry limit was ignored')
+    write_iptc_jpeg(native_bytes)
+    undeclared = openmeta.read(str(native_path))
+    try:
+        undeclared.translate_iptc_to_xmp()
+    except ValueError as exc:
+        assert 'source_encoding_conflict' in str(exc)
+    else:
+        raise AssertionError('undeclared non-ASCII IPTC was guessed')
+    assert native.entry_count == native_count
+
+with tempfile.TemporaryDirectory() as temporary:
     gps_path = Path(temporary) / 'gps.jpg'
     xml = b'''<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">
 <rdf:Description xmlns:e=\"http://ns.adobe.com/exif/1.0/\">

@@ -1573,9 +1573,10 @@ inline constexpr uint32_t kMetadataDescriptiveTranslationMaxOperations = 4096U;
 inline constexpr uint64_t kMetadataDescriptiveTranslationMaxTotalTextBytes
     = 8ULL * 1024ULL * 1024ULL;
 
-/// Which XMP entries are eligible as reverse descriptive sources.
+/// Which entries are eligible as descriptive translation sources.
 enum class MetadataDescriptiveTranslationSourceMode : uint8_t {
-    /// Translate a property group only when at least one member is Dirty.
+    /// Translate a property group only when a member or its native charset
+    /// declaration is Dirty.
     DirtyOnly,
     /// Translate active clean or dirty entries; tombstones still require Dirty.
     All,
@@ -1698,6 +1699,136 @@ metadata_descriptive_translation_status_name(
 const char*
 metadata_descriptive_translation_mapping_name(
     MetadataDescriptiveTranslationMapping mapping) noexcept;
+
+/// Experimental native IPTC to materialized XMP translation contract version.
+inline constexpr uint32_t kMetadataIptcToXmpContractVersion     = 1U;
+inline constexpr uint32_t kMetadataIptcToXmpMaxSourceProperties = 1024U;
+inline constexpr uint32_t kMetadataIptcToXmpMaxAddedEntries     = 1024U;
+inline constexpr uint32_t kMetadataIptcToXmpMaxOperations       = 4096U;
+inline constexpr uint64_t kMetadataIptcToXmpMaxTotalTextBytes   = 8ULL * 1024ULL
+                                                                * 1024ULL;
+
+/// How existing XMP destination groups are reconciled with IPTC values.
+enum class MetadataIptcToXmpConflictPolicy : uint8_t {
+    PreserveExisting,
+    FailOnConflict,
+    ReplaceExisting,
+};
+
+/// Caller-selected bounded native IPTC to XMP mappings.
+struct MetadataIptcToXmpOptions final {
+    MetadataDescriptiveTranslationSourceMode source_mode
+        = MetadataDescriptiveTranslationSourceMode::All;
+    MetadataIptcToXmpConflictPolicy conflict_policy
+        = MetadataIptcToXmpConflictPolicy::FailOnConflict;
+
+    bool title                   = true;
+    bool description             = true;
+    bool creators                = true;
+    bool keywords                = true;
+    bool copyright               = true;
+    bool credit                  = true;
+    bool source                  = true;
+    bool city                    = true;
+    bool sublocation             = true;
+    bool state                   = true;
+    bool country                 = true;
+    bool country_code            = true;
+    bool headline                = true;
+    bool instructions            = true;
+    bool transmission_reference  = true;
+    bool authors_position        = true;
+    bool caption_writer          = true;
+    bool category                = true;
+    bool supplemental_categories = true;
+    bool urgency                 = true;
+
+    uint32_t max_source_properties = kMetadataIptcToXmpMaxSourceProperties;
+    uint32_t max_added_entries     = kMetadataIptcToXmpMaxAddedEntries;
+    uint32_t max_operations        = kMetadataIptcToXmpMaxOperations;
+    uint64_t max_total_text_bytes  = kMetadataIptcToXmpMaxTotalTextBytes;
+};
+
+enum class MetadataIptcToXmpStatus : uint8_t {
+    Ok,
+    NullOutput,
+    SourceNotFinalized,
+    InvalidOptions,
+    SourceLimitExceeded,
+    AmbiguousSource,
+    InvalidSourceValue,
+    ValueTooLong,
+    SourceEncodingConflict,
+    DestinationConflict,
+    UnsupportedDestinationShape,
+    EntryLimitExceeded,
+    OperationLimitExceeded,
+    InternalError,
+};
+
+/// Transactional result details for one native IPTC to XMP translation.
+struct MetadataIptcToXmpResult final {
+    MetadataIptcToXmpStatus status = MetadataIptcToXmpStatus::Ok;
+    MetadataDescriptiveTranslationMapping failed_mapping
+        = MetadataDescriptiveTranslationMapping::None;
+    EntryId failed_source_entry = kInvalidEntryId;
+    uint32_t source_properties  = 0U;
+    uint32_t groups_translated  = 0U;
+    uint32_t groups_preserved   = 0U;
+    uint32_t groups_unchanged   = 0U;
+    uint32_t entries_added      = 0U;
+    uint32_t entries_updated    = 0U;
+    uint32_t entries_removed    = 0U;
+};
+
+/**
+ * \brief Materialize selected native IPTC-IIM datasets as XMP properties.
+ *
+ * The source store must be finalized. All is the default source mode. DirtyOnly
+ * selects a mapping group when a source member or a charset entry in a block
+ * containing an active member is dirty. All active members in that selected
+ * group participate. Clean tombstones are ignored, while dirty tombstones
+ * participate as removals. Repeated values retain (block, order_in_block,
+ * EntryId) order, including duplicate text values. More than one active value
+ * for a singleton mapping is ambiguous.
+ *
+ * Selected native values must be Bytes or Text with a valid span and matching
+ * count, and contain nonempty logical UTF-8/XML text. Text values require an
+ * explicit Ascii or Utf8 encoding hint; raw Bytes need no hint. Non-ASCII bytes
+ * require exactly one active record-1 dataset-90 value equal to bytes 0x1b,
+ * 0x25, 0x47 in the same origin block. Text charset markers also require an
+ * Ascii or Utf8 hint. Values are validated against their IPTC dataset byte and
+ * field constraints; the function does not guess encodings or transcode source
+ * bytes. Charset declarations in unrelated blocks do not affect a mapping
+ * group.
+ *
+ * FailOnConflict is the default destination policy. PreserveExisting retains
+ * an existing destination root without validating its shape. ReplaceExisting
+ * updates supported destinations, removes excess repeated values with
+ * tombstones, and adds missing values. Scalar and x-default paths must match
+ * exactly; repeated paths must use canonical contiguous positive indices.
+ * Non-default language siblings are preserved. Unsupported shapes, damaged
+ * values, and duplicate destination paths fail for FailOnConflict and
+ * ReplaceExisting. Existing IPTC and unrelated metadata are preserved.
+ *
+ * The text-byte budget includes selected source values and owned destination
+ * values. Source, destination, and other resource limits are checked before
+ * publication.
+ * Failure leaves source and output unchanged and mutation counts zero. The
+ * output store is replaced only after a successful commit; a separate source
+ * remains unchanged. Passing the source store as the output is supported.
+ * Preparation may allocate: the output clone scales with the input store, and
+ * DirtyOnly uses one bit per source block to track charset selection. The
+ * published limits bound selected properties, operations, and inspected value
+ * text, not total store size. Callers synchronize shared stores themselves.
+ */
+MetadataIptcToXmpResult
+translate_iptc_to_xmp(const MetaStore& source,
+                      const MetadataIptcToXmpOptions& options,
+                      MetaStore* out_store);
+
+const char*
+metadata_iptc_to_xmp_status_name(MetadataIptcToXmpStatus status) noexcept;
 
 /// Experimental reverse IPTC Core location translation contract version.
 inline constexpr uint32_t kMetadataLocationTranslationContractVersion = 1U;

@@ -1,6 +1,15 @@
 Developer Notes
 ===============
 
+Native IPTC to XMP in 0.8.17
+----------------------------
+
+``translate_iptc_to_xmp()`` adds a bounded v1 store transaction for 20 flat
+native IPTC mappings. Charset declarations are block-scoped; conflicts and
+resource limits fail before output changes. Existing layouts and unfrozen ABI 4
+remain unchanged. New symbols require matching 0.8.17 headers and binaries.
+Portable export retains its existing byte policy. See :doc:`translation`.
+
 JPEG IPTC resource preservation in 0.8.16
 -----------------------------------------
 

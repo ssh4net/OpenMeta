@@ -5,6 +5,7 @@
 #include "metadata_gps_fields_internal.h"
 #include "metadata_learning_fields_internal.h"
 #include "metadata_text_fields_internal.h"
+#include "metadata_translation_iptc_xmp_mapping_internal.h"
 
 #include "openmeta/xmp_dump.h"
 
@@ -10869,95 +10870,22 @@ namespace {
             return false;
         }
 
-        switch (dataset) {
-        case 5U:  // ObjectName
-            *out_prefix = "dc";
-            *out_name   = "title";
+        for (const detail::IptcXmpMappingDescriptor& mapping :
+             detail::kIptcXmpMappings) {
+            if (mapping.iptc_dataset != dataset) {
+                continue;
+            }
+            *out_prefix  = mapping.prefix;
+            *out_name    = mapping.property_root;
+            *out_indexed = mapping.repeated;
+            if (mapping.shape == detail::IptcXmpPropertyShape::Bag) {
+                *out_container = PortableIndexedProperty::Container::Bag;
+            } else if (mapping.shape == detail::IptcXmpPropertyShape::Seq) {
+                *out_container = PortableIndexedProperty::Container::Seq;
+            }
             return true;
-        case 25U:  // Keywords
-            *out_prefix    = "dc";
-            *out_name      = "subject";
-            *out_indexed   = true;
-            *out_container = PortableIndexedProperty::Container::Bag;
-            return true;
-        case 80U:  // By-line
-            *out_prefix    = "dc";
-            *out_name      = "creator";
-            *out_indexed   = true;
-            *out_container = PortableIndexedProperty::Container::Seq;
-            return true;
-        case 116U:  // CopyrightNotice
-            *out_prefix = "dc";
-            *out_name   = "rights";
-            return true;
-        case 120U:  // Caption-Abstract
-            *out_prefix = "dc";
-            *out_name   = "description";
-            return true;
-        case 10U:  // Urgency
-            *out_prefix = "photoshop";
-            *out_name   = "Urgency";
-            return true;
-        case 15U:  // Category
-            *out_prefix = "photoshop";
-            *out_name   = "Category";
-            return true;
-        case 20U:  // SupplementalCategories
-            *out_prefix    = "photoshop";
-            *out_name      = "SupplementalCategories";
-            *out_indexed   = true;
-            *out_container = PortableIndexedProperty::Container::Bag;
-            return true;
-        case 40U:  // SpecialInstructions
-            *out_prefix = "photoshop";
-            *out_name   = "Instructions";
-            return true;
-        case 85U:  // By-lineTitle
-            *out_prefix = "photoshop";
-            *out_name   = "AuthorsPosition";
-            return true;
-        case 90U:  // City
-            *out_prefix = "photoshop";
-            *out_name   = "City";
-            return true;
-        case 92U:  // Sub-location
-            *out_prefix = "Iptc4xmpCore";
-            *out_name   = "Location";
-            return true;
-        case 95U:  // Province-State
-            *out_prefix = "photoshop";
-            *out_name   = "State";
-            return true;
-        case 100U:  // Country-PrimaryLocationCode
-            *out_prefix = "Iptc4xmpCore";
-            *out_name   = "CountryCode";
-            return true;
-        case 101U:  // Country-PrimaryLocationName
-            *out_prefix = "photoshop";
-            *out_name   = "Country";
-            return true;
-        case 103U:  // OriginalTransmissionReference
-            *out_prefix = "photoshop";
-            *out_name   = "TransmissionReference";
-            return true;
-        case 105U:  // Headline
-            *out_prefix = "photoshop";
-            *out_name   = "Headline";
-            return true;
-        case 110U:  // Credit
-            *out_prefix = "photoshop";
-            *out_name   = "Credit";
-            return true;
-        case 115U:  // Source
-            *out_prefix = "photoshop";
-            *out_name   = "Source";
-            return true;
-        case 122U:  // Writer-Editor
-            *out_prefix = "photoshop";
-            *out_name   = "CaptionWriter";
-            return true;
-        default: return false;
         }
+        return false;
     }
 
     static bool map_iptc_dataset_to_portable_structured(
