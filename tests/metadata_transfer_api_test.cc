@@ -19887,6 +19887,140 @@ TEST(MetadataTransferApi,
 }
 
 TEST(MetadataTransferApi,
+     PartialDatePairsReplaceStaleTimesAndRemoveWithRetainedIptc)
+{
+    struct DateCase final {
+        const char* created;
+        const char* digital;
+        const char* native_created;
+        const char* native_digital;
+        bool remove;
+    };
+    static constexpr DateCase cases[] = {
+        { "1861", "2026-10", "18610000", "20261000", false },
+        { "2024-02", "9999", "20240200", "99990000", false },
+        { "", "", "", "", true },
+    };
+    for (const DateCase& test_case : cases) {
+        SCOPED_TRACE(test_case.created);
+        SCOPED_TRACE(test_case.remove);
+        openmeta::MetaStore source;
+        openmeta::MetaStore stale;
+        for (const uint16_t dataset : { 55U, 60U, 62U, 63U, 120U }) {
+            const std::string_view value = dataset == 120U ? "Retained caption"
+                                           : dataset == 55U || dataset == 62U
+                                               ? "20240102"
+                                               : "030405+0900";
+            openmeta::Entry entry;
+            entry.key   = openmeta::make_iptc_dataset_key(2U, dataset);
+            entry.value = openmeta::make_text(stale.arena(), value,
+                                              openmeta::TextEncoding::Ascii);
+            entry.flags = openmeta::EntryFlags::Dirty;
+            ASSERT_NE(stale.add_entry(entry), openmeta::kInvalidEntryId);
+            // Partial-date sources deliberately have no native date/time.
+            if (test_case.remove || dataset == 120U) {
+                entry.value = openmeta::make_text(source.arena(), value,
+                                                  openmeta::TextEncoding::Ascii);
+                entry.flags = openmeta::EntryFlags::None;
+                ASSERT_NE(source.add_entry(entry), openmeta::kInvalidEntryId);
+            }
+        }
+        stale.finalize();
+        for (const bool digital : { false, true }) {
+            openmeta::Entry xmp;
+            xmp.key = openmeta::make_xmp_property_key(
+                source.arena(),
+                digital ? "http://ns.adobe.com/xap/1.0/"
+                        : "http://ns.adobe.com/photoshop/1.0/",
+                digital ? "CreateDate" : "DateCreated");
+            xmp.value = openmeta::make_text(source.arena(),
+                                            digital ? test_case.digital
+                                                    : test_case.created,
+                                            openmeta::TextEncoding::Utf8);
+            xmp.flags = openmeta::EntryFlags::Dirty;
+            if (test_case.remove) {
+                xmp.flags |= openmeta::EntryFlags::Deleted;
+            }
+            ASSERT_NE(source.add_entry(xmp), openmeta::kInvalidEntryId);
+        }
+        source.finalize();
+        openmeta::MetadataDateTranslationOptions translate_options;
+        translate_options.create_date_to_exif_digitized       = false;
+        translate_options.date_time_original_to_exif_original = false;
+        translate_options.conflict_policy
+            = openmeta::MetadataDateTranslationConflictPolicy::ReplaceExisting;
+        openmeta::MetaStore translated;
+        ASSERT_EQ(openmeta::translate_xmp_creation_dates(source,
+                                                         translate_options,
+                                                         &translated)
+                      .status,
+                  openmeta::MetadataDateTranslationStatus::Ok);
+        for (const auto target : { openmeta::TransferTargetFormat::Jpeg,
+                                   openmeta::TransferTargetFormat::Tiff }) {
+            SCOPED_TRACE(target == openmeta::TransferTargetFormat::Jpeg
+                             ? "jpeg"
+                             : "tiff");
+            openmeta::PrepareTransferRequest request;
+            request.target_format      = target;
+            request.include_exif_app1  = false;
+            request.include_xmp_app1   = false;
+            request.include_icc_app2   = false;
+            request.include_iptc_app13 = true;
+            std::vector<std::byte> carrier
+                = target == openmeta::TransferTargetFormat::Jpeg
+                      ? make_jpeg_with_segments({})
+                      : make_minimal_tiff_little_endian();
+            // First establish and verify stale destination bytes, then replace.
+            for (const bool replacement : { false, true }) {
+                openmeta::PreparedTransferBundle bundle;
+                ASSERT_EQ(openmeta::prepare_metadata_for_target(
+                              replacement ? translated : stale, request, &bundle)
+                              .status,
+                          openmeta::TransferStatus::Ok);
+                ASSERT_FALSE(bundle.blocks.empty());
+                openmeta::ExecutePreparedTransferOptions execute;
+                execute.edit_requested = true;
+                execute.edit_apply     = true;
+                const auto result
+                    = openmeta::execute_prepared_transfer(&bundle, carrier,
+                                                          execute);
+                ASSERT_EQ(result.edit_plan_status,
+                          openmeta::TransferStatus::Ok);
+                ASSERT_EQ(result.edit_apply.status,
+                          openmeta::TransferStatus::Ok);
+                carrier = result.edited_output;
+                openmeta::MetaStore decoded;
+                ASSERT_TRUE(decode_transfer_roundtrip_store(carrier, &decoded));
+                EXPECT_TRUE(store_has_any_text_entry(decoded,
+                                                     iptc_key_view(2U, 120U),
+                                                     "Retained caption"));
+                for (const uint16_t time : { 60U, 63U }) {
+                    if (replacement) {
+                        EXPECT_TRUE(
+                            decoded.find_all(iptc_key_view(2U, time)).empty());
+                    } else {
+                        EXPECT_TRUE(store_has_any_text_entry(
+                            decoded, iptc_key_view(2U, time), "030405+0900"));
+                    }
+                }
+                for (const bool digital : { false, true }) {
+                    const auto key = iptc_key_view(2U, digital ? 62U : 55U);
+                    if (replacement && test_case.remove) {
+                        EXPECT_TRUE(decoded.find_all(key).empty());
+                    } else {
+                        const std::string_view expected
+                            = replacement ? (digital ? test_case.native_digital
+                                                     : test_case.native_created)
+                                          : "20240102";
+                        EXPECT_TRUE(
+                            store_has_any_text_entry(decoded, key, expected));
+                    }
+                }
+            }
+        }
+    }
+}
+TEST(MetadataTransferApi,
      TranslatedXmpDescriptionsSurviveNativeJpegAndTiffRoundTrip)
 {
     const std::array fields = {

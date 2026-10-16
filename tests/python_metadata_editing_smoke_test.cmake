@@ -89,7 +89,7 @@ dates = openmeta.create_metadata([
 ])
 translated_dates = dates.translate_creation_dates(
     date_created_to_iptc_created=False)
-assert openmeta.METADATA_DATE_TRANSLATION_CONTRACT_VERSION == 2
+assert openmeta.METADATA_DATE_TRANSLATION_CONTRACT_VERSION == 3
 assert translated_dates.entry_count == dates.entry_count + 8
 assert dates.entry_count == 2
 translated_packet, _ = translated_dates.dump_xmp_portable(
@@ -560,6 +560,26 @@ with tempfile.TemporaryDirectory() as temporary:
     partial = native_dates([(55, '18610000'), (62, '20261000')]).translate_iptc_dates_to_xmp()
     assert b'<photoshop:DateCreated>1861</photoshop:DateCreated>' in date_packet(partial)
     assert b'<xmp:CreateDate>2026-10</xmp:CreateDate>' in date_packet(partial)
+    partial_count = partial.entry_count
+    try:
+        partial.translate_creation_dates()
+    except ValueError as exc:
+        assert 'unsupported_precision for xmp_create_date' in str(exc)
+    else:
+        raise AssertionError('partial date invented EXIF time')
+    assert partial.entry_count == partial_count
+    roundtripped_partial = partial.translate_creation_dates(
+        create_date_to_exif_digitized=False,
+        date_time_original_to_exif_original=False)
+    assert roundtripped_partial.entry_count == partial_count
+    assert date_packet(roundtripped_partial) == date_packet(partial)
+    for value in ['0001', '9999-12']:
+        authored_partial = openmeta.create_metadata([
+            openmeta.metadata_creation_text(K.CreateDate, value)])
+        projected_partial = authored_partial.translate_creation_dates(
+            create_date_to_exif_digitized=False,
+            date_time_original_to_exif_original=False)
+        assert projected_partial.entry_count == authored_partial.entry_count + 1
     unzoned = native_dates([(55, '20190529'), (60, '211240'), (62, '20190529')])
     unzoned_packet = date_packet(unzoned.translate_iptc_dates_to_xmp())
     assert b'<photoshop:DateCreated>2019-05-29T21:12:40</photoshop:DateCreated>' in unzoned_packet

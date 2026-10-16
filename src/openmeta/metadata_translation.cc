@@ -13,6 +13,7 @@
 #include <limits>
 #include <span>
 #include <string_view>
+#include <utility>
 
 namespace openmeta {
 namespace {
@@ -117,9 +118,49 @@ namespace {
     }
 
     static bool parse_xmp_datetime(std::string_view text,
-                                   ParsedXmpDateTime* out) noexcept
+                                   ParsedXmpDateTime* out,
+                                   bool allow_partial_date) noexcept
     {
-        if (!out || text.size() < 10U || text[4] != '-' || text[7] != '-') {
+        if (!out) {
+            return false;
+        }
+
+        if (allow_partial_date && text.size() == 4U) {
+            for (size_t i = 0U; i < text.size(); ++i) {
+                if (!ascii_digit(text[i])) {
+                    return false;
+                }
+            }
+            const uint32_t year = decimal_digits(text, 0U, 4U);
+            if (year == 0U) {
+                return false;
+            }
+            ParsedXmpDateTime parsed;
+            parsed.year = static_cast<uint16_t>(year);
+            *out        = parsed;
+            return true;
+        }
+        if (allow_partial_date && text.size() == 7U && text[4] == '-') {
+            for (size_t i = 0U; i < 4U; ++i) {
+                if (!ascii_digit(text[i])) {
+                    return false;
+                }
+            }
+            if (!ascii_digit(text[5U]) || !ascii_digit(text[6U])) {
+                return false;
+            }
+            const uint32_t year  = decimal_digits(text, 0U, 4U);
+            const uint32_t month = decimal_digits(text, 5U, 2U);
+            if (year == 0U || month == 0U || month > 12U) {
+                return false;
+            }
+            ParsedXmpDateTime parsed;
+            parsed.year  = static_cast<uint16_t>(year);
+            parsed.month = static_cast<uint8_t>(month);
+            *out         = parsed;
+            return true;
+        }
+        if (text.size() < 10U || text[4] != '-' || text[7] != '-') {
             return false;
         }
         static constexpr std::array<size_t, 8U> kDateDigitPositions = {
@@ -836,6 +877,15 @@ namespace {
         return result;
     }
 
+    static void clear_committed_date_mutations(
+        MetadataDateTranslationResult& result) noexcept
+    {
+        result.groups_translated = 0U;
+        result.entries_added     = 0U;
+        result.entries_updated   = 0U;
+        result.entries_removed   = 0U;
+    }
+
     static MetadataDateTranslationStatus append_source_groups(
         const MetaStore& source, const MetadataDateTranslationOptions& options,
         std::string_view schema_ns, std::string_view property_path,
@@ -862,7 +912,8 @@ namespace {
         ++result->source_properties;
 
         ParsedXmpDateTime parsed;
-        if (!property.deleted && !parse_xmp_datetime(property.text, &parsed)) {
+        if (!property.deleted
+            && !parse_xmp_datetime(property.text, &parsed, true)) {
             result->failed_mapping      = mapping;
             result->failed_source_entry = property.entry_id;
             return MetadataDateTranslationStatus::InvalidDateTime;
@@ -1498,7 +1549,7 @@ namespace {
         if (date_time) {
             ParsedXmpDateTime parsed;
             if (!property.deleted
-                && !parse_xmp_datetime(property.text, &parsed)) {
+                && !parse_xmp_datetime(property.text, &parsed, false)) {
                 result->failed_mapping      = mapping;
                 result->failed_source_entry = property.entry_id;
                 return MetadataTechnicalTranslationStatus::InvalidDateTime;
@@ -1734,10 +1785,17 @@ translate_xmp_creation_dates(const MetaStore& source,
     if (edit.ops().size() != operation_count || edit.arena().limit_exceeded()
         || result.entries_added != added_entries) {
         result.status = MetadataDateTranslationStatus::InternalError;
+        clear_committed_date_mutations(result);
         return result;
     }
 
-    *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    MetaStore staged = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    if (staged.arena().limit_exceeded()) {
+        result.status = MetadataDateTranslationStatus::InternalError;
+        clear_committed_date_mutations(result);
+        return result;
+    }
+    *out_store = std::move(staged);
     return result;
 }
 

@@ -73,9 +73,9 @@ allocate in proportion to input size; allocation failure is not recoverable.
 Hosts synchronize shared objects. No atomics or mutexes are added.
 
 Serialize stored properties with ``include_existing_xmp=True``, ``include_iptc=False``
-and ``include_exif=False``. The existing portable projection and reverse-date APIs
-retain their policies. In particular, reverse translation currently requires a
-full calendar date, so year/month-only XMP does not round-trip through that API.
+and ``include_exif=False``. Since 0.8.19, reverse creation-date translation
+preserves year/month precision when only IPTC output is selected. Portable
+projection retains its existing policy.
 The forward transaction does not infer EXIF dates or combine the two native pairs.
 
 
@@ -183,7 +183,7 @@ transfer or writing. Native IPTC text/priority groups can also become materializ
 XMP properties.
 
 The APIs are experimental and versioned by
-``kMetadataDateTranslationContractVersion == 2`` and
+``kMetadataDateTranslationContractVersion == 3`` and
 ``kMetadataTechnicalTranslationContractVersion == 2`` and
 ``kMetadataCaptureTranslationContractVersion == 1`` and
 ``kMetadataGeometryTranslationContractVersion == 1`` and
@@ -280,19 +280,28 @@ Date mappings
        preserved in companion tags.
    * - ``xmp:CreateDate``
      - IPTC ``DigitalCreationDate`` and ``DigitalCreationTime``
-     - Date-only or whole seconds are accepted. Fractional seconds are
-       rejected.
+     - Year-only, year-month, full date or whole seconds are accepted.
+       Fractional seconds are rejected.
    * - ``photoshop:DateCreated``
      - IPTC ``DateCreated`` and ``TimeCreated``
-     - Date-only or whole seconds are accepted. Fractional seconds are
-       rejected.
+     - Year-only, year-month, full date or whole seconds are accepted.
+       Fractional seconds are rejected.
    * - XMP ``exif:DateTimeOriginal``
      - EXIF ``DateTimeOriginal``, ``OffsetTimeOriginal``, and
        ``SubSecTimeOriginal``
      - Time is required. Timezone and up to nine fractional digits are
        preserved in companion tags.
 
-Accepted values use a full Gregorian ``YYYY-MM-DD`` date, optionally followed
+Creation-date contract 3 accepts exact ``YYYY`` (positive four-digit year) and
+``YYYY-MM`` (month 01–12). IPTC encodes missing month/day as zero: ``1861`` becomes
+``18610000`` and ``2026-10`` becomes ``20261000``. A partial date cannot carry time
+or timezone. Year 0000, zero month/day in XMP and trailing data are invalid.
+A valid partial date with an EXIF projection returns ``UnsupportedPrecision``
+for the whole transaction. Disable ``create_date_to_exif_digitized`` for partial
+``xmp:CreateDate``. Photoshop DateCreated has no EXIF projection. Technical
+``xmp:ModifyDate`` retains its full-date-only syntax.
+
+Full dates use a Gregorian ``YYYY-MM-DD`` date, optionally followed
 by ``T`` and ``hh:mm:ss``, up to nine fractional digits, and ``Z`` or a
 ``+/-HH:MM`` timezone. Invalid dates, malformed values, and conversions that
 would discard precision fail instead of being normalized or truncated.
@@ -301,6 +310,15 @@ Lexical ``-00:00`` is preserved as a negative-zero offset.
 Each mapping can be disabled independently. For example, callers that need to
 retain fractional ``xmp:CreateDate`` can disable its IPTC projection while
 keeping exact EXIF projection.
+
+The complete IPTC date/time pair follows the selected conflict policy.
+ReplaceExisting removes stale source time for a date without time. Complete
+nonempty IPTC payload replacement also removes target-only stale times in JPEG
+and TIFF. Retain other desired IPTC datasets in the source store. Under
+ReplaceExisting, dirty XMP removal of existing native pairs works when another
+active dataset remains.
+Clearing the last active IPTC dataset needs a future carrier-removal contract;
+an omitted route does not clear the destination carrier.
 
 Technical EXIF mappings
 -----------------------

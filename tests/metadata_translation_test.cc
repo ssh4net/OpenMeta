@@ -221,6 +221,38 @@ namespace {
         return false;
     }
 
+    static bool active_iptc_bytes_exact(const MetaStore& store,
+                                        uint16_t dataset,
+                                        std::string_view expected) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if (any(entry.flags, EntryFlags::Deleted)
+                || entry.key.kind != MetaKeyKind::IptcDataset
+                || entry.key.data.iptc_dataset.record != 2U
+                || entry.key.data.iptc_dataset.dataset != dataset
+                || entry.value.kind != MetaValueKind::Bytes) {
+                continue;
+            }
+            const std::span<const std::byte> bytes = store.arena().span(
+                entry.value.data.span);
+            if (bytes.size() == expected.size()
+                && std::memcmp(bytes.data(), expected.data(), bytes.size())
+                       == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool
+    arena_bytes_equal(const MetaStore& store,
+                      const std::vector<std::byte>& expected) noexcept
+    {
+        const std::span<const std::byte> actual = store.arena().bytes();
+        return actual.size() == expected.size()
+               && std::equal(actual.begin(), actual.end(), expected.begin());
+    }
+
     static bool active_iptc_record_text(const MetaStore& store, uint16_t record,
                                         uint16_t dataset,
                                         std::string_view expected) noexcept
@@ -498,6 +530,521 @@ namespace {
                   MetadataDateTranslationMapping::XmpDateTimeOriginal);
         EXPECT_EQ(output.entries().size(), sentinel.entries().size());
         EXPECT_TRUE(active_iptc_text(output, 5U, "sentinel"));
+    }
+
+    TEST(MetadataTranslation,
+         TranslatesHierarchicalPartialDatesToLiteralIptcBytes)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block,
+                               "http://ns.adobe.com/photoshop/1.0/",
+                               "DateCreated", "2024", EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/xap/1.0/",
+                               "CreateDate", "2025-09", EntryFlags::Dirty, 1U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        MetadataDateTranslationOptions options;
+        options.create_date_to_exif_digitized = false;
+
+        MetaStore translated;
+        const MetadataDateTranslationResult result
+            = translate_xmp_creation_dates(source, options, &translated);
+        ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(result.source_properties, 2U);
+        EXPECT_EQ(result.groups_translated, 2U);
+        EXPECT_EQ(result.entries_added, 2U);
+        EXPECT_TRUE(active_iptc_bytes_exact(translated, 55U, "20240000"));
+        EXPECT_TRUE(active_iptc_bytes_exact(translated, 62U, "20250900"));
+        EXPECT_EQ(active_iptc_count(translated, 60U), 0U);
+        EXPECT_EQ(active_iptc_count(translated, 63U), 0U);
+    }
+
+    TEST(MetadataTranslation,
+         LateExifPartialDateFailurePreservesOutputAndAliasedSource)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        const EntryId photoshop_entry
+            = add_xmp_text(&source, block, "http://ns.adobe.com/photoshop/1.0/",
+                           "DateCreated", "2024-09", EntryFlags::Dirty, 0U);
+        ASSERT_NE(photoshop_entry, kInvalidEntryId);
+        const EntryId exif_entry
+            = add_xmp_text(&source, block, "http://ns.adobe.com/exif/1.0/",
+                           "DateTimeOriginal", "2024", EntryFlags::Dirty, 1U);
+        ASSERT_NE(exif_entry, kInvalidEntryId);
+        source.finalize();
+
+        MetaStore sentinel;
+        const BlockId sentinel_block = sentinel.add_block(BlockInfo {});
+        ASSERT_NE(sentinel_block, kInvalidBlockId);
+        ASSERT_NE(add_iptc_bytes(&sentinel, sentinel_block, 5U, "sentinel", 0U),
+                  kInvalidEntryId);
+        sentinel.finalize();
+        MetaStore output = sentinel;
+        const std::vector<std::byte> sentinel_arena_before(
+            output.arena().bytes().begin(), output.arena().bytes().end());
+
+        const MetadataDateTranslationOptions options;
+        const MetadataDateTranslationResult output_result
+            = translate_xmp_creation_dates(source, options, &output);
+        EXPECT_EQ(output_result.status,
+                  MetadataDateTranslationStatus::UnsupportedPrecision);
+        EXPECT_EQ(output_result.failed_mapping,
+                  MetadataDateTranslationMapping::XmpDateTimeOriginal);
+        EXPECT_EQ(output_result.failed_source_entry, exif_entry);
+        EXPECT_EQ(output_result.entries_added, 0U);
+        EXPECT_EQ(output_result.entries_updated, 0U);
+        EXPECT_EQ(output_result.entries_removed, 0U);
+        EXPECT_EQ(output_result.groups_translated, 0U);
+        EXPECT_EQ(output.entries().size(), sentinel.entries().size());
+        EXPECT_TRUE(arena_bytes_equal(output, sentinel_arena_before));
+        EXPECT_TRUE(active_iptc_text(output, 5U, "sentinel"));
+
+        const size_t source_entry_count = source.entries().size();
+        const std::vector<std::byte> source_arena_before(
+            source.arena().bytes().begin(), source.arena().bytes().end());
+        const MetadataDateTranslationResult alias_result
+            = translate_xmp_creation_dates(source, options, &source);
+        EXPECT_EQ(alias_result.status,
+                  MetadataDateTranslationStatus::UnsupportedPrecision);
+        EXPECT_EQ(alias_result.failed_source_entry, exif_entry);
+        EXPECT_EQ(alias_result.entries_added, 0U);
+        EXPECT_EQ(alias_result.entries_updated, 0U);
+        EXPECT_EQ(alias_result.entries_removed, 0U);
+        EXPECT_EQ(alias_result.groups_translated, 0U);
+        EXPECT_EQ(source.entries().size(), source_entry_count);
+        EXPECT_TRUE(arena_bytes_equal(source, source_arena_before));
+        ASSERT_LT(static_cast<size_t>(photoshop_entry),
+                  source.entries().size());
+        ASSERT_LT(static_cast<size_t>(exif_entry), source.entries().size());
+        EXPECT_TRUE(entry_matches_text(source, source.entry(photoshop_entry),
+                                       "2024-09"));
+        EXPECT_TRUE(
+            entry_matches_text(source, source.entry(exif_entry), "2024"));
+    }
+
+    TEST(MetadataTranslation,
+         PartialDateSyntaxBoundariesAndSourceSelectionAreExplicit)
+    {
+        struct PartialDateCase final {
+            std::string_view source_text;
+            std::string_view expected_bytes;
+        };
+        static constexpr std::array<PartialDateCase, 4U> kValidCases = { {
+            { "0001", "00010000" },
+            { "9999", "99990000" },
+            { "0001-01", "00010100" },
+            { "9999-12", "99991200" },
+        } };
+        for (const PartialDateCase& test_case : kValidCases) {
+            SCOPED_TRACE(std::string(test_case.source_text));
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            ASSERT_NE(block, kInvalidBlockId);
+            const EntryId source_entry = add_xmp_text(
+                &source, block, "http://ns.adobe.com/photoshop/1.0/",
+                "DateCreated", test_case.source_text, EntryFlags::Dirty, 0U);
+            ASSERT_NE(source_entry, kInvalidEntryId);
+            source.finalize();
+
+            MetaStore output;
+            const MetadataDateTranslationResult result
+                = translate_xmp_creation_dates(
+                    source, MetadataDateTranslationOptions {}, &output);
+            ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
+            EXPECT_EQ(result.entries_added, 1U);
+            EXPECT_TRUE(
+                active_iptc_bytes_exact(output, 55U, test_case.expected_bytes));
+        }
+
+        MetaStore clean_source;
+        const BlockId clean_block = clean_source.add_block(BlockInfo {});
+        ASSERT_NE(clean_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&clean_source, clean_block,
+                               "http://ns.adobe.com/photoshop/1.0/",
+                               "DateCreated", "2024-01", EntryFlags::None, 0U),
+                  kInvalidEntryId);
+        clean_source.finalize();
+
+        MetaStore clean_output;
+        MetadataDateTranslationOptions options;
+        MetadataDateTranslationResult result
+            = translate_xmp_creation_dates(clean_source, options,
+                                           &clean_output);
+        ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(result.source_properties, 0U);
+        EXPECT_EQ(active_iptc_count(clean_output, 55U), 0U);
+        options.source_mode = MetadataDateTranslationSourceMode::All;
+        result = translate_xmp_creation_dates(clean_source, options,
+                                              &clean_output);
+        ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(result.source_properties, 1U);
+        EXPECT_TRUE(active_iptc_bytes_exact(clean_output, 55U, "20240100"));
+
+        static constexpr std::array<std::string_view, 15U> kInvalidCases = {
+            "0000",
+            "0000-01",
+            "2024-00",
+            "2024-13",
+            "2024-00-01",
+            "2024-09-00",
+            "2024-09T01:02:03Z",
+            "2024-09+09:00",
+            "2024-09.1",
+            "2024-09x",
+            " 2024",
+            "2024 ",
+            "20X4",
+            "12024",
+            std::string_view("2024\0", 5U),
+        };
+        MetaStore sentinel;
+        const BlockId sentinel_block = sentinel.add_block(BlockInfo {});
+        ASSERT_NE(sentinel_block, kInvalidBlockId);
+        ASSERT_NE(add_iptc_bytes(&sentinel, sentinel_block, 5U, "sentinel", 0U),
+                  kInvalidEntryId);
+        sentinel.finalize();
+        for (const std::string_view invalid_text : kInvalidCases) {
+            SCOPED_TRACE(std::string(invalid_text));
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            ASSERT_NE(block, kInvalidBlockId);
+            const EntryId source_entry = add_xmp_text(
+                &source, block, "http://ns.adobe.com/photoshop/1.0/",
+                "DateCreated", invalid_text, EntryFlags::Dirty, 0U);
+            ASSERT_NE(source_entry, kInvalidEntryId);
+            source.finalize();
+
+            MetaStore output = sentinel;
+            const std::vector<std::byte> sentinel_arena(
+                output.arena().bytes().begin(), output.arena().bytes().end());
+            result = translate_xmp_creation_dates(
+                source, MetadataDateTranslationOptions {}, &output);
+            EXPECT_EQ(result.status,
+                      MetadataDateTranslationStatus::InvalidDateTime);
+            EXPECT_EQ(result.failed_mapping,
+                      MetadataDateTranslationMapping::PhotoshopDateCreated);
+            EXPECT_EQ(result.failed_source_entry, source_entry);
+            EXPECT_EQ(output.entries().size(), sentinel.entries().size());
+            EXPECT_TRUE(arena_bytes_equal(output, sentinel_arena));
+            EXPECT_TRUE(active_iptc_text(output, 5U, "sentinel"));
+        }
+
+        MetaStore default_create_date;
+        const BlockId create_block = default_create_date.add_block(
+            BlockInfo {});
+        ASSERT_NE(create_block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&default_create_date, create_block,
+                               "http://ns.adobe.com/xap/1.0/", "CreateDate",
+                               "2024-01", EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        default_create_date.finalize();
+        MetaStore default_output = sentinel;
+        result = translate_xmp_creation_dates(default_create_date,
+                                              MetadataDateTranslationOptions {},
+                                              &default_output);
+        EXPECT_EQ(result.status,
+                  MetadataDateTranslationStatus::UnsupportedPrecision);
+        EXPECT_EQ(result.failed_mapping,
+                  MetadataDateTranslationMapping::XmpCreateDate);
+        EXPECT_STREQ(metadata_date_translation_status_name(result.status),
+                     "unsupported_precision");
+        EXPECT_EQ(active_iptc_count(default_output, 62U), 0U);
+        EXPECT_TRUE(active_iptc_text(default_output, 5U, "sentinel"));
+    }
+
+    TEST(MetadataTranslation,
+         PartialDateConflictPoliciesAndDirtyPairRemovalStayGrouped)
+    {
+        static constexpr std::array<MetadataDateTranslationConflictPolicy, 3U>
+            kPolicies = {
+                MetadataDateTranslationConflictPolicy::PreserveExisting,
+                MetadataDateTranslationConflictPolicy::FailOnConflict,
+                MetadataDateTranslationConflictPolicy::ReplaceExisting,
+            };
+        for (const MetadataDateTranslationConflictPolicy policy : kPolicies) {
+            SCOPED_TRACE(static_cast<int>(policy));
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            ASSERT_NE(block, kInvalidBlockId);
+            ASSERT_NE(add_xmp_text(&source, block,
+                                   "http://ns.adobe.com/photoshop/1.0/",
+                                   "DateCreated", "2024", EntryFlags::Dirty,
+                                   0U),
+                      kInvalidEntryId);
+            ASSERT_NE(add_iptc_bytes(&source, block, 60U, "010203", 1U),
+                      kInvalidEntryId);
+            source.finalize();
+
+            MetaStore sentinel;
+            const BlockId sentinel_block = sentinel.add_block(BlockInfo {});
+            ASSERT_NE(sentinel_block, kInvalidBlockId);
+            ASSERT_NE(add_iptc_bytes(&sentinel, sentinel_block, 5U, "sentinel",
+                                     0U),
+                      kInvalidEntryId);
+            sentinel.finalize();
+            MetaStore output = sentinel;
+
+            MetadataDateTranslationOptions options;
+            options.conflict_policy = policy;
+            const MetadataDateTranslationResult result
+                = translate_xmp_creation_dates(source, options, &output);
+            if (policy
+                == MetadataDateTranslationConflictPolicy::PreserveExisting) {
+                ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
+                EXPECT_EQ(result.groups_preserved, 1U);
+                EXPECT_EQ(active_iptc_count(output, 55U), 0U);
+                EXPECT_TRUE(active_iptc_text(output, 60U, "010203"));
+            } else if (policy
+                       == MetadataDateTranslationConflictPolicy::FailOnConflict) {
+                EXPECT_EQ(result.status,
+                          MetadataDateTranslationStatus::NativeConflict);
+                EXPECT_EQ(output.entries().size(), sentinel.entries().size());
+                EXPECT_TRUE(active_iptc_text(output, 5U, "sentinel"));
+            } else {
+                ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
+                EXPECT_EQ(result.entries_added, 1U);
+                EXPECT_EQ(result.entries_removed, 1U);
+                EXPECT_TRUE(active_iptc_bytes_exact(output, 55U, "20240000"));
+                EXPECT_EQ(active_iptc_count(output, 60U), 0U);
+            }
+        }
+
+        for (const MetadataDateTranslationConflictPolicy policy : kPolicies) {
+            SCOPED_TRACE(static_cast<int>(policy));
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            ASSERT_NE(block, kInvalidBlockId);
+            ASSERT_NE(add_xmp_text(&source, block,
+                                   "http://ns.adobe.com/photoshop/1.0/",
+                                   "DateCreated", "removed",
+                                   EntryFlags::Dirty | EntryFlags::Deleted, 0U),
+                      kInvalidEntryId);
+            ASSERT_NE(add_iptc_bytes(&source, block, 55U, "20200102", 1U),
+                      kInvalidEntryId);
+            ASSERT_NE(add_iptc_bytes(&source, block, 60U, "010203", 2U),
+                      kInvalidEntryId);
+            ASSERT_NE(add_iptc_bytes(&source, block, 5U, "caption", 3U),
+                      kInvalidEntryId);
+            source.finalize();
+
+            MetaStore sentinel;
+            const BlockId sentinel_block = sentinel.add_block(BlockInfo {});
+            ASSERT_NE(sentinel_block, kInvalidBlockId);
+            ASSERT_NE(add_iptc_bytes(&sentinel, sentinel_block, 5U, "sentinel",
+                                     0U),
+                      kInvalidEntryId);
+            sentinel.finalize();
+            MetaStore output = sentinel;
+
+            MetadataDateTranslationOptions options;
+            options.conflict_policy = policy;
+            const MetadataDateTranslationResult result
+                = translate_xmp_creation_dates(source, options, &output);
+            if (policy
+                == MetadataDateTranslationConflictPolicy::PreserveExisting) {
+                ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
+                EXPECT_EQ(result.groups_preserved, 1U);
+                EXPECT_TRUE(active_iptc_text(output, 55U, "20200102"));
+                EXPECT_TRUE(active_iptc_text(output, 60U, "010203"));
+                EXPECT_TRUE(active_iptc_text(output, 5U, "caption"));
+            } else if (policy
+                       == MetadataDateTranslationConflictPolicy::FailOnConflict) {
+                EXPECT_EQ(result.status,
+                          MetadataDateTranslationStatus::NativeConflict);
+                EXPECT_EQ(output.entries().size(), sentinel.entries().size());
+                EXPECT_TRUE(active_iptc_text(output, 5U, "sentinel"));
+            } else {
+                ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
+                EXPECT_EQ(result.entries_removed, 2U);
+                EXPECT_EQ(active_iptc_count(output, 55U), 0U);
+                EXPECT_EQ(active_iptc_count(output, 60U), 0U);
+                EXPECT_TRUE(active_iptc_text(output, 5U, "caption"));
+            }
+        }
+    }
+
+    TEST(MetadataTranslation,
+         PartialDateLimitsExactReapplyAndArenaRollbackAreTransactional)
+    {
+        MetaStore source;
+        const BlockId block = source.add_block(BlockInfo {});
+        ASSERT_NE(block, kInvalidBlockId);
+        ASSERT_NE(add_xmp_text(&source, block,
+                               "http://ns.adobe.com/photoshop/1.0/",
+                               "DateCreated", "2024", EntryFlags::Dirty, 0U),
+                  kInvalidEntryId);
+        ASSERT_NE(add_xmp_text(&source, block, "http://ns.adobe.com/xap/1.0/",
+                               "CreateDate", "2025-09", EntryFlags::Dirty, 1U),
+                  kInvalidEntryId);
+        source.finalize();
+
+        MetaStore sentinel;
+        const BlockId sentinel_block = sentinel.add_block(BlockInfo {});
+        ASSERT_NE(sentinel_block, kInvalidBlockId);
+        ASSERT_NE(add_iptc_bytes(&sentinel, sentinel_block, 5U, "sentinel", 0U),
+                  kInvalidEntryId);
+        sentinel.finalize();
+        MetaStore output = sentinel;
+        const std::vector<std::byte> sentinel_arena(
+            output.arena().bytes().begin(), output.arena().bytes().end());
+
+        MetadataDateTranslationOptions options;
+        options.create_date_to_exif_digitized = false;
+        options.max_added_entries             = 1U;
+        MetadataDateTranslationResult result
+            = translate_xmp_creation_dates(source, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataDateTranslationStatus::EntryLimitExceeded);
+        EXPECT_EQ(result.entries_added, 0U);
+        EXPECT_EQ(result.entries_updated, 0U);
+        EXPECT_EQ(result.entries_removed, 0U);
+        EXPECT_EQ(result.groups_translated, 0U);
+        EXPECT_EQ(output.entries().size(), sentinel.entries().size());
+        EXPECT_TRUE(arena_bytes_equal(output, sentinel_arena));
+        EXPECT_TRUE(active_iptc_text(output, 5U, "sentinel"));
+
+        options.max_added_entries = kMetadataDateTranslationMaxAddedEntries;
+        options.max_operations    = 1U;
+        result = translate_xmp_creation_dates(source, options, &output);
+        EXPECT_EQ(result.status,
+                  MetadataDateTranslationStatus::OperationLimitExceeded);
+        EXPECT_EQ(result.entries_added, 0U);
+        EXPECT_EQ(result.entries_updated, 0U);
+        EXPECT_EQ(result.entries_removed, 0U);
+        EXPECT_EQ(result.groups_translated, 0U);
+        EXPECT_EQ(output.entries().size(), sentinel.entries().size());
+        EXPECT_TRUE(arena_bytes_equal(output, sentinel_arena));
+
+        options.max_operations = kMetadataDateTranslationMaxOperations;
+        MetaStore translated;
+        result = translate_xmp_creation_dates(source, options, &translated);
+        ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(result.groups_translated, 2U);
+        EXPECT_EQ(result.entries_added, 2U);
+        EXPECT_TRUE(active_iptc_bytes_exact(translated, 55U, "20240000"));
+        EXPECT_TRUE(active_iptc_bytes_exact(translated, 62U, "20250900"));
+
+        MetaStore reapplied;
+        result = translate_xmp_creation_dates(translated, options, &reapplied);
+        ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(result.groups_unchanged, 2U);
+        EXPECT_EQ(result.groups_translated, 0U);
+        EXPECT_EQ(result.entries_added, 0U);
+        EXPECT_EQ(reapplied.entries().size(), translated.entries().size());
+        EXPECT_TRUE(active_iptc_bytes_exact(reapplied, 55U, "20240000"));
+        EXPECT_TRUE(active_iptc_bytes_exact(reapplied, 62U, "20250900"));
+
+        const size_t translated_entry_count = translated.entries().size();
+        const std::vector<std::byte> translated_arena(
+            translated.arena().bytes().begin(),
+            translated.arena().bytes().end());
+        result = translate_xmp_creation_dates(translated, options, &translated);
+        ASSERT_EQ(result.status, MetadataDateTranslationStatus::Ok);
+        EXPECT_EQ(result.groups_unchanged, 2U);
+        EXPECT_EQ(result.entries_added, 0U);
+        EXPECT_EQ(translated.entries().size(), translated_entry_count);
+        EXPECT_TRUE(arena_bytes_equal(translated, translated_arena));
+        EXPECT_TRUE(active_iptc_bytes_exact(translated, 55U, "20240000"));
+        EXPECT_TRUE(active_iptc_bytes_exact(translated, 62U, "20250900"));
+
+        MetaStore constrained;
+        const BlockId constrained_block = constrained.add_block(BlockInfo {});
+        ASSERT_NE(constrained_block, kInvalidBlockId);
+        const EntryId constrained_source_entry
+            = add_xmp_text(&constrained, constrained_block,
+                           "http://ns.adobe.com/photoshop/1.0/", "DateCreated",
+                           "2024", EntryFlags::Dirty, 0U);
+        ASSERT_NE(constrained_source_entry, kInvalidEntryId);
+        constrained.finalize();
+        const std::vector<std::byte> constrained_arena(
+            constrained.arena().bytes().begin(),
+            constrained.arena().bytes().end());
+        const size_t constrained_entry_count = constrained.entries().size();
+        constrained.arena().constrain_max_size(constrained_arena.size());
+
+        MetaStore failure_output = sentinel;
+        const std::vector<std::byte> failure_output_arena(
+            failure_output.arena().bytes().begin(),
+            failure_output.arena().bytes().end());
+        result = translate_xmp_creation_dates(constrained,
+                                              MetadataDateTranslationOptions {},
+                                              &failure_output);
+        EXPECT_EQ(result.status, MetadataDateTranslationStatus::InternalError);
+        EXPECT_EQ(result.entries_added, 0U);
+        EXPECT_EQ(result.entries_updated, 0U);
+        EXPECT_EQ(result.entries_removed, 0U);
+        EXPECT_EQ(result.groups_translated, 0U);
+        EXPECT_EQ(failure_output.entries().size(), sentinel.entries().size());
+        EXPECT_TRUE(arena_bytes_equal(failure_output, failure_output_arena));
+        EXPECT_TRUE(active_iptc_text(failure_output, 5U, "sentinel"));
+        EXPECT_EQ(constrained.entries().size(), constrained_entry_count);
+        EXPECT_TRUE(arena_bytes_equal(constrained, constrained_arena));
+        EXPECT_FALSE(constrained.arena().limit_exceeded());
+        EXPECT_TRUE(entry_matches_text(
+            constrained, constrained.entry(constrained_source_entry), "2024"));
+
+        result = translate_xmp_creation_dates(constrained,
+                                              MetadataDateTranslationOptions {},
+                                              &constrained);
+        EXPECT_EQ(result.status, MetadataDateTranslationStatus::InternalError);
+        EXPECT_EQ(result.entries_added, 0U);
+        EXPECT_EQ(result.entries_updated, 0U);
+        EXPECT_EQ(result.entries_removed, 0U);
+        EXPECT_EQ(result.groups_translated, 0U);
+        EXPECT_EQ(constrained.entries().size(), constrained_entry_count);
+        EXPECT_TRUE(arena_bytes_equal(constrained, constrained_arena));
+        EXPECT_FALSE(constrained.arena().limit_exceeded());
+        EXPECT_TRUE(entry_matches_text(
+            constrained, constrained.entry(constrained_source_entry), "2024"));
+    }
+
+    TEST(MetadataTranslation,
+         TechnicalModifyDateKeepsHierarchicalPartialsInvalid)
+    {
+        static constexpr std::array<std::string_view, 2U> kPartialDates = {
+            "2024",
+            "2024-09",
+        };
+        for (const std::string_view partial_date : kPartialDates) {
+            SCOPED_TRACE(std::string(partial_date));
+            MetaStore source;
+            const BlockId block = source.add_block(BlockInfo {});
+            ASSERT_NE(block, kInvalidBlockId);
+            const EntryId source_entry
+                = add_xmp_text(&source, block, "http://ns.adobe.com/xap/1.0/",
+                               "ModifyDate", partial_date, EntryFlags::Dirty,
+                               0U);
+            ASSERT_NE(source_entry, kInvalidEntryId);
+            source.finalize();
+
+            MetaStore sentinel;
+            const BlockId sentinel_block = sentinel.add_block(BlockInfo {});
+            ASSERT_NE(sentinel_block, kInvalidBlockId);
+            ASSERT_NE(add_iptc_bytes(&sentinel, sentinel_block, 5U, "sentinel",
+                                     0U),
+                      kInvalidEntryId);
+            sentinel.finalize();
+            MetaStore output = sentinel;
+            const std::vector<std::byte> sentinel_arena(
+                output.arena().bytes().begin(), output.arena().bytes().end());
+
+            const MetadataTechnicalTranslationResult result
+                = translate_xmp_technical_metadata(
+                    source, MetadataTechnicalTranslationOptions {}, &output);
+            EXPECT_EQ(result.status,
+                      MetadataTechnicalTranslationStatus::InvalidDateTime);
+            EXPECT_EQ(result.failed_mapping,
+                      MetadataTechnicalTranslationMapping::XmpModifyDate);
+            EXPECT_EQ(output.entries().size(), sentinel.entries().size());
+            EXPECT_TRUE(arena_bytes_equal(output, sentinel_arena));
+            EXPECT_TRUE(active_iptc_text(output, 5U, "sentinel"));
+        }
     }
 
     TEST(MetadataTranslation, HonorsSourceSelectionAndRejectsDuplicates)

@@ -19,7 +19,7 @@ namespace openmeta {
 struct TransferTargetImageSpec;
 
 /// Experimental XMP creation-date translation contract version.
-inline constexpr uint32_t kMetadataDateTranslationContractVersion = 2U;
+inline constexpr uint32_t kMetadataDateTranslationContractVersion = 3U;
 
 /// Hard limit for native entries added by one date-translation call.
 inline constexpr uint32_t kMetadataDateTranslationMaxAddedEntries = 16U;
@@ -109,19 +109,25 @@ struct MetadataDateTranslationResult final {
  * The source store is immutable and the output is replaced only after every
  * selected mapping parses and reconciles successfully. Parsing accepts only a
  * full Gregorian `YYYY-MM-DD` date with optional `T` followed by `hh:mm:ss`,
- * up to nine fractional digits, and `Z` or `+/-HH:MM` timezone.
+ * up to nine fractional digits, and `Z` or `+/-HH:MM` timezone. IPTC
+ * projections also accept exactly `YYYY` and `YYYY-MM`; they emit the eight
+ * ASCII bytes `YYYY0000` and `YYYYMM00` in native date fields. Years must be
+ * positive and partial months must be 01 through 12. Whitespace, trailing
+ * data, and partial dates with time, fraction, or timezone are invalid.
  *
- * EXIF projection requires a time and preserves fractions and timezone through
- * SubSecTime* and OffsetTime* companion tags. It emits Dirty|Deleted intents
- * for absent timestamp companions, including when the native key is missing;
+ * Any selected EXIF projection requires a full date and time; a valid partial
+ * date returns UnsupportedPrecision atomically. EXIF projection preserves
+ * fractions and timezone through SubSecTime* and OffsetTime* companion tags.
+ * It emits Dirty|Deleted intents for absent timestamp companions, including
+ * when the native key is missing;
  * the lexical fraction and timezone control companion presence. An accepted
  * exact EXIF timestamp group also marks clean active members Dirty to carry the
  * projection authority. Those SetValue operations count as entries_updated and
  * against max_operations. PreserveExisting leaves an active group untouched.
- * IPTC projection supports date only or whole seconds with an optional
- * timezone; fractional seconds return UnsupportedPrecision rather than being
- * truncated. Exact source-property namespaces are required, and duplicate
- * eligible sources are ambiguous.
+ * IPTC projection supports the partial forms above, a full date alone, or
+ * whole seconds with an optional timezone; fractional seconds return
+ * UnsupportedPrecision rather than being truncated. Exact source-property
+ * namespaces are required, and duplicate eligible sources are ambiguous.
  *
  * Calls keep no global state and are safe when each call owns its output store.
  */

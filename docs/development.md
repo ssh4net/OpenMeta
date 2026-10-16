@@ -1,5 +1,14 @@
 # Development
 
+## Reverse partial-date precision (0.8.19)
+
+Creation-date contract 3 accepts exact `YYYY` and `YYYY-MM` for both IPTC date
+pairs. They serialize as `YYYY0000` and `YYYYMM00`; no missing component is
+invented. EXIF still requires a full date and time. Disable
+`create_date_to_exif_digitized` to translate a partial `xmp:CreateDate` to IPTC.
+Public layouts, technical translation, snapshot v1 and unfrozen ABI 4 remain
+unchanged. Use matching headers and binaries. Hosts synchronize shared objects.
+
 ## Native IPTC date translation (0.8.18)
 
 The new native IPTC date-to-XMP contract is version 1. It adds two explicit

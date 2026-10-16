@@ -1,5 +1,15 @@
 # OpenMeta Changes
 
+## 0.8.19 - 2026-10-16
+
+- Preserve year and year-month precision in XMP creation-date translation to
+  both native IPTC date pairs. Valid partial dates return UnsupportedPrecision
+  when an EXIF timestamp projection is selected; no components are invented.
+- Advance the creation-date contract to version 3 without changing public
+  layouts or unfrozen ABI 4. Technical ModifyDate parsing stays unchanged.
+- Check the staged reverse-date store's arena limit before publication. Add
+  grouped conflict, rollback, round-trip and JPEG/TIFF stale-time coverage.
+
 ## 0.8.18 - 2026-10-16
 
 - Add transactional native IPTC creation-date/time to XMP translation for both

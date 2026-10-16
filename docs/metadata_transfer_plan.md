@@ -19,8 +19,10 @@ with per-block charset validation, destination conflicts and one store transacti
 The portable writer retains its existing ASCII-only raw-byte projection.
 Version 0.8.18 adds both native IPTC creation-date/time pairs to materialized XMP,
 including year/month precision, explicit timezone absence and transactional conflicts.
-Next synchronization candidate: preserve partial date precision through the reverse
-XMP-to-IPTC date path, without inventing EXIF timestamp components.
+Version 0.8.19 preserves that precision through reverse XMP-to-IPTC translation
+and verifies removal of stale time fields by nonempty JPEG/TIFF payload replacement.
+Next synchronization candidate: explicit IPTC carrier removal when the last active
+dataset is deleted. An omitted/empty prepared IPTC route does not clear a target.
 Full RDF authoring, fresh ICC construction and prepared IPTC patching remain open.
 
 Date: March 5, 2026
