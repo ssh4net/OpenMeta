@@ -1,6 +1,16 @@
 API Stability
 =============
 
+Canonical IPTC-IIM in 0.8.15
+----------------------------
+
+``serialize_iptc_iim()`` in ``openmeta/iptc_iim_serialize.h`` adds an experimental
+v1 target-neutral measure/write API. Active datasets retain raw bytes, duplicates
+and deterministic ordering. Strict selected-entry checks precede publication;
+JPEG/TIFF dataset rebuilds share the engine with skip-and-warn handling. Existing
+layouts, snapshot v1 and unfrozen ABI 4 remain unchanged. New symbols require
+matching 0.8.15 headers and binaries. See :doc:`canonical_serialization`.
+
 Profile native lifecycle update (0.8.12)
 ----------------------------------------
 

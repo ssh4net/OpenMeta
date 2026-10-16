@@ -411,6 +411,7 @@ set(OPENMETA_SOURCES
   src/openmeta/interop_safety_internal.cc
   src/openmeta/interop_value_format_internal.cc
   src/openmeta/iptc_iim_decode.cc
+  src/openmeta/iptc_iim_serialize.cc
   src/openmeta/jumbf_decode.cc
   src/openmeta/libraw_adapter.cc
   src/openmeta/meta_key.cc
@@ -1024,6 +1025,8 @@ if(OPENMETA_BUILD_TESTS)
     tests/geotiff_decode_test.cc
     tests/host_adoption_test.cc
     tests/iptc_iim_decode_test.cc
+    tests/iptc_iim_serialize_test.cc
+    tests/iptc_iim_serialize_transfer_test.cc
     tests/interop_export_test.cc
     tests/interop_import_test.cc
     tests/dji_app4_decode_test.cc

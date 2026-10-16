@@ -7,6 +7,7 @@
 #include "openmeta/metadata_transfer.h"
 
 #include "metadata_patch_internal.h"
+#include "iptc_iim_serialize_internal.h"
 #include "jp2_metadata_internal.h"
 #include "openmeta/console_format.h"
 #include "openmeta/container_payload.h"
@@ -8263,32 +8264,6 @@ namespace {
         return build_icc_profile_bytes_from_items(headers, tags, out_profile);
     }
 
-    struct IptcDatasetItem final {
-        uint16_t record       = 0;
-        uint16_t dataset      = 0;
-        uint32_t source_order = 0;
-        std::vector<std::byte> payload;
-    };
-
-    struct IptcDatasetItemLess final {
-        bool operator()(const IptcDatasetItem& a,
-                        const IptcDatasetItem& b) const noexcept
-        {
-            const bool a_charset = a.record == 1U && a.dataset == 90U;
-            const bool b_charset = b.record == 1U && b.dataset == 90U;
-            if (a_charset != b_charset) {
-                return a_charset;
-            }
-            if (a.source_order != b.source_order) {
-                return a.source_order < b.source_order;
-            }
-            if (a.record != b.record) {
-                return a.record < b.record;
-            }
-            return a.dataset < b.dataset;
-        }
-    };
-
     static bool value_to_raw_bytes(const MetaStore& store, const MetaValue& v,
                                    std::vector<std::byte>* out) noexcept
     {
@@ -8304,69 +8279,6 @@ namespace {
             return true;
         }
         return false;
-    }
-
-    static void append_iptc_len(std::vector<std::byte>* out,
-                                uint32_t n) noexcept
-    {
-        if (!out) {
-            return;
-        }
-        if (n <= 0x7FFFU) {
-            append_u16be(out, static_cast<uint16_t>(n));
-            return;
-        }
-        append_u16be(out, 0x8004U);
-        append_u32be(out, n);
-    }
-
-    static std::vector<std::byte>
-    build_iptc_iim_stream_from_datasets(const MetaStore& store,
-                                        uint32_t* skipped_count) noexcept
-    {
-        std::vector<IptcDatasetItem> items;
-        if (skipped_count) {
-            *skipped_count = 0U;
-        }
-
-        for (const Entry& e : store.entries()) {
-            if (any(e.flags, EntryFlags::Deleted)
-                || e.key.kind != MetaKeyKind::IptcDataset) {
-                continue;
-            }
-            if (e.key.data.iptc_dataset.record > 255U
-                || e.key.data.iptc_dataset.dataset > 255U) {
-                if (skipped_count) {
-                    *skipped_count += 1U;
-                }
-                continue;
-            }
-            IptcDatasetItem item;
-            item.record       = e.key.data.iptc_dataset.record;
-            item.dataset      = e.key.data.iptc_dataset.dataset;
-            item.source_order = e.origin.order_in_block;
-            if (!value_to_raw_bytes(store, e.value, &item.payload)) {
-                if (skipped_count) {
-                    *skipped_count += 1U;
-                }
-                continue;
-            }
-            items.push_back(std::move(item));
-        }
-
-        std::stable_sort(items.begin(), items.end(), IptcDatasetItemLess {});
-
-        std::vector<std::byte> out;
-        for (const IptcDatasetItem& item : items) {
-            out.push_back(std::byte { 0x1CU });
-            out.push_back(
-                static_cast<std::byte>(static_cast<uint8_t>(item.record)));
-            out.push_back(
-                static_cast<std::byte>(static_cast<uint8_t>(item.dataset)));
-            append_iptc_len(&out, static_cast<uint32_t>(item.payload.size()));
-            out.insert(out.end(), item.payload.begin(), item.payload.end());
-        }
-        return out;
     }
 
     static bool has_dirty_iptc_dataset(const MetaStore& store) noexcept
@@ -8435,8 +8347,13 @@ namespace {
         std::vector<std::byte> iptc_iim;
         if (has_dirty_iptc_dataset(store)
             || !first_photoshop_iptc_payload(store, &iptc_iim)) {
-            iptc_iim = build_iptc_iim_stream_from_datasets(store,
-                                                           &out.skipped_count);
+            const IptcIimSerializeResult serialized
+                = detail::build_iptc_iim_payload(
+                    store, IptcIimSerializeOptions {}, true, &iptc_iim);
+            out.skipped_count = serialized.entries_skipped;
+            if (!serialized.ok()) {
+                return out;
+            }
         }
 
         if (iptc_iim.empty()) {
@@ -14335,8 +14252,14 @@ prepare_metadata_for_target_impl(const MetaStore& store,
             uint32_t skipped_iptc = 0U;
             if (has_dirty_iptc_dataset(prepared_store)
                 || !first_photoshop_iptc_payload(prepared_store, &iptc_iim)) {
-                iptc_iim = build_iptc_iim_stream_from_datasets(prepared_store,
-                                                               &skipped_iptc);
+                const IptcIimSerializeResult serialized
+                    = detail::build_iptc_iim_payload(
+                        prepared_store, IptcIimSerializeOptions {}, true,
+                        &iptc_iim);
+                skipped_iptc = serialized.entries_skipped;
+                if (!serialized.ok()) {
+                    iptc_iim.clear();
+                }
             }
             if (!iptc_iim.empty()) {
                 PreparedTransferBlock b;

@@ -1,5 +1,23 @@
 # Metadata Transfer Plan (Draft)
 
+## Canonical IPTC-IIM follow-up (0.8.15)
+
+The public `serialize_iptc_iim()` v1 API closes target-neutral native IPTC output
+for existing generic authoring, typed editing and XMP-to-IPTC translation.
+JPEG/TIFF dataset rebuilds share its wire engine and retain opaque-carrier
+fallback policy. Bounds and selected-entry errors are explicit; unknown binary
+datasets and duplicate payloads remain representable. See
+[canonical_serialization.md](canonical_serialization.md).
+
+Next writer priority: preserve unrelated Photoshop resources while replacing
+IPTC inside a shared JPEG APP13 segment. Current replacement acts on the entire
+recognized segment; a mixed-resource negative reproducer records the limitation.
+
+Following synchronization candidate: materialized IPTC-to-XMP translation with
+explicit charset handling. The portable writer already maps 20 native IPTC groups;
+its ASCII-only raw-byte projection does not establish UTF-8 IPTC coverage.
+Full RDF authoring, fresh ICC construction and prepared IPTC patching remain open.
+
 Date: March 5, 2026
 
 Related:

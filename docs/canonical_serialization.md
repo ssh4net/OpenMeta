@@ -1,5 +1,67 @@
 # Canonical Metadata Serialization
 
+## IPTC-IIM (0.8.15)
+
+`openmeta/iptc_iim_serialize.h` adds `serialize_iptc_iim()` for native IPTC
+datasets created, edited, translated or decoded into a finalized `MetaStore`.
+It emits an unwrapped IIM stream. JPEG APP13/Photoshop framing and TIFF tag 33723
+remain separate; transfer dataset rebuilds use the same wire engine.
+
+```cpp
+#include "openmeta/iptc_iim_serialize.h"
+#include <vector>
+
+const auto measured = openmeta::serialize_iptc_iim(store, {});
+if (measured.status == openmeta::IptcIimSerializeStatus::OutputTruncated) {
+    std::vector<std::byte> bytes(static_cast<size_t>(measured.needed));
+    const auto written = openmeta::serialize_iptc_iim(store, bytes);
+    // Check written.ok() before handing bytes to the container writer.
+}
+```
+
+The v1 contract selects active IPTC datasets only. Other families and tombstones
+are ignored. It preserves duplicate keys and values, putting CodedCharacterSet
+(1:90) first, then sorting by `origin.order_in_block`, record, dataset, and original
+entry order for ties. Lengths through 32,767 use the two-byte form; larger values
+use `0x8004` followed by a four-byte big-endian length.
+
+Bytes, Text and well-formed Array values supply **raw payload bytes**. Arrays
+receive no numeric encoding or byte-order conversion. Text hints do not transcode
+bytes or insert a charset marker. Unknown binary datasets and empty payloads are
+retained. Use `translate_xmp_iptc_metadata()` for its supported text mappings and
+UTF-8 marker policy. This serializer checks wire structure, not IIM field-level
+semantics, standard field lengths, text validity or charset consistency.
+
+The strict API rejects out-of-range keys, scalar/empty values, malformed spans or
+counts, and selected Truncated/Unreadable entries. `failed_entry` identifies a
+selected entry when applicable. Default ceilings are 200,000 datasets, 8 MiB per
+dataset and 64 MiB output. Limits must be nonzero; output is capped at `UINT32_MAX`
+and the platform's addressable size. Complete preflight precedes payload allocation
+and publication. Measurement allocates no payload or ordering scratch. Writing may
+allocate bounded scratch and a complete temporary payload; system allocation
+failure is not a recoverable status.
+
+A short output span receives a deterministic prefix and returns `OutputTruncated`.
+All other errors leave output unchanged with zero `written` and `needed`.
+Output must not overlap the store's arena; detected overlap returns
+`InvalidOptions`. Callers keep the store immutable during the call and synchronize
+mutations. This is a preparation API, not allocation-free prepared patching.
+
+JPEG/TIFF transfer retains its best-effort policy: unsupported or damaged datasets
+are skipped with a warning; resource-limit failure rejects the complete rebuild.
+An unchanged opaque Photoshop IPTC carrier still takes precedence when no native
+IPTC dataset is dirty. That carrier pass-through is outside canonical dataset
+validation. Existing public layouts and development ABI 4 remain unchanged;
+consumers using the new symbols need matching 0.8.15 headers and binaries.
+
+The current JPEG writer replaces a recognized Photoshop APP13 segment as a
+whole. When IPTC shares that segment with other Photoshop resources, an IPTC
+rewrite does not retain those resources. Canonical serialization does not change
+that existing carrier policy. Resource-level APP13 merging remains an open writer
+task; hosts that need it must preserve and wrap those resources themselves.
+
+## EXIF/TIFF
+
 `openmeta/exif_tiff_serialize.h` exposes the same deterministic EXIF/TIFF
 serializer used by target transfer preparation without requiring a fake target
 container.

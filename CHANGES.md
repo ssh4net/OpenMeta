@@ -1,5 +1,15 @@
 # OpenMeta Changes
 
+## 0.8.15 - 2026-10-16
+
+- Add bounded canonical IPTC-IIM serialization with exact measurement,
+  deterministic prefix writes, retained duplicates and dataset/output limits.
+- Share the wire engine with JPEG APP13 and TIFF/DNG IPTC dataset rebuilds.
+  Preserve valid ordering and opaque Photoshop fallback precedence; skip damaged
+  entries in transfer and reject them through the strict public API.
+- Keep development ABI 4 and existing public option layouts. Hosts own charset
+  conversion, container framing and synchronization of store mutations.
+
 ## 0.8.7 - 2026-10-06
 
 - Apply the existing MakerNote decode option to expanded CIFF vendor fields and

@@ -1,5 +1,15 @@
 # API Stability
 
+## Canonical IPTC-IIM serialization (0.8.15)
+
+`serialize_iptc_iim()` adds a bounded target-neutral v1 measure/write API.
+Active datasets retain raw payload bytes, duplicates and deterministic ordering.
+The strict API rejects malformed selected entries before output publication;
+JPEG/TIFF dataset rebuilds use the same wire engine with skip-and-warn handling.
+Existing public layouts, snapshot v1 and unfrozen ABI 4 remain unchanged. New
+symbols require matching 0.8.15 headers and binaries. See
+[canonical_serialization.md](canonical_serialization.md) for limits and semantics.
+
 ## Structured XMP transactions (0.8.14)
 
 Bounded whole-record, array-item and language-alternative creation/editing now
@@ -53,6 +63,7 @@ See [the migration guide](migration_0_8.md).
 | Generic typed metadata authoring: `create_metadata_store(...)`, borrowed key/value helpers, and `MetaStore::reserve(...)` | `openmeta/metadata_authoring.h`, `openmeta/meta_key.h`, `openmeta/meta_value.h`, `openmeta/meta_store.h` | Experimental v1 | Transactional bounded construction of finalized EXIF/TIFF/DNG-style, XMP, and IPTC-IIM entries. Unknown/private EXIF and custom XMP namespaces remain authorable; safe scalar/indexed custom XMP is supported. Output is replaced only after enabled validation succeeds. C++ only in this milestone. See [generic_authoring.md](generic_authoring.md). |
 | Detached store/schema validation: `validate_entry(...)`, `validate_store(...)` | `openmeta/validate.h` | Experimental v1 | Structured structural and initial TIFF/EXIF/GPS/DNG/XMP schema diagnostics with resource limits, permissive unknown-tag policy, duplicate-singleton checks, rational/text checks, and optional image/CFA/color context. This does not prove that semantically valid metadata describes the destination pixels. |
 | Canonical TIFF/EXIF serialization: `serialize_exif_tiff(...)` | `openmeta/exif_tiff_serialize.h` | Experimental v1 | Deterministic measure/write API for unwrapped little-endian TIFF bytes. The same payload feeds target transfer wrapping; JPEG/TIFF, PNG/WebP, and boxed EXIF framing remain separate. Opaque MakerNotes drop by default. See [canonical_serialization.md](canonical_serialization.md). |
+| Canonical IPTC-IIM serialization: `serialize_iptc_iim(...)` | `openmeta/iptc_iim_serialize.h` | Experimental v1 | Bounded measure/write API for raw dataset bytes, preserving duplicates and deterministic ordering. Strict selected-entry checks; shared JPEG/TIFF dataset encoding. No charset conversion or IIM field-level semantic validation. See [canonical_serialization.md](canonical_serialization.md). |
 | Prepared TIFF/EXIF and scalar XMP patching: `prepare_metadata_patch_plan(...)`, `PreparedMetadataPatchPlan`, `PreparedMetadataPatchInstance`, and `patch_prepared_metadata_instance(...)` | `openmeta/metadata_patch.h` | Experimental v1 | Target-neutral opaque handles for typed EXIF and emitted scalar XMP values. Preparation and worker creation may allocate; mixed EXIF/XMP batches, payload access and library replay do not. Failed batches change neither payload. Handles expose no offsets and belong to one preparation generation. See [canonical_patching.md](canonical_patching.md). |
 | Logical metadata editing: `edit_metadata(...)` and add/set/remove helpers | `openmeta/metadata_editing.h` | Experimental | Transactional v1 contract over finalized stores and the Creation logical field map. Set/remove preserve provenance through dirty values and tombstones; add handles deterministic repeated fields and explicit singleton conflicts. Python returns a detached edited `Document` without mutating its source. See [editing.md](editing.md). |
 | Exact-key typed editing: `edit_metadata_typed(...)` | `openmeta/metadata_editing.h` | Experimental v1 | Transactional C++ Add/Set/Remove for supported EXIF/IPTC/XMP and private/custom keys, explicit occurrence/conflict handling, updated wire hints, resource ceilings and complete candidate validation. See [editing.md](editing.md). |

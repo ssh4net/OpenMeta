@@ -1,5 +1,16 @@
 # Development
 
+## Canonical IPTC-IIM serialization (0.8.15)
+
+Native IPTC creation, editing and translation can now feed the public bounded
+`serialize_iptc_iim()` measure/write API independently of a container. JPEG/TIFF
+dataset rebuilds share its deterministic wire engine. The serializer retains raw
+bytes, duplicate datasets and charset markers, with selected-entry structural
+checks and explicit count/payload/output ceilings. Charset conversion, field-level
+semantics and allocation-free prepared IPTC patching remain outside this API.
+Existing layouts and unfrozen ABI 4 remain unchanged. See
+[canonical_serialization.md](canonical_serialization.md).
+
 ## Structured XMP transactions (0.8.14)
 
 Bounded whole-record, array-item and language-alternative creation/editing now

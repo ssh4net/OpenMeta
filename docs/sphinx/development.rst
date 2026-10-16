@@ -1,6 +1,17 @@
 Developer Notes
 ===============
 
+Canonical IPTC-IIM in 0.8.15
+----------------------------
+
+Native IPTC authoring, editing and translation now feed the public bounded
+``serialize_iptc_iim()`` API independently of a container. JPEG/TIFF dataset
+rebuilds share its deterministic wire engine. Raw bytes, duplicate datasets and
+charset markers are retained; selected-entry structure and count/payload/output
+limits are checked. Charset conversion, field semantics and prepared IPTC patching
+remain separate. Existing layouts and ABI 4 are unchanged. See
+:doc:`canonical_serialization`.
+
 Profile native lifecycle in 0.8.12
 ----------------------------------
 
