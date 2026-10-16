@@ -1,5 +1,14 @@
 # Development
 
+## JPEG IPTC resource preservation (0.8.16)
+
+JPEG edit, package and C2PA binding paths now share bounded Photoshop resource
+inspection. Replacing IPTC retains unrelated records and per-source segment
+boundaries; mixed resources force metadata rewrite. Strict preflight leaves
+buffered/package output unchanged on failure. ABI 4 and public layouts remain;
+C2PA packages with the new residual chunk use wire version 2. See
+[canonical_serialization.md](canonical_serialization.md).
+
 ## Canonical IPTC-IIM serialization (0.8.15)
 
 Native IPTC creation, editing and translation can now feed the public bounded

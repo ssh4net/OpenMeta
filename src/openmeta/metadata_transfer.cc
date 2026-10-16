@@ -6,9 +6,10 @@
 
 #include "openmeta/metadata_transfer.h"
 
-#include "metadata_patch_internal.h"
 #include "iptc_iim_serialize_internal.h"
 #include "jp2_metadata_internal.h"
+#include "jpeg_photoshop_irb.h"
+#include "metadata_patch_internal.h"
 #include "openmeta/console_format.h"
 #include "openmeta/container_payload.h"
 #include "openmeta/container_scan.h"
@@ -1219,6 +1220,8 @@ namespace {
         size_t payload_len = 0;
         std::string route;
         bool route_known = false;
+        bool preserve_photoshop = false;
+        std::vector<std::byte> photoshop_residual;
     };
 
     struct JpegScanResult final {
@@ -1437,7 +1440,7 @@ namespace {
         }
         size_t seen = 0;
         for (size_t i = 0; i < existing.size(); ++i) {
-            if (existing[i].route != route) {
+            if (existing[i].route != route || existing[i].preserve_photoshop) {
                 continue;
             }
             if (seen == occurrence) {
@@ -1461,6 +1464,53 @@ namespace {
         return false;
     }
 
+    static TransferStatus
+    prepare_jpeg_iptc_resources(std::span<const std::byte> input,
+                                const std::vector<PlannedJpegSegment>& desired,
+                                JpegScanResult* scan,
+                                std::string* message) noexcept
+    {
+        if (!route_in_desired("jpeg:app13-iptc", desired)) {
+            return TransferStatus::Ok;
+        }
+        for (const PlannedJpegSegment& segment : desired) {
+            if (segment.route != "jpeg:app13-iptc") {
+                continue;
+            }
+            detail::JpegPhotoshopIptcInfo info;
+            if (!detail::inspect_jpeg_photoshop_iptc(segment.payload, &info)) {
+                *message
+                    = "prepared IPTC APP13 is not a complete Photoshop resource stream";
+                return TransferStatus::Malformed;
+            }
+            if (info.iptc_resources == 0U || info.other_resources != 0U) {
+                *message
+                    = "prepared IPTC APP13 must contain only IPTC resources";
+                return TransferStatus::Unsupported;
+            }
+        }
+        for (ExistingJpegSegment& segment : scan->leading_segments) {
+            if (segment.route != "jpeg:app13-iptc") {
+                continue;
+            }
+            const std::span<const std::byte> payload
+                = input.subspan(segment.payload_off, segment.payload_len);
+            detail::JpegPhotoshopIptcInfo info;
+            if (!detail::inspect_jpeg_photoshop_iptc(payload, &info)) {
+                *message
+                    = "existing IPTC APP13 is not a complete Photoshop resource stream";
+                return TransferStatus::Malformed;
+            }
+            segment.preserve_photoshop = info.iptc_resources == 0U;
+            if (info.iptc_resources != 0U && info.other_resources != 0U) {
+                segment.photoshop_residual.resize(info.retained_payload_size);
+                detail::copy_jpeg_photoshop_without_iptc(
+                    payload, segment.photoshop_residual);
+            }
+        }
+        return TransferStatus::Ok;
+    }
+
     static const PreparedTransferPolicyDecision*
     find_policy_decision(const PreparedTransferBundle& bundle,
                          TransferPolicySubject subject) noexcept
@@ -1479,7 +1529,7 @@ namespace {
         const std::vector<PlannedJpegSegment>& desired,
         bool strip_existing_xmp) noexcept
     {
-        if (!existing.route_known) {
+        if (!existing.route_known || existing.preserve_photoshop) {
             return false;
         }
         if (route_in_desired(existing.route, desired)) {
@@ -1504,6 +1554,183 @@ namespace {
                    && decision->matched_entries > 0U;
         }
         return false;
+    }
+
+    static JpegEditPlan describe_jpeg_edit(
+        uint64_t input_size, const PreparedTransferBundle& bundle,
+        const std::vector<PlannedJpegSegment>& desired,
+        const JpegScanResult& scan, const PlanJpegEditOptions& options) noexcept
+    {
+        JpegEditPlan plan;
+        plan.requested_mode     = options.mode;
+        plan.input_size         = input_size;
+        plan.leading_scan_end   = scan.scan_end;
+        plan.strip_existing_xmp = options.strip_existing_xmp;
+        if (desired.size() > UINT32_MAX
+            || scan.leading_segments.size() > UINT32_MAX) {
+            plan.status  = TransferStatus::LimitExceeded;
+            plan.message = "jpeg segment count exceeds limit";
+            return plan;
+        }
+        plan.emitted_segments   = static_cast<uint32_t>(desired.size());
+        bool in_place_possible  = true;
+        uint32_t in_place_count = 0;
+        uint64_t replaced_bytes = 0;
+        for (size_t i = 0; i < desired.size(); ++i) {
+            const PlannedJpegSegment& d = desired[i];
+            const size_t occ    = route_occurrence_before(desired, i, d.route);
+            size_t existing_idx = 0;
+            if (!find_existing_by_route_occurrence(scan.leading_segments,
+                                                   d.route, occ,
+                                                   &existing_idx)) {
+                in_place_possible = false;
+                break;
+            }
+            const ExistingJpegSegment& e = scan.leading_segments[existing_idx];
+            if (e.payload_len != d.payload.size()
+                || !e.photoshop_residual.empty()) {
+                in_place_possible = false;
+                break;
+            }
+            in_place_count += 1U;
+        }
+        if (in_place_possible) {
+            for (size_t i = 0; i < scan.leading_segments.size(); ++i) {
+                if (!should_strip_existing_jpeg_segment(
+                        bundle, scan.leading_segments[i], desired,
+                        options.strip_existing_xmp)) {
+                    continue;
+                }
+                if (!route_in_desired(scan.leading_segments[i].route, desired)) {
+                    in_place_possible = false;
+                    break;
+                }
+            }
+        }
+        size_t desired_iptc  = 0U;
+        size_t existing_iptc = 0U;
+        for (const PlannedJpegSegment& segment : desired) {
+            desired_iptc += segment.route == "jpeg:app13-iptc" ? 1U : 0U;
+        }
+        for (const ExistingJpegSegment& segment : scan.leading_segments) {
+            existing_iptc += segment.route == "jpeg:app13-iptc"
+                                     && !segment.preserve_photoshop
+                                 ? 1U
+                                 : 0U;
+        }
+        if (desired_iptc != 0U && desired_iptc != existing_iptc) {
+            in_place_possible = false;
+        }
+        plan.in_place_possible = in_place_possible;
+
+        JpegEditMode selected = JpegEditMode::MetadataRewrite;
+        if (options.mode == JpegEditMode::InPlace) {
+            if (!in_place_possible) {
+                plan.status  = TransferStatus::Unsupported;
+                plan.message = "in_place edit is not possible for current jpeg";
+                return plan;
+            }
+            selected = JpegEditMode::InPlace;
+        } else if (options.mode == JpegEditMode::MetadataRewrite) {
+            selected = JpegEditMode::MetadataRewrite;
+        } else {
+            selected = in_place_possible ? JpegEditMode::InPlace
+                                         : JpegEditMode::MetadataRewrite;
+        }
+
+        if (options.require_in_place && selected != JpegEditMode::InPlace) {
+            plan.status  = TransferStatus::Unsupported;
+            plan.message = "in_place edit required but not possible";
+            return plan;
+        }
+
+        plan.selected_mode = selected;
+        if (selected == JpegEditMode::InPlace) {
+            plan.replaced_segments = in_place_count;
+            plan.appended_segments = 0U;
+            plan.output_size       = plan.input_size;
+            plan.status            = TransferStatus::Ok;
+            return plan;
+        }
+
+        uint32_t residual_segments      = 0U;
+        uint64_t residual_bytes         = 0U;
+        uint32_t replaced_segments      = 0;
+        uint32_t removed_jumbf_segments = 0;
+        uint32_t removed_c2pa_segments  = 0;
+        for (size_t i = 0; i < scan.leading_segments.size(); ++i) {
+            const ExistingJpegSegment& e = scan.leading_segments[i];
+            if (!should_strip_existing_jpeg_segment(
+                    bundle, e, desired, options.strip_existing_xmp)) {
+                continue;
+            }
+            replaced_segments += 1U;
+            if (e.route == "jpeg:app11-jumbf") {
+                removed_jumbf_segments += 1U;
+            } else if (e.route == "jpeg:app11-c2pa") {
+                removed_c2pa_segments += 1U;
+            }
+            replaced_bytes += static_cast<uint64_t>(4U + e.payload_len);
+            if (!e.photoshop_residual.empty()) {
+                ++residual_segments;
+                residual_bytes += 4U + e.photoshop_residual.size();
+            }
+        }
+
+        uint64_t added_bytes = residual_bytes;
+        for (size_t i = 0; i < desired.size(); ++i) {
+            added_bytes += static_cast<uint64_t>(4U
+                                                 + desired[i].payload.size());
+        }
+
+        plan.replaced_segments = replaced_segments;
+        if (desired.size() > UINT32_MAX - residual_segments) {
+            plan.status  = TransferStatus::LimitExceeded;
+            plan.message = "jpeg emitted segment count exceeds limit";
+            return plan;
+        }
+        plan.emitted_segments = static_cast<uint32_t>(desired.size())
+                                + residual_segments;
+        plan.appended_segments               = plan.emitted_segments;
+        plan.removed_existing_segments       = replaced_segments;
+        plan.removed_existing_jumbf_segments = removed_jumbf_segments;
+        plan.removed_existing_c2pa_segments  = removed_c2pa_segments;
+        if (replaced_bytes > plan.input_size
+            || added_bytes > UINT64_MAX - (plan.input_size - replaced_bytes)
+            || plan.input_size - replaced_bytes + added_bytes > SIZE_MAX) {
+            plan.status  = TransferStatus::LimitExceeded;
+            plan.message = "jpeg output size exceeds addressable limit";
+            return plan;
+        }
+        plan.output_size = plan.input_size - replaced_bytes + added_bytes;
+        plan.status      = TransferStatus::Ok;
+        return plan;
+    }
+
+    static bool jpeg_edit_summary_matches(
+        uint64_t input_size, const PreparedTransferBundle& bundle,
+        const std::vector<PlannedJpegSegment>& desired,
+        const JpegScanResult& scan, const JpegEditPlan& plan) noexcept
+    {
+        PlanJpegEditOptions options;
+        options.mode               = plan.selected_mode;
+        options.strip_existing_xmp = plan.strip_existing_xmp;
+        const JpegEditPlan current = describe_jpeg_edit(input_size, bundle,
+                                                        desired, scan, options);
+        return current.status == TransferStatus::Ok
+               && current.selected_mode == plan.selected_mode
+               && current.input_size == plan.input_size
+               && current.output_size == plan.output_size
+               && current.leading_scan_end == plan.leading_scan_end
+               && current.emitted_segments == plan.emitted_segments
+               && current.replaced_segments == plan.replaced_segments
+               && current.appended_segments == plan.appended_segments
+               && current.removed_existing_segments
+                      == plan.removed_existing_segments
+               && current.removed_existing_jumbf_segments
+                      == plan.removed_existing_jumbf_segments
+               && current.removed_existing_c2pa_segments
+                      == plan.removed_existing_c2pa_segments;
     }
 
     static void append_c2pa_rewrite_source_chunk(
@@ -1660,10 +1887,20 @@ namespace {
             desired_ops.push_back(op);
         }
 
-        const JpegScanResult scan = scan_leading_jpeg_segments(input_jpeg);
+        JpegScanResult scan = scan_leading_jpeg_segments(input_jpeg);
         if (scan.status != TransferStatus::Ok) {
             if (err) {
                 *err = scan.message.empty() ? "jpeg scan failed" : scan.message;
+            }
+            return false;
+        }
+
+        std::string resource_message;
+        if (prepare_jpeg_iptc_resources(input_jpeg, desired, &scan,
+                                        &resource_message)
+            != TransferStatus::Ok) {
+            if (err) {
+                *err = resource_message;
             }
             return false;
         }
@@ -1686,6 +1923,16 @@ namespace {
                             static_cast<uint64_t>(4U + block.payload.size()));
                     }
                     inserted = true;
+                }
+                if (!e.photoshop_residual.empty()) {
+                    PreparedTransferC2paRewriteChunk residual;
+                    residual.kind = TransferC2paRewriteChunkKind::
+                        PreservedJpegPhotoshopResources;
+                    residual.source_offset = e.marker_off;
+                    residual.size          = 4U + e.photoshop_residual.size();
+                    residual.jpeg_marker_code = 0xEDU;
+                    rewrite->content_binding_chunks.push_back(residual);
+                    rewrite->content_binding_bytes += residual.size;
                 }
                 continue;
             }
@@ -20533,7 +20780,7 @@ plan_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
     }
     plan.emitted_segments = static_cast<uint32_t>(desired.size());
 
-    const JpegScanResult scan = scan_leading_jpeg_segments(input_jpeg);
+    JpegScanResult scan       = scan_leading_jpeg_segments(input_jpeg);
     plan.leading_scan_end     = static_cast<uint64_t>(scan.scan_end);
     plan.strip_existing_xmp   = options.strip_existing_xmp;
     if (scan.status != TransferStatus::Ok) {
@@ -20542,105 +20789,12 @@ plan_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
         return plan;
     }
 
-    bool in_place_possible  = true;
-    uint32_t in_place_count = 0;
-    uint64_t replaced_bytes = 0;
-    for (size_t i = 0; i < desired.size(); ++i) {
-        const PlannedJpegSegment& d = desired[i];
-        const size_t occ    = route_occurrence_before(desired, i, d.route);
-        size_t existing_idx = 0;
-        if (!find_existing_by_route_occurrence(scan.leading_segments, d.route,
-                                               occ, &existing_idx)) {
-            in_place_possible = false;
-            break;
-        }
-        const ExistingJpegSegment& e = scan.leading_segments[existing_idx];
-        if (e.payload_len != d.payload.size()) {
-            in_place_possible = false;
-            break;
-        }
-        in_place_count += 1U;
-    }
-    if (in_place_possible) {
-        for (size_t i = 0; i < scan.leading_segments.size(); ++i) {
-            if (!should_strip_existing_jpeg_segment(
-                    bundle, scan.leading_segments[i], desired,
-                    options.strip_existing_xmp)) {
-                continue;
-            }
-            if (!route_in_desired(scan.leading_segments[i].route, desired)) {
-                in_place_possible = false;
-                break;
-            }
-        }
-    }
-    plan.in_place_possible = in_place_possible;
-
-    JpegEditMode selected = JpegEditMode::MetadataRewrite;
-    if (options.mode == JpegEditMode::InPlace) {
-        if (!in_place_possible) {
-            plan.status  = TransferStatus::Unsupported;
-            plan.message = "in_place edit is not possible for current jpeg";
-            return plan;
-        }
-        selected = JpegEditMode::InPlace;
-    } else if (options.mode == JpegEditMode::MetadataRewrite) {
-        selected = JpegEditMode::MetadataRewrite;
-    } else {
-        selected = in_place_possible ? JpegEditMode::InPlace
-                                     : JpegEditMode::MetadataRewrite;
-    }
-
-    if (options.require_in_place && selected != JpegEditMode::InPlace) {
-        plan.status  = TransferStatus::Unsupported;
-        plan.message = "in_place edit required but not possible";
+    plan.status = prepare_jpeg_iptc_resources(input_jpeg, desired, &scan,
+                                              &plan.message);
+    if (plan.status != TransferStatus::Ok) {
         return plan;
     }
-
-    plan.selected_mode = selected;
-    if (selected == JpegEditMode::InPlace) {
-        plan.replaced_segments = in_place_count;
-        plan.appended_segments = 0U;
-        plan.output_size       = plan.input_size;
-        plan.status            = TransferStatus::Ok;
-        return plan;
-    }
-
-    uint32_t replaced_segments      = 0;
-    uint32_t removed_jumbf_segments = 0;
-    uint32_t removed_c2pa_segments  = 0;
-    for (size_t i = 0; i < scan.leading_segments.size(); ++i) {
-        const ExistingJpegSegment& e = scan.leading_segments[i];
-        if (!should_strip_existing_jpeg_segment(bundle, e, desired,
-                                                options.strip_existing_xmp)) {
-            continue;
-        }
-        replaced_segments += 1U;
-        if (e.route == "jpeg:app11-jumbf") {
-            removed_jumbf_segments += 1U;
-        } else if (e.route == "jpeg:app11-c2pa") {
-            removed_c2pa_segments += 1U;
-        }
-        replaced_bytes += static_cast<uint64_t>(4U + e.payload_len);
-    }
-
-    uint64_t added_bytes = 0;
-    for (size_t i = 0; i < desired.size(); ++i) {
-        added_bytes += static_cast<uint64_t>(4U + desired[i].payload.size());
-    }
-
-    plan.replaced_segments         = replaced_segments;
-    plan.appended_segments         = static_cast<uint32_t>(desired.size());
-    plan.removed_existing_segments = replaced_segments;
-    plan.removed_existing_jumbf_segments = removed_jumbf_segments;
-    plan.removed_existing_c2pa_segments  = removed_c2pa_segments;
-    if (plan.input_size >= replaced_bytes) {
-        plan.output_size = plan.input_size - replaced_bytes + added_bytes;
-    } else {
-        plan.output_size = plan.input_size + added_bytes;
-    }
-    plan.status = TransferStatus::Ok;
-    return plan;
+    return describe_jpeg_edit(plan.input_size, bundle, desired, scan, options);
 }
 
 EmitTransferResult
@@ -20686,7 +20840,7 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
         return desired_status;
     }
 
-    const JpegScanResult scan = scan_leading_jpeg_segments(input_jpeg);
+    JpegScanResult scan = scan_leading_jpeg_segments(input_jpeg);
     if (scan.status != TransferStatus::Ok) {
         out.status  = scan.status;
         out.code    = EmitTransferCode::InvalidArgument;
@@ -20695,8 +20849,25 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
         return out;
     }
 
+    out.status = prepare_jpeg_iptc_resources(input_jpeg, desired, &scan,
+                                             &out.message);
+    if (out.status != TransferStatus::Ok) {
+        out.code   = EmitTransferCode::InvalidPayload;
+        out.errors = 1U;
+        return out;
+    }
+    if (!jpeg_edit_summary_matches(input_jpeg.size(), bundle, desired, scan,
+                                   plan)) {
+        out.status  = TransferStatus::InvalidArgument;
+        out.code    = EmitTransferCode::PlanMismatch;
+        out.errors  = 1U;
+        out.message = "jpeg edit plan no longer matches input or bundle";
+        return out;
+    }
+
+    std::vector<std::byte> staged;
     if (plan.selected_mode == JpegEditMode::InPlace) {
-        out_jpeg->assign(input_jpeg.begin(), input_jpeg.end());
+        staged.assign(input_jpeg.begin(), input_jpeg.end());
         for (size_t i = 0; i < desired.size(); ++i) {
             const PlannedJpegSegment& d = desired[i];
             const size_t occ    = route_occurrence_before(desired, i, d.route);
@@ -20718,7 +20889,7 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
                 out.message = "in_place size mismatch for route: " + d.route;
                 return out;
             }
-            if (e.payload_off + e.payload_len > out_jpeg->size()) {
+            if (e.payload_off + e.payload_len > staged.size()) {
                 out.status  = TransferStatus::Malformed;
                 out.code    = EmitTransferCode::PlanMismatch;
                 out.errors  = 1U;
@@ -20726,11 +20897,12 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
                 return out;
             }
             if (!d.payload.empty()) {
-                std::memcpy(out_jpeg->data() + e.payload_off, d.payload.data(),
+                std::memcpy(staged.data() + e.payload_off, d.payload.data(),
                             d.payload.size());
             }
             out.emitted += 1U;
         }
+        *out_jpeg  = std::move(staged);
         out.status = TransferStatus::Ok;
         out.code   = EmitTransferCode::None;
         return out;
@@ -20744,8 +20916,8 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
         return out;
     }
 
-    out_jpeg->clear();
-    out_jpeg->reserve(static_cast<size_t>(plan.output_size));
+    staged.clear();
+    staged.reserve(static_cast<size_t>(plan.output_size));
 
     if (input_jpeg.size() < 2U) {
         out.status  = TransferStatus::Malformed;
@@ -20754,8 +20926,8 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
         out.message = "jpeg input is too small";
         return out;
     }
-    out_jpeg->push_back(input_jpeg[0]);
-    out_jpeg->push_back(input_jpeg[1]);
+    staged.push_back(input_jpeg[0]);
+    staged.push_back(input_jpeg[1]);
 
     bool inserted = false;
     for (size_t i = 0; i < scan.leading_segments.size(); ++i) {
@@ -20766,11 +20938,15 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
         if (replaced) {
             if (!inserted) {
                 for (size_t si = 0; si < desired.size(); ++si) {
-                    append_jpeg_segment(out_jpeg, desired[si].marker,
+                    append_jpeg_segment(&staged, desired[si].marker,
                                         desired[si].payload);
                 }
                 inserted    = true;
                 out.emitted = static_cast<uint32_t>(desired.size());
+            }
+            if (!e.photoshop_residual.empty()) {
+                append_jpeg_segment(&staged, 0xEDU, e.photoshop_residual);
+                out.emitted += 1U;
             }
             out.skipped += 1U;
             continue;
@@ -20787,13 +20963,13 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
         const std::ptrdiff_t marker_off = static_cast<std::ptrdiff_t>(
             e.marker_off);
         const std::ptrdiff_t seg_end_off = static_cast<std::ptrdiff_t>(seg_end);
-        out_jpeg->insert(out_jpeg->end(), input_jpeg.begin() + marker_off,
-                         input_jpeg.begin() + seg_end_off);
+        staged.insert(staged.end(), input_jpeg.begin() + marker_off,
+                      input_jpeg.begin() + seg_end_off);
     }
 
     if (!inserted) {
         for (size_t si = 0; si < desired.size(); ++si) {
-            append_jpeg_segment(out_jpeg, desired[si].marker,
+            append_jpeg_segment(&staged, desired[si].marker,
                                 desired[si].payload);
         }
         out.emitted = static_cast<uint32_t>(desired.size());
@@ -20802,10 +20978,11 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
     if (scan.scan_end <= input_jpeg.size()) {
         const std::ptrdiff_t scan_end = static_cast<std::ptrdiff_t>(
             scan.scan_end);
-        out_jpeg->insert(out_jpeg->end(), input_jpeg.begin() + scan_end,
-                         input_jpeg.end());
+        staged.insert(staged.end(), input_jpeg.begin() + scan_end,
+                      input_jpeg.end());
     }
 
+    *out_jpeg  = std::move(staged);
     out.status = TransferStatus::Ok;
     out.code   = EmitTransferCode::None;
     return out;
@@ -21290,11 +21467,13 @@ build_prepared_bundle_jpeg_package(
         out.message = "out_plan is null";
         return out;
     }
-    out_plan->contract_version = bundle.contract_version;
-    out_plan->target_format    = bundle.target_format;
-    out_plan->input_size       = static_cast<uint64_t>(input_jpeg.size());
-    out_plan->output_size      = 0U;
-    out_plan->chunks.clear();
+    PreparedTransferPackagePlan staged;
+    PreparedTransferPackagePlan* destination = &staged;
+    destination->contract_version            = bundle.contract_version;
+    destination->target_format               = bundle.target_format;
+    destination->input_size  = static_cast<uint64_t>(input_jpeg.size());
+    destination->output_size = 0U;
+    destination->chunks.clear();
 
     if (plan.status != TransferStatus::Ok) {
         out.status  = TransferStatus::InvalidArgument;
@@ -21343,12 +21522,28 @@ build_prepared_bundle_jpeg_package(
         desired_ops.push_back(op);
     }
 
-    const JpegScanResult scan = scan_leading_jpeg_segments(input_jpeg);
+    JpegScanResult scan = scan_leading_jpeg_segments(input_jpeg);
     if (scan.status != TransferStatus::Ok) {
         out.status  = scan.status;
         out.code    = EmitTransferCode::InvalidArgument;
         out.errors  = 1U;
         out.message = scan.message;
+        return out;
+    }
+
+    out.status = prepare_jpeg_iptc_resources(input_jpeg, desired, &scan,
+                                             &out.message);
+    if (out.status != TransferStatus::Ok) {
+        out.code   = EmitTransferCode::InvalidPayload;
+        out.errors = 1U;
+        return out;
+    }
+    if (!jpeg_edit_summary_matches(input_jpeg.size(), bundle, desired, scan,
+                                   plan)) {
+        out.status  = TransferStatus::InvalidArgument;
+        out.code    = EmitTransferCode::PlanMismatch;
+        out.errors  = 1U;
+        out.message = "jpeg edit plan no longer matches input or bundle";
         return out;
     }
 
@@ -21397,12 +21592,13 @@ build_prepared_bundle_jpeg_package(
                 out.message = "in_place payload range out of bounds";
                 return out;
             }
-            append_package_source_chunk(out_plan, static_cast<uint64_t>(cursor),
+            append_package_source_chunk(destination,
+                                        static_cast<uint64_t>(cursor),
                                         static_cast<uint64_t>(repl.payload_off
                                                               - cursor));
             append_package_inline_chunk(
-                out_plan, std::span<const std::byte>(repl.payload.data(),
-                                                     repl.payload.size()));
+                destination, std::span<const std::byte>(repl.payload.data(),
+                                                        repl.payload.size()));
             cursor = repl.payload_off + repl.payload_len;
         }
         if (cursor > input_jpeg.size()) {
@@ -21412,9 +21608,10 @@ build_prepared_bundle_jpeg_package(
             out.message = "jpeg in_place cursor is out of range";
             return out;
         }
-        append_package_source_chunk(out_plan, static_cast<uint64_t>(cursor),
+        append_package_source_chunk(destination, static_cast<uint64_t>(cursor),
                                     static_cast<uint64_t>(input_jpeg.size()
                                                           - cursor));
+        *out_plan             = std::move(staged);
         out_plan->output_size = plan.output_size;
         out.status            = TransferStatus::Ok;
         out.code              = EmitTransferCode::None;
@@ -21436,7 +21633,7 @@ build_prepared_bundle_jpeg_package(
         return out;
     }
 
-    append_package_source_chunk(out_plan, 0U, 2U);
+    append_package_source_chunk(destination, 0U, 2U);
 
     bool inserted = false;
     for (size_t i = 0; i < scan.leading_segments.size(); ++i) {
@@ -21448,11 +21645,17 @@ build_prepared_bundle_jpeg_package(
             if (!inserted) {
                 for (size_t si = 0; si < desired.size(); ++si) {
                     append_package_jpeg_segment_chunk(
-                        out_plan, desired_ops[si].block_index,
+                        destination, desired_ops[si].block_index,
                         desired_ops[si].marker_code,
                         desired[si].payload.size());
                 }
                 inserted = true;
+            }
+            if (!e.photoshop_residual.empty()) {
+                std::vector<std::byte> residual;
+                residual.reserve(4U + e.photoshop_residual.size());
+                append_jpeg_segment(&residual, 0xEDU, e.photoshop_residual);
+                append_package_inline_chunk(destination, residual);
             }
             continue;
         }
@@ -21464,14 +21667,14 @@ build_prepared_bundle_jpeg_package(
             out.message = "existing jpeg segment range is invalid";
             return out;
         }
-        append_package_source_chunk(out_plan,
+        append_package_source_chunk(destination,
                                     static_cast<uint64_t>(e.marker_off),
                                     static_cast<uint64_t>(seg_end
                                                           - e.marker_off));
     }
     if (!inserted) {
         for (size_t si = 0; si < desired.size(); ++si) {
-            append_package_jpeg_segment_chunk(out_plan,
+            append_package_jpeg_segment_chunk(destination,
                                               desired_ops[si].block_index,
                                               desired_ops[si].marker_code,
                                               desired[si].payload.size());
@@ -21484,10 +21687,12 @@ build_prepared_bundle_jpeg_package(
         out.message = "jpeg rewrite scan end is out of range";
         return out;
     }
-    append_package_source_chunk(out_plan, static_cast<uint64_t>(scan.scan_end),
+    append_package_source_chunk(destination,
+                                static_cast<uint64_t>(scan.scan_end),
                                 static_cast<uint64_t>(input_jpeg.size()
                                                       - scan.scan_end));
 
+    *out_plan             = std::move(staged);
     out_plan->output_size = plan.output_size;
     out.status            = TransferStatus::Ok;
     out.code              = EmitTransferCode::None;
@@ -23354,8 +23559,21 @@ namespace {
                                                    'P', 'S', '0', '1' };
     static constexpr char kTransferPackageBatchMagic[8]
         = { 'O', 'M', 'T', 'P', 'K', 'G', '0', '1' };
-    static constexpr uint32_t kC2paPackageVersion          = 1U;
+    static constexpr uint32_t kC2paPackageVersion          = 2U;
     static constexpr uint32_t kTransferPackageBatchVersion = 2U;
+
+    static uint32_t c2pa_package_version(
+        const PreparedTransferC2paSignRequest& request) noexcept
+    {
+        for (const PreparedTransferC2paRewriteChunk& chunk :
+             request.content_binding_chunks) {
+            if (chunk.kind
+                == TransferC2paRewriteChunkKind::PreservedJpegPhotoshopResources) {
+                return 2U;
+            }
+        }
+        return 1U;
+    }
 
     static void append_bool_u8(std::vector<std::byte>* out, bool value) noexcept
     {
@@ -23408,7 +23626,7 @@ namespace {
     }
 
     static bool parse_c2pa_rewrite_chunks_le(
-        std::span<const std::byte> bytes, size_t* io_off,
+        std::span<const std::byte> bytes, size_t* io_off, uint32_t version,
         std::vector<PreparedTransferC2paRewriteChunk>* out) noexcept
     {
         if (!io_off || !out) {
@@ -23435,6 +23653,14 @@ namespace {
                 || !read_u64le(bytes, io_off, &size)
                 || !read_u32le(bytes, io_off, &block_index)
                 || !read_u8(bytes, io_off, &jpeg_marker_code)) {
+                return false;
+            }
+            const uint8_t last_kind = static_cast<uint8_t>(
+                version == 1U
+                    ? TransferC2paRewriteChunkKind::PreparedBmffMetaBox
+                    : TransferC2paRewriteChunkKind::
+                          PreservedJpegPhotoshopResources);
+            if (kind > last_kind) {
                 return false;
             }
             PreparedTransferC2paRewriteChunk chunk;
@@ -23484,6 +23710,7 @@ namespace {
 
     static bool
     parse_c2pa_sign_request_le(std::span<const std::byte> bytes, size_t* io_off,
+                               uint32_t version,
                                PreparedTransferC2paSignRequest* out) noexcept
     {
         if (!io_off || !out) {
@@ -23510,7 +23737,7 @@ namespace {
             || !parse_bool_u8(bytes, io_off, &request.requires_private_key)
             || !parse_bool_u8(bytes, io_off, &request.requires_signing_time)
             || !read_string_le(bytes, io_off, &request.message)
-            || !parse_c2pa_rewrite_chunks_le(bytes, io_off,
+            || !parse_c2pa_rewrite_chunks_le(bytes, io_off, version,
                                              &request.content_binding_chunks)) {
             return false;
         }
@@ -23597,8 +23824,8 @@ namespace {
 
     static PreparedTransferC2paPackageIoResult
     deserialize_c2pa_package_header(std::span<const std::byte> bytes,
-                                    const char magic[8],
-                                    size_t* io_off) noexcept
+                                    const char magic[8], size_t* io_off,
+                                    uint32_t* out_version) noexcept
     {
         PreparedTransferC2paPackageIoResult out;
         if (!io_off) {
@@ -23634,13 +23861,14 @@ namespace {
             out.message = "package header is truncated";
             return out;
         }
-        if (version != kC2paPackageVersion) {
+        if (version == 0U || version > kC2paPackageVersion) {
             out.status  = TransferStatus::Unsupported;
             out.code    = EmitTransferCode::InvalidPayload;
             out.errors  = 1U;
             out.message = "package version is unsupported";
             return out;
         }
+        *out_version = version;
         out.status = TransferStatus::Ok;
         out.code   = EmitTransferCode::None;
         return out;
@@ -23813,6 +24041,10 @@ build_prepared_c2pa_sign_request(
             out.prepared_segment_chunks += 1U;
         } else if (chunk.kind
                    == TransferC2paRewriteChunkKind::PreparedBmffMetaBox) {
+            out.prepared_segment_chunks += 1U;
+        } else if (chunk.kind
+                   == TransferC2paRewriteChunkKind::
+                       PreservedJpegPhotoshopResources) {
             out.prepared_segment_chunks += 1U;
         }
     }
@@ -24029,6 +24261,13 @@ build_prepared_c2pa_sign_request_binding(
         return out;
     }
 
+    if (request.content_binding_bytes > SIZE_MAX) {
+        out.status  = TransferStatus::LimitExceeded;
+        out.code    = EmitTransferCode::InvalidPayload;
+        out.errors  = 1U;
+        out.message = "c2pa binding exceeds addressable size";
+        return out;
+    }
     out_bytes->reserve(static_cast<size_t>(request.content_binding_bytes));
     uint64_t written = 0U;
     for (size_t i = 0; i < request.content_binding_chunks.size(); ++i) {
@@ -24036,8 +24275,7 @@ build_prepared_c2pa_sign_request_binding(
             = request.content_binding_chunks[i];
         if (chunk.kind == TransferC2paRewriteChunkKind::SourceRange) {
             if (chunk.source_offset > target_input.size()
-                || chunk.size > target_input.size()
-                || chunk.source_offset + chunk.size > target_input.size()) {
+                || chunk.size > target_input.size() - chunk.source_offset) {
                 out.status  = TransferStatus::Malformed;
                 out.code    = EmitTransferCode::InvalidPayload;
                 out.errors  = 1U;
@@ -24049,6 +24287,56 @@ build_prepared_c2pa_sign_request_binding(
             const std::span<const std::byte> range
                 = target_input.subspan(begin, static_cast<size_t>(chunk.size));
             out_bytes->insert(out_bytes->end(), range.begin(), range.end());
+            written += chunk.size;
+            continue;
+        }
+
+        if (is_jpeg
+            && chunk.kind
+                   == TransferC2paRewriteChunkKind::
+                       PreservedJpegPhotoshopResources) {
+            if (chunk.jpeg_marker_code != 0xEDU
+                || chunk.block_index != UINT32_MAX
+                || chunk.source_offset > target_input.size()
+                || target_input.size() - chunk.source_offset < 4U) {
+                out.status = TransferStatus::Malformed;
+                out.code   = EmitTransferCode::InvalidPayload;
+                out.errors = 1U;
+                out.message
+                    = "c2pa preserved Photoshop source descriptor is invalid";
+                out_bytes->clear();
+                return out;
+            }
+            const size_t offset   = static_cast<size_t>(chunk.source_offset);
+            const uint16_t length = read_u16be(target_input, offset + 2U);
+            if (target_input[offset] != std::byte { 0xFFU }
+                || target_input[offset + 1U] != std::byte { 0xEDU }
+                || length < 2U || length > target_input.size() - offset - 2U) {
+                out.status = TransferStatus::Malformed;
+                out.code   = EmitTransferCode::InvalidPayload;
+                out.errors = 1U;
+                out.message
+                    = "c2pa preserved Photoshop source segment is invalid";
+                out_bytes->clear();
+                return out;
+            }
+            const std::span<const std::byte> payload
+                = target_input.subspan(offset + 4U, length - 2U);
+            detail::JpegPhotoshopIptcInfo info;
+            if (!detail::inspect_jpeg_photoshop_iptc(payload, &info)
+                || info.iptc_resources == 0U || info.other_resources == 0U
+                || chunk.size != 4U + info.retained_payload_size) {
+                out.status = TransferStatus::Malformed;
+                out.code   = EmitTransferCode::InvalidPayload;
+                out.errors = 1U;
+                out.message
+                    = "c2pa preserved Photoshop resource layout no longer matches";
+                out_bytes->clear();
+                return out;
+            }
+            std::vector<std::byte> residual(info.retained_payload_size);
+            detail::copy_jpeg_photoshop_without_iptc(payload, residual);
+            append_jpeg_segment(out_bytes, 0xEDU, residual);
             written += chunk.size;
             continue;
         }
@@ -24262,7 +24550,7 @@ serialize_prepared_c2pa_handoff_package(
                        + package.request.message.size()
                        + package.binding.message.size());
     append_ascii_bytes(out_bytes, std::string_view(kC2paHandoffMagic, 8U));
-    append_u32le(out_bytes, kC2paPackageVersion);
+    append_u32le(out_bytes, c2pa_package_version(package.request));
     append_c2pa_sign_request_le(out_bytes, package.request);
     append_c2pa_binding_result_le(out_bytes, package.binding);
     append_blob_le(out_bytes,
@@ -24289,12 +24577,14 @@ deserialize_prepared_c2pa_handoff_package(
         return out;
     }
     size_t off = 0U;
-    out = deserialize_c2pa_package_header(bytes, kC2paHandoffMagic, &off);
+    uint32_t version = 0U;
+    out = deserialize_c2pa_package_header(bytes, kC2paHandoffMagic, &off,
+                                          &version);
     if (out.status != TransferStatus::Ok) {
         return out;
     }
     PreparedTransferC2paHandoffPackage package;
-    if (!parse_c2pa_sign_request_le(bytes, &off, &package.request)
+    if (!parse_c2pa_sign_request_le(bytes, &off, version, &package.request)
         || !parse_c2pa_binding_result_le(bytes, &off, &package.binding)
         || !read_blob_le(bytes, &off, &package.binding_bytes)
         || off != bytes.size()) {
@@ -24335,7 +24625,7 @@ serialize_prepared_c2pa_signed_package(
         + package.signer_input.manifest_builder_output.size()
         + package.signer_input.signed_c2pa_logical_payload.size());
     append_ascii_bytes(out_bytes, std::string_view(kC2paSignedMagic, 8U));
-    append_u32le(out_bytes, kC2paPackageVersion);
+    append_u32le(out_bytes, c2pa_package_version(package.request));
     append_c2pa_sign_request_le(out_bytes, package.request);
     append_c2pa_signer_input_le(out_bytes, package.signer_input);
     out.status  = TransferStatus::Ok;
@@ -24359,12 +24649,14 @@ deserialize_prepared_c2pa_signed_package(
         return out;
     }
     size_t off = 0U;
-    out        = deserialize_c2pa_package_header(bytes, kC2paSignedMagic, &off);
+    uint32_t version = 0U;
+    out = deserialize_c2pa_package_header(bytes, kC2paSignedMagic, &off,
+                                          &version);
     if (out.status != TransferStatus::Ok) {
         return out;
     }
     PreparedTransferC2paSignedPackage package;
-    if (!parse_c2pa_sign_request_le(bytes, &off, &package.request)
+    if (!parse_c2pa_sign_request_le(bytes, &off, version, &package.request)
         || !parse_c2pa_signer_input_le(bytes, &off, &package.signer_input)
         || off != bytes.size()) {
         out.status  = TransferStatus::Malformed;

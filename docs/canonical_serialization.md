@@ -54,11 +54,47 @@ IPTC dataset is dirty. That carrier pass-through is outside canonical dataset
 validation. Existing public layouts and development ABI 4 remain unchanged;
 consumers using the new symbols need matching 0.8.15 headers and binaries.
 
-The current JPEG writer replaces a recognized Photoshop APP13 segment as a
-whole. When IPTC shares that segment with other Photoshop resources, an IPTC
-rewrite does not retain those resources. Canonical serialization does not change
-that existing carrier policy. Resource-level APP13 merging remains an open writer
-task; hosts that need it must preserve and wrap those resources themselves.
+### JPEG IPTC replacement (0.8.16)
+
+When a nonempty `jpeg:app13-iptc` replacement is requested, JPEG edit planning,
+buffered apply and package construction validate complete Photoshop `8BIM`
+resource streams. The replacement must contain at least one `0x0404` IPTC
+resource and no other resource IDs. Malformed streams return `Malformed`;
+mixed or IPTC-free replacement streams return `Unsupported`.
+
+All old `0x0404` records in leading Photoshop APP13 segments are removed.
+Every other record retains its exact signature, ID, name, data and padding,
+including duplicate IDs and nonzero padding. Each mixed source segment yields
+one residual APP13 at its original position; replacement segments are inserted
+once at the first replaced marker. Resources from different sources and the
+replacement are never merged, keeping each payload within 65,533 bytes.
+Photoshop segments without IPTC remain byte-identical. Without an IPTC update,
+APP13 resource parsing is bypassed and existing opaque bytes remain unchanged.
+Post-SOS data stays opaque. This does not update semantic dependencies such as
+Photoshop IPTC digest resources; preserved records are not recertified.
+
+Mixed resources or extra old IPTC segments require `MetadataRewrite`.
+`InPlace` remains available for matching IPTC-only segment counts and payload
+sizes. Plan sizes and counters are rechecked before output allocation. Plans
+remain summaries, not source identity bindings: keep the input and bundle
+immutable between planning and execution. Apply/package failures leave caller
+outputs unchanged; writer preflight errors make no writes. Sink failures can
+still leave partial external output. Host code synchronizes shared objects.
+
+`emitted_segments` and rewrite `appended_segments` count replacement plus
+residual output segments. `replaced_segments`, `removed_existing_segments`
+and apply `skipped` count original marker segments replaced, even when their
+non-IPTC resources survive in a residual segment.
+
+C2PA rewrite binding includes each residual through
+`PreservedJpegPhotoshopResources`: `source_offset` identifies its original APP13
+marker, `size` includes the emitted four-byte marker header, `block_index` is
+`UINT32_MAX`, and `jpeg_marker_code` is `0xED`. It counts as a prepared segment.
+Handoff/signed packages use wire version 2 only when this kind is present;
+legacy kinds retain version 1. Readers reject unknown kinds and the new kind
+in version 1. Binding equality applies to the prepared rewrite options; changing
+edit options such as XMP stripping after preparing a signing request is outside
+that binding contract. This adds no cryptographic signer or prepared IPTC patch API.
 
 ## EXIF/TIFF
 

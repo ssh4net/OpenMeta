@@ -1,5 +1,18 @@
 # OpenMeta Changes
 
+## 0.8.16 - 2026-10-16
+
+- Replace JPEG IPTC resource `0x0404` while preserving other Photoshop resource
+  records, including names, duplicates and padding, byte for byte. Keep residual
+  resources from each source APP13 in separate segments within JPEG size limits.
+- Validate affected resource streams and edit summaries before publishing buffered
+  output or packages. Preserve in-place edits for matching IPTC-only segments;
+  mixed resources and extra old IPTC segments require metadata rewrite.
+- Bind retained resources into the same C2PA rewrite byte sequence. Add a rewrite
+  chunk kind without changing public layouts or development ABI 4. Handoff and
+  signed packages containing that kind use wire version 2; existing kinds retain
+  version 1 encoding, and readers accept both with explicit kind validation.
+
 ## 0.8.15 - 2026-10-16
 
 - Add bounded canonical IPTC-IIM serialization with exact measurement,

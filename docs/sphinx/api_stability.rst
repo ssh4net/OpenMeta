@@ -1,6 +1,17 @@
 API Stability
 =============
 
+JPEG IPTC resource preservation in 0.8.16
+-----------------------------------------
+
+JPEG IPTC edits preserve unrelated Photoshop resources after complete structural
+validation of affected APP13 streams. Managed replacements contain only IPTC
+resources. The new ``PreservedJpegPhotoshopResources`` C2PA rewrite chunk kind
+requires matching 0.8.16 headers and binaries, with unchanged public layouts and
+ABI 4. Handoff/signed packages containing it use wire version 2; older kinds still
+encode as version 1. Both versions are readable with explicit kind validation.
+See :doc:`canonical_serialization`.
+
 Canonical IPTC-IIM in 0.8.15
 ----------------------------
 

@@ -870,6 +870,8 @@ namespace {
             return "prepared_jxl_box";
         case TransferC2paRewriteChunkKind::PreparedBmffMetaBox:
             return "prepared_bmff_meta_box";
+        case TransferC2paRewriteChunkKind::PreservedJpegPhotoshopResources:
+            return "preserved_jpeg_photoshop_resources";
         }
         return "unknown";
     }
@@ -4437,8 +4439,10 @@ main(int argc, char** argv)
                      ++ci) {
                     const PreparedTransferC2paRewriteChunk& chunk
                         = rewrite.content_binding_chunks[ci];
-                    if (chunk.kind
-                        == TransferC2paRewriteChunkKind::SourceRange) {
+                    if (chunk.kind == TransferC2paRewriteChunkKind::SourceRange
+                        || chunk.kind
+                               == TransferC2paRewriteChunkKind::
+                                   PreservedJpegPhotoshopResources) {
                         std::printf(
                             "  c2pa_rewrite_chunk[%u]: kind=%s offset=%llu size=%llu\n",
                             static_cast<unsigned>(ci),

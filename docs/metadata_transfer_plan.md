@@ -9,11 +9,12 @@ fallback policy. Bounds and selected-entry errors are explicit; unknown binary
 datasets and duplicate payloads remain representable. See
 [canonical_serialization.md](canonical_serialization.md).
 
-Next writer priority: preserve unrelated Photoshop resources while replacing
-IPTC inside a shared JPEG APP13 segment. Current replacement acts on the entire
-recognized segment; a mixed-resource negative reproducer records the limitation.
+Version 0.8.16 closes resource-level JPEG IPTC replacement: affected Photoshop
+streams are validated, all old IPTC records are replaced, and other records are
+preserved byte for byte in per-source residual APP13 segments. Buffered/package
+publication is transactional and C2PA binding includes the same residual bytes.
 
-Following synchronization candidate: materialized IPTC-to-XMP translation with
+Next synchronization candidate: materialized IPTC-to-XMP translation with
 explicit charset handling. The portable writer already maps 20 native IPTC groups;
 its ASCII-only raw-byte projection does not establish UTF-8 IPTC coverage.
 Full RDF authoring, fresh ICC construction and prepared IPTC patching remain open.

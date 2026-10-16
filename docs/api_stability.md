@@ -1,5 +1,16 @@
 # API Stability
 
+## JPEG IPTC resource preservation (0.8.16)
+
+JPEG IPTC edits now preserve unrelated Photoshop resources. Affected source
+and replacement APP13 streams must be structurally complete; a managed
+replacement must contain only IPTC resources. Direct opaque emission is unchanged.
+`TransferC2paRewriteChunkKind::PreservedJpegPhotoshopResources` extends the enum
+without changing public struct layouts or development ABI 4. Consumers using this
+kind require matching 0.8.16 headers and binaries. C2PA handoff/signed packages
+use wire version 2 only for this kind; version 1 remains supported for older kinds.
+See [canonical_serialization.md](canonical_serialization.md) for the edit contract.
+
 ## Canonical IPTC-IIM serialization (0.8.15)
 
 `serialize_iptc_iim()` adds a bounded target-neutral v1 measure/write API.

@@ -436,6 +436,7 @@ set(OPENMETA_SOURCES
   src/openmeta/metadata_snapshot_io.cc
   src/openmeta/metadata_store_validate.cc
   src/openmeta/metadata_transfer.cc
+  src/openmeta/jpeg_photoshop_irb.cc
   src/openmeta/prepared_transfer_handoff.cc
   src/openmeta/metadata_patch.cc
   src/openmeta/metadata_logical_field_internal.cc
@@ -1027,6 +1028,9 @@ if(OPENMETA_BUILD_TESTS)
     tests/iptc_iim_decode_test.cc
     tests/iptc_iim_serialize_test.cc
     tests/iptc_iim_serialize_transfer_test.cc
+    tests/jpeg_photoshop_irb_test.cc
+    tests/jpeg_iptc_resource_edit_test.cc
+    tests/jpeg_iptc_c2pa_test.cc
     tests/interop_export_test.cc
     tests/interop_import_test.cc
     tests/dji_app4_decode_test.cc

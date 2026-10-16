@@ -33,11 +33,28 @@ validation. Existing layouts, snapshot v1 and development ABI 4 remain unchanged
 new symbols require matching 0.8.15 headers and binaries. This API adds no prepared
 IPTC patching. See ``docs/canonical_serialization.md`` for the example and contract.
 
-The current JPEG writer replaces the whole recognized Photoshop APP13 segment.
-Other Photoshop resources sharing that segment with IPTC are not retained by
-an IPTC rewrite. Canonical serialization does not change that carrier policy.
-Resource-level APP13 merging remains open; hosts that require it must preserve
-and wrap those resources themselves.
+JPEG IPTC replacement in 0.8.16
+-------------------------------
+
+Managed IPTC edits validate complete Photoshop ``8BIM`` resource streams and
+replace all old ``0x0404`` records. Other records retain exact names, duplicate
+IDs, data and padding. Each mixed source yields a separate residual APP13;
+replacement segments are inserted once. Pure non-IPTC segments remain identical.
+No IPTC update bypasses resource parsing. Post-SOS bytes remain opaque.
+Preservation does not recalculate semantic dependencies such as IPTC digests.
+
+Mixed resources and extra old IPTC segments require metadata rewrite. Matching
+IPTC-only segment counts and sizes can use in-place editing. Malformed input or
+replacement streams fail before apply/package publication or writer calls.
+Mixed or IPTC-free managed replacements are unsupported. Sink errors can still
+leave partial external output. Plans remain summaries; hosts keep input and
+bundle immutable and synchronize mutations.
+
+Output counters include residual segments; removed/replaced counters refer to
+original markers. C2PA binding includes the same residual bytes through the new
+``PreservedJpegPhotoshopResources`` kind. Packages with this kind use wire version
+2; legacy kinds retain version 1. See ``docs/canonical_serialization.md`` for
+descriptor fields, counter semantics and the signing-option boundary.
 
 EXIF/TIFF
 ---------

@@ -647,6 +647,28 @@ assert r5['c2pa_sign_request']['source_range_chunks'] == 2, r5
 assert r5['c2pa_sign_request']['prepared_segment_chunks'] == 0, r5
 assert r5['c2pa_sign_request']['content_binding_bytes'] == 4, r5
 
+# Resource-level IPTC rewrites expose the new chunk consistently in Python.
+p_mixed_iptc = Path(r'''${WORK_DIR}/mixed_iptc_c2pa.jpg''')
+other_irb = b'8BIM' + bytes([4, 0, 0, 0]) + (3).to_bytes(4, 'big') + b'abc' + bytes([7])
+iim = bytes([28, 2, 5, 0, 3]) + b'OLD'
+iptc_irb = b'8BIM' + bytes([4, 4, 0, 0]) + len(iim).to_bytes(4, 'big') + iim
+photoshop = b'Photoshop 3.0' + bytes([0]) + other_irb + iptc_irb
+p_mixed_iptc.write_bytes(bytes([255, 216, 255, 237]) + (len(photoshop) + 2).to_bytes(2, 'big') + photoshop + p_c2pa.read_bytes()[2:])
+mixed = openmeta.transfer_probe(
+    str(p_mixed_iptc), include_exif_app1=False, include_xmp_app1=False,
+    include_icc_app2=False, include_iptc_app13=True,
+    c2pa_policy=openmeta.TransferPolicyAction.Rewrite,
+)
+assert mixed['prepare_status'] == openmeta.TransferStatus.Ok, mixed
+for view in ['c2pa_rewrite', 'c2pa_sign_request']:
+    residuals = [c for c in mixed[view]['content_binding_chunks']
+                 if c['kind_name'] == 'preserved_jpeg_photoshop_resources']
+    assert len(residuals) == 1, mixed
+    residual = residuals[0]
+    assert residual['kind'] == openmeta.TransferC2paRewriteChunkKind.PreservedJpegPhotoshopResources, residual
+    assert residual['source_offset'] == 2 and residual['size'] == 4 + 14 + len(other_irb), residual
+    assert residual['block_index'] == 4294967295 and residual['jpeg_marker_code'] == 237, residual
+
 r5b = openmeta.unsafe_transfer_probe(
     str(p_c2pa),
     include_exif_app1=False,

@@ -297,6 +297,8 @@ enum class TransferC2paRewriteChunkKind : uint8_t {
     PreparedJpegSegment,
     PreparedJxlBox,
     PreparedBmffMetaBox,
+    /// Source APP13 with its IPTC resources removed, retaining other records.
+    PreservedJpegPhotoshopResources,
 };
 
 /// Coarse transfer safety mode for source metadata reuse.
@@ -3340,6 +3342,10 @@ execute_prepared_transfer_bundle(
  * `Auto` selects `InPlace` when all emitted payloads can replace existing
  * leading JPEG metadata segments with exact size match; otherwise it selects
  * `MetadataRewrite`.
+ * Managed IPTC replacement validates complete Photoshop 8BIM streams and
+ * retains non-IPTC records. Mixed resources or extra old IPTC segments require
+ * rewrite. Replacement APP13 payloads must contain only IPTC resources.
+ * The plan is a summary, not an identity binding: keep input and bundle immutable.
  */
 JpegEditPlan
 plan_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
@@ -3353,6 +3359,7 @@ plan_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
  * For `InPlace`, this replaces matched existing segment payload bytes in a
  * copy of the input stream. For `MetadataRewrite`, this rewrites leading
  * metadata segments and preserves the remaining codestream bytes unchanged.
+ * Errors leave `out_jpeg` unchanged. Input may alias the output vector.
  */
 EmitTransferResult
 apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
@@ -3362,6 +3369,8 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
 
 /**
  * \brief Apply a planned JPEG metadata edit and stream output bytes to a writer.
+ * Resource/plan preflight errors make no writer calls. Sink failures can leave
+ * partial external output.
  */
 EmitTransferResult
 write_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
@@ -3416,6 +3425,7 @@ build_prepared_transfer_emit_package(const PreparedTransferBundle& bundle,
                                      const EmitTransferOptions& options
                                      = {}) noexcept;
 
+/// Build a JPEG edit package; errors leave `out_plan` unchanged.
 EmitTransferResult
 build_prepared_bundle_jpeg_package(
     std::span<const std::byte> input_jpeg, const PreparedTransferBundle& bundle,

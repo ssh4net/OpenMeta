@@ -1,6 +1,15 @@
 Developer Notes
 ===============
 
+JPEG IPTC resource preservation in 0.8.16
+-----------------------------------------
+
+JPEG edits, packages and C2PA binding share bounded resource inspection.
+Non-IPTC records retain their exact bytes and per-source segment boundaries;
+mixed resources force metadata rewrite. Preflight errors preserve buffered and
+package output. ABI 4 and public layouts remain; C2PA packages containing the new
+residual chunk use wire version 2. See :doc:`canonical_serialization`.
+
 Canonical IPTC-IIM in 0.8.15
 ----------------------------
 

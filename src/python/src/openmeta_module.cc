@@ -2159,6 +2159,8 @@ namespace {
             return "prepared_jxl_box";
         case TransferC2paRewriteChunkKind::PreparedBmffMetaBox:
             return "prepared_bmff_meta_box";
+        case TransferC2paRewriteChunkKind::PreservedJpegPhotoshopResources:
+            return "preserved_jpeg_photoshop_resources";
         }
         return "unknown";
     }
@@ -10546,7 +10548,9 @@ NB_MODULE(_openmeta, m)
                TransferC2paRewriteChunkKind::PreparedJpegSegment)
         .value("PreparedJxlBox", TransferC2paRewriteChunkKind::PreparedJxlBox)
         .value("PreparedBmffMetaBox",
-               TransferC2paRewriteChunkKind::PreparedBmffMetaBox);
+               TransferC2paRewriteChunkKind::PreparedBmffMetaBox)
+        .value("PreservedJpegPhotoshopResources",
+               TransferC2paRewriteChunkKind::PreservedJpegPhotoshopResources);
 
     nb::enum_<TransferC2paSignedPayloadKind>(m, "TransferC2paSignedPayloadKind")
         .value("NotApplicable", TransferC2paSignedPayloadKind::NotApplicable)
