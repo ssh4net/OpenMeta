@@ -7839,6 +7839,52 @@ translate_iptc_to_xmp_document(
     return document;
 }
 
+static std::shared_ptr<PyDocument>
+translate_iptc_dates_to_xmp_document(
+    std::shared_ptr<PyDocument> document_source,
+    MetadataDateTranslationSourceMode source_mode,
+    MetadataIptcToXmpConflictPolicy conflict_policy, bool created,
+    bool digital_creation, uint32_t max_source_properties,
+    uint32_t max_added_entries, uint32_t max_operations,
+    uint64_t max_total_text_bytes)
+{
+    MetadataIptcDateToXmpOptions options;
+    options.source_mode           = source_mode;
+    options.conflict_policy       = conflict_policy;
+    options.created               = created;
+    options.digital_creation      = digital_creation;
+    options.max_source_properties = max_source_properties;
+    options.max_added_entries     = max_added_entries;
+    options.max_operations        = max_operations;
+    options.max_total_text_bytes  = max_total_text_bytes;
+    MetaStore translated;
+    MetadataIptcDateToXmpResult result;
+    {
+        nb::gil_scoped_release gil_release;
+        result = translate_iptc_dates_to_xmp(document_source->store, options,
+                                             &translated);
+    }
+    if (result.status != MetadataIptcDateToXmpStatus::Ok) {
+        std::string message = "IPTC date to XMP translation failed: ";
+        message += metadata_iptc_date_to_xmp_status_name(result.status);
+        if (result.failed_mapping != MetadataDateTranslationMapping::None) {
+            message += " for ";
+            message += metadata_date_translation_mapping_name(
+                result.failed_mapping);
+        }
+        if (result.failed_source_entry != kInvalidEntryId) {
+            message += " at source entry ";
+            message += std::to_string(result.failed_source_entry);
+        }
+        throw std::invalid_argument(message);
+    }
+    auto document                        = std::make_shared<PyDocument>();
+    document->store                      = std::move(translated);
+    document->result.xmp.entries_decoded = active_xmp_entry_count(
+        document->store);
+    return document;
+}
+
 static std::string
 document_compatibility_dump(std::shared_ptr<PyDocument> d,
                             ExportNameStyle style, ExportNamePolicy name_policy,
@@ -10439,6 +10485,44 @@ NB_MODULE(_openmeta, m)
     m.def("metadata_iptc_to_xmp_status_name", &metadata_iptc_to_xmp_status_name,
           "status"_a);
 
+    nb::enum_<MetadataIptcDateToXmpStatus>(m, "MetadataIptcDateToXmpStatus")
+        .value("Ok", MetadataIptcDateToXmpStatus::Ok)
+        .value("NullOutput", MetadataIptcDateToXmpStatus::NullOutput)
+        .value("SourceNotFinalized",
+               MetadataIptcDateToXmpStatus::SourceNotFinalized)
+        .value("InvalidOptions", MetadataIptcDateToXmpStatus::InvalidOptions)
+        .value("SourceLimitExceeded",
+               MetadataIptcDateToXmpStatus::SourceLimitExceeded)
+        .value("AmbiguousSource", MetadataIptcDateToXmpStatus::AmbiguousSource)
+        .value("InvalidSourceValue",
+               MetadataIptcDateToXmpStatus::InvalidSourceValue)
+        .value("InvalidDateTime", MetadataIptcDateToXmpStatus::InvalidDateTime)
+        .value("UnsupportedPrecision",
+               MetadataIptcDateToXmpStatus::UnsupportedPrecision)
+        .value("IncompleteSource",
+               MetadataIptcDateToXmpStatus::IncompleteSource)
+        .value("DestinationConflict",
+               MetadataIptcDateToXmpStatus::DestinationConflict)
+        .value("UnsupportedDestinationShape",
+               MetadataIptcDateToXmpStatus::UnsupportedDestinationShape)
+        .value("EntryLimitExceeded",
+               MetadataIptcDateToXmpStatus::EntryLimitExceeded)
+        .value("OperationLimitExceeded",
+               MetadataIptcDateToXmpStatus::OperationLimitExceeded)
+        .value("InternalError", MetadataIptcDateToXmpStatus::InternalError);
+    m.attr("METADATA_IPTC_DATE_TO_XMP_CONTRACT_VERSION") = nb::int_(
+        kMetadataIptcDateToXmpContractVersion);
+    m.attr("METADATA_IPTC_DATE_TO_XMP_MAX_SOURCE_PROPERTIES") = nb::int_(
+        kMetadataIptcDateToXmpMaxSourceProperties);
+    m.attr("METADATA_IPTC_DATE_TO_XMP_MAX_ADDED_ENTRIES") = nb::int_(
+        kMetadataIptcDateToXmpMaxAddedEntries);
+    m.attr("METADATA_IPTC_DATE_TO_XMP_MAX_OPERATIONS") = nb::int_(
+        kMetadataIptcDateToXmpMaxOperations);
+    m.attr("METADATA_IPTC_DATE_TO_XMP_MAX_TOTAL_TEXT_BYTES") = nb::int_(
+        kMetadataIptcDateToXmpMaxTotalTextBytes);
+    m.def("metadata_iptc_date_to_xmp_status_name",
+          &metadata_iptc_date_to_xmp_status_name, "status"_a);
+
     nb::enum_<MetadataFuzzySearchStatus>(m, "MetadataFuzzySearchStatus")
         .value("Ok", MetadataFuzzySearchStatus::Ok)
         .value("FeatureUnavailable",
@@ -11626,6 +11710,17 @@ NB_MODULE(_openmeta, m)
              "max_added_entries"_a = kMetadataIptcToXmpMaxAddedEntries,
              "max_operations"_a = kMetadataIptcToXmpMaxOperations,
              "max_total_text_bytes"_a = kMetadataIptcToXmpMaxTotalTextBytes)
+        .def("translate_iptc_dates_to_xmp",
+             &translate_iptc_dates_to_xmp_document,
+             "source_mode"_a = MetadataDateTranslationSourceMode::All,
+             "conflict_policy"_a
+             = MetadataIptcToXmpConflictPolicy::FailOnConflict,
+             "created"_a = true, "digital_creation"_a = true,
+             "max_source_properties"_a
+             = kMetadataIptcDateToXmpMaxSourceProperties,
+             "max_added_entries"_a    = kMetadataIptcDateToXmpMaxAddedEntries,
+             "max_operations"_a       = kMetadataIptcDateToXmpMaxOperations,
+             "max_total_text_bytes"_a = kMetadataIptcDateToXmpMaxTotalTextBytes)
         .def("phaseone_raw_geometry", &document_phaseone_raw_geometry)
         .def("phaseone_raw_processing", &document_phaseone_raw_processing)
         .def("vendor_raw_processing", &document_vendor_raw_processing)

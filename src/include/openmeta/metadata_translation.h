@@ -25,7 +25,7 @@ inline constexpr uint32_t kMetadataDateTranslationContractVersion = 2U;
 inline constexpr uint32_t kMetadataDateTranslationMaxAddedEntries = 16U;
 inline constexpr uint32_t kMetadataDateTranslationMaxOperations   = 1024U;
 
-/// Which XMP entries are eligible as reverse-translation sources.
+/// Which entries are eligible as sources for explicit date translations.
 enum class MetadataDateTranslationSourceMode : uint8_t {
     /// Translate only entries marked Dirty, including dirty tombstones.
     DirtyOnly,
@@ -1829,6 +1829,102 @@ translate_iptc_to_xmp(const MetaStore& source,
 
 const char*
 metadata_iptc_to_xmp_status_name(MetadataIptcToXmpStatus status) noexcept;
+
+/// Experimental native IPTC date/time to materialized XMP contract version.
+inline constexpr uint32_t kMetadataIptcDateToXmpContractVersion     = 1U;
+inline constexpr uint32_t kMetadataIptcDateToXmpMaxSourceProperties = 1024U;
+inline constexpr uint32_t kMetadataIptcDateToXmpMaxAddedEntries     = 2U;
+inline constexpr uint32_t kMetadataIptcDateToXmpMaxOperations       = 2U;
+inline constexpr uint64_t kMetadataIptcDateToXmpMaxTotalTextBytes   = 8192U;
+
+/// Caller-selected native IPTC date/time pairs to materialize as XMP.
+struct MetadataIptcDateToXmpOptions final {
+    MetadataDateTranslationSourceMode source_mode
+        = MetadataDateTranslationSourceMode::All;
+    MetadataIptcToXmpConflictPolicy conflict_policy
+        = MetadataIptcToXmpConflictPolicy::FailOnConflict;
+
+    bool created          = true;
+    bool digital_creation = true;
+
+    uint32_t max_source_properties = kMetadataIptcDateToXmpMaxSourceProperties;
+    uint32_t max_added_entries     = kMetadataIptcDateToXmpMaxAddedEntries;
+    uint32_t max_operations        = kMetadataIptcDateToXmpMaxOperations;
+    uint64_t max_total_text_bytes  = kMetadataIptcDateToXmpMaxTotalTextBytes;
+};
+
+enum class MetadataIptcDateToXmpStatus : uint8_t {
+    Ok,
+    NullOutput,
+    SourceNotFinalized,
+    InvalidOptions,
+    SourceLimitExceeded,
+    AmbiguousSource,
+    InvalidSourceValue,
+    InvalidDateTime,
+    UnsupportedPrecision,
+    IncompleteSource,
+    DestinationConflict,
+    UnsupportedDestinationShape,
+    EntryLimitExceeded,
+    OperationLimitExceeded,
+    InternalError,
+};
+
+/// Transactional result details for native IPTC date/time materialization.
+struct MetadataIptcDateToXmpResult final {
+    MetadataIptcDateToXmpStatus status = MetadataIptcDateToXmpStatus::Ok;
+    MetadataDateTranslationMapping failed_mapping
+        = MetadataDateTranslationMapping::None;
+    EntryId failed_source_entry = kInvalidEntryId;
+    uint32_t source_properties  = 0U;
+    uint32_t groups_translated  = 0U;
+    uint32_t groups_preserved   = 0U;
+    uint32_t groups_unchanged   = 0U;
+    uint32_t entries_added      = 0U;
+    uint32_t entries_updated    = 0U;
+    uint32_t entries_removed    = 0U;
+};
+
+/**
+ * \brief Materialize the native IPTC creation-date pairs as XMP.
+ *
+ * Record 2 datasets 55/60 map to photoshop:DateCreated; datasets 62/63 map to
+ * xmp:CreateDate. Date values use YYYYMMDD. A positive year with zero month
+ * and day emits YYYY; a positive year/month with zero day emits YYYY-MM.
+ * Both pairs accept those hierarchical partial dates; year 0000 and a known
+ * day with unknown month are unsupported. Full dates use the Gregorian
+ * calendar. A time requires a full date and uses HHMMSS or HHMMSS+/-HHMM;
+ * output preserves the timezone sign, including negative zero, without
+ * converting the instant. Seconds may be 60 and offsets range through 23:59.
+ *
+ * All is the default source mode. DirtyOnly selects a pair when either member
+ * is dirty; all active members in a selected pair participate. Clean
+ * tombstones are ignored. A dirty time tombstone may reduce a pair to a date;
+ * a dirty date tombstone removes the whole pair only when no active member
+ * remains. Numeric bytes are ASCII syntax and do not use IPTC charset markers.
+ * Dirty tombstones count toward source limits. Unknown flag bits on selected
+ * candidates are rejected. Tombstone payloads, origins, Truncated, and
+ * Unreadable state are not inspected; those payload checks apply only to
+ * active values.
+ * Multiple active dates or times are ambiguous. Active date/time members must
+ * share an origin block; kInvalidBlockId is accepted as an authored scope.
+ *
+ * FailOnConflict accepts an absent destination or one exact scalar Text value
+ * with the same lexical spelling. PreserveExisting keeps any existing root
+ * without inspecting its payload. ReplaceExisting updates or removes one
+ * supported exact scalar target. Failures leave the source and output
+ * unchanged. Preparation may allocate to clone the input store; callers
+ * synchronize mutation of shared stores.
+ */
+MetadataIptcDateToXmpResult
+translate_iptc_dates_to_xmp(const MetaStore& source,
+                            const MetadataIptcDateToXmpOptions& options,
+                            MetaStore* out_store);
+
+const char*
+metadata_iptc_date_to_xmp_status_name(
+    MetadataIptcDateToXmpStatus status) noexcept;
 
 /// Experimental reverse IPTC Core location translation contract version.
 inline constexpr uint32_t kMetadataLocationTranslationContractVersion = 1U;

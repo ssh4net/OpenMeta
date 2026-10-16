@@ -207,6 +207,26 @@ main()
           && native_title_translation.status == openmeta::MetadataIptcToXmpStatus::Ok
           && native_title_translation.entries_added == 1U
           && native_title_translated.is_finalized();
+    const openmeta::MetadataAuthoringEntry native_date {
+        openmeta::make_iptc_dataset_key_view(2U, 55U),
+        openmeta::make_value_view_text("20261000",
+                                       openmeta::TextEncoding::Ascii),
+    };
+    openmeta::MetaStore native_date_source;
+    const auto native_date_authored = openmeta::create_metadata_store(
+        std::span<const openmeta::MetadataAuthoringEntry>(&native_date, 1U),
+        &native_date_source);
+    openmeta::MetaStore native_date_translated;
+    const auto native_date_translation = openmeta::translate_iptc_dates_to_xmp(
+        native_date_source, openmeta::MetadataIptcDateToXmpOptions {},
+        &native_date_translated);
+    const bool native_date_contract_matches
+        = native_date_authored.ok()
+          && openmeta::kMetadataIptcDateToXmpContractVersion == 1U
+          && native_date_translation.status
+                 == openmeta::MetadataIptcDateToXmpStatus::Ok
+          && native_date_translation.entries_added == 1U
+          && native_date_translated.is_finalized();
     openmeta::MetaStore authored;
     const openmeta::MetadataAuthoringEntry gps {
         openmeta::make_xmp_property_key_view("http://ns.adobe.com/exif/1.0/",
@@ -854,7 +874,7 @@ main()
                    || !descriptive_translation_contract_matches
                    || !location_contract_matches || !editorial_contract_matches
                    || !iptc_contract_matches || !native_title_contract_matches
-                   || !gps_contract_matches
+                   || !native_date_contract_matches || !gps_contract_matches
                    || !structured_location_contract_matches
                    || !navigation_contract_matches
                    || !destination_contract_matches || !quality_contract_matches

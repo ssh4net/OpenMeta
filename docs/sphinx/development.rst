@@ -1,6 +1,15 @@
 Developer Notes
 ===============
 
+Native IPTC date translation (0.8.18)
+-------------------------------------
+
+The new native IPTC date-to-XMP contract is version 1. It adds two explicit
+date-pair mappings, partial-date precision and transactional destination policies.
+Existing public layouts, reverse/portable behavior, snapshot v1 and unfrozen ABI 4
+remain unchanged. New symbols require matching headers and binaries; hosts own
+shared-object synchronization. Qualification keeps grouped tests and source hashes.
+
 Native IPTC to XMP in 0.8.17
 ----------------------------
 

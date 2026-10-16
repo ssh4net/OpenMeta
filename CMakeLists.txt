@@ -429,6 +429,7 @@ set(OPENMETA_SOURCES
   src/openmeta/metadata_translation_capture.cc
   src/openmeta/metadata_translation_descriptive.cc
   src/openmeta/metadata_translation_iptc_to_xmp.cc
+  src/openmeta/metadata_translation_iptc_dates_to_xmp.cc
   src/openmeta/metadata_translation_geometry.cc
   src/openmeta/metadata_translation_gps.cc
   src/openmeta/metadata_fuzzy_search.cc
@@ -1053,6 +1054,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/metadata_translation_profile_test.cc
     tests/metadata_translation_test.cc
     tests/metadata_translation_iptc_to_xmp_test.cc
+    tests/metadata_translation_iptc_dates_to_xmp_test.cc
     tests/metadata_translation_gps_test.cc
     tests/metadata_translation_structured_location_test.cc
     tests/metadata_fuzzy_search_test.cc

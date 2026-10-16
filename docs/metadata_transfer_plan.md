@@ -17,8 +17,10 @@ publication is transactional and C2PA binding includes the same residual bytes.
 Version 0.8.17 adds materialized IPTC-to-XMP translation for the 20 flat groups,
 with per-block charset validation, destination conflicts and one store transaction.
 The portable writer retains its existing ASCII-only raw-byte projection.
-Next synchronization candidate: explicit native IPTC creation-date/time groups
-to materialized XMP, including timezone, partial-value and conflict rules.
+Version 0.8.18 adds both native IPTC creation-date/time pairs to materialized XMP,
+including year/month precision, explicit timezone absence and transactional conflicts.
+Next synchronization candidate: preserve partial date precision through the reverse
+XMP-to-IPTC date path, without inventing EXIF timestamp components.
 Full RDF authoring, fresh ICC construction and prepared IPTC patching remain open.
 
 Date: March 5, 2026

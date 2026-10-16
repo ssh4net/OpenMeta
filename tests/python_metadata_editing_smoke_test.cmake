@@ -499,6 +499,85 @@ with tempfile.TemporaryDirectory() as temporary:
     assert native.entry_count == native_count
 
 with tempfile.TemporaryDirectory() as temporary:
+    native_path = Path(temporary) / 'native_iptc_dates.jpg'
+    def date_dataset(tag, value):
+        data = value.encode('ascii')
+        return bytes([28, 2, tag]) + len(data).to_bytes(2, 'big') + data
+    def native_dates(fields):
+        payload = b''.join(date_dataset(tag, value) for tag, value in fields)
+        resource = (b'8BIM' + bytes.fromhex('04040000') +
+            len(payload).to_bytes(4, 'big') + payload + bytes(len(payload) % 2))
+        app13 = b'Photoshop 3.0' + bytes([0]) + resource
+        native_path.write_bytes(bytes.fromhex('ffd8ffed') +
+            (len(app13) + 2).to_bytes(2, 'big') + app13 + bytes.fromhex('ffd9'))
+        return openmeta.read(str(native_path))
+    def date_packet(document):
+        return document.dump_xmp_portable(include_existing_xmp=True,
+            include_iptc=False, include_exif=False)[0]
+    native = native_dates([(55, '20240229'), (60, '235959-0000'),
+        (62, '20261016'), (63, '123456+0545')])
+    count = native.entry_count
+    translated = native.translate_iptc_dates_to_xmp()
+    packet = date_packet(translated)
+    assert b'<photoshop:DateCreated>2024-02-29T23:59:59-00:00</photoshop:DateCreated>' in packet
+    assert b'<xmp:CreateDate>2026-10-16T12:34:56+05:45</xmp:CreateDate>' in packet
+    assert native.entry_count == count and translated.entry_count == count + 2
+    assert native.translate_iptc_dates_to_xmp(created=False).entry_count == count + 1
+    assert native.translate_iptc_dates_to_xmp(digital_creation=False).entry_count == count + 1
+    assert native.translate_iptc_dates_to_xmp(created=False, digital_creation=False).entry_count == count
+    assert native.translate_iptc_dates_to_xmp(
+        source_mode=openmeta.MetadataDateTranslationSourceMode.DirtyOnly).entry_count == count
+    assert date_packet(translated.translate_iptc_dates_to_xmp()) == packet
+    assert openmeta.METADATA_IPTC_DATE_TO_XMP_CONTRACT_VERSION == 1
+    assert openmeta.METADATA_IPTC_DATE_TO_XMP_MAX_SOURCE_PROPERTIES == 1024
+    assert openmeta.METADATA_IPTC_DATE_TO_XMP_MAX_ADDED_ENTRIES == 2
+    assert openmeta.METADATA_IPTC_DATE_TO_XMP_MAX_OPERATIONS == 2
+    assert openmeta.METADATA_IPTC_DATE_TO_XMP_MAX_TOTAL_TEXT_BYTES == 8192
+    assert openmeta.metadata_iptc_date_to_xmp_status_name(
+        openmeta.MetadataIptcDateToXmpStatus.IncompleteSource) == 'incomplete_source'
+    conflicting = translated.edit_metadata([
+        openmeta.metadata_edit_set(openmeta.metadata_creation_text(K.CreateDate, '2025-01-01'))])
+    try:
+        conflicting.translate_iptc_dates_to_xmp()
+    except ValueError as exc:
+        assert 'destination_conflict for xmp_create_date' in str(exc)
+    else:
+        raise AssertionError('native IPTC date conflict was ignored')
+    assert b'2025-01-01' in date_packet(conflicting.translate_iptc_dates_to_xmp(
+        conflict_policy=openmeta.MetadataIptcToXmpConflictPolicy.PreserveExisting))
+    assert date_packet(conflicting.translate_iptc_dates_to_xmp(
+        conflict_policy=openmeta.MetadataIptcToXmpConflictPolicy.ReplaceExisting)) == packet
+    for options, status in [({'max_added_entries': 1}, 'entry_limit_exceeded'),
+                            ({'max_operations': 1}, 'operation_limit_exceeded'),
+                            ({'max_source_properties': 3}, 'source_limit_exceeded'),
+                            ({'max_total_text_bytes': 1}, 'source_limit_exceeded')]:
+        try:
+            native.translate_iptc_dates_to_xmp(**options)
+        except ValueError as exc:
+            assert status in str(exc)
+        else:
+            raise AssertionError('native IPTC date limit was ignored')
+    partial = native_dates([(55, '18610000'), (62, '20261000')]).translate_iptc_dates_to_xmp()
+    assert b'<photoshop:DateCreated>1861</photoshop:DateCreated>' in date_packet(partial)
+    assert b'<xmp:CreateDate>2026-10</xmp:CreateDate>' in date_packet(partial)
+    unzoned = native_dates([(55, '20190529'), (60, '211240'), (62, '20190529')])
+    unzoned_packet = date_packet(unzoned.translate_iptc_dates_to_xmp())
+    assert b'<photoshop:DateCreated>2019-05-29T21:12:40</photoshop:DateCreated>' in unzoned_packet
+    assert b'<xmp:CreateDate>2019-05-29</xmp:CreateDate>' in unzoned_packet
+    for fields, status in [([(55, '20230229')], 'invalid_date_time'),
+                           ([(60, '211240')], 'incomplete_source'),
+                           ([(55, '20260000'), (60, '211240')], 'unsupported_precision')]:
+        bad = native_dates(fields)
+        initial_count = bad.entry_count
+        try:
+            bad.translate_iptc_dates_to_xmp()
+        except ValueError as exc:
+            assert status in str(exc)
+        else:
+            raise AssertionError('invalid native IPTC date was accepted')
+        assert bad.entry_count == initial_count
+
+with tempfile.TemporaryDirectory() as temporary:
     gps_path = Path(temporary) / 'gps.jpg'
     xml = b'''<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">
 <rdf:Description xmlns:e=\"http://ns.adobe.com/exif/1.0/\">

@@ -1,5 +1,73 @@
 # Metadata Translation
 
+## Native IPTC creation dates to XMP (0.8.18)
+
+`translate_iptc_dates_to_xmp(...)` materializes two date/time pairs in one
+transaction. Python exposes `Document.translate_iptc_dates_to_xmp(...)`.
+
+| Native pair | XMP destination | Option |
+| --- | --- | --- |
+| 2:55 DateCreated / 2:60 TimeCreated | `photoshop:DateCreated` | `created` |
+| 2:62 DigitalCreationDate / 2:63 DigitalCreationTime | `xmp:CreateDate` | `digital_creation` |
+
+Both flags default to true. These identities follow
+[Adobe XMP Part 3, Tables 37–38](https://github.com/adobe/XMP-Toolkit-SDK/blob/main/docs/XMPSpecificationPart3.pdf).
+The native date is exactly eight digits. `20260000` becomes `2026`, and
+`20261000` becomes `2026-10`; a full date must be a valid Gregorian date.
+Unknown years, known days with unknown months, and time attached to an incomplete
+date return `UnsupportedPrecision`. Invalid numeric syntax or calendar values
+return `InvalidDateTime`. No missing component is invented.
+
+Time accepts `HHMMSS` or `HHMMSS+/-HHMM`. The six-byte form retains the existing
+OpenMeta compatibility syntax and produces no timezone suffix. Explicit offsets
+retain their sign, including `-0000` → `-00:00`; no UTC conversion or host timezone
+lookup occurs. Hours are 0–23, minutes 0–59, seconds 0–60, and offset hours/minutes
+0–23/0–59. Accepting second 60 does not validate a real leap-second event.
+Fractions, whitespace, trailing NULs and wire padding are rejected. Numeric
+Bytes need no text hint; Text requires Ascii or Utf8. Charset markers do not
+select or interpret these fixed ASCII numeric fields.
+
+Defaults are `MetadataDateTranslationSourceMode::All` and
+`MetadataIptcToXmpConflictPolicy::FailOnConflict`. DirtyOnly selects a pair when
+one member is Dirty, then includes its clean active companion. Duplicate active
+dates or times are ambiguous, including equal duplicates. Active members must
+share an origin block; the invalid-block sentinel is an authored/unscoped
+scope by convention, while other invalid active origins fail. Time without a date returns
+`IncompleteSource`.
+
+Clean tombstones are ignored. Removing only time from an active date yields a
+date-only value. A dirty date tombstone requests destination removal only when
+both native members are inactive. Removing a date while leaving active time, or
+a lone dirty time tombstone without an active date, returns `IncompleteSource`.
+Missing inputs alone never request removal. Active replacements win over
+same-field tombstones. Dirty tombstones select/count by mapping regardless of
+block; only active members undergo origin and payload validation. Unknown flag
+bits are rejected even on selected tombstones; payload damage flags on tombstones
+do not prevent deletion.
+
+FailOnConflict accepts an absent or exactly equal lexical target; unequal
+existing text or removal conflicts. It does not equate different timezone or
+precision spellings. PreserveExisting keeps an existing root after validating
+sources. ReplaceExisting updates/removes a supported exact scalar target.
+Duplicate targets, indexed/structured descendants, malformed spans, damaged
+values, unsupported text encodings and invalid UTF-8/XML fail for Fail/Replace.
+Unrelated namespaces/roots and original native metadata are retained.
+
+Added XMP entries are Dirty UTF-8 with the date source's block/order and no native
+wire hints. Updated entries retain destination provenance. Limits are 1,024
+selected source entries, two added entries, two operations and 8,192 inspected
+source/owned-destination text bytes. Options can lower these positive limits.
+All checks precede publication; failures leave source/output unchanged, including
+aliasing, with zero mutation counts. Preparation and output-store copying may
+allocate in proportion to input size; allocation failure is not recoverable.
+Hosts synchronize shared objects. No atomics or mutexes are added.
+
+Serialize stored properties with `include_existing_xmp=True`, `include_iptc=False`
+and `include_exif=False`. The existing portable projection and reverse-date APIs
+retain their policies. In particular, reverse translation currently requires a
+full calendar date, so year/month-only XMP does not round-trip through that API.
+The forward transaction does not infer EXIF dates or combine the two native pairs.
+
 ## Native IPTC to materialized XMP (0.8.17)
 
 `translate_iptc_to_xmp(source, options, &output)` adds the 20 flat text/priority
@@ -79,6 +147,7 @@ The APIs are experimental and versioned by
 `kMetadataEditorialTranslationContractVersion == 1` and
 `kMetadataIptcTranslationContractVersion == 1` and
 `kMetadataIptcToXmpContractVersion == 1` and
+`kMetadataIptcDateToXmpContractVersion == 1` and
 `kMetadataGpsTranslationContractVersion == 2` and
 `kMetadataStructuredLocationTranslationContractVersion == 1` and
 `kMetadataGpsNavigationTranslationContractVersion == 1` and
