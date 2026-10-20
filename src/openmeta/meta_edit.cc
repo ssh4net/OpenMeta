@@ -79,55 +79,80 @@ MetaEdit::ops() const noexcept
 }
 
 
+static bool
+copy_span(ByteSpan source, const ByteArena& src, ByteArena& dst,
+          ByteSpan* copied)
+{
+    if (!copied) {
+        return false;
+    }
+    const size_t source_size = src.bytes().size();
+    const size_t offset = static_cast<size_t>(source.offset);
+    const size_t size   = static_cast<size_t>(source.size);
+    if (offset > source_size || size > source_size - offset) {
+        *copied = ByteSpan {};
+        return false;
+    }
+    const std::span<const std::byte> bytes = src.span(source);
+    *copied = dst.append(bytes);
+    return bytes.size() == size && copied->size == source.size
+           && !dst.limit_exceeded();
+}
+
+
 static MetaKey
-copy_key(const MetaKey& key, const ByteArena& src, ByteArena& dst)
+copy_key(const MetaKey& key, const ByteArena& src, ByteArena& dst,
+         bool* success)
 {
     MetaKey out = key;
+    *success    = true;
 
     switch (key.kind) {
     case MetaKeyKind::ExifTag:
-        out.data.exif_tag.ifd = dst.append(src.span(key.data.exif_tag.ifd));
+        *success = copy_span(key.data.exif_tag.ifd, src, dst,
+                             &out.data.exif_tag.ifd);
         return out;
     case MetaKeyKind::Comment: return out;
     case MetaKeyKind::ExrAttribute:
-        out.data.exr_attribute.name = dst.append(
-            src.span(key.data.exr_attribute.name));
+        *success = copy_span(key.data.exr_attribute.name, src, dst,
+                             &out.data.exr_attribute.name);
         return out;
     case MetaKeyKind::IptcDataset: return out;
     case MetaKeyKind::XmpProperty:
-        out.data.xmp_property.schema_ns = dst.append(
-            src.span(key.data.xmp_property.schema_ns));
-        out.data.xmp_property.property_path = dst.append(
-            src.span(key.data.xmp_property.property_path));
+        *success = copy_span(key.data.xmp_property.schema_ns, src, dst,
+                             &out.data.xmp_property.schema_ns)
+                   && copy_span(key.data.xmp_property.property_path, src,
+                                dst, &out.data.xmp_property.property_path);
         return out;
     case MetaKeyKind::IccHeaderField:
     case MetaKeyKind::IccTag:
     case MetaKeyKind::PhotoshopIrb:
     case MetaKeyKind::GeotiffKey: return out;
     case MetaKeyKind::PhotoshopIrbField:
-        out.data.photoshop_irb_field.field = dst.append(
-            src.span(key.data.photoshop_irb_field.field));
+        *success = copy_span(key.data.photoshop_irb_field.field, src, dst,
+                             &out.data.photoshop_irb_field.field);
         return out;
     case MetaKeyKind::PrintImField:
-        out.data.printim_field.field = dst.append(
-            src.span(key.data.printim_field.field));
+        *success = copy_span(key.data.printim_field.field, src, dst,
+                             &out.data.printim_field.field);
         return out;
     case MetaKeyKind::BmffField:
-        out.data.bmff_field.field = dst.append(
-            src.span(key.data.bmff_field.field));
+        *success = copy_span(key.data.bmff_field.field, src, dst,
+                             &out.data.bmff_field.field);
         return out;
     case MetaKeyKind::JumbfField:
-        out.data.jumbf_field.field = dst.append(
-            src.span(key.data.jumbf_field.field));
+        *success = copy_span(key.data.jumbf_field.field, src, dst,
+                             &out.data.jumbf_field.field);
         return out;
     case MetaKeyKind::JumbfCborKey:
-        out.data.jumbf_cbor_key.key = dst.append(
-            src.span(key.data.jumbf_cbor_key.key));
+        *success = copy_span(key.data.jumbf_cbor_key.key, src, dst,
+                             &out.data.jumbf_cbor_key.key);
         return out;
     case MetaKeyKind::PngText:
-        out.data.png_text.keyword = dst.append(
-            src.span(key.data.png_text.keyword));
-        out.data.png_text.field = dst.append(src.span(key.data.png_text.field));
+        *success = copy_span(key.data.png_text.keyword, src, dst,
+                             &out.data.png_text.keyword)
+                   && copy_span(key.data.png_text.field, src, dst,
+                                &out.data.png_text.field);
         return out;
     }
     return out;
@@ -135,23 +160,30 @@ copy_key(const MetaKey& key, const ByteArena& src, ByteArena& dst)
 
 
 static MetaValue
-copy_value(const MetaValue& value, const ByteArena& src, ByteArena& dst)
+copy_value(const MetaValue& value, const ByteArena& src, ByteArena& dst,
+           bool* success)
 {
     MetaValue out = value;
+    *success = true;
     if (value.kind == MetaValueKind::Bytes || value.kind == MetaValueKind::Text
         || value.kind == MetaValueKind::Array) {
-        out.data.span = dst.append(src.span(value.data.span));
+        *success = copy_span(value.data.span, src, dst, &out.data.span);
     }
     return out;
 }
 
 static Origin
-copy_origin(const Origin& origin, const ByteArena& src, ByteArena& dst)
+copy_origin(const Origin& origin, const ByteArena& src, ByteArena& dst,
+            bool* success)
 {
     Origin out = origin;
-    if (origin.wire_type_name.size > 0U) {
-        out.wire_type_name = dst.append(src.span(origin.wire_type_name));
+    if (origin.wire_type_name.size == 0U) {
+        out.wire_type_name = {};
+        *success           = true;
+        return out;
     }
+    *success = copy_span(origin.wire_type_name, src, dst,
+                         &out.wire_type_name);
     return out;
 }
 
@@ -159,9 +191,23 @@ copy_origin(const Origin& origin, const ByteArena& src, ByteArena& dst)
 MetaStore
 commit(const MetaStore& base, std::span<const MetaEdit> edits)
 {
+    if (base.resource_limit_exceeded()) {
+        MetaStore unchanged = base;
+        unchanged.entry_limit_exceeded_ = true;
+        return unchanged;
+    }
+    for (size_t e = 0; e < edits.size(); ++e) {
+        if (edits[e].arena().limit_exceeded()) {
+            MetaStore unchanged = base;
+            unchanged.entry_limit_exceeded_ = true;
+            return unchanged;
+        }
+    }
+
     MetaStore out  = base;
     out.finalized_ = false;
     out.clear_indices();
+    bool failed    = false;
 
     for (size_t e = 0; e < edits.size(); ++e) {
         const MetaEdit& edit              = edits[e];
@@ -171,12 +217,32 @@ commit(const MetaStore& base, std::span<const MetaEdit> edits)
             const EditOp& op = ops[i];
             switch (op.kind) {
             case EditOpKind::AddEntry: {
+                if (out.entries_.size() >= out.max_entries_
+                    || out.entries_.size()
+                           >= static_cast<size_t>(kInvalidEntryId)) {
+                    failed = true;
+                    break;
+                }
                 Entry entry  = op.entry;
-                entry.key    = copy_key(entry.key, edit.arena(), out.arena());
-                entry.value  = copy_value(entry.value, edit.arena(),
-                                          out.arena());
+                bool copy_succeeded = false;
+                entry.key = copy_key(entry.key, edit.arena(), out.arena(),
+                                     &copy_succeeded);
+                if (!copy_succeeded) {
+                    failed = true;
+                    break;
+                }
+                entry.value = copy_value(entry.value, edit.arena(),
+                                         out.arena(), &copy_succeeded);
+                if (!copy_succeeded) {
+                    failed = true;
+                    break;
+                }
                 entry.origin = copy_origin(entry.origin, edit.arena(),
-                                           out.arena());
+                                           out.arena(), &copy_succeeded);
+                if (!copy_succeeded) {
+                    failed = true;
+                    break;
+                }
                 out.entries_.push_back(entry);
                 break;
             }
@@ -186,7 +252,15 @@ commit(const MetaStore& base, std::span<const MetaEdit> edits)
                     break;
                 }
                 Entry& updated = out.entries_[op.target];
-                updated.value = copy_value(op.value, edit.arena(), out.arena());
+                bool copy_succeeded = false;
+                const MetaValue value
+                    = copy_value(op.value, edit.arena(), out.arena(),
+                                 &copy_succeeded);
+                if (!copy_succeeded) {
+                    failed = true;
+                    break;
+                }
+                updated.value = value;
                 updated.flags |= EntryFlags::Dirty;
                 if (op.kind == EditOpKind::SetValueWithWire) {
                     updated.flags = static_cast<EntryFlags>(
@@ -207,7 +281,19 @@ commit(const MetaStore& base, std::span<const MetaEdit> edits)
                 break;
             }
             }
+            if (failed) {
+                break;
+            }
         }
+        if (failed) {
+            break;
+        }
+    }
+
+    if (failed || out.resource_limit_exceeded()) {
+        MetaStore unchanged = base;
+        unchanged.entry_limit_exceeded_ = true;
+        return unchanged;
     }
 
     out.finalize();
@@ -218,8 +304,17 @@ commit(const MetaStore& base, std::span<const MetaEdit> edits)
 MetaStore
 compact(const MetaStore& base)
 {
-    MetaStore out;
-    out.blocks_ = base.blocks_;
+    if (base.resource_limit_exceeded()) {
+        MetaStore unchanged = base;
+        unchanged.entry_limit_exceeded_ = true;
+        return unchanged;
+    }
+
+    MetaStore out = base;
+    out.entries_.clear();
+    out.arena_.clear();
+    out.clear_indices();
+    out.finalized_ = false;
 
     const std::span<const Entry> entries = base.entries();
     for (EntryId id = 0; id < entries.size(); ++id) {
@@ -228,10 +323,35 @@ compact(const MetaStore& base)
             continue;
         }
         Entry copied  = entry;
-        copied.key    = copy_key(entry.key, base.arena(), out.arena());
-        copied.value  = copy_value(entry.value, base.arena(), out.arena());
-        copied.origin = copy_origin(entry.origin, base.arena(), out.arena());
+        bool copy_succeeded = false;
+        copied.key = copy_key(entry.key, base.arena(), out.arena(),
+                              &copy_succeeded);
+        if (!copy_succeeded) {
+            MetaStore unchanged = base;
+            unchanged.entry_limit_exceeded_ = true;
+            return unchanged;
+        }
+        copied.value = copy_value(entry.value, base.arena(), out.arena(),
+                                  &copy_succeeded);
+        if (!copy_succeeded) {
+            MetaStore unchanged = base;
+            unchanged.entry_limit_exceeded_ = true;
+            return unchanged;
+        }
+        copied.origin = copy_origin(entry.origin, base.arena(), out.arena(),
+                                    &copy_succeeded);
+        if (!copy_succeeded) {
+            MetaStore unchanged = base;
+            unchanged.entry_limit_exceeded_ = true;
+            return unchanged;
+        }
         out.entries_.push_back(copied);
+    }
+
+    if (out.resource_limit_exceeded()) {
+        MetaStore unchanged = base;
+        unchanged.entry_limit_exceeded_ = true;
+        return unchanged;
     }
 
     out.finalize();

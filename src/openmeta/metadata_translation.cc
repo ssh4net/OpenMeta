@@ -1655,7 +1655,13 @@ namespace {
             result.status = MetadataTechnicalTranslationStatus::InternalError;
             return result;
         }
-        *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
+        MetaStore candidate = commit(source, std::span<const MetaEdit>(&edit, 1U));
+        if (candidate.resource_limit_exceeded()) {
+            MetadataTechnicalTranslationResult failure;
+            failure.status = MetadataTechnicalTranslationStatus::InternalError;
+            return failure;
+        }
+        *out_store = std::move(candidate);
         return result;
     }
 
@@ -1790,7 +1796,7 @@ translate_xmp_creation_dates(const MetaStore& source,
     }
 
     MetaStore staged = commit(source, std::span<const MetaEdit>(&edit, 1U));
-    if (staged.arena().limit_exceeded()) {
+    if (staged.resource_limit_exceeded()) {
         result.status = MetadataDateTranslationStatus::InternalError;
         clear_committed_date_mutations(result);
         return result;

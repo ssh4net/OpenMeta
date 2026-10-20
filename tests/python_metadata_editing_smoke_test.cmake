@@ -1722,6 +1722,32 @@ with tempfile.TemporaryDirectory() as temporary:
     assert all(after[tag] == value for tag, value in before.items() if tag not in (1, 2))
     assert original.entry_count == gps_source_count
 
+assert openmeta.metadata_editing_status_name(
+    openmeta.MetadataEditingStatus.ResourceLimitExceeded) == 'resource_limit_exceeded'
+with tempfile.TemporaryDirectory() as directory:
+    path = Path(directory) / 'limited.tiff'
+    path.write_bytes(b'II' + struct.pack('<HIH', 42, 8, 1)
+                     + struct.pack('<HHII', 0x0112, 3, 1, 1) + bytes(4))
+    policy = openmeta.ResourcePolicy()
+    limits = policy.exif_limits
+    limits.max_total_entries = 1
+    policy.exif_limits = limits
+    limited = openmeta.read(str(path), policy=policy)
+    assert limited.entry_count == 1
+    assert limited.edit_metadata([]).entry_count == 1
+    before = limited.dump_xmp_portable()[0]
+    operation = openmeta.metadata_edit_add(
+        openmeta.metadata_creation_text(K.Title, 'must fail'))
+    try:
+        limited.edit_metadata([operation])
+    except ValueError as exc:
+        assert 'resource_limit_exceeded' in str(exc)
+    else:
+        raise AssertionError('logical edit ignored inherited entry limit')
+    assert limited.entry_count == 1 and limited.dump_xmp_portable()[0] == before
+    control = openmeta.read(str(path)).edit_metadata([operation])
+    assert control.entry_count == 2
+
 print('openmeta metadata editing smoke ok')
 ")
 

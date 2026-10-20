@@ -94,6 +94,7 @@ enum class MetadataEditingStatus : uint8_t {
     AmbiguousTarget,
     EntryLimitExceeded,
     InternalError,
+    ResourceLimitExceeded,
 };
 
 struct MetadataEditingResult final {

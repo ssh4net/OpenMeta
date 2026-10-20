@@ -74,6 +74,10 @@ MappedFile::open(const char* path, uint64_t max_file_bytes) noexcept
     if (h == INVALID_HANDLE_VALUE) {
         return MappedFileStatus::OpenFailed;
     }
+    if (::GetFileType(h) != FILE_TYPE_DISK) {
+        ::CloseHandle(h);
+        return MappedFileStatus::OpenFailed;
+    }
 
     LARGE_INTEGER sz;
     if (!::GetFileSizeEx(h, &sz) || sz.QuadPart < 0) {
@@ -117,7 +121,7 @@ MappedFile::open(const char* path, uint64_t max_file_bytes) noexcept
     size_        = size_u64;
     return MappedFileStatus::Ok;
 #else
-    const int fd = ::open(path, O_RDONLY);
+    const int fd = ::open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
         return MappedFileStatus::OpenFailed;
     }
@@ -126,6 +130,10 @@ MappedFile::open(const char* path, uint64_t max_file_bytes) noexcept
     if (::fstat(fd, &st) != 0) {
         ::close(fd);
         return MappedFileStatus::StatFailed;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        ::close(fd);
+        return MappedFileStatus::OpenFailed;
     }
     if (st.st_size < 0) {
         ::close(fd);

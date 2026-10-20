@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <span>
 
 namespace openmeta {
@@ -154,6 +155,13 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
 
     store.finalize();
 
+    if (size >= 3U && (bytes[0] & 0x80U) != 0U) {
+        const uint32_t entries = static_cast<uint32_t>(store.entries().size());
+        const uint32_t entry_limit = entries + (bytes[1] & 3U);
+        store.constrain_resources(entry_limit == 0U ? 1U : entry_limit,
+                                   store.arena().bytes().size() + (bytes[2] & 31U));
+    }
+
     MetaEdit edit;
     const ByteSpan ifd_edit = edit.arena().append_string("ifd0Id");
     edit.reserve_ops(32);
@@ -196,6 +204,18 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     const std::span<const uint16_t> sample_tags(sample_tags_buf, sample_count);
 
     MetaStore updated = commit(store, std::span<const MetaEdit>(&edit, 1));
+    if (updated.resource_limit_exceeded()) {
+        if (updated.entries().size() != store.entries().size()
+            || updated.arena().bytes().size() != store.arena().bytes().size()) {
+            fuzz_trap();
+        }
+        if (!store.arena().bytes().empty()
+            && std::memcmp(updated.arena().bytes().data(),
+                           store.arena().bytes().data(),
+                           store.arena().bytes().size()) != 0) {
+            fuzz_trap();
+        }
+    }
     verify_block_order(updated, block);
     verify_lookup(updated, sample_tags);
 

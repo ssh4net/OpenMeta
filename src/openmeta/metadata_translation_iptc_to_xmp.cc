@@ -1096,9 +1096,10 @@ translate_iptc_to_xmp(const MetaStore& source,
     }
 
     MetaStore built = commit(source, std::span<const MetaEdit>(&edit, 1U));
-    if (built.arena().limit_exceeded()) {
-        result.status = Status::InternalError;
-        return result;
+    if (built.resource_limit_exceeded()) {
+        MetadataIptcToXmpResult failure;
+        failure.status = Status::InternalError;
+        return failure;
     }
     uint32_t groups_translated = 0U;
     uint32_t groups_preserved  = 0U;

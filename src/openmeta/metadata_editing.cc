@@ -341,6 +341,11 @@ edit_metadata(const MetaStore& base, const MetadataEditingRequest& request,
                              operation_count,
                              kInvalidMetadataEditingOperationIndex);
     }
+    if (base.resource_limit_exceeded()) {
+        return editing_error(MetadataEditingStatus::ResourceLimitExceeded,
+                             operation_count,
+                             kInvalidMetadataEditingOperationIndex);
+    }
     if (!limits_are_valid(request.limits)) {
         return editing_error(MetadataEditingStatus::InvalidLimits,
                              operation_count,
@@ -504,6 +509,11 @@ edit_metadata(const MetaStore& base, const MetadataEditingRequest& request,
     }
 
     MetaStore edited = commit(base, std::span<const MetaEdit>(&edit, 1U));
+    if (edited.resource_limit_exceeded()) {
+        return editing_error(MetadataEditingStatus::ResourceLimitExceeded,
+                             operation_count,
+                             kInvalidMetadataEditingOperationIndex);
+    }
     *out_store       = std::move(edited);
 
     MetadataEditingResult result;
@@ -553,6 +563,8 @@ metadata_editing_status_name(MetadataEditingStatus status) noexcept
     case MetadataEditingStatus::EntryLimitExceeded:
         return "entry_limit_exceeded";
     case MetadataEditingStatus::InternalError: return "internal_error";
+    case MetadataEditingStatus::ResourceLimitExceeded:
+        return "resource_limit_exceeded";
     }
     return "unknown";
 }

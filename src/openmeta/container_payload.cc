@@ -494,6 +494,10 @@ namespace {
                 res.status = PayloadStatus::Malformed;
                 return res;
             }
+            if (b.data_size > UINT64_MAX - needed) {
+                res.status = PayloadStatus::Malformed;
+                return res;
+            }
             needed += b.data_size;
             const uint64_t max_out = options.limits.max_output_bytes;
             if (max_out != 0U && needed > max_out) {
@@ -678,6 +682,10 @@ extract_payload(std::span<const std::byte> file_bytes,
             uint64_t max_end = 0;
             for (uint32_t i = 0; i < static_cast<uint32_t>(count); ++i) {
                 const ContainerBlockRef& b = blocks[parts[i]];
+                if (b.logical_offset > UINT64_MAX - b.data_size) {
+                    res.status = PayloadStatus::Malformed;
+                    return res;
+                }
                 const uint64_t end         = b.logical_offset + b.data_size;
                 max_end                    = (end > max_end) ? end : max_end;
             }
@@ -705,6 +713,10 @@ extract_payload(std::span<const std::byte> file_bytes,
                 const ContainerBlockRef& b = blocks[parts[i]];
                 if (b.logical_size != 0U) {
                     logical_size = b.logical_size;
+                }
+                if (b.logical_offset > UINT64_MAX - b.data_size) {
+                    res.status = PayloadStatus::Malformed;
+                    return res;
                 }
                 const uint64_t end = b.logical_offset + b.data_size;
                 max_end            = (end > max_end) ? end : max_end;

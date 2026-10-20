@@ -9630,7 +9630,8 @@ NB_MODULE(_openmeta, m)
         .value("TargetNotFound", MetadataEditingStatus::TargetNotFound)
         .value("AmbiguousTarget", MetadataEditingStatus::AmbiguousTarget)
         .value("EntryLimitExceeded", MetadataEditingStatus::EntryLimitExceeded)
-        .value("InternalError", MetadataEditingStatus::InternalError);
+        .value("InternalError", MetadataEditingStatus::InternalError)
+        .value("ResourceLimitExceeded", MetadataEditingStatus::ResourceLimitExceeded);
 
     nb::class_<PyMetadataEditingOperation>(m, "MetadataEditingOperation")
         .def_ro("kind", &PyMetadataEditingOperation::kind)

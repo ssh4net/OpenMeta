@@ -6,6 +6,17 @@
 
 namespace openmeta {
 
+static MetaStore
+make_finalized_empty_store(uint32_t max_entries, uint64_t max_arena_bytes)
+{
+    MetaStore store;
+    store.constrain_resources(max_entries, max_arena_bytes);
+    store.add_block(BlockInfo {});
+    store.finalize();
+    return store;
+}
+
+
 TEST(MetaStoreTest, CumulativeResourceConstraintsCannotBeWidened)
 {
     MetaStore store;
@@ -177,6 +188,282 @@ TEST(MetaStoreTest, CommitAppendsNewEntry)
     ASSERT_EQ(ids.size(), 2U);
     EXPECT_EQ(ids[0], 1U);
     EXPECT_EQ(ids[1], 0U);
+}
+
+
+TEST(MetaStoreTest, CommitRollsBackSequentialEditsAtInheritedEntryLimit)
+{
+    MetaStore store;
+    store.constrain_resources(1U, 1024U);
+    const BlockId block = store.add_block(BlockInfo {});
+    ASSERT_NE(block, kInvalidBlockId);
+
+    Entry original;
+    original.key   = make_exif_tag_key(store.arena(), "ifd0Id", 0x010fU);
+    original.value = make_text(store.arena(), "base", TextEncoding::Ascii);
+    ASSERT_NE(store.add_entry(original), kInvalidEntryId);
+    store.finalize();
+
+    MetaEdit set_edit;
+    const MetaValue replacement
+        = make_text(set_edit.arena(), "changed", TextEncoding::Ascii);
+    set_edit.set_value(0U, replacement);
+
+    MetaEdit add_edit;
+    Entry added;
+    added.key = make_exif_tag_key(add_edit.arena(), "ifd0Id", 0x0110U);
+    added.value = make_text(add_edit.arena(), "new", TextEncoding::Ascii);
+    add_edit.add_entry(added);
+
+    const MetaEdit edits[] = { set_edit, add_edit };
+    const MetaStore updated
+        = commit(store, std::span<const MetaEdit>(edits, 2U));
+
+    ASSERT_EQ(updated.entries().size(), 1U);
+    EXPECT_TRUE(updated.is_finalized());
+    EXPECT_TRUE(updated.resource_limit_exceeded());
+    EXPECT_FALSE(store.resource_limit_exceeded());
+    EXPECT_EQ(updated.entry(0U).value.data.span.offset,
+              store.entry(0U).value.data.span.offset);
+    EXPECT_EQ(updated.entry(0U).value.data.span.size,
+              store.entry(0U).value.data.span.size);
+
+    MetaKeyView key;
+    key.kind              = MetaKeyKind::ExifTag;
+    key.data.exif_tag.ifd = "ifd0Id";
+    key.data.exif_tag.tag = 0x010fU;
+    EXPECT_EQ(updated.find_all(key).size(), 1U);
+}
+
+
+TEST(MetaStoreTest, CommitAllowsAddAtInheritedEntryLimit)
+{
+    const MetaStore base = make_finalized_empty_store(1U, 1U);
+    MetaEdit edit;
+
+    Entry added;
+    added.key.kind = MetaKeyKind::Comment;
+    added.value   = make_u32(7U);
+    edit.add_entry(added);
+
+    const MetaStore updated = commit(base, std::span<const MetaEdit>(&edit, 1U));
+    ASSERT_EQ(updated.entries().size(), 1U);
+    EXPECT_FALSE(updated.resource_limit_exceeded());
+    EXPECT_TRUE(updated.is_finalized());
+}
+
+
+TEST(MetaStoreTest, CommitRollsBackAddKeyValueAndOriginCopyExhaustion)
+{
+    {
+        const MetaStore base = make_finalized_empty_store(2U, 1U);
+        MetaEdit edit;
+        Entry added;
+        added.key   = make_exif_tag_key(edit.arena(), "ab", 1U);
+        added.value = make_u32(1U);
+        edit.add_entry(added);
+
+        const MetaStore updated
+            = commit(base, std::span<const MetaEdit>(&edit, 1U));
+        EXPECT_TRUE(updated.resource_limit_exceeded());
+        EXPECT_TRUE(updated.entries().empty());
+        EXPECT_FALSE(base.resource_limit_exceeded());
+    }
+    {
+        const MetaStore base = make_finalized_empty_store(2U, 1U);
+        MetaEdit edit;
+        Entry added;
+        added.key   = MetaKey {};
+        added.value = make_text(edit.arena(), "ab", TextEncoding::Utf8);
+        edit.add_entry(added);
+
+        const MetaStore updated
+            = commit(base, std::span<const MetaEdit>(&edit, 1U));
+        EXPECT_TRUE(updated.resource_limit_exceeded());
+        EXPECT_TRUE(updated.entries().empty());
+        EXPECT_FALSE(base.resource_limit_exceeded());
+    }
+    {
+        const MetaStore base = make_finalized_empty_store(2U, 1U);
+        MetaEdit edit;
+        Entry added;
+        added.key.kind           = MetaKeyKind::Comment;
+        added.value              = make_u32(1U);
+        added.origin.wire_type_name = edit.arena().append_string("ab");
+        edit.add_entry(added);
+
+        const MetaStore updated
+            = commit(base, std::span<const MetaEdit>(&edit, 1U));
+        EXPECT_TRUE(updated.resource_limit_exceeded());
+        EXPECT_TRUE(updated.entries().empty());
+        EXPECT_FALSE(base.resource_limit_exceeded());
+    }
+}
+
+
+TEST(MetaStoreTest, CommitAcceptsValidEmptyValueSpans)
+{
+    const MetaStore base = make_finalized_empty_store(1U, 1U);
+    MetaEdit edit;
+
+    Entry added;
+    added.key.kind = MetaKeyKind::Comment;
+    added.value   = make_text(edit.arena(), "", TextEncoding::Utf8);
+    edit.add_entry(added);
+
+    const MetaStore updated = commit(base, std::span<const MetaEdit>(&edit, 1U));
+    ASSERT_EQ(updated.entries().size(), 1U);
+    EXPECT_EQ(updated.entry(0U).value.kind, MetaValueKind::Text);
+    EXPECT_EQ(updated.entry(0U).value.data.span.size, 0U);
+    EXPECT_FALSE(updated.resource_limit_exceeded());
+}
+
+
+TEST(MetaStoreTest, CommitCanonicalizesEmptyOriginNamesAcrossEdits)
+{
+    MetaStore base;
+    base.finalize();
+
+    MetaEdit first_edit;
+    Entry first;
+    first.key   = make_exif_tag_key(first_edit.arena(), "ifd0", 1U);
+    first.value = make_text(first_edit.arena(), "value", TextEncoding::Utf8);
+    first_edit.add_entry(first);
+
+    const MetaStore first_result
+        = commit(base, std::span<const MetaEdit>(&first_edit, 1U));
+    ASSERT_EQ(first_result.entries().size(), 1U);
+    EXPECT_EQ(first_result.entry(0U).origin.wire_type_name.offset, 0U);
+    EXPECT_EQ(first_result.entry(0U).origin.wire_type_name.size, 0U);
+
+    MetaEdit second_edit;
+    Entry second;
+    second.key.kind              = MetaKeyKind::Comment;
+    second.value                 = make_u32(2U);
+    second.origin                = first_result.entry(0U).origin;
+    second_edit.add_entry(second);
+    ASSERT_TRUE(second_edit.arena().bytes().empty());
+
+    const MetaStore second_result
+        = commit(first_result, std::span<const MetaEdit>(&second_edit, 1U));
+    ASSERT_EQ(second_result.entries().size(), 2U);
+    EXPECT_FALSE(second_result.resource_limit_exceeded());
+    EXPECT_EQ(second_result.entry(0U).origin.wire_type_name.offset, 0U);
+    EXPECT_EQ(second_result.entry(0U).origin.wire_type_name.size, 0U);
+    EXPECT_EQ(second_result.entry(1U).origin.wire_type_name.offset, 0U);
+    EXPECT_EQ(second_result.entry(1U).origin.wire_type_name.size, 0U);
+}
+
+
+TEST(MetaStoreTest, CommitRollsBackSetCopyFailureAndRejectsMalformedSpans)
+{
+    {
+        MetaStore base;
+        base.constrain_resources(1U, 2U);
+        base.add_block(BlockInfo {});
+        Entry original;
+        original.key.kind = MetaKeyKind::Comment;
+        original.value   = make_text(base.arena(), "a", TextEncoding::Utf8);
+        ASSERT_NE(base.add_entry(original), kInvalidEntryId);
+        base.finalize();
+
+        MetaEdit edit;
+        const MetaValue replacement
+            = make_text(edit.arena(), "bc", TextEncoding::Utf8);
+        edit.set_value(0U, replacement);
+
+        const MetaStore updated
+            = commit(base, std::span<const MetaEdit>(&edit, 1U));
+        ASSERT_EQ(updated.entries().size(), 1U);
+        EXPECT_TRUE(updated.resource_limit_exceeded());
+        EXPECT_FALSE(base.resource_limit_exceeded());
+        EXPECT_EQ(updated.entry(0U).value.data.span.offset,
+                  base.entry(0U).value.data.span.offset);
+        EXPECT_EQ(updated.entry(0U).value.data.span.size,
+                  base.entry(0U).value.data.span.size);
+    }
+    {
+        const MetaStore base = make_finalized_empty_store(2U, 8U);
+        MetaEdit edit;
+        Entry malformed;
+        malformed.key.kind         = MetaKeyKind::Comment;
+        malformed.value.kind       = MetaValueKind::Text;
+        malformed.value.data.span  = ByteSpan { UINT32_MAX, 1U };
+        edit.add_entry(malformed);
+
+        const MetaStore updated
+            = commit(base, std::span<const MetaEdit>(&edit, 1U));
+        EXPECT_TRUE(updated.resource_limit_exceeded());
+        EXPECT_TRUE(updated.entries().empty());
+    }
+}
+
+
+TEST(MetaStoreTest, CommitRejectsFailedBaseAndEditArenas)
+{
+    const MetaStore healthy_base = make_finalized_empty_store(1U, 4U);
+    MetaEdit failed_edit;
+    failed_edit.arena().constrain_max_size(1U);
+    failed_edit.arena().append_string("ab");
+    failed_edit.tombstone(kInvalidEntryId);
+
+    const MetaStore failed_edit_result
+        = commit(healthy_base, std::span<const MetaEdit>(&failed_edit, 1U));
+    EXPECT_TRUE(failed_edit_result.resource_limit_exceeded());
+    EXPECT_TRUE(failed_edit_result.entries().empty());
+
+    MetaStore failed_base = make_finalized_empty_store(1U, 1U);
+    failed_base.arena().append_string("ab");
+    ASSERT_TRUE(failed_base.resource_limit_exceeded());
+    const MetaStore failed_base_result
+        = commit(failed_base, std::span<const MetaEdit>());
+    EXPECT_TRUE(failed_base_result.resource_limit_exceeded());
+    EXPECT_TRUE(failed_base_result.entries().empty());
+    EXPECT_TRUE(failed_base_result.is_finalized());
+}
+
+
+TEST(MetaStoreTest, CompactPreservesBudgetsAndRollsBackFailedCopies)
+{
+    const MetaStore empty_base = make_finalized_empty_store(1U, 1U);
+    const MetaStore compacted_empty = compact(empty_base);
+    EXPECT_TRUE(compacted_empty.entries().empty());
+    EXPECT_TRUE(compacted_empty.is_finalized());
+    EXPECT_FALSE(compacted_empty.resource_limit_exceeded());
+
+    MetaStore shared_span_base;
+    shared_span_base.constrain_resources(2U, 1U);
+    shared_span_base.add_block(BlockInfo {});
+    Entry first;
+    first.key.kind = MetaKeyKind::Comment;
+    first.value   = make_text(shared_span_base.arena(), "x", TextEncoding::Utf8);
+    ASSERT_NE(shared_span_base.add_entry(first), kInvalidEntryId);
+    Entry second = first;
+    ASSERT_NE(shared_span_base.add_entry(second), kInvalidEntryId);
+    shared_span_base.finalize();
+
+    const MetaStore failed_compaction = compact(shared_span_base);
+    ASSERT_EQ(failed_compaction.entries().size(), 2U);
+    EXPECT_TRUE(failed_compaction.resource_limit_exceeded());
+    EXPECT_FALSE(shared_span_base.resource_limit_exceeded());
+    EXPECT_EQ(failed_compaction.entry(0U).value.data.span.offset,
+              shared_span_base.entry(0U).value.data.span.offset);
+
+    MetaStore deleted_base;
+    deleted_base.constrain_resources(1U, 1U);
+    deleted_base.add_block(BlockInfo {});
+    Entry deleted;
+    deleted.key.kind = MetaKeyKind::Comment;
+    deleted.value   = make_text(deleted_base.arena(), "x", TextEncoding::Utf8);
+    deleted.flags   = EntryFlags::Deleted | EntryFlags::Dirty;
+    ASSERT_NE(deleted_base.add_entry(deleted), kInvalidEntryId);
+    deleted_base.finalize();
+
+    const MetaStore compacted = compact(deleted_base);
+    EXPECT_TRUE(compacted.entries().empty());
+    EXPECT_EQ(compacted.block_count(), 1U);
+    EXPECT_TRUE(compacted.is_finalized());
+    EXPECT_FALSE(compacted.resource_limit_exceeded());
 }
 
 

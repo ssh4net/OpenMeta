@@ -343,6 +343,8 @@ measure_scan_gif_random_access(const RandomAccessSourceRange& gif,
                                const RandomAccessReadLimits& read_limits
                                = RandomAccessReadLimits {}) noexcept;
 /// Scans a TIFF/DNG byte stream; the whole file is exposed as an EXIF/TIFF-IFD block.
+/// Tracks at most 256 distinct IFD offsets and 256 pending offsets. Exhaustion
+/// returns Malformed; cycles through recorded offsets are skipped.
 ScanResult
 scan_tiff(std::span<const std::byte> bytes,
           std::span<ContainerBlockRef> out) noexcept;

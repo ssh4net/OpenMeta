@@ -69,9 +69,13 @@ private:
 };
 
 /// Applies \p edits to \p base and returns a new \ref MetaStore snapshot.
+/// Inherited resource ceilings remain in force. On a resource or span-copy
+/// failure, returns the unchanged base with resource_limit_exceeded() set.
+/// Check that flag before publishing the returned snapshot.
 MetaStore
 commit(const MetaStore& base, std::span<const MetaEdit> edits);
 /// Compacts a store by removing tombstones and rewriting indices.
+/// Retains inherited ceilings and uses the same rollback/failure contract.
 MetaStore
 compact(const MetaStore& base);
 

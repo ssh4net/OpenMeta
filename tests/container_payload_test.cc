@@ -437,6 +437,44 @@ namespace {
     }
 
 
+    TEST(ContainerPayload, RejectsWrappedMultipartEndsBeforeWriting)
+    {
+        const std::array<std::byte, 2> input { std::byte { 'a' },
+                                              std::byte { 'b' } };
+        for (const BlockChunking chunking : {
+                 BlockChunking::None, BlockChunking::JpegXmpExtendedGuidOffset }) {
+            std::array<ContainerBlockRef, 2> blocks;
+            for (uint32_t i = 0U; i < blocks.size(); ++i) {
+                blocks[i].kind = ContainerBlockKind::Xmp;
+                blocks[i].chunking = chunking;
+                blocks[i].part_index = i;
+                blocks[i].part_count = 2U;
+                blocks[i].data_offset = i;
+                blocks[i].data_size = 1U;
+            }
+            blocks[1].logical_offset = UINT64_MAX;
+            std::array<std::byte, 4> out;
+            out.fill(std::byte { 0x5a });
+            std::array<uint32_t, 2> indices;
+            PayloadOptions options;
+            const PayloadResult result = extract_payload(input, blocks, 0U,
+                                                           out, indices, options);
+            EXPECT_EQ(result.status, PayloadStatus::Malformed);
+            EXPECT_EQ(result.written, 0U);
+            for (const std::byte b : out)
+                EXPECT_EQ(b, std::byte { 0x5a });
+
+            blocks[1].logical_offset = 1U;
+            const PayloadResult valid = extract_payload(input, blocks, 0U,
+                                                          out, indices, options);
+            ASSERT_EQ(valid.status, PayloadStatus::Ok);
+            EXPECT_EQ(valid.written, 2U);
+            EXPECT_EQ(out[0], input[0]);
+            EXPECT_EQ(out[1], input[1]);
+            EXPECT_EQ(out[2], std::byte { 0x5a });
+        }
+    }
+
     TEST(ContainerPayload, JpegXmpExtendedGuidOffset)
     {
         std::vector<std::byte> jpeg;

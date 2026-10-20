@@ -23,10 +23,11 @@ checked_add_size(size_t a, size_t b, size_t* out) noexcept
 static bool
 align_up_size(size_t value, uint32_t alignment, size_t* out) noexcept
 {
-    if (!out) {
+    if (!out || alignment == 0U
+        || (alignment & (alignment - 1U)) != 0U) {
         return false;
     }
-    if (alignment <= 1U) {
+    if (alignment == 1U) {
         *out = value;
         return true;
     }
@@ -179,8 +180,7 @@ ByteArena::span(ByteSpan view) const noexcept
     if (view.offset > all.size()) {
         return std::span<const std::byte>();
     }
-    const size_t end = static_cast<size_t>(view.offset) + view.size;
-    if (end > all.size()) {
+    if (static_cast<size_t>(view.size) > all.size() - view.offset) {
         return std::span<const std::byte>();
     }
     return all.subspan(view.offset, view.size);
@@ -194,8 +194,7 @@ ByteArena::span_mut(ByteSpan view) noexcept
     if (view.offset > all.size()) {
         return std::span<std::byte>();
     }
-    const size_t end = static_cast<size_t>(view.offset) + view.size;
-    if (end > all.size()) {
+    if (static_cast<size_t>(view.size) > all.size() - view.offset) {
         return std::span<std::byte>();
     }
     return all.subspan(view.offset, view.size);

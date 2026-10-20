@@ -2011,3 +2011,22 @@ is inferred, and complete-file profile validation remains outside these APIs.
 Existing JP2 and boxed JPH rewrite tests cover carrier replacement and
 codestream/unknown-box preservation; OIIO/iRAW consumer acceptance remains
 pending. See [the translation contract](translation.md#exif-31-learningoptoutin-data-0512).
+
+## Metadata resource and traversal safety (0.8.21)
+
+The TIFF container scanner tracks up to 256 distinct and 256 pending IFD offsets.
+Tracking exhaustion is `Malformed`, including on measurement and nested RAF
+paths. Previously supported 65-IFD acyclic chains remain within this ceiling.
+
+Low-level `commit` enforces inherited entry and arena ceilings. Failed batches
+return the original snapshot with `resource_limit_exceeded()` set; inspect that
+flag before using the result. Logical editing reports `ResourceLimitExceeded`
+without publishing failed output. Translation transactions also reject failed
+commit candidates. Successful empty edits and normal metadata operations retain
+their behavior. ABI 4 and existing public object layouts remain unchanged.
+
+Arena spans use overflow-safe bounds checks, and allocation requires nonzero
+power-of-two alignment. Multipart payload size calculations reject overflow.
+File mapping accepts regular files, follows regular-file symlinks and rejects
+special files; POSIX FIFO inputs cannot block before descriptor validation.
+Hosts still authorize paths and synchronize mutations of shared objects.

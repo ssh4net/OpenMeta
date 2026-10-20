@@ -1,11 +1,51 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "openmeta/resource_policy.h"
+#include "openmeta/byte_arena.h"
 
 #include <gtest/gtest.h>
+#include <array>
 
 namespace openmeta {
 namespace {
+
+    TEST(ByteArenaSecurity, RejectsWrappedAndOutOfRangeSpans)
+    {
+        ByteArena arena;
+        ASSERT_EQ(arena.allocate(16U, 1U).size, 16U);
+        const std::array invalid = {
+            ByteSpan { 8U, UINT32_MAX - 7U }, ByteSpan { 1U, UINT32_MAX },
+            ByteSpan { UINT32_MAX, 2U }, ByteSpan { 17U, 0U },
+            ByteSpan { 16U, 1U }, ByteSpan { 8U, 9U },
+        };
+        for (const ByteSpan view : invalid) {
+            EXPECT_TRUE(arena.span(view).empty());
+            EXPECT_TRUE(arena.span_mut(view).empty());
+        }
+        EXPECT_EQ(arena.span(ByteSpan { 8U, 8U }).size(), 8U);
+        EXPECT_EQ(arena.span_mut(ByteSpan { 0U, 16U }).size(), 16U);
+        EXPECT_TRUE(arena.span(ByteSpan { 16U, 0U }).empty());
+        EXPECT_FALSE(arena.limit_exceeded());
+    }
+
+    TEST(ByteArenaSecurity, RejectsInvalidAlignmentWithoutMutation)
+    {
+        for (const uint32_t alignment : { 0U, 3U, 6U, UINT32_MAX }) {
+            ByteArena arena;
+            ASSERT_EQ(arena.append_string("abc").size, 3U);
+            EXPECT_EQ(arena.allocate(4U, alignment).size, 0U);
+            EXPECT_TRUE(arena.limit_exceeded());
+            ASSERT_EQ(arena.bytes().size(), 3U);
+            EXPECT_EQ(arena.bytes()[2], std::byte { 'c' });
+        }
+        ByteArena arena;
+        ASSERT_EQ(arena.append_string("abc").size, 3U);
+        const ByteSpan aligned = arena.allocate(4U, 8U);
+        EXPECT_EQ(aligned.offset, 8U);
+        EXPECT_EQ(aligned.size, 4U);
+        EXPECT_EQ(arena.bytes().size(), 12U);
+        EXPECT_FALSE(arena.limit_exceeded());
+    }
 
     TEST(ResourcePolicy, RecommendedPolicyHasBoundedTraversalDefaults)
     {

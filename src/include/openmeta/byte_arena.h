@@ -54,8 +54,9 @@ public:
     /// Appends the raw bytes of \p text (no terminator) and returns a span.
     /// Returns an empty span if the payload would exceed \ref ByteSpan limits.
     ByteSpan append_string(std::string_view text);
-    /// Allocates \p size_bytes with \p alignment and returns the written span.
-    /// Returns an empty span if the allocation cannot be represented.
+    /// Allocates \p size_bytes with a nonzero power-of-two \p alignment.
+    /// Returns an empty span and sets limit_exceeded() for invalid alignment
+    /// or if the allocation cannot be represented or exceeds the ceiling.
     ByteSpan allocate(uint32_t size_bytes, uint32_t alignment);
 
     /// Returns a view of the full buffer.

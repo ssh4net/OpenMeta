@@ -35,6 +35,10 @@ Recommended limits by block family:
 - EXIF/TIFF + MakerNotes (IFD pointer graph): keep
   `exif_limits.max_ifds <= 128`, `max_entries_per_ifd <= 4096`, and
   `max_total_entries <= 200000`; keep visited-offset loop checks enabled.
+  The contiguous TIFF container scanner separately tracks at most 256 distinct
+  IFD offsets and 256 pending offsets. Tracking exhaustion returns `Malformed`;
+  cycles through recorded offsets are skipped. This scanner budget also applies
+  before EXIF decoding and on measurement paths.
 - XMP RDF/XML (element nesting): keep `xmp_limits.max_depth <= 128` and
   `xmp_limits.max_properties <= 200000`.
 - JUMBF/C2PA (nested BMFF + CBOR): keep `jumbf_limits.max_box_depth <= 32`,
@@ -52,6 +56,24 @@ For JUMBF preflight checks, use `estimate_jumbf_structure(...)` before full
 decode when you need to enforce stricter deployment-specific depth policy.
 For cross-decoder policy setup, start from `recommended_resource_policy()` and
 override only what your application needs.
+
+## Store Edits and File Inputs
+
+`commit` retains inherited store ceilings. A failed entry insertion or arena
+copy rolls back the whole edit batch and returns the original snapshot with
+`resource_limit_exceeded()` set. Callers must check that flag before publishing
+the result. Logical editing and translation transactions reject failed commit
+candidates before assigning output. Healthy empty edits retain their no-op
+behavior. A failed edit arena cannot be used as a source for a successful commit.
+
+`ByteArena` rejects out-of-range spans with subtraction-based bounds checks on
+both 32-bit and 64-bit targets. Allocation alignment must be a nonzero power of
+two; invalid alignment returns an empty span and sets the arena failure flag.
+
+`MappedFile` accepts regular files, including symlinks to regular files. It
+checks the opened descriptor/handle type. POSIX opens are nonblocking so a FIFO
+cannot block before type validation. Type checks do not sandbox filesystem paths;
+hosts remain responsible for path authorization and directory trust.
 
 ## Output & Export Safety Requirements
 

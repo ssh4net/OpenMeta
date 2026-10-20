@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "openmeta/validate.h"
+#include "openmeta/mapped_file.h"
 
 #include <gtest/gtest.h>
 
@@ -15,8 +16,10 @@
 
 #if defined(_WIN32)
 #    include <io.h>
-#elif defined(_POSIX_VERSION)
+#else
+#    include <sys/stat.h>
 #    include <sys/types.h>
+#    include <unistd.h>
 #endif
 
 namespace openmeta {
@@ -238,6 +241,57 @@ namespace {
     }
 
 }  // namespace
+
+TEST(MappedFileSecurity, RegularEmptyAndSymlinkFilesKeepTheirBehavior)
+{
+    const ScopedFile input(make_temp_path(".regular"));
+    const std::vector<std::byte> bytes { std::byte { 'a' }, std::byte { 'b' } };
+    ASSERT_TRUE(write_bytes_file(input.path(), bytes));
+    MappedFile file;
+    ASSERT_EQ(file.open(input.path().c_str()), MappedFileStatus::Ok);
+    ASSERT_EQ(file.bytes().size(), 2U);
+    EXPECT_EQ(file.bytes()[1], std::byte { 'b' });
+    file.close();
+    EXPECT_EQ(file.open(input.path().c_str(), 1U), MappedFileStatus::TooLarge);
+    EXPECT_FALSE(file.is_open());
+#if !defined(_WIN32)
+    const ScopedFile link(make_temp_path(".link"));
+    ASSERT_EQ(::symlink(input.path().c_str(), link.path().c_str()), 0);
+    ASSERT_EQ(file.open(link.path().c_str()), MappedFileStatus::Ok);
+    EXPECT_EQ(file.bytes().size(), 2U);
+    file.close();
+#endif
+    ASSERT_TRUE(write_bytes_file(input.path(), {}));
+    ASSERT_EQ(file.open(input.path().c_str()), MappedFileStatus::Ok);
+    EXPECT_TRUE(file.is_open());
+    EXPECT_EQ(file.size(), 0U);
+    EXPECT_TRUE(file.bytes().empty());
+}
+
+TEST(MappedFileSecurity, RejectsNonRegularFilesWithoutBlocking)
+{
+    MappedFile file;
+    EXPECT_EQ(file.open(temp_root().c_str()), MappedFileStatus::OpenFailed);
+    EXPECT_FALSE(file.is_open());
+#if defined(_WIN32)
+    EXPECT_EQ(file.open("NUL"), MappedFileStatus::OpenFailed);
+    EXPECT_FALSE(file.is_open());
+#else
+    EXPECT_EQ(file.open("/dev/null"), MappedFileStatus::OpenFailed);
+    const ScopedFile fifo(make_temp_path(".fifo"));
+    ASSERT_EQ(::mkfifo(fifo.path().c_str(), 0600), 0);
+    // A regression must kill only the child, not hang the complete test suite.
+    EXPECT_EXIT({
+        ::alarm(3U);
+        MappedFile child_file;
+        const MappedFileStatus status = child_file.open(fifo.path().c_str());
+        ::_exit(status == MappedFileStatus::OpenFailed ? 0 : 1);
+    }, ::testing::ExitedWithCode(0), "");
+    const ValidateResult result = validate_file(fifo.path().c_str(),
+                                               ValidateOptions {});
+    EXPECT_TRUE(has_issue(result, "file", "open_failed"));
+#endif
+}
 
 TEST(ValidateFile, ReturnsOpenFailedForMissingPath)
 {

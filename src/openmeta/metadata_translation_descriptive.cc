@@ -866,7 +866,11 @@ translate_iptc_text_mappings(
         return result;
     }
 
-    *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    MetaStore candidate = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    if (candidate.resource_limit_exceeded()) {
+        return translation_error(MetadataDescriptiveTranslationStatus::InternalError);
+    }
+    *out_store = std::move(candidate);
     return result;
 }
 
@@ -1249,7 +1253,11 @@ translate_xmp_structured_location_metadata(
         || edit.arena().limit_exceeded()) {
         return translation_error(Status::InternalError);
     }
-    *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    MetaStore candidate = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    if (candidate.resource_limit_exceeded()) {
+        return translation_error(Status::InternalError);
+    }
+    *out_store = std::move(candidate);
     return result;
 }
 
@@ -1501,7 +1509,11 @@ translate_xmp_location_to_structured_metadata(
     if (edit.ops().size() != operations || result.entries_added != added
         || edit.arena().limit_exceeded())
         return translation_error(Status::InternalError);
-    *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    MetaStore candidate = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    if (candidate.resource_limit_exceeded()) {
+        return translation_error(Status::InternalError);
+    }
+    *out_store = std::move(candidate);
     return result;
 }
 

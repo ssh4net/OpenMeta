@@ -290,6 +290,72 @@ namespace {
         EXPECT_EQ(copy.entries().size(), base.entries().size());
     }
 
+    TEST(MetadataEditing, PropagatesResourceFailuresWithoutPublishing)
+    {
+        const std::array original_field = {
+            make_metadata_creation_text(MetadataCreationFieldKind::Title,
+                                        "Original"),
+        };
+        const std::array sentinel_field = {
+            make_metadata_creation_text(MetadataCreationFieldKind::Title,
+                                        "Sentinel"),
+        };
+
+        MetaStore failed_base = create_base(original_field);
+        const size_t failed_base_arena_size
+            = failed_base.arena().bytes().size();
+        failed_base.arena().constrain_max_size(failed_base_arena_size);
+        failed_base.arena().append_string("x");
+        ASSERT_TRUE(failed_base.resource_limit_exceeded());
+
+        MetaStore output = create_base(sentinel_field);
+        MetadataEditingRequest empty_request;
+        const MetadataEditingResult failed_base_result
+            = edit_metadata(failed_base, empty_request, &output);
+        EXPECT_EQ(failed_base_result.status,
+                  MetadataEditingStatus::ResourceLimitExceeded);
+        ASSERT_EQ(output.entries().size(), 1U);
+        EXPECT_EQ(arena_string(output.arena(), output.entry(0U).value.data.span),
+                  "Sentinel");
+
+        MetaStore bounded_base = create_base(original_field);
+        const uint64_t base_arena_size = bounded_base.arena().bytes().size();
+        bounded_base.constrain_resources(0U, base_arena_size);
+        ASSERT_FALSE(bounded_base.resource_limit_exceeded());
+
+        const std::array operations = {
+            make_metadata_edit_set(
+                make_metadata_creation_text(MetadataCreationFieldKind::Title,
+                                            "Changed")),
+        };
+        MetadataEditingRequest request;
+        request.operations = operations;
+        const MetadataEditingResult separate_result
+            = edit_metadata(bounded_base, request, &output);
+        EXPECT_EQ(separate_result.status,
+                  MetadataEditingStatus::ResourceLimitExceeded);
+        EXPECT_EQ(arena_string(output.arena(), output.entry(0U).value.data.span),
+                  "Sentinel");
+        EXPECT_EQ(arena_string(bounded_base.arena(),
+                               bounded_base.entry(0U).value.data.span),
+                  "Original");
+        EXPECT_FALSE(bounded_base.resource_limit_exceeded());
+
+        MetaStore aliased_base = create_base(original_field);
+        aliased_base.constrain_resources(
+            0U, aliased_base.arena().bytes().size());
+        const EntryFlags original_flags = aliased_base.entry(0U).flags;
+        const MetadataEditingResult aliased_result
+            = edit_metadata(aliased_base, request, &aliased_base);
+        EXPECT_EQ(aliased_result.status,
+                  MetadataEditingStatus::ResourceLimitExceeded);
+        EXPECT_EQ(arena_string(aliased_base.arena(),
+                               aliased_base.entry(0U).value.data.span),
+                  "Original");
+        EXPECT_EQ(aliased_base.entry(0U).flags, original_flags);
+        EXPECT_FALSE(aliased_base.resource_limit_exceeded());
+    }
+
     TEST(MetadataEditing, EnforcesLimitsAndExposesStableNames)
     {
         const std::array fields = {
@@ -335,6 +401,9 @@ namespace {
         EXPECT_STREQ(metadata_editing_status_name(
                          MetadataEditingStatus::SingletonAlreadyExists),
                      "singleton_already_exists");
+        EXPECT_STREQ(metadata_editing_status_name(
+                         MetadataEditingStatus::ResourceLimitExceeded),
+                     "resource_limit_exceeded");
     }
 
     TEST(MetadataEditing, EditedValuesReachPreparedTransfer)

@@ -670,3 +670,22 @@ Structured XMP transactions in 0.8.14
 Bounded whole-record, array-item and language-alternative operations use canonical
 portable-XMP paths and one transactional typed edit. ABI4 and existing layouts
 remain unchanged. See :doc:`structured_xmp_editing` for scopes and limits.
+
+Metadata resource and traversal safety in 0.8.21
+-------------------------------------------------------
+
+The TIFF scanner tracks at most 256 distinct and 256 pending IFD offsets.
+Exhaustion returns ``Malformed``, including through measurement and nested RAF
+paths. Acyclic 65-IFD chains remain supported by the scanner.
+
+Low-level ``commit`` retains inherited entry and arena ceilings. Failed batches
+return the original snapshot with ``resource_limit_exceeded()`` set. Callers
+must inspect this flag. Logical editing returns ``ResourceLimitExceeded`` and
+translation transactions reject failed candidates before publishing output.
+Healthy empty edits retain their behavior. ABI 4 and public layouts are retained.
+
+Arena spans use overflow-safe bounds checks, alignment must be a nonzero power
+of two, and multipart size calculations reject overflow. Mapping accepts regular
+files and symlinks to regular files, rejects special files, and cannot block on
+a POSIX FIFO before descriptor validation. Hosts authorize filesystem paths and
+synchronize shared mutation.

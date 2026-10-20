@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "openmeta/container_scan.h"
+#include "openmeta/simple_meta.h"
 
 #include <gtest/gtest.h>
 
@@ -4415,6 +4416,126 @@ namespace {
         EXPECT_EQ(auto_res.written, 1U);
     }
 
+
+    static void append_tiff_word(std::vector<std::byte>* out, uint64_t value,
+                                  uint32_t width, bool little_endian)
+    {
+        for (uint32_t i = 0U; i < width; ++i) {
+            const uint32_t shift = 8U * (little_endian ? i : width - 1U - i);
+            out->push_back(std::byte { static_cast<uint8_t>(value >> shift) });
+        }
+    }
+
+    static std::vector<std::byte> make_tiff_ifd_chain(uint32_t count,
+                                                     bool bigtiff, bool le,
+                                                     bool cycle, uint16_t tag)
+    {
+        std::vector<std::byte> out;
+        append_bytes(&out, le ? "II" : "MM");
+        append_tiff_word(&out, bigtiff ? 43U : 42U, 2U, le);
+        if (bigtiff) {
+            append_tiff_word(&out, 8U, 2U, le);
+            append_tiff_word(&out, 0U, 2U, le);
+        }
+        const uint32_t header = bigtiff ? 16U : 8U;
+        const uint32_t width = bigtiff ? 8U : 4U;
+        const uint32_t node_size = (bigtiff ? 16U : 6U)
+                                   + (tag == 0U ? 0U : bigtiff ? 20U : 12U);
+        append_tiff_word(&out, header, width, le);
+        for (uint32_t i = 0U; i < count; ++i) {
+            const uint64_t next = i + 1U < count
+                                      ? header + node_size * (i + 1U)
+                                      : cycle ? header + node_size * i : 0U;
+            append_tiff_word(&out, tag == 0U ? 0U : 1U,
+                             bigtiff ? 8U : 2U, le);
+            if (tag != 0U) {
+                append_tiff_word(&out, tag, 2U, le);
+                append_tiff_word(&out, bigtiff ? 18U : 4U, 2U, le);
+                append_tiff_word(&out, 1U, width, le);
+                append_tiff_word(&out, next, width, le);
+            }
+            append_tiff_word(&out, tag == 0U ? next : 0U, width, le);
+        }
+        return out;
+    }
+
+    TEST(ContainerScan, TiffTraversalCyclesAndCapacityAreBounded)
+    {
+        for (const bool bigtiff : { false, true }) {
+            for (const bool le : { false, true }) {
+                for (const uint16_t tag : { 0U, 0x014aU, 0x8769U, 0x8825U,
+                                            0xa005U }) {
+                    for (const uint32_t count : { 1U, 64U, 65U, 256U, 257U }) {
+                        for (const bool cycle : { false, true }) {
+                            SCOPED_TRACE(::testing::Message() << bigtiff << le
+                                         << tag << '/' << count << '/' << cycle);
+                            const std::vector<std::byte> tiff
+                                = make_tiff_ifd_chain(count, bigtiff, le, cycle,
+                                                      tag);
+                            std::array<ContainerBlockRef, 2> blocks;
+                            const ScanStatus status = count > 256U
+                                                          ? ScanStatus::Malformed
+                                                          : ScanStatus::Ok;
+                            EXPECT_EQ(scan_tiff(tiff, blocks).status, status);
+                            EXPECT_EQ(scan_auto(tiff, blocks).status, status);
+                            EXPECT_EQ(measure_scan_tiff(tiff).status, status);
+                            EXPECT_EQ(measure_scan_auto(tiff).status, status);
+                            EXPECT_EQ(scan_tiff(tiff, {}).status,
+                                      count > 256U ? ScanStatus::Malformed
+                                                   : ScanStatus::Ok);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    TEST(ContainerScan, TiffPendingOffsetExhaustionIsExplicit)
+    {
+        for (const uint32_t count : { 7U, 10U }) {
+            std::vector<std::byte> tiff;
+            append_bytes(&tiff, "II");
+            append_tiff_word(&tiff, 42U, 2U, true);
+            append_tiff_word(&tiff, 8U, 4U, true);
+            for (uint32_t i = 0U; i < count; ++i) {
+                const uint32_t offset = 8U + i * 146U;
+                append_tiff_word(&tiff, 1U, 2U, true);
+                append_tiff_word(&tiff, 0x014aU, 2U, true);
+                append_tiff_word(&tiff, 4U, 2U, true);
+                append_tiff_word(&tiff, 32U, 4U, true);
+                append_tiff_word(&tiff, offset + 18U, 4U, true);
+                append_tiff_word(&tiff, 0U, 4U, true);
+                for (uint32_t j = 0U; j < 32U; ++j)
+                    append_tiff_word(&tiff, i + 1U < count ? offset + 146U : 0U,
+                                     4U, true);
+            }
+            std::array<ContainerBlockRef, 2> blocks;
+            const ScanStatus expected = count == 7U ? ScanStatus::Ok
+                                                    : ScanStatus::Malformed;
+            EXPECT_EQ(scan_tiff(tiff, blocks).status, expected);
+            EXPECT_EQ(measure_scan_auto(tiff).status, expected);
+        }
+    }
+
+    TEST(ContainerScan, TiffTraversalFailureSurvivesRafAndAggregateReads)
+    {
+        const std::vector<std::byte> tiff = make_tiff_ifd_chain(257U, false,
+                                                               true, true, 0U);
+        std::vector<std::byte> raf(160U);
+        std::memcpy(raf.data(), "FUJIFILMCCD-RAW ", 16U);
+        raf.insert(raf.end(), tiff.begin(), tiff.end());
+        std::array<ContainerBlockRef, 4> blocks;
+        EXPECT_EQ(scan_auto(raf, blocks).status, ScanStatus::Malformed);
+        EXPECT_EQ(measure_scan_auto(raf).status, ScanStatus::Malformed);
+        std::array<ExifIfdRef, 256> ifds;
+        std::array<std::byte, 256> payload;
+        std::array<uint32_t, 4> parts;
+        MetaStore store;
+        const SimpleMetaResult read = simple_meta_read(tiff, store, blocks,
+                                                        ifds, payload, parts,
+                                                        SimpleMetaDecodeOptions {});
+        EXPECT_EQ(read.scan.status, ScanStatus::Malformed);
+    }
 
     TEST(ContainerScan, TiffTagValues)
     {

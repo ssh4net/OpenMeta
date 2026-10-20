@@ -797,7 +797,13 @@ translate_xmp_image_geometry(const MetaStore& source,
         result.status = MetadataGeometryTranslationStatus::InternalError;
         return result;
     }
-    *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    MetaStore candidate = commit(source, std::span<const MetaEdit>(&edit, 1U));
+    if (candidate.resource_limit_exceeded()) {
+        MetadataGeometryTranslationResult failure;
+        failure.status = MetadataGeometryTranslationStatus::InternalError;
+        return failure;
+    }
+    *out_store = std::move(candidate);
     return result;
 }
 

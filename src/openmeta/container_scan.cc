@@ -6047,8 +6047,8 @@ scan_tiff(std::span<const std::byte> bytes,
         }
     }
 
-    std::array<uint64_t, 64> stack_buf {};
-    std::array<uint64_t, 64> visited_buf {};
+    std::array<uint64_t, 256> stack_buf {};
+    std::array<uint64_t, 256> visited_buf {};
     uint32_t stack_size    = 0;
     uint32_t visited_count = 0;
     (void)push_offset(first_ifd, std::span<uint64_t>(stack_buf), &stack_size);
@@ -6063,10 +6063,12 @@ scan_tiff(std::span<const std::byte> bytes,
                             visited_count)) {
             continue;
         }
-        if (visited_count < visited_buf.size()) {
-            visited_buf[visited_count] = ifd_off;
-            visited_count += 1;
+        if (visited_count >= visited_buf.size()) {
+            sink.result.status = ScanStatus::Malformed;
+            return sink.result;
         }
+        visited_buf[visited_count] = ifd_off;
+        visited_count += 1;
 
         uint64_t entry_count      = 0;
         uint64_t entries_off      = 0;
@@ -6087,8 +6089,11 @@ scan_tiff(std::span<const std::byte> bytes,
             }
             uint32_t next32 = 0;
             if (read_tiff_u32(cfg, bytes, next_ifd_off_pos, &next32)) {
-                (void)push_offset(next32, std::span<uint64_t>(stack_buf),
-                                  &stack_size);
+                if (!push_offset(next32, std::span<uint64_t>(stack_buf),
+                                 &stack_size)) {
+                    sink.result.status = ScanStatus::Malformed;
+                    return sink.result;
+                }
             }
         } else {
             uint64_t n64 = 0;
@@ -6107,8 +6112,11 @@ scan_tiff(std::span<const std::byte> bytes,
             }
             uint64_t next64 = 0;
             if (read_tiff_u64(cfg, bytes, next_ifd_off_pos, &next64)) {
-                (void)push_offset(next64, std::span<uint64_t>(stack_buf),
-                                  &stack_size);
+                if (!push_offset(next64, std::span<uint64_t>(stack_buf),
+                                 &stack_size)) {
+                    sink.result.status = ScanStatus::Malformed;
+                    return sink.result;
+                }
             }
         }
 
@@ -6207,9 +6215,12 @@ scan_tiff(std::span<const std::byte> bytes,
                                                     &sub_off);
                             }
                         }
-                        (void)push_offset(sub_off,
-                                          std::span<uint64_t>(stack_buf),
-                                          &stack_size);
+                        if (!push_offset(sub_off,
+                                         std::span<uint64_t>(stack_buf),
+                                         &stack_size)) {
+                            sink.result.status = ScanStatus::Malformed;
+                            return sink.result;
+                        }
                     }
                 } else {
                     uint64_t ptr = value_or_off;
@@ -6226,8 +6237,11 @@ scan_tiff(std::span<const std::byte> bytes,
                             }
                         }
                     }
-                    (void)push_offset(ptr, std::span<uint64_t>(stack_buf),
-                                      &stack_size);
+                    if (!push_offset(ptr, std::span<uint64_t>(stack_buf),
+                                     &stack_size)) {
+                        sink.result.status = ScanStatus::Malformed;
+                        return sink.result;
+                    }
                 }
             }
 
@@ -6550,7 +6564,7 @@ scan_auto(std::span<const std::byte> bytes,
             if (tiff_res.status == ScanStatus::OutputTruncated
                 && sink.result.status == ScanStatus::Ok) {
                 sink.result.status = ScanStatus::OutputTruncated;
-            } else if (tiff_res.status == ScanStatus::Malformed && !any) {
+            } else if (tiff_res.status == ScanStatus::Malformed) {
                 sink.result.status = ScanStatus::Malformed;
             }
         }

@@ -1004,7 +1004,11 @@ namespace {
             || edit.arena().limit_exceeded()) {
             return error(Status::InternalError);
         }
-        *out_store = commit(source, std::span<const MetaEdit>(&edit, 1U));
+        MetaStore candidate = commit(source, std::span<const MetaEdit>(&edit, 1U));
+        if (candidate.resource_limit_exceeded()) {
+            return error(Status::InternalError);
+        }
+        *out_store = std::move(candidate);
         return result;
     }
 

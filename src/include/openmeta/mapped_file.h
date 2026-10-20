@@ -43,7 +43,9 @@ public:
     MappedFile(MappedFile&& other) noexcept;
     MappedFile& operator=(MappedFile&& other) noexcept;
 
-    /// Opens and maps \p path (read-only). \p max_file_bytes is a hard cap (0 = unlimited).
+    /// Opens and maps a regular file at \p path (read-only), following symlinks.
+    /// Non-regular inputs return OpenFailed. \p max_file_bytes is a hard cap
+    /// (0 = unlimited). Type checks apply to the opened descriptor/handle.
     MappedFileStatus open(const char* path,
                           uint64_t max_file_bytes = 0) noexcept;
 

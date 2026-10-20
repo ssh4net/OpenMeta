@@ -875,7 +875,7 @@ translate_iptc_dates_to_xmp(const MetaStore& source,
     }
 
     MetaStore built = commit(source, std::span<const MetaEdit>(&edit, 1U));
-    if (built.arena().limit_exceeded()) {
+    if (built.resource_limit_exceeded()) {
         return failure(Status::InternalError);
     }
 

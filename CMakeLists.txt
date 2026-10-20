@@ -1068,6 +1068,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/mrw_decode_test.cc
     tests/flir_fff_decode_test.cc
     tests/meta_store_test.cc
+    tests/metadata_commit_limits_test.cc
     tests/mpf_decode_test.cc
     tests/ocio_adapter_test.cc
     tests/orientation_test.cc
