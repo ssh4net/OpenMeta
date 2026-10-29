@@ -19,6 +19,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     MetaStore store;
 
     ExifDecodeOptions options;
+    options.decode_makernote           = true;
     options.include_pointer_tags       = true;
     options.limits.max_ifds            = 64;
     options.limits.max_entries_per_ifd = 512;

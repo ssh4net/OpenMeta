@@ -2,6 +2,8 @@
 
 #include "capture_sync_fixture.h"
 
+#include "../src/openmeta/icc_profile_layout_internal.h"
+
 #include "openmeta/compatibility_dump.h"
 #include "openmeta/container_scan.h"
 #include "openmeta/dng_sdk_adapter.h"
@@ -36816,6 +36818,153 @@ TEST(MetadataTransferApi, ApplyTimePatchesViewUpdatesPreparedPayload)
     EXPECT_EQ(bundle.blocks[0].payload, patched);
 }
 
+static openmeta::PreparedTransferBundle
+make_time_patch_bounds_test_bundle(uint32_t byte_offset)
+{
+    openmeta::PreparedTransferBundle bundle;
+    openmeta::PreparedTransferBlock exif;
+    exif.route   = "jpeg:app1-exif";
+    exif.payload = { std::byte { 0x10 }, std::byte { 0x20 }, std::byte { 0x30 },
+                     std::byte { 0x40 }, std::byte { 0x50 }, std::byte { 0x60 },
+                     std::byte { 0x70 }, std::byte { 0x80 } };
+    bundle.blocks.push_back(std::move(exif));
+
+    openmeta::TimePatchSlot slot;
+    slot.field       = openmeta::TimePatchField::DateTime;
+    slot.block_index = 0U;
+    slot.byte_offset = byte_offset;
+    slot.width       = 4U;
+    bundle.time_patch_map.push_back(slot);
+    return bundle;
+}
+
+TEST(MetadataTransferApi, ApplyTimePatchesRejectsOverflowingAndOutOfBoundsSlots)
+{
+    const std::array<uint32_t, 2> bad_offsets
+        = { std::numeric_limits<uint32_t>::max() - 1U, 6U };
+    const std::array<std::byte, 4> replacement
+        = { std::byte { 0xA1 }, std::byte { 0xA2 }, std::byte { 0xA3 },
+            std::byte { 0xA4 } };
+    openmeta::TimePatchUpdate update;
+    update.field = openmeta::TimePatchField::DateTime;
+    update.value.assign(replacement.begin(), replacement.end());
+    const std::array<openmeta::TimePatchUpdate, 1> updates = { update };
+
+    for (uint32_t offset : bad_offsets) {
+        openmeta::PreparedTransferBundle bundle
+            = make_time_patch_bounds_test_bundle(offset);
+        const std::vector<std::byte> original = bundle.blocks[0].payload;
+        const openmeta::ApplyTimePatchResult result
+            = openmeta::apply_time_patches(&bundle, updates);
+        EXPECT_EQ(result.status, openmeta::TransferStatus::InvalidArgument);
+        EXPECT_GT(result.errors, 0U);
+        EXPECT_EQ(result.patched_slots, 0U);
+        EXPECT_EQ(bundle.blocks[0].payload, original);
+    }
+
+    openmeta::PreparedTransferBundle valid_bundle
+        = make_time_patch_bounds_test_bundle(4U);
+    const openmeta::ApplyTimePatchResult valid_result
+        = openmeta::apply_time_patches(&valid_bundle, updates);
+    EXPECT_EQ(valid_result.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(valid_result.patched_slots, 1U);
+    EXPECT_TRUE(std::equal(replacement.begin(), replacement.end(),
+                           valid_bundle.blocks[0].payload.begin() + 4));
+}
+
+TEST(MetadataTransferApi,
+     ApplyTimePatchesViewRejectsOverflowingAndOutOfBoundsSlots)
+{
+    const std::array<uint32_t, 2> bad_offsets
+        = { std::numeric_limits<uint32_t>::max() - 1U, 6U };
+    const std::array<std::byte, 4> replacement
+        = { std::byte { 0xB1 }, std::byte { 0xB2 }, std::byte { 0xB3 },
+            std::byte { 0xB4 } };
+    openmeta::TimePatchView update;
+    update.field = openmeta::TimePatchField::DateTime;
+    update.value = std::span<const std::byte>(replacement.data(),
+                                              replacement.size());
+    const std::array<openmeta::TimePatchView, 1> updates = { update };
+
+    for (uint32_t offset : bad_offsets) {
+        openmeta::PreparedTransferBundle bundle
+            = make_time_patch_bounds_test_bundle(offset);
+        const std::vector<std::byte> original = bundle.blocks[0].payload;
+        const openmeta::ApplyTimePatchResult result
+            = openmeta::apply_time_patches_view(&bundle, updates);
+        EXPECT_EQ(result.status, openmeta::TransferStatus::InvalidArgument);
+        EXPECT_GT(result.errors, 0U);
+        EXPECT_EQ(result.patched_slots, 0U);
+        EXPECT_EQ(bundle.blocks[0].payload, original);
+    }
+
+    openmeta::PreparedTransferBundle valid_bundle
+        = make_time_patch_bounds_test_bundle(4U);
+    const openmeta::ApplyTimePatchResult valid_result
+        = openmeta::apply_time_patches_view(&valid_bundle, updates);
+    EXPECT_EQ(valid_result.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(valid_result.patched_slots, 1U);
+    EXPECT_TRUE(std::equal(replacement.begin(), replacement.end(),
+                           valid_bundle.blocks[0].payload.begin() + 4));
+}
+
+TEST(MetadataTransferApi, IccProfileLayoutRejectsUnrepresentableSizes)
+{
+    const uint64_t max_u32 = static_cast<uint64_t>(
+        std::numeric_limits<uint32_t>::max());
+    openmeta::internal::IccProfileLayout layout;
+    EXPECT_FALSE(
+        openmeta::internal::icc_profile_layout_begin(max_u32 + 1U, &layout));
+
+    const uint64_t max_table_count = (max_u32 - 132U) / 12U;
+    EXPECT_FALSE(
+        openmeta::internal::icc_profile_layout_begin(max_table_count + 1U,
+                                                     &layout));
+
+    ASSERT_TRUE(openmeta::internal::icc_profile_layout_begin(2U, &layout));
+    EXPECT_EQ(layout.data_offset, 156U);
+    openmeta::internal::IccProfileTagLayout first_tag;
+    openmeta::internal::IccProfileTagLayout second_tag;
+    ASSERT_TRUE(openmeta::internal::icc_profile_layout_tag(layout.data_offset,
+                                                           3U, &first_tag));
+    EXPECT_EQ(first_tag.offset, 156U);
+    EXPECT_EQ(first_tag.end_offset, 159U);
+    ASSERT_TRUE(openmeta::internal::icc_profile_layout_tag(first_tag.end_offset,
+                                                           5U, &second_tag));
+    EXPECT_EQ(second_tag.offset, 160U);
+    EXPECT_EQ(second_tag.size, 5U);
+    EXPECT_EQ(second_tag.end_offset, 165U);
+    uint32_t small_profile_size = 0U;
+    ASSERT_TRUE(
+        openmeta::internal::icc_profile_layout_finish(second_tag.end_offset,
+                                                      &small_profile_size));
+    EXPECT_EQ(small_profile_size, 165U);
+
+    ASSERT_TRUE(openmeta::internal::icc_profile_layout_begin(1U, &layout));
+    EXPECT_EQ(layout.data_offset, 144U);
+
+    openmeta::internal::IccProfileTagLayout tag_layout;
+    EXPECT_FALSE(openmeta::internal::icc_profile_layout_tag(layout.data_offset,
+                                                            max_u32 + 1U,
+                                                            &tag_layout));
+    EXPECT_FALSE(openmeta::internal::icc_profile_layout_tag(max_u32 - 2U, 0U,
+                                                            &tag_layout));
+    EXPECT_FALSE(openmeta::internal::icc_profile_layout_tag(max_u32 - 3U, 4U,
+                                                            &tag_layout));
+
+    ASSERT_TRUE(openmeta::internal::icc_profile_layout_tag(max_u32 - 3U, 3U,
+                                                           &tag_layout));
+    EXPECT_EQ(tag_layout.offset, std::numeric_limits<uint32_t>::max() - 3U);
+    EXPECT_EQ(tag_layout.size, 3U);
+    uint32_t profile_size = 0U;
+    EXPECT_FALSE(openmeta::internal::icc_profile_layout_finish(max_u32 + 1U,
+                                                               &profile_size));
+    EXPECT_TRUE(
+        openmeta::internal::icc_profile_layout_finish(tag_layout.end_offset,
+                                                      &profile_size));
+    EXPECT_EQ(profile_size, std::numeric_limits<uint32_t>::max());
+}
+
 TEST(MetadataTransferApi, ApplyTimePatchesStrictWidthMismatchFails)
 {
     openmeta::MetaStore store;
@@ -50473,6 +50622,96 @@ TEST(MetadataTransferApi, PrepareBuildsJpegIccApp2Block)
     EXPECT_EQ(bundle.blocks[0].payload[13], std::byte { 0x01 });
 }
 
+TEST(MetadataTransferApi, PrepareReportsXmpTextSanitization)
+{
+    for (const bool unsafe : { false, true }) {
+        openmeta::MetaStore store;
+        const openmeta::BlockId block = store.add_block(openmeta::BlockInfo {});
+        ASSERT_NE(block, openmeta::kInvalidBlockId);
+        openmeta::Entry entry;
+        entry.key = openmeta::make_xmp_property_key(
+            store.arena(), "http://ns.adobe.com/xap/1.0/", "Label");
+        entry.value        = openmeta::make_text(store.arena(),
+                                          unsafe ? "bad\xff"
+                                                        : "valid \xc3\xa9 <&>",
+                                                 openmeta::TextEncoding::Utf8);
+        entry.origin.block = block;
+        ASSERT_NE(store.add_entry(entry), openmeta::kInvalidEntryId);
+        store.finalize();
+        openmeta::PrepareTransferRequest request;
+        request.include_exif_app1  = false;
+        request.include_iptc_app13 = false;
+        request.include_icc_app2   = false;
+        request.include_xmp_app1   = true;
+        request.xmp_portable       = true;
+        openmeta::PreparedTransferBundle bundle;
+        const auto result
+            = openmeta::prepare_metadata_for_target(store, request, &bundle);
+        ASSERT_EQ(result.status, openmeta::TransferStatus::Ok);
+        EXPECT_EQ(result.xmp_text_sanitized, unsafe);
+        EXPECT_EQ(result.warnings, unsafe ? 1U : 0U);
+        EXPECT_EQ(result.message.find("xmp/text_sanitized")
+                      != std::string::npos,
+                  unsafe);
+        ASSERT_EQ(bundle.blocks.size(), 1U);
+        EXPECT_FALSE(bundle.generated_xmp_sidecar.empty());
+    }
+}
+
+TEST(MetadataTransferApi, PrepareSkipsMalformedIccArrayCountAndKeepsValidTag)
+{
+    openmeta::MetaStore store;
+    const openmeta::BlockId block = store.add_block(openmeta::BlockInfo {});
+    ASSERT_NE(block, openmeta::kInvalidBlockId);
+
+    const std::array<uint16_t, 1> valid_values = { 0x1234U };
+    openmeta::Entry valid;
+    valid.key   = openmeta::make_icc_tag_key(0x64657363U);
+    valid.value = openmeta::make_u16_array(
+        store.arena(),
+        std::span<const uint16_t>(valid_values.data(), valid_values.size()));
+    valid.value.count           = 0U;
+    valid.origin.block          = block;
+    valid.origin.order_in_block = 0U;
+    ASSERT_NE(store.add_entry(valid), openmeta::kInvalidEntryId);
+
+    const std::array<uint16_t, 1> malformed_values = { 0x5678U };
+    openmeta::Entry malformed;
+    malformed.key   = openmeta::make_icc_tag_key(0x63707274U);
+    malformed.value = openmeta::make_u16_array(
+        store.arena(), std::span<const uint16_t>(malformed_values.data(),
+                                                 malformed_values.size()));
+    malformed.value.count           = 2U;
+    malformed.origin.block          = block;
+    malformed.origin.order_in_block = 1U;
+    ASSERT_NE(store.add_entry(malformed), openmeta::kInvalidEntryId);
+    store.finalize();
+
+    openmeta::PrepareTransferRequest request;
+    request.include_exif_app1  = false;
+    request.include_xmp_app1   = false;
+    request.include_iptc_app13 = false;
+    request.include_icc_app2   = true;
+
+    openmeta::PreparedTransferBundle bundle;
+    const openmeta::PrepareTransferResult result
+        = openmeta::prepare_metadata_for_target(store, request, &bundle);
+
+    EXPECT_EQ(result.status, openmeta::TransferStatus::Ok);
+    EXPECT_EQ(result.errors, 0U);
+    EXPECT_EQ(result.warnings, 1U);
+    EXPECT_NE(result.message.find(
+                  "icc serializer skipped 1 unsupported icc entries"),
+              std::string::npos);
+    ASSERT_EQ(bundle.blocks.size(), 1U);
+    EXPECT_EQ(bundle.blocks[0].route, "jpeg:app2-icc");
+    ASSERT_GE(bundle.blocks[0].payload.size(), 146U);
+    EXPECT_EQ(bundle.blocks[0].payload[142U], std::byte { 0x00 });
+    EXPECT_EQ(bundle.blocks[0].payload[143U], std::byte { 0x00 });
+    EXPECT_EQ(bundle.blocks[0].payload[144U], std::byte { 0x00 });
+    EXPECT_EQ(bundle.blocks[0].payload[145U], std::byte { 0x01 });
+}
+
 TEST(MetadataTransferApi, PrepareBuildsMultiChunkIccApp2Blocks)
 {
     openmeta::MetaStore store;
@@ -56844,6 +57083,43 @@ TEST(MetadataTransferApi, ExecutePreparedTransferBmffEditAppendsMetaBox)
     EXPECT_EQ(blocks[0].kind, openmeta::ContainerBlockKind::Exif);
     EXPECT_EQ(blocks[1].kind, openmeta::ContainerBlockKind::Xmp);
     EXPECT_EQ(blocks[2].kind, openmeta::ContainerBlockKind::Icc);
+}
+
+TEST(MetadataTransferApi,
+     ExecutePreparedTransferBmffEditRejectsTooManyItemsWithoutOutput)
+{
+    openmeta::PreparedTransferBundle bundle;
+    bundle.target_format = openmeta::TransferTargetFormat::Heif;
+    bundle.blocks.resize(65536U);
+    for (openmeta::PreparedTransferBlock& item : bundle.blocks) {
+        item.route = "bmff:item-exif";
+        item.payload.push_back(std::byte { 0x01 });
+    }
+
+    const std::vector<std::byte> input = make_minimal_bmff_file();
+    openmeta::ExecutePreparedTransferOptions options;
+    options.edit_requested = true;
+    options.edit_apply     = true;
+    BufferByteWriter writer;
+    writer.out                                   = { std::byte { 0xA5 } };
+    const std::vector<std::byte> original_output = writer.out;
+    options.edit_output_writer                   = &writer;
+
+    const openmeta::ExecutePreparedTransferResult result
+        = openmeta::execute_prepared_transfer(
+            &bundle, std::span<const std::byte>(input.data(), input.size()),
+            options);
+
+    EXPECT_EQ(result.edit_plan_status, openmeta::TransferStatus::LimitExceeded);
+    EXPECT_TRUE(result.edit_plan_message.find(
+                    "bmff rewrite item count exceeds 16-bit iloc item_id")
+                != std::string::npos);
+    EXPECT_EQ(result.edit_apply.status,
+              openmeta::TransferStatus::LimitExceeded);
+    EXPECT_EQ(result.edit_output_size, 0U);
+    EXPECT_TRUE(result.edited_output.empty());
+    EXPECT_EQ(writer.writes, 0U);
+    EXPECT_EQ(writer.out, original_output);
 }
 
 TEST(MetadataTransferApi,

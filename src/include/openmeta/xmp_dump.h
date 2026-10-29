@@ -206,6 +206,12 @@ struct XmpDumpResult final {
     uint64_t written     = 0;
     uint64_t needed      = 0;
     uint32_t entries     = 0;
+    /// Text or a key field required visible byte escapes (for example `\xFF`).
+    /// XML entities and valid portable UTF-8 do not set this flag. Lossless
+    /// dumps may escape non-ASCII key fields while preserving valueBase64.
+    /// Reports text visited by this dump, including measurement/truncation
+    /// passes; a limit can stop the visit before later fields are inspected.
+    bool text_sanitized = false;
 };
 
 /**

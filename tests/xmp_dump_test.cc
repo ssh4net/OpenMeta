@@ -293,6 +293,7 @@ TEST(XmpDump, SidecarRequestPortableEscapesUnsafeText)
                              out.size());
     EXPECT_NE(s.find("<xmp:Label>A\\x01&lt;&gt;&amp;&quot;&apos;</xmp:Label>"),
               std::string_view::npos);
+    EXPECT_TRUE(r.text_sanitized);
 }
 
 TEST(XmpDump, EscapesOpaqueKeysAndMalformedUtf8)
@@ -322,7 +323,10 @@ TEST(XmpDump, EscapesOpaqueKeysAndMalformedUtf8)
     XmpSidecarOptions lossless;
     lossless.format = XmpSidecarFormat::Lossless;
     std::vector<std::byte> output;
-    ASSERT_EQ(dump_xmp_sidecar(store, &output, lossless).status, XmpDumpStatus::Ok);
+    const XmpDumpResult lossless_result = dump_xmp_sidecar(store, &output,
+                                                           lossless);
+    ASSERT_EQ(lossless_result.status, XmpDumpStatus::Ok);
+    EXPECT_FALSE(lossless_result.text_sanitized);  // Value bytes are base64.
     std::string xml(reinterpret_cast<const char*>(output.data()), output.size());
     EXPECT_EQ(xml.find("</omd:key><evil"), std::string::npos);
     EXPECT_NE(xml.find("&lt;/omd:key&gt;&lt;evil a='x'&gt;&amp;"), std::string::npos);
@@ -331,11 +335,95 @@ TEST(XmpDump, EscapesOpaqueKeysAndMalformedUtf8)
     portable.format = XmpSidecarFormat::Portable;
     portable.include_exif = false;
     portable.include_existing_xmp = true;
-    ASSERT_EQ(dump_xmp_sidecar(store, &output, portable).status, XmpDumpStatus::Ok);
+    const XmpDumpResult portable_result = dump_xmp_sidecar(store, &output,
+                                                           portable);
+    ASSERT_EQ(portable_result.status, XmpDumpStatus::Ok);
+    EXPECT_TRUE(portable_result.text_sanitized);
     xml.assign(reinterpret_cast<const char*>(output.data()), output.size());
     EXPECT_NE(xml.find("valid \xc3\xa9\\xC0\\xAF\\xED\\xA0\\x80"
                        "\\xEF\\xBF\\xBE\\xF4\\x90\\x80\\x80"),
               std::string::npos);
+}
+
+TEST(XmpDump, SanitizationDiagnosticCoversTextShapesAndMeasurement)
+{
+    const std::array<std::string_view, 4> paths { "Label", "Label[1]",
+                                                  "Label[@xml:lang=x-default]",
+                                                  "Custom/Child" };
+    for (const std::string_view path : paths) {
+        for (const bool unsafe : { false, true }) {
+            MetaStore store;
+            const BlockId block = store.add_block(BlockInfo {});
+            ASSERT_NE(block, kInvalidBlockId);
+            Entry entry;
+            entry.key                   = make_xmp_property_key(store.arena(),
+                                                                "urn:test:sanitize", path);
+            const std::string_view text = unsafe ? "bad\xc0\xaf\x01"
+                                                 : "valid \xc3\xa9 <&>\r\n";
+            entry.value = make_text(store.arena(), text, TextEncoding::Utf8);
+            entry.origin.block = block;
+            ASSERT_NE(store.add_entry(entry), kInvalidEntryId);
+            store.finalize();
+            XmpPortableOptions options;
+            options.include_exif         = false;
+            options.include_iptc         = false;
+            options.include_existing_xmp = true;
+            options.existing_namespace_policy
+                = XmpExistingNamespacePolicy::PreserveCustom;
+            const XmpDumpResult measured = dump_xmp_portable(store, {},
+                                                             options);
+            EXPECT_EQ(measured.status, XmpDumpStatus::OutputTruncated);
+            EXPECT_EQ(measured.text_sanitized, unsafe);
+            std::vector<std::byte> output(static_cast<size_t>(measured.needed));
+            const XmpDumpResult emitted = dump_xmp_portable(store, output,
+                                                            options);
+            ASSERT_EQ(emitted.status, XmpDumpStatus::Ok);
+            EXPECT_EQ(emitted.entries, 1U);
+            EXPECT_EQ(emitted.text_sanitized, unsafe);
+            EXPECT_EQ(emitted.needed, measured.needed);
+        }
+    }
+}
+
+TEST(XmpDump, SanitizationDiagnosticFollowsSelectedOutputAndLosslessKeys)
+{
+    MetaStore store;
+    const BlockId block = store.add_block(BlockInfo {});
+    ASSERT_NE(block, kInvalidBlockId);
+    Entry generated;
+    generated.key          = make_exif_tag_key(store.arena(), "ifd0", 0x010fU);
+    generated.value        = make_text(store.arena(), "Clean & camera",
+                                       TextEncoding::Ascii);
+    generated.origin.block = block;
+    ASSERT_NE(store.add_entry(generated), kInvalidEntryId);
+    Entry existing;
+    existing.key   = make_xmp_property_key(store.arena(),
+                                           "http://ns.adobe.com/tiff/1.0/",
+                                           "Make");
+    existing.value = make_text(store.arena(), "bad\xff", TextEncoding::Utf8);
+    existing.origin.block = block;
+    ASSERT_NE(store.add_entry(existing), kInvalidEntryId);
+    store.finalize();
+    XmpPortableOptions options;
+    options.include_existing_xmp = true;
+    options.conflict_policy      = XmpConflictPolicy::GeneratedWins;
+    std::vector<std::byte> output(4096U);
+    EXPECT_FALSE(dump_xmp_portable(store, output, options).text_sanitized);
+    options.conflict_policy = XmpConflictPolicy::ExistingWins;
+    EXPECT_TRUE(dump_xmp_portable(store, output, options).text_sanitized);
+
+    MetaStore keys;
+    const BlockId key_block = keys.add_block(BlockInfo {});
+    ASSERT_NE(key_block, kInvalidBlockId);
+    Entry key;
+    key.key   = make_xmp_property_key(keys.arena(), "urn:test", "field\xff");
+    key.value = make_text(keys.arena(), "payload", TextEncoding::Utf8);
+    key.origin.block = key_block;
+    ASSERT_NE(keys.add_entry(key), kInvalidEntryId);
+    keys.finalize();
+    const XmpDumpResult lossless = dump_xmp_lossless(keys, output, {});
+    EXPECT_EQ(lossless.status, XmpDumpStatus::Ok);
+    EXPECT_TRUE(lossless.text_sanitized);
 }
 
 

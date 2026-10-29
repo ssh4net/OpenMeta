@@ -24,6 +24,7 @@
 #include "openmeta/xmp_dump.h"
 
 #include "crw_ciff_decode_internal.h"
+#include "icc_profile_layout_internal.h"
 #include "interop_safety_internal.h"
 #include "interop_value_format_internal.h"
 #include "metadata_logical_field_internal.h"
@@ -8220,14 +8221,31 @@ namespace {
             return false;
         }
 
-        const auto align4 = [](uint32_t v) noexcept -> uint32_t {
-            return (v + 3U) & ~3U;
-        };
+        internal::IccProfileLayout layout;
+        if (!internal::icc_profile_layout_begin(
+                static_cast<uint64_t>(tags.size()), &layout)) {
+            return false;
+        }
 
-        const uint32_t count = static_cast<uint32_t>(tags.size());
-        uint32_t table_off   = 128U;
-        uint32_t data_off    = table_off + 4U + count * 12U;
-        data_off             = align4(data_off);
+        uint64_t cursor = layout.data_offset;
+        for (const IccTagItem& t : tags) {
+            internal::IccProfileTagLayout tag_layout;
+            if (!internal::icc_profile_layout_tag(
+                    cursor, static_cast<uint64_t>(t.bytes.size()),
+                    &tag_layout)) {
+                return false;
+            }
+            cursor = tag_layout.end_offset;
+        }
+
+        uint32_t profile_size = 0U;
+        if (!internal::icc_profile_layout_finish(cursor, &profile_size)) {
+            return false;
+        }
+        const size_t output_size = static_cast<size_t>(profile_size);
+        if (output_size > out_profile->max_size()) {
+            return false;
+        }
 
         struct TagPos final {
             uint32_t signature                  = 0;
@@ -8238,19 +8256,24 @@ namespace {
 
         std::vector<TagPos> positions;
         positions.reserve(tags.size());
-        uint32_t cursor = data_off;
+        cursor = layout.data_offset;
         for (const IccTagItem& t : tags) {
-            cursor = align4(cursor);
+            internal::IccProfileTagLayout tag_layout;
+            if (!internal::icc_profile_layout_tag(
+                    cursor, static_cast<uint64_t>(t.bytes.size()),
+                    &tag_layout)) {
+                return false;
+            }
             TagPos p;
             p.signature = t.signature;
-            p.offset    = cursor;
-            p.size      = static_cast<uint32_t>(t.bytes.size());
+            p.offset    = tag_layout.offset;
+            p.size      = tag_layout.size;
             p.bytes     = &t.bytes;
             positions.push_back(p);
-            cursor += p.size;
+            cursor = tag_layout.end_offset;
         }
 
-        out_profile->assign(cursor, std::byte { 0x00 });
+        out_profile->assign(output_size, std::byte { 0x00 });
         for (const IccHeaderFieldItem& h : headers) {
             if (h.offset >= 128U || h.bytes.empty()) {
                 continue;
@@ -8265,7 +8288,7 @@ namespace {
         (*out_profile)[38] = std::byte { 's' };
         (*out_profile)[39] = std::byte { 'p' };
 
-        put_u32be(out_profile, 128U, count);
+        put_u32be(out_profile, 128U, layout.tag_count);
         uint32_t table_pos = 132U;
         for (const TagPos& p : positions) {
             put_u32be(out_profile, table_pos + 0U, p.signature);
@@ -8280,7 +8303,7 @@ namespace {
             std::memcpy(out_profile->data() + p.offset, p.bytes->data(),
                         p.bytes->size());
         }
-        put_u32be(out_profile, 0U, static_cast<uint32_t>(out_profile->size()));
+        put_u32be(out_profile, 0U, profile_size);
         return true;
     }
 
@@ -8325,7 +8348,13 @@ namespace {
                 count = static_cast<uint32_t>(bytes.size() / elem_sz);
             }
 
-            out->reserve(count * elem_sz);
+            if (static_cast<size_t>(count)
+                > bytes.size() / static_cast<size_t>(elem_sz)) {
+                return false;
+            }
+            const size_t output_size = static_cast<size_t>(count)
+                                       * static_cast<size_t>(elem_sz);
+            out->reserve(output_size);
             if (t == 3U || t == 8U) {
                 for (uint32_t i = 0; i < count; ++i) {
                     uint16_t x = 0;
@@ -14342,6 +14371,11 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         const XmpDumpResult xr = dump_xmp_sidecar(prepared_store, &xmp_packet,
                                                   xmp_req);
         if (xr.status == XmpDumpStatus::Ok && !xmp_packet.empty()) {
+            if (xr.text_sanitized) {
+                r.xmp_text_sanitized = true;
+                r.warnings += 1U;
+                append_message(&r.message, "xmp/text_sanitized");
+            }
             bundle.generated_xmp_sidecar = xmp_packet;
             PreparedTransferBlock b;
             b.kind  = TransferBlockKind::Xmp;
@@ -14728,6 +14762,11 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                 const XmpDumpResult xr = dump_xmp_sidecar(prepared_store,
                                                           &xmp_packet, xmp_req);
                 if (xr.status == XmpDumpStatus::Ok && !xmp_packet.empty()) {
+                    if (xr.text_sanitized) {
+                        r.xmp_text_sanitized = true;
+                        r.warnings += 1U;
+                        append_message(&r.message, "xmp/text_sanitized");
+                    }
                     bundle.generated_xmp_sidecar = xmp_packet;
                     PreparedTransferBlock b;
                     b.kind  = TransferBlockKind::Xmp;
@@ -25924,7 +25963,10 @@ namespace {
                                    + time_patch_field_name(slot.field));
                 continue;
             }
-            if (slot.byte_offset + width > block.payload.size()) {
+            const size_t payload_offset = static_cast<size_t>(slot.byte_offset);
+            const size_t payload_width  = static_cast<size_t>(width);
+            if (payload_offset > block.payload.size()
+                || payload_width > block.payload.size() - payload_offset) {
                 out->errors += 1U;
                 append_message(&out->message,
                                std::string(

@@ -36,6 +36,7 @@ packet, result = doc.dump_xmp_portable(
     include_existing_xmp=True,
 )
 assert result.status == openmeta.XmpDumpStatus.Ok
+assert result.text_sanitized is False
 assert b'<dc:title>' in packet
 assert b'<rdf:li>Alice</rdf:li>' in packet
 assert b'<xmp:Rating>5</xmp:Rating>' in packet

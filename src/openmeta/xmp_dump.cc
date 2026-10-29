@@ -120,6 +120,7 @@ namespace {
         uint64_t written    = 0;
         uint64_t needed     = 0;
         bool limit_hit      = false;
+        bool text_sanitized      = false;
         bool invalid_scalar_utf8 = false;
         std::span<detail::XmpScalarPatchSlot> patch_slots;
         std::span<const XmpNsDecl> patch_namespaces;
@@ -317,6 +318,7 @@ namespace {
             }
 
             // Emit a deterministic ASCII escape for anything non-printable or non-ASCII.
+            w->text_sanitized = true;
             char buf[5];
             static constexpr char hex[] = "0123456789ABCDEF";
             buf[0]                      = '\\';
@@ -369,6 +371,7 @@ namespace {
                     w->append(s.substr(i, length));
                     i += length - 1U;
                 } else {
+                    w->text_sanitized      = true;
                     w->invalid_scalar_utf8 = true;
                     char buf[5];
                     static constexpr char hex[] = "0123456789ABCDEF";
@@ -413,6 +416,7 @@ namespace {
                 continue;
             }
 
+            w->text_sanitized = true;
             char buf[5];
             static constexpr char hex[] = "0123456789ABCDEF";
             buf[0]                      = '\\';
@@ -1259,6 +1263,7 @@ dump_xmp_lossless(const MetaStore& store, std::span<std::byte> out,
     emit_xmp_packet_end(&w);
 
     r.entries = emitted;
+    r.text_sanitized = w.text_sanitized;
 
     if (w.limit_hit) {
         r.status = XmpDumpStatus::LimitExceeded;
@@ -15002,6 +15007,7 @@ dump_xmp_portable_impl(const MetaStore& store, std::span<std::byte> out,
     emit_xmp_packet_end(&w);
 
     r.entries = emitted;
+    r.text_sanitized = w.text_sanitized;
     if (w.limit_hit) {
         r.status = XmpDumpStatus::LimitExceeded;
     } else if (w.needed > static_cast<uint64_t>(out.size())) {

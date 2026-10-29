@@ -459,6 +459,22 @@ Python binding entry points:
   GE/Motorola/Nintendo/Microsoft grouped RAW/source-processing field
   summaries.
 
+Since 0.8.22, C++ ``XmpDumpResult::text_sanitized`` and Python
+``result.text_sanitized`` report visible byte escapes in generated XMP text or
+key fields. Normal XML entities and valid portable UTF-8 do not set the flag.
+Lossless dumps can escape non-ASCII keys while preserving ``valueBase64``.
+The flag covers text visited during the dump, including measurement and
+truncated output; a resource limit can stop before later fields are inspected.
+Check both ``status`` and ``text_sanitized`` before publishing portable output.
+Prepared XMP patch selection is unchanged. ABI remains 4; rebuild consumers
+with matching 0.8.22 headers and binaries.
+
+Prepared transfers retain the flag as
+``PrepareTransferResult::xmp_text_sanitized`` and issue a warning with code
+``xmp/text_sanitized``. Python transfer dictionaries expose
+``prepare_xmp_text_sanitized``. Successful sanitized generation keeps its
+successful preparation status.
+
 C++ adapter entry points:
 
 - ``visit_metadata(...)`` in ``openmeta/interop_export.h``

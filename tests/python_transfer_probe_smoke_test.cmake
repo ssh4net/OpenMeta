@@ -69,6 +69,20 @@ p_array.write_bytes(array_tiff)
 array_entry = openmeta.read(str(p_array)).find_exif('ifd0', 0x0102)[0]
 assert list(array_entry.value()) == [8, 12, 16]
 assert list(array_entry.value(max_elements=2)) == [8, 12]
+unsafe_tiff = bytearray([73, 73, 42, 0]) + (8).to_bytes(4, 'little')
+unsafe_tiff += (1).to_bytes(2, 'little')
+unsafe_tiff += (0x010f).to_bytes(2, 'little') + (2).to_bytes(2, 'little')
+unsafe_tiff += (3).to_bytes(4, 'little') + bytes([65, 1, 0, 0])
+unsafe_tiff += (0).to_bytes(4, 'little')
+p_array.write_bytes(unsafe_tiff)
+unsafe_packet, unsafe_result = openmeta.read(str(p_array)).dump_xmp_portable()
+assert unsafe_result.status == openmeta.XmpDumpStatus.Ok
+assert unsafe_result.text_sanitized is True
+assert bytes([92, 120, 48, 49]) in unsafe_packet
+unsafe_transfer = openmeta.transfer_probe(str(p_array), format=openmeta.XmpSidecarFormat.Portable)
+assert unsafe_transfer['prepare_status'] == openmeta.TransferStatus.Ok, unsafe_transfer
+assert unsafe_transfer['prepare_xmp_text_sanitized'] is True, unsafe_transfer
+assert 'xmp/text_sanitized' in unsafe_transfer['prepare_message'], unsafe_transfer
 t = bytearray()
 t += b'II*\\x00'
 t += (8).to_bytes(4, 'little')
@@ -162,6 +176,7 @@ r = openmeta.transfer_probe(
 )
 assert r['file_status'] == openmeta.TransferFileStatus.Ok, r
 assert r['prepare_status'] == openmeta.TransferStatus.Ok, r
+assert r['prepare_xmp_text_sanitized'] is False, r
 assert r['time_patch_status'] == openmeta.TransferStatus.Ok, r
 assert r['time_patch_patched_slots'] >= 1, r
 assert r['emit_status'] == openmeta.TransferStatus.Ok, r

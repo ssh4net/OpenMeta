@@ -979,6 +979,9 @@ struct PrepareTransferResult final {
     uint32_t warnings        = 0;
     uint32_t errors          = 0;
     std::string message;
+    /// Generated XMP contains visible byte escapes in text or key fields.
+    /// Also reports a warning with the issue code `xmp/text_sanitized`.
+    bool xmp_text_sanitized = false;
 };
 
 /// Result details for bundle emission.

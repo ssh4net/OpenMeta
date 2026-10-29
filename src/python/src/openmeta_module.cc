@@ -3109,6 +3109,8 @@ namespace {
         out["prepare_code_name"] = nb::str(
             prepare_transfer_code_name(prepared.prepare.code));
         out["prepare_warnings"] = nb::int_(prepared.prepare.warnings);
+        out["prepare_xmp_text_sanitized"] = nb::bool_(
+            prepared.prepare.xmp_text_sanitized);
         out["prepare_errors"]   = nb::int_(prepared.prepare.errors);
         out["prepare_message"]  = nb::str(prepared.prepare.message.c_str(),
                                           prepared.prepare.message.size());
@@ -3603,6 +3605,8 @@ namespace {
         out["prepare_code_name"] = nb::str(
             prepare_transfer_code_name(result.prepared.prepare.code));
         out["prepare_warnings"] = nb::int_(result.prepared.prepare.warnings);
+        out["prepare_xmp_text_sanitized"] = nb::bool_(
+            result.prepared.prepare.xmp_text_sanitized);
         out["prepare_errors"]   = nb::int_(result.prepared.prepare.errors);
         out["prepare_message"]
             = nb::str(result.prepared.prepare.message.c_str(),
@@ -3914,6 +3918,8 @@ namespace {
         out["prepare_code_name"] = nb::str(
             prepare_transfer_code_name(result.prepared.prepare.code));
         out["prepare_warnings"] = nb::int_(result.prepared.prepare.warnings);
+        out["prepare_xmp_text_sanitized"] = nb::bool_(
+            result.prepared.prepare.xmp_text_sanitized);
         out["prepare_errors"]   = nb::int_(result.prepared.prepare.errors);
         out["prepare_message"]
             = nb::str(result.prepared.prepare.message.c_str(),
@@ -4237,6 +4243,8 @@ namespace {
         out["prepare_code_name"] = nb::str(
             prepare_transfer_code_name(prepared.prepare.code));
         out["prepare_warnings"] = nb::int_(prepared.prepare.warnings);
+        out["prepare_xmp_text_sanitized"] = nb::bool_(
+            prepared.prepare.xmp_text_sanitized);
         out["prepare_errors"]   = nb::int_(prepared.prepare.errors);
         out["prepare_message"]  = nb::str(prepared.prepare.message.c_str(),
                                           prepared.prepare.message.size());
@@ -10940,7 +10948,8 @@ NB_MODULE(_openmeta, m)
         .def_ro("status", &XmpDumpResult::status)
         .def_ro("written", &XmpDumpResult::written)
         .def_ro("needed", &XmpDumpResult::needed)
-        .def_ro("entries", &XmpDumpResult::entries);
+        .def_ro("entries", &XmpDumpResult::entries)
+        .def_ro("text_sanitized", &XmpDumpResult::text_sanitized);
 
     nb::class_<ContainerBlockRef>(m, "BlockRef")
         .def(nb::init<>())
