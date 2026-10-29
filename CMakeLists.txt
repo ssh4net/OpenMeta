@@ -1012,6 +1012,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/jp2_rewrite_test.cc
     tests/bmff_fields_decode_test.cc
     tests/c2pa_container_test.cc
+    tests/c2pa_snapshot_context_test.cc
     tests/jumbf_decode_test.cc
     tests/libraw_adapter_test.cc
     tests/crw_ciff_decode_test.cc

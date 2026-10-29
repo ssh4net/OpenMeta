@@ -132,7 +132,8 @@ build_prepared_bundle_jxl_package_impl(std::span<const std::byte> input_jxl,
                                        const PreparedTransferBundle& bundle,
                                        const JxlRewritePolicy& policy,
                                        PreparedTransferPackagePlan* out_plan,
-                                       uint32_t* out_removed_boxes) noexcept;
+                                       uint32_t* out_removed_boxes,
+                                       bool allow_unchanged = false) noexcept;
 
 static EmitTransferResult
 build_prepared_bundle_png_package(std::span<const std::byte> input_png,
@@ -2067,10 +2068,16 @@ namespace {
     static bool build_bmff_c2pa_rewrite_chunks(
         std::span<const std::byte> input_bmff,
         const PreparedTransferBundle& bundle,
-        PreparedTransferC2paRewriteRequirements* rewrite,
-        std::string* err) noexcept
+        PreparedTransferC2paRewriteRequirements* rewrite, std::string* err,
+        TransferStatus* failure_status = nullptr) noexcept
     {
+        if (failure_status) {
+            *failure_status = TransferStatus::Ok;
+        }
         if (!rewrite) {
+            if (failure_status) {
+                *failure_status = TransferStatus::InvalidArgument;
+            }
             if (err) {
                 *err = "c2pa rewrite output is null";
             }
@@ -2084,12 +2091,18 @@ namespace {
             return true;
         }
         if (!transfer_target_is_bmff(bundle.target_format)) {
+            if (failure_status) {
+                *failure_status = TransferStatus::Unsupported;
+            }
             if (err) {
                 *err = "c2pa rewrite binding chunks currently require bmff";
             }
             return false;
         }
         if (input_bmff.empty()) {
+            if (failure_status) {
+                *failure_status = TransferStatus::Malformed;
+            }
             if (err) {
                 *err = "bmff input is empty";
             }
@@ -2108,6 +2121,9 @@ namespace {
                                                          true, &plan,
                                                          &removed_meta_boxes);
         if (plan_status.status != TransferStatus::Ok) {
+            if (failure_status) {
+                *failure_status = plan_status.status;
+            }
             if (err) {
                 *err = plan_status.message.empty()
                            ? "failed to build bmff rewrite binding chunks"
@@ -2130,6 +2146,9 @@ namespace {
             if (err) {
                 *err = "bmff rewrite binding contains unsupported package chunk";
             }
+            if (failure_status) {
+                *failure_status = TransferStatus::Unsupported;
+            }
             rewrite->content_binding_bytes = 0U;
             rewrite->content_binding_chunks.clear();
             return false;
@@ -2140,10 +2159,16 @@ namespace {
     static bool build_jxl_c2pa_rewrite_chunks(
         std::span<const std::byte> input_jxl,
         const PreparedTransferBundle& bundle,
-        PreparedTransferC2paRewriteRequirements* rewrite,
-        std::string* err) noexcept
+        PreparedTransferC2paRewriteRequirements* rewrite, std::string* err,
+        TransferStatus* failure_status = nullptr) noexcept
     {
+        if (failure_status) {
+            *failure_status = TransferStatus::Ok;
+        }
         if (!rewrite) {
+            if (failure_status) {
+                *failure_status = TransferStatus::InvalidArgument;
+            }
             if (err) {
                 *err = "c2pa rewrite output is null";
             }
@@ -2157,12 +2182,18 @@ namespace {
             return true;
         }
         if (bundle.target_format != TransferTargetFormat::Jxl) {
+            if (failure_status) {
+                *failure_status = TransferStatus::Unsupported;
+            }
             if (err) {
                 *err = "c2pa rewrite binding chunks currently require jxl";
             }
             return false;
         }
         if (input_jxl.empty()) {
+            if (failure_status) {
+                *failure_status = TransferStatus::Malformed;
+            }
             if (err) {
                 *err = "jxl input is empty";
             }
@@ -2170,21 +2201,24 @@ namespace {
         }
 
         PreparedTransferBundle binding_bundle = bundle;
-        const uint32_t removed_c2pa           = remove_prepared_jxl_c2pa_blocks(
-            &binding_bundle);
+        (void)remove_prepared_jxl_c2pa_blocks(&binding_bundle);
         JxlRewritePolicy policy = collect_jxl_rewrite_policy(binding_bundle,
                                                              false);
-        if (removed_c2pa > 0U || rewrite->existing_carrier_segments > 0U) {
-            policy.c2pa = true;
-        }
+        // A pending signed rewrite always removes source C2PA. The generic
+        // snapshot planner can report zero existing carriers even when the
+        // target stream contains a C2PA box.
+        policy.c2pa = true;
 
         PreparedTransferPackagePlan plan;
         uint32_t removed_boxes = 0U;
         const EmitTransferResult plan_status
             = build_prepared_bundle_jxl_package_impl(input_jxl, binding_bundle,
                                                      policy, &plan,
-                                                     &removed_boxes);
+                                                     &removed_boxes, true);
         if (plan_status.status != TransferStatus::Ok) {
+            if (failure_status) {
+                *failure_status = plan_status.status;
+            }
             if (err) {
                 *err = plan_status.message.empty()
                            ? "failed to build jxl rewrite binding chunks"
@@ -2207,6 +2241,9 @@ namespace {
             }
             if (err) {
                 *err = "jxl rewrite binding contains unsupported package chunk";
+            }
+            if (failure_status) {
+                *failure_status = TransferStatus::Unsupported;
             }
             rewrite->content_binding_bytes = 0U;
             rewrite->content_binding_chunks.clear();
@@ -15323,6 +15360,292 @@ prepare_metadata_for_target_snapshot(const TransferSourceSnapshot& snapshot,
     return result;
 }
 
+static BuildPreparedC2paBindingResult
+c2pa_signing_context_failure(TransferStatus status, EmitTransferCode code,
+                             std::string_view message) noexcept
+{
+    BuildPreparedC2paBindingResult out;
+    out.status = status;
+    out.code   = code;
+    out.errors = 1U;
+    out.message.assign(message.data(), message.size());
+    return out;
+}
+
+static bool
+c2pa_context_jpeg_framing_is_complete(std::span<const std::byte> bytes) noexcept
+{
+    if (bytes.size() < 4U || bytes[0] != std::byte { 0xFFU }
+        || bytes[1] != std::byte { 0xD8U }) {
+        return false;
+    }
+    size_t offset = 2U;
+    bool in_scan  = false;
+    while (offset < bytes.size()) {
+        if (in_scan) {
+            while (offset < bytes.size()
+                   && bytes[offset] != std::byte { 0xFFU }) {
+                ++offset;
+            }
+        } else if (bytes[offset] != std::byte { 0xFFU }) {
+            return false;
+        }
+        while (offset < bytes.size() && bytes[offset] == std::byte { 0xFFU }) {
+            ++offset;
+        }
+        if (offset == bytes.size()) {
+            return false;
+        }
+        const uint8_t marker = std::to_integer<uint8_t>(bytes[offset++]);
+        if (marker == 0xD9U) {
+            return true;
+        }
+        const bool restart = marker >= 0xD0U && marker <= 0xD7U;
+        if (in_scan && (marker == 0U || restart || marker == 1U)) {
+            continue;
+        }
+        if (marker == 0U || marker == 0xD8U || restart) {
+            return false;
+        }
+        if (marker == 1U) {
+            continue;
+        }
+        if (bytes.size() - offset < 2U) {
+            return false;
+        }
+        const uint16_t length = static_cast<uint16_t>(
+            (std::to_integer<uint16_t>(bytes[offset]) << 8U)
+            | std::to_integer<uint16_t>(bytes[offset + 1U]));
+        if (length < 2U || length > bytes.size() - offset) {
+            return false;
+        }
+        if (marker == 0xDAU) {
+            if (length < 6U) {
+                return false;
+            }
+            const uint8_t components = std::to_integer<uint8_t>(
+                bytes[offset + 2U]);
+            if (components == 0U
+                || length != 6U + 2U * static_cast<uint16_t>(components)) {
+                return false;
+            }
+        }
+        // DNL interrupts an entropy-coded scan without ending it.
+        in_scan = marker == 0xDAU || (in_scan && marker == 0xDCU);
+        offset += length;
+    }
+    return false;
+}
+
+PrepareTransferC2paSigningContextResult
+prepare_c2pa_signing_context(const TransferSourceSnapshot& snapshot,
+                             std::span<const std::byte> target_bytes,
+                             const PrepareTransferRequest& request,
+                             PreparedTransferC2paSigningContext* out_context,
+                             const OpenMetaResourcePolicy& policy,
+                             const C2paSigningContextLimits& limits) noexcept
+{
+    PrepareTransferC2paSigningContextResult out;
+    if (!out_context) {
+        out.prepare.status  = TransferStatus::InvalidArgument;
+        out.prepare.errors  = 1U;
+        out.prepare.message = "prepared C2PA context output is null";
+        out.binding
+            = c2pa_signing_context_failure(TransferStatus::InvalidArgument,
+                                           EmitTransferCode::InvalidArgument,
+                                           out.prepare.message);
+        return out;
+    }
+
+    if (limits.max_snapshot_entries == 0U
+        || limits.max_snapshot_arena_bytes == 0U) {
+        out.prepare.status = TransferStatus::InvalidArgument;
+        out.prepare.errors = 1U;
+        out.prepare.message
+            = "snapshot entry and arena ceilings must be nonzero";
+        out.binding
+            = c2pa_signing_context_failure(TransferStatus::InvalidArgument,
+                                           EmitTransferCode::InvalidArgument,
+                                           out.prepare.message);
+        return out;
+    }
+
+    OpenMetaResourcePolicy normalized_policy = policy;
+    normalize_resource_policy(&normalized_policy);
+    if (normalized_policy.max_file_bytes != 0U
+        && static_cast<uint64_t>(target_bytes.size())
+               > normalized_policy.max_file_bytes) {
+        out.prepare.status  = TransferStatus::LimitExceeded;
+        out.prepare.errors  = 1U;
+        out.prepare.message = "target bytes exceed configured file-size limit";
+        out.binding
+            = c2pa_signing_context_failure(TransferStatus::LimitExceeded,
+                                           EmitTransferCode::InvalidPayload,
+                                           out.prepare.message);
+        return out;
+    }
+
+    const bool supported_target
+        = request.target_format == TransferTargetFormat::Jpeg
+          || request.target_format == TransferTargetFormat::Jxl
+          || transfer_target_is_bmff(request.target_format);
+    if (!supported_target) {
+        out.prepare.status = TransferStatus::Unsupported;
+        out.prepare.message
+            = "C2PA signing contexts support JPEG, JXL, and BMFF targets only";
+        out.binding
+            = c2pa_signing_context_failure(TransferStatus::Unsupported,
+                                           EmitTransferCode::InvalidArgument,
+                                           out.prepare.message);
+        return out;
+    }
+
+    if (request.target_format == TransferTargetFormat::Jpeg
+        && !c2pa_context_jpeg_framing_is_complete(target_bytes)) {
+        out.prepare.status = TransferStatus::Malformed;
+        out.prepare.errors = 1U;
+        out.prepare.message
+            = "target JPEG marker framing is incomplete or invalid";
+        out.binding
+            = c2pa_signing_context_failure(TransferStatus::Malformed,
+                                           EmitTransferCode::InvalidPayload,
+                                           out.prepare.message);
+        return out;
+    }
+
+    if (snapshot.store.resource_limit_exceeded()
+        || snapshot.store.entries().size() > limits.max_snapshot_entries
+        || snapshot.store.block_count() > limits.max_snapshot_entries
+        || snapshot.store.arena().bytes().size()
+               > limits.max_snapshot_arena_bytes) {
+        out.prepare.status = TransferStatus::LimitExceeded;
+        out.prepare.errors = 1U;
+        out.prepare.message
+            = "source snapshot exceeds decoded-store resource ceilings";
+        out.binding
+            = c2pa_signing_context_failure(TransferStatus::LimitExceeded,
+                                           EmitTransferCode::InvalidPayload,
+                                           out.prepare.message);
+        return out;
+    }
+
+    PreparedTransferC2paSigningContext candidate;
+    candidate.policy                  = normalized_policy;
+    candidate.limits                  = limits;
+    candidate.source_snapshot_entries = static_cast<uint32_t>(
+        snapshot.store.entries().size());
+    candidate.source_snapshot_arena_bytes = static_cast<uint64_t>(
+        snapshot.store.arena().bytes().size());
+    candidate.prepare = prepare_metadata_for_target_snapshot(snapshot, request,
+                                                             &candidate.bundle);
+    out.prepare       = candidate.prepare;
+    bool intentional_c2pa_only_unsupported = false;
+    // The one soft warning is the existing signed-rewrite preparation notice.
+    // Any counted prep error or additional warning indicates another failed
+    // request and must not be hidden by successful C2PA binding construction.
+    if (candidate.prepare.status == TransferStatus::Unsupported
+        && candidate.prepare.code
+               == PrepareTransferCode::RequestedMetadataNotSerializable
+        && candidate.prepare.errors == 0U && candidate.prepare.warnings == 1U
+        && candidate.bundle.blocks.empty()
+        && candidate.bundle.generated_xmp_sidecar.empty()
+        && candidate.bundle.c2pa_rewrite.state
+               == TransferC2paRewriteState::SigningMaterialRequired
+        && candidate.bundle.c2pa_rewrite.target_carrier_available) {
+        for (size_t i = 0U; i < candidate.bundle.policy_decisions.size(); ++i) {
+            const PreparedTransferPolicyDecision& decision
+                = candidate.bundle.policy_decisions[i];
+            if (decision.subject == TransferPolicySubject::C2pa
+                && decision.requested == TransferPolicyAction::Rewrite
+                && decision.effective == TransferPolicyAction::Drop
+                && decision.reason
+                       == TransferPolicyReason::SignedRewriteUnavailable
+                && decision.c2pa_mode == TransferC2paMode::Drop
+                && decision.c2pa_prepared_output
+                       == TransferC2paPreparedOutput::Dropped
+                && decision.matched_entries > 0U) {
+                intentional_c2pa_only_unsupported = true;
+                break;
+            }
+        }
+    }
+    if (candidate.prepare.status != TransferStatus::Ok
+        && !intentional_c2pa_only_unsupported) {
+        out.binding = c2pa_signing_context_failure(
+            candidate.prepare.status,
+            candidate.prepare.status == TransferStatus::InvalidArgument
+                ? EmitTransferCode::InvalidArgument
+                : EmitTransferCode::InvalidPayload,
+            candidate.prepare.message.empty()
+                ? "metadata preparation failed before C2PA context creation"
+                : candidate.prepare.message);
+        return out;
+    }
+
+    if (candidate.bundle.c2pa_rewrite.state
+        == TransferC2paRewriteState::SigningMaterialRequired) {
+        std::string rewrite_error;
+        bool rewrite_ok               = false;
+        TransferStatus rewrite_status = TransferStatus::Malformed;
+        if (request.target_format == TransferTargetFormat::Jpeg) {
+            rewrite_ok = build_jpeg_c2pa_rewrite_chunks(
+                target_bytes, candidate.bundle, &candidate.bundle.c2pa_rewrite,
+                &rewrite_error, &rewrite_status);
+        } else if (request.target_format == TransferTargetFormat::Jxl) {
+            rewrite_ok = build_jxl_c2pa_rewrite_chunks(
+                target_bytes, candidate.bundle, &candidate.bundle.c2pa_rewrite,
+                &rewrite_error, &rewrite_status);
+        } else {
+            rewrite_ok = build_bmff_c2pa_rewrite_chunks(
+                target_bytes, candidate.bundle, &candidate.bundle.c2pa_rewrite,
+                &rewrite_error, &rewrite_status);
+        }
+        if (!rewrite_ok) {
+            if (rewrite_status == TransferStatus::Ok) {
+                rewrite_status = TransferStatus::Malformed;
+            }
+            out.binding = c2pa_signing_context_failure(
+                rewrite_status, EmitTransferCode::InvalidPayload,
+                rewrite_error.empty()
+                    ? "failed to plan C2PA content-binding chunks"
+                    : rewrite_error);
+            return out;
+        }
+        if (limits.max_binding_bytes != 0U
+            && candidate.bundle.c2pa_rewrite.content_binding_bytes
+                   > limits.max_binding_bytes) {
+            out.binding = c2pa_signing_context_failure(
+                TransferStatus::LimitExceeded, EmitTransferCode::InvalidPayload,
+                "C2PA binding exceeds configured byte limit");
+            return out;
+        }
+    }
+
+    const TransferStatus handoff_status
+        = build_prepared_c2pa_handoff_package(candidate.bundle, target_bytes,
+                                              &candidate.handoff);
+    out.binding = candidate.handoff.binding;
+    if (handoff_status != TransferStatus::Ok
+        || candidate.handoff.binding.status != TransferStatus::Ok) {
+        if (handoff_status != TransferStatus::Ok
+            && out.binding.status == TransferStatus::Ok) {
+            out.binding = c2pa_signing_context_failure(
+                TransferStatus::Malformed, EmitTransferCode::InvalidPayload,
+                "C2PA handoff builder failed without an error status");
+        }
+        if (out.binding.status == TransferStatus::Unsupported
+            && out.binding.message.empty()) {
+            out.binding.message
+                = "prepared bundle does not provide a C2PA signer handoff";
+            out.binding.errors = 1U;
+        }
+        return out;
+    }
+
+    *out_context = std::move(candidate);
+    return out;
+}
+
 TransferSourceSnapshot
 build_transfer_source_snapshot(const MetaStore& store) noexcept
 {
@@ -24461,6 +24784,39 @@ c2pa_rewrite_chunks_match(
     return true;
 }
 
+static bool
+c2pa_sign_requests_semantically_match(
+    const PreparedTransferC2paSignRequest& a,
+    const PreparedTransferC2paSignRequest& b) noexcept
+{
+    // Replanned chunk descriptors are checked through the output binding bytes.
+    return a.status == b.status && a.rewrite_state == b.rewrite_state
+           && a.target_format == b.target_format
+           && a.source_kind == b.source_kind
+           && a.carrier_route == b.carrier_route
+           && a.manifest_label == b.manifest_label
+           && a.existing_carrier_segments == b.existing_carrier_segments
+           && a.prepared_segment_chunks == b.prepared_segment_chunks
+           && a.content_binding_bytes == b.content_binding_bytes
+           && a.requires_manifest_builder == b.requires_manifest_builder
+           && a.requires_content_binding == b.requires_content_binding
+           && a.requires_certificate_chain == b.requires_certificate_chain
+           && a.requires_private_key == b.requires_private_key
+           && a.requires_signing_time == b.requires_signing_time;
+}
+
+static bool
+c2pa_sign_requests_match_exactly(
+    const PreparedTransferC2paSignRequest& a,
+    const PreparedTransferC2paSignRequest& b) noexcept
+{
+    return c2pa_sign_requests_semantically_match(a, b)
+           && a.source_range_chunks == b.source_range_chunks
+           && c2pa_rewrite_chunks_match(a.content_binding_chunks,
+                                        b.content_binding_chunks)
+           && a.message == b.message;
+}
+
 static TransferStatus
 build_bmff_c2pa_binding_meta_box(const PreparedTransferBundle& bundle,
                                  uint64_t output_meta_offset,
@@ -24921,6 +25277,165 @@ build_prepared_c2pa_sign_request_binding(
     out.written = written;
     out.message = "c2pa binding bytes materialized from prepared rewrite chunks";
     return out;
+}
+
+static BuildPreparedC2paBindingResult
+validate_prepared_c2pa_signing_context_impl(
+    const PreparedTransferC2paSigningContext& context,
+    std::span<const std::byte> target_bytes,
+    PreparedTransferBundle* out_replanned_bundle) noexcept
+{
+    const PreparedTransferC2paHandoffPackage& issued = context.handoff;
+    if (issued.request.status != TransferStatus::Ok
+        || issued.binding.status != TransferStatus::Ok
+        || issued.binding.code != EmitTransferCode::None
+        || issued.binding.errors != 0U
+        || issued.binding.written != issued.binding_bytes.size()
+        || issued.binding_bytes.empty()) {
+        return c2pa_signing_context_failure(
+            TransferStatus::InvalidArgument, EmitTransferCode::PlanMismatch,
+            "prepared C2PA signing context handoff is incomplete");
+    }
+
+    if (context.limits.max_snapshot_entries == 0U
+        || context.limits.max_snapshot_arena_bytes == 0U) {
+        return c2pa_signing_context_failure(
+            TransferStatus::InvalidArgument, EmitTransferCode::InvalidArgument,
+            "context snapshot entry and arena ceilings must be nonzero");
+    }
+    if (context.source_snapshot_entries > context.limits.max_snapshot_entries
+        || context.source_snapshot_arena_bytes
+               > context.limits.max_snapshot_arena_bytes) {
+        return c2pa_signing_context_failure(
+            TransferStatus::LimitExceeded, EmitTransferCode::InvalidPayload,
+            "source snapshot exceeds context resource ceilings");
+    }
+
+    OpenMetaResourcePolicy normalized_policy = context.policy;
+    normalize_resource_policy(&normalized_policy);
+    if (normalized_policy.max_file_bytes != 0U
+        && static_cast<uint64_t>(target_bytes.size())
+               > normalized_policy.max_file_bytes) {
+        return c2pa_signing_context_failure(
+            TransferStatus::LimitExceeded, EmitTransferCode::InvalidPayload,
+            "target bytes exceed context file-size limit");
+    }
+    if (context.limits.max_binding_bytes != 0U
+        && static_cast<uint64_t>(issued.binding_bytes.size())
+               > context.limits.max_binding_bytes) {
+        return c2pa_signing_context_failure(
+            TransferStatus::LimitExceeded, EmitTransferCode::InvalidPayload,
+            "issued binding exceeds context byte limit");
+    }
+
+    const TransferTargetFormat target_format = context.bundle.target_format;
+    const bool is_jpeg = target_format == TransferTargetFormat::Jpeg;
+    const bool is_jxl  = target_format == TransferTargetFormat::Jxl;
+    const bool is_bmff = transfer_target_is_bmff(target_format);
+    if (!is_jpeg && !is_jxl && !is_bmff) {
+        return c2pa_signing_context_failure(
+            TransferStatus::Unsupported, EmitTransferCode::InvalidArgument,
+            "prepared C2PA signing context target is unsupported");
+    }
+    if (is_jpeg && !c2pa_context_jpeg_framing_is_complete(target_bytes)) {
+        return c2pa_signing_context_failure(
+            TransferStatus::Malformed, EmitTransferCode::InvalidPayload,
+            "target JPEG marker framing is incomplete or invalid");
+    }
+
+    PreparedTransferC2paSignRequest current_request;
+    const TransferStatus request_status
+        = build_prepared_c2pa_sign_request(context.bundle, &current_request);
+    if (request_status != TransferStatus::Ok
+        || !c2pa_sign_requests_match_exactly(current_request, issued.request)) {
+        return c2pa_signing_context_failure(
+            TransferStatus::InvalidArgument, EmitTransferCode::PlanMismatch,
+            "prepared bundle no longer matches the issued C2PA handoff request");
+    }
+
+    PreparedTransferC2paRewriteRequirements replanned
+        = context.bundle.c2pa_rewrite;
+    replanned.content_binding_bytes = 0U;
+    replanned.content_binding_chunks.clear();
+    std::string rewrite_error;
+    bool rewrite_ok               = false;
+    TransferStatus rewrite_status = TransferStatus::Malformed;
+    if (is_jpeg) {
+        rewrite_ok = build_jpeg_c2pa_rewrite_chunks(target_bytes,
+                                                    context.bundle, &replanned,
+                                                    &rewrite_error,
+                                                    &rewrite_status);
+    } else if (is_jxl) {
+        rewrite_ok = build_jxl_c2pa_rewrite_chunks(target_bytes, context.bundle,
+                                                   &replanned, &rewrite_error,
+                                                   &rewrite_status);
+    } else {
+        rewrite_ok = build_bmff_c2pa_rewrite_chunks(target_bytes,
+                                                    context.bundle, &replanned,
+                                                    &rewrite_error,
+                                                    &rewrite_status);
+    }
+    if (!rewrite_ok) {
+        if (rewrite_status == TransferStatus::Ok) {
+            rewrite_status = TransferStatus::Malformed;
+        }
+        return c2pa_signing_context_failure(
+            rewrite_status, EmitTransferCode::InvalidPayload,
+            rewrite_error.empty()
+                ? "failed to replan C2PA content-binding chunks"
+                : rewrite_error);
+    }
+    if (context.limits.max_binding_bytes != 0U
+        && replanned.content_binding_bytes > context.limits.max_binding_bytes) {
+        return c2pa_signing_context_failure(
+            TransferStatus::LimitExceeded, EmitTransferCode::InvalidPayload,
+            "replanned binding exceeds context byte limit");
+    }
+
+    PreparedTransferBundle replanned_bundle = context.bundle;
+    replanned_bundle.c2pa_rewrite           = std::move(replanned);
+    PreparedTransferC2paSignRequest replanned_request;
+    const TransferStatus replanned_request_status
+        = build_prepared_c2pa_sign_request(replanned_bundle,
+                                           &replanned_request);
+    if (replanned_request_status != TransferStatus::Ok
+        || !c2pa_sign_requests_semantically_match(replanned_request,
+                                                  issued.request)) {
+        return c2pa_signing_context_failure(
+            TransferStatus::InvalidArgument, EmitTransferCode::PlanMismatch,
+            "replanned C2PA request no longer matches the issued handoff");
+    }
+
+    std::vector<std::byte> current_binding_bytes;
+    const BuildPreparedC2paBindingResult current_binding
+        = build_prepared_c2pa_sign_request_binding(replanned_bundle,
+                                                   target_bytes,
+                                                   replanned_request,
+                                                   &current_binding_bytes);
+    if (current_binding.status != TransferStatus::Ok) {
+        return current_binding;
+    }
+    if (current_binding_bytes.size() != issued.binding_bytes.size()
+        || !std::equal(current_binding_bytes.begin(),
+                       current_binding_bytes.end(),
+                       issued.binding_bytes.begin())) {
+        return c2pa_signing_context_failure(
+            TransferStatus::InvalidArgument, EmitTransferCode::PlanMismatch,
+            "target or prepared bundle no longer produces the issued C2PA binding bytes");
+    }
+    if (out_replanned_bundle) {
+        *out_replanned_bundle = std::move(replanned_bundle);
+    }
+    return current_binding;
+}
+
+BuildPreparedC2paBindingResult
+validate_prepared_c2pa_signing_context(
+    const PreparedTransferC2paSigningContext& context,
+    std::span<const std::byte> target_bytes) noexcept
+{
+    return validate_prepared_c2pa_signing_context_impl(context, target_bytes,
+                                                       nullptr);
 }
 
 PreparedTransferC2paPackageIoResult
@@ -35288,7 +35803,8 @@ build_prepared_bundle_jxl_package_impl(std::span<const std::byte> input_jxl,
                                        const PreparedTransferBundle& bundle,
                                        const JxlRewritePolicy& policy,
                                        PreparedTransferPackagePlan* out_plan,
-                                       uint32_t* out_removed_boxes) noexcept
+                                       uint32_t* out_removed_boxes,
+                                       bool allow_unchanged) noexcept
 {
     EmitTransferResult out;
     if (!out_plan) {
@@ -35394,7 +35910,7 @@ build_prepared_bundle_jxl_package_impl(std::span<const std::byte> input_jxl,
         appended_boxes += 1U;
     }
 
-    if (appended_boxes == 0U && removed_boxes == 0U) {
+    if (!allow_unchanged && appended_boxes == 0U && removed_boxes == 0U) {
         out.status  = TransferStatus::InvalidArgument;
         out.code    = EmitTransferCode::InvalidArgument;
         out.errors  = 1U;
@@ -35413,7 +35929,9 @@ build_prepared_bundle_jxl_package_impl(std::span<const std::byte> input_jxl,
     out.code    = EmitTransferCode::None;
     out.emitted = appended_boxes;
     if (appended_boxes == 0U) {
-        out.message = "removed prior matching jxl metadata boxes";
+        out.message = removed_boxes == 0U
+                          ? "preserved unchanged jxl container"
+                          : "removed prior matching jxl metadata boxes";
     } else if (removed_boxes == 0U) {
         out.message = "appended prepared jxl metadata boxes";
     } else {
@@ -35432,7 +35950,8 @@ build_prepared_bundle_jxl_package(std::span<const std::byte> input_jxl,
     const JxlRewritePolicy policy
         = collect_jxl_rewrite_policy(bundle, strip_existing_xmp);
     return build_prepared_bundle_jxl_package_impl(input_jxl, bundle, policy,
-                                                  out_plan, out_removed_boxes);
+                                                  out_plan, out_removed_boxes,
+                                                  false);
 }
 
 static EmitTransferResult
@@ -37256,6 +37775,112 @@ execute_prepared_transfer_bundle(
     execute_options.c2pa_signed_package = options.c2pa_signed_package;
     return execute_prepared_transfer_prepared_result(std::move(out),
                                                      execute_options);
+}
+
+static ExecutePreparedTransferFileResult
+c2pa_context_execution_failure(
+    const PreparedTransferC2paSigningContext& context,
+    std::span<const std::byte> target_bytes, TransferStatus status,
+    EmitTransferCode code, uint32_t errors, std::string_view message) noexcept
+{
+    ExecutePreparedTransferFileResult out;
+    out.prepared.file_status = TransferFileStatus::Ok;
+    out.prepared.code        = PrepareTransferFileCode::None;
+    out.prepared.file_size   = static_cast<uint64_t>(target_bytes.size());
+    out.prepared.entry_count = context.source_snapshot_entries;
+    out.prepared.prepare     = context.prepare;
+
+    out.execute.c2pa_stage_requested         = true;
+    out.execute.c2pa_stage_validation.status = status;
+    out.execute.c2pa_stage_validation.code   = code;
+    out.execute.c2pa_stage_validation.errors = errors == 0U ? 1U : errors;
+    out.execute.c2pa_stage_validation.message.assign(message.data(),
+                                                     message.size());
+    out.execute.c2pa_stage.status  = status;
+    out.execute.c2pa_stage.code    = code;
+    out.execute.c2pa_stage.errors  = errors == 0U ? 1U : errors;
+    out.execute.c2pa_stage.message = out.execute.c2pa_stage_validation.message;
+    out.execute.compile            = skipped_emit_result(
+        "skipped emit due to C2PA signing-context preflight failure");
+    out.execute.emit               = out.execute.compile;
+    out.execute.edit_requested     = true;
+    out.execute.edit_plan_status   = status;
+    out.execute.edit_plan_message  = out.execute.c2pa_stage.message;
+    out.execute.edit_apply.status  = status;
+    out.execute.edit_apply.code    = code;
+    out.execute.edit_apply.errors  = errors == 0U ? 1U : errors;
+    out.execute.edit_apply.message = out.execute.c2pa_stage.message;
+    return out;
+}
+
+ExecutePreparedTransferFileResult
+execute_prepared_c2pa_signing_context(
+    const PreparedTransferC2paSigningContext& context,
+    std::span<const std::byte> target_bytes,
+    const PreparedTransferC2paSignerInput& signer_input, bool apply,
+    TransferByteWriter* edit_output_writer) noexcept
+{
+    if (edit_output_writer && !apply) {
+        return c2pa_context_execution_failure(
+            context, target_bytes, TransferStatus::InvalidArgument,
+            EmitTransferCode::InvalidArgument, 1U,
+            "edit output writer requires apply=true");
+    }
+
+    PreparedTransferBundle replanned_bundle;
+    const BuildPreparedC2paBindingResult context_validation
+        = validate_prepared_c2pa_signing_context_impl(context, target_bytes,
+                                                      &replanned_bundle);
+    if (context_validation.status != TransferStatus::Ok) {
+        return c2pa_context_execution_failure(context, target_bytes,
+                                              context_validation.status,
+                                              context_validation.code,
+                                              context_validation.errors,
+                                              context_validation.message);
+    }
+
+    PreparedTransferC2paSignRequest request;
+    const TransferStatus request_status
+        = build_prepared_c2pa_sign_request(replanned_bundle, &request);
+    if (request_status != TransferStatus::Ok) {
+        const std::string_view message
+            = request.message.empty()
+                  ? std::string_view("failed to rebuild C2PA signer request")
+                  : std::string_view(request.message);
+        return c2pa_context_execution_failure(
+            context, target_bytes, request_status,
+            request_status == TransferStatus::InvalidArgument
+                ? EmitTransferCode::PlanMismatch
+                : EmitTransferCode::InvalidArgument,
+            1U, message);
+    }
+
+    const ValidatePreparedC2paSignResult signer_validation
+        = validate_prepared_c2pa_sign_result(replanned_bundle, request,
+                                             signer_input);
+    if (signer_validation.status != TransferStatus::Ok) {
+        ExecutePreparedTransferFileResult out = c2pa_context_execution_failure(
+            context, target_bytes, signer_validation.status,
+            signer_validation.code, signer_validation.errors,
+            signer_validation.message);
+        out.execute.c2pa_stage_validation = signer_validation;
+        return out;
+    }
+
+    ExecutePreparedTransferBundleOptions options;
+    options.policy                     = context.policy;
+    options.execute.edit_requested     = true;
+    options.execute.edit_apply         = apply;
+    options.execute.edit_output_writer = edit_output_writer;
+    options.c2pa_stage_requested       = true;
+    options.c2pa_signer_input          = signer_input;
+    ExecutePreparedTransferFileResult out
+        = execute_prepared_transfer_bundle(replanned_bundle, target_bytes,
+                                           options);
+    out.prepared.prepare     = context.prepare;
+    out.prepared.entry_count = context.source_snapshot_entries;
+    out.prepared.file_size   = static_cast<uint64_t>(target_bytes.size());
+    return out;
 }
 
 PersistPreparedTransferFileResult

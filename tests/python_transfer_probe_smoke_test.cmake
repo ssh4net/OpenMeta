@@ -633,6 +633,137 @@ p_target_jxl.write_bytes(
     u32(12) + b'JXL ' + u32(0x0D0A870A) + bmff_box(b'jxlc', bytes([0x11, 0x22, 0x33, 0x44]))
 )
 
+# Snapshot signing contexts bind caller-owned bytes, with independent statuses.
+context_snapshot = openmeta.read(str(p_c2pa)).build_transfer_source_snapshot()
+context_signer = dict(
+    signed_payload=bytes(signed_jumb),
+    certificate_chain=bytes([0x30, 0x82, 1, 0]),
+    private_key_reference='test-key-ref',
+    signing_time='2026-03-09T00:00:00Z',
+    manifest_builder_output=bytes(signed_cbor),
+)
+context_options = dict(include_exif_app1=False, include_xmp_app1=False,
+                       include_icc_app2=False, include_iptc_app13=False,
+                       jumbf_policy=openmeta.TransferPolicyAction.Drop)
+def context_box_media(data):
+    media = []
+    offset = 0
+    while offset < len(data):
+        assert len(data) - offset >= 8
+        size = int.from_bytes(data[offset:offset + 4], 'big')
+        kind = data[offset + 4:offset + 8]
+        header = 8
+        if size == 1:
+            assert len(data) - offset >= 16
+            size = int.from_bytes(data[offset + 8:offset + 16], 'big')
+            header = 16
+        elif size == 0:
+            size = len(data) - offset
+        assert size >= header and size <= len(data) - offset
+        if kind in (b'jxlc', b'jxlp', b'mdat'):
+            media.append((kind, data[offset + header:offset + size]))
+        offset += size
+    return media
+
+context_scan = bytes([0x11, 0x22, 0x33, 0x44])
+context_jpeg = bytes([255, 216, 255, 218, 0, 8, 1, 1, 0, 0, 63, 0]) + context_scan + bytes([255, 217])
+try:
+    openmeta.prepare_c2pa_signing_context(
+        context_snapshot, bytearray(context_jpeg), **context_options)
+except TypeError:
+    pass
+else:
+    raise AssertionError('mutable target buffer accepted by immutable-bytes API')
+context_targets = [
+    (openmeta.TransferTargetFormat.Jpeg, context_jpeg),
+    (openmeta.TransferTargetFormat.Jxl, p_target_jxl.read_bytes()),
+    (openmeta.TransferTargetFormat.Heif,
+     bmff_box(b'ftyp', b'heic' + u32(0) + b'mif1heic') + bmff_box(b'mdat', context_scan)),
+]
+for context_format, context_target in context_targets:
+    prepared_context = openmeta.prepare_c2pa_signing_context(
+        context_snapshot, context_target, target_format=context_format,
+        **context_options)
+    assert prepared_context['prepare_status'] == openmeta.TransferStatus.Unsupported, prepared_context
+    assert prepared_context['binding']['status'] == openmeta.TransferStatus.Ok, prepared_context
+    assert prepared_context['overall_status'] == openmeta.TransferStatus.Ok, prepared_context
+    context = prepared_context['context']
+    assert context.request() == prepared_context['request']
+    assert 'bytes' not in prepared_context['request']
+    assert context.validate(context_target)['status'] == openmeta.TransferStatus.Ok
+    original_binding = context.unsafe_binding_bytes()
+    assert context_scan in original_binding
+    handoff = context.unsafe_handoff_bytes()
+    assert handoff['status'] == openmeta.TransferStatus.Ok, handoff
+    assert isinstance(handoff['bytes'], bytes), handoff
+    changed_target = context_target.replace(context_scan, bytes([0x11, 0x22, 0x33, 0x45]), 1)
+    assert context.validate(changed_target)['status'] != openmeta.TransferStatus.Ok
+    rejected = context.unsafe_execute(changed_target, apply=True, **context_signer)
+    assert rejected['overall_status'] != openmeta.TransferStatus.Ok, rejected
+    assert rejected['edited_bytes'] is None, rejected
+    missing_signer = context.unsafe_execute(context_target, apply=True)
+    assert missing_signer['overall_status'] != openmeta.TransferStatus.Ok, missing_signer
+    assert missing_signer['edited_bytes'] is None, missing_signer
+    planned_signed = context.unsafe_execute(context_target, **context_signer)
+    assert planned_signed['overall_status'] == openmeta.TransferStatus.Ok, planned_signed
+    assert planned_signed['edited_bytes'] is None, planned_signed
+    safe_signed = context.execute(context_target, apply=True, **context_signer)
+    assert safe_signed['overall_status'] == openmeta.TransferStatus.Ok, safe_signed
+    assert safe_signed['edited_bytes'] is None, safe_signed
+    signed = context.unsafe_execute(context_target, apply=True, **context_signer)
+    assert signed['overall_status'] == openmeta.TransferStatus.Ok, signed
+    assert context_scan in signed['edited_bytes'], signed
+    if context_format != openmeta.TransferTargetFormat.Jpeg:
+        original_media = context_box_media(context_target)
+        assert original_media
+        assert context_box_media(signed['edited_bytes']) == original_media
+    assert context.unsafe_binding_bytes() == original_binding
+    assert context.validate(context_target)['status'] == openmeta.TransferStatus.Ok
+    capped = openmeta.prepare_c2pa_signing_context(
+        context_snapshot, context_target, target_format=context_format,
+        max_binding_bytes=1, **context_options)
+    assert capped['overall_status'] == openmeta.TransferStatus.LimitExceeded, capped
+    assert capped['context'] is None, capped
+    truncated = openmeta.prepare_c2pa_signing_context(
+        context_snapshot, context_target[:3], target_format=context_format,
+        **context_options)
+    assert truncated['overall_status'] != openmeta.TransferStatus.Ok, truncated
+    assert truncated['context'] is None, truncated
+
+context_policy = openmeta.ResourcePolicy()
+context_policy.max_file_bytes = 1
+policy_failure = openmeta.prepare_c2pa_signing_context(
+    context_snapshot, context_jpeg, policy=context_policy, **context_options)
+assert policy_failure['overall_status'] == openmeta.TransferStatus.LimitExceeded, policy_failure
+assert policy_failure['context'] is None, policy_failure
+zero_entries = openmeta.prepare_c2pa_signing_context(
+    context_snapshot, context_jpeg, max_snapshot_entries=0, **context_options)
+assert zero_entries['overall_status'] == openmeta.TransferStatus.InvalidArgument, zero_entries
+assert zero_entries['context'] is None, zero_entries
+zero_arena = openmeta.prepare_c2pa_signing_context(
+    context_snapshot, context_jpeg, max_snapshot_arena_bytes=0, **context_options)
+assert zero_arena['overall_status'] == openmeta.TransferStatus.InvalidArgument, zero_arena
+assert zero_arena['context'] is None, zero_arena
+
+context_document = openmeta.read(str(p_c2pa))
+context_edited = context_document.edit_metadata([
+    openmeta.metadata_edit_add(openmeta.metadata_creation_text(
+        openmeta.MetadataCreationFieldKind.Title, 'Snapshot edited title')),
+])
+edited_context = openmeta.prepare_c2pa_signing_context(
+    context_edited.build_transfer_source_snapshot(), context_jpeg,
+    include_exif_app1=False, include_icc_app2=False, include_iptc_app13=False,
+    jumbf_policy=openmeta.TransferPolicyAction.Drop)
+assert edited_context['prepare_status'] == openmeta.TransferStatus.Ok, edited_context
+assert edited_context['binding']['status'] == openmeta.TransferStatus.Ok, edited_context
+assert b'Snapshot edited title' in edited_context['context'].unsafe_binding_bytes()
+edited_signed = edited_context['context'].unsafe_execute(
+    context_jpeg, apply=True, **context_signer)
+assert edited_signed['overall_status'] == openmeta.TransferStatus.Ok, edited_signed
+assert b'Snapshot edited title' in edited_signed['edited_bytes']
+assert context_scan in edited_signed['edited_bytes']
+assert context_document.entry_count == context_snapshot.entry_count
+
 r4 = openmeta.transfer_probe(
     str(p_c2pa),
     include_exif_app1=False,

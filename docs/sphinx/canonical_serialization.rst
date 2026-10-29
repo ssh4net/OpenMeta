@@ -1,6 +1,61 @@
 Canonical Metadata Serialization
 ================================
 
+Edited-snapshot C2PA signing (0.8.23)
+-------------------------------------
+
+``prepare_c2pa_signing_context()`` combines an edited ``TransferSourceSnapshot``
+with the exact target bytes for JPEG, boxed JPEG XL, HEIF, AVIF and CR3. The
+owned ``PreparedTransferC2paSigningContext`` retains the prepared metadata,
+external-signer handoff and complete rewritten asset stream without C2PA.
+Metadata preparation and content-binding results remain separate. In particular,
+C2PA-only input can return ``Unsupported/RequestedMetadataNotSerializable`` for
+metadata preparation and ``Ok`` for binding; check both results.
+
+Pass the handoff to the host's manifest builder and signer, then use
+``execute_prepared_c2pa_signing_context()`` with the signer material and target
+bytes. Validation replans the target and compares the complete binding stream
+before staging or publishing output. A changed scan/codestream byte or prepared
+metadata value fails. Changes confined to bytes removed or replaced by the
+rewrite can pass when the complete binding stream and request semantics match.
+The executor uses that fresh plan. JPEG signing contexts require complete marker
+framing, bounded segment/SOS headers and an EOI marker; trailing bytes are
+retained. This structural check does not decode or validate image pixels.
+Contexts and source snapshots remain unchanged.
+The host provides signature creation, certificate trust and cryptographic
+verification; OpenMeta checks the existing structural signer contract.
+
+``C2paSigningContextLimits`` defaults to 200,000 snapshot entries and 64 MiB of
+snapshot arena data. These two limits must be nonzero. ``max_binding_bytes=0``
+allows any binding size; set a nonzero limit to bound its materialization.
+``OpenMetaResourcePolicy::max_file_bytes`` independently caps target input bytes.
+The decoded-store ceilings exclude separately owned raw carriers; bound
+optional raw-carrier ingestion with the snapshot read/serialization limits.
+These preparation, validation and execution operations allocate. Hosts must
+synchronize access to shared mutable objects. Preflight failures publish no
+context or output bytes; a byte writer's I/O failure retains the existing
+partial-write behavior.
+
+Python exposes ``prepare_c2pa_signing_context(snapshot, target_bytes, ...)``,
+returning independent ``prepare_status``, ``binding`` and ``overall_status`` fields.
+Set ``jumbf_policy=TransferPolicyAction.Drop`` to omit projected JUMBF
+when requesting C2PA-only output. The returned ``C2paSigningContext`` provides ``request()``, ``validate(target_bytes)``
+and ``execute(target_bytes, ..., apply=True)``. Pass immutable Python ``bytes`` for
+the target. Raw handoff/binding bytes require ``unsafe_handoff_bytes()`` and
+``unsafe_binding_bytes()``; output asset bytes require ``unsafe_execute()``.
+These accessors export the retained stream and handoff issued at preparation;
+they do not inspect another target. If the target changes before signing, call
+``validate(current_target_bytes)`` before exporting. Execution always validates
+the supplied target again. The safe executor reports results without exposing
+asset bytes. Python accepts
+``policy``, ``max_snapshot_entries``, ``max_snapshot_arena_bytes`` and
+``max_binding_bytes`` with the C++ defaults.
+
+ABI remains 4; rebuild with matching 0.8.23 headers and binaries. Existing public
+layouts, source snapshot v1 and external-signer package wire formats are unchanged.
+Older preparation entrypoints remain available; use this explicit context API
+when the source is an edited snapshot and signing requires target bytes.
+
 IPTC carrier removal (0.8.20)
 -----------------------------
 
@@ -16,10 +71,10 @@ preserving unrelated resources byte for byte. TIFF/BigTIFF/DNG edits remove IFD0
 tag 33723 and preserve other tags and pixel data. This does not erase every
 possible embedded copy. Removal conflicts with a prepared IPTC payload. Fresh
 emission and payload-only handoffs reject the edit-only intent; exact-output
-packages and complete C2PA binding requests carry the edited bytes. Automatic
-C2PA signing-context preparation from an edited source snapshot remains
-unsupported; removal does not bypass that independent requirement. Snapshot
-wire v1 is unchanged.
+packages and complete C2PA binding requests carry the edited bytes. The explicit
+0.8.23 signing-context API supports edited snapshots plus target bytes; the
+older snapshot preparation entrypoint alone cannot establish that binding.
+Snapshot wire v1 is unchanged.
 
 The bundle layout changes within unfrozen ABI 4. Rebuild consumers with matching
 0.8.20 headers and binaries. Preparation may allocate; hosts synchronize shared

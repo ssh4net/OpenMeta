@@ -1,5 +1,20 @@
 # Metadata Transfer Plan (Draft)
 
+## Edited-snapshot C2PA context (0.8.23)
+
+The explicit signing-context API prepares an edited source snapshot against
+caller-supplied JPEG, boxed JXL or BMFF target bytes. It owns the complete
+binding stream and existing external-signer handoff, reports metadata and
+context failures separately, and validates the target again before staging.
+Python exposes the same workflow with explicit raw-byte access. Preparation
+and deferred validation allocate and honor the context and file-size budgets.
+ABI 4 and the existing snapshot/package wire formats remain unchanged.
+See [canonical_serialization.md](canonical_serialization.md).
+
+Host signing, certificate trust and cryptographic verification remain external.
+Full RDF authoring, fresh ICC construction and prepared IPTC patching remain
+separate gaps. Downstream OIIO/iRAW work stays on hold; fuzzy search remains last.
+
 ## Canonical IPTC-IIM follow-up (0.8.15)
 
 The public `serialize_iptc_iim()` v1 API closes target-neutral native IPTC output

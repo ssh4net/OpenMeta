@@ -984,6 +984,34 @@ struct PrepareTransferResult final {
     bool xmp_text_sanitized = false;
 };
 
+/// Explicit resource ceilings for target-bound C2PA context preparation.
+struct C2paSigningContextLimits final {
+    /// Maximum decoded source entries copied into preparation.
+    uint32_t max_snapshot_entries = 200000U;
+    /// Maximum decoded source arena bytes copied into preparation.
+    uint64_t max_snapshot_arena_bytes = 64ULL * 1024ULL * 1024ULL;
+    /// Optional maximum binding stream size (0 = unlimited). An unlimited
+    /// binding can allocate memory proportional to the target stream.
+    uint64_t max_binding_bytes = 0U;
+};
+
+/// In-memory C2PA signing context tied to the exact prepared output stream.
+struct PreparedTransferC2paSigningContext final {
+    PrepareTransferResult prepare;
+    PreparedTransferBundle bundle;
+    PreparedTransferC2paHandoffPackage handoff;
+    OpenMetaResourcePolicy policy;
+    C2paSigningContextLimits limits;
+    uint32_t source_snapshot_entries     = 0U;
+    uint64_t source_snapshot_arena_bytes = 0U;
+};
+
+/// Independent metadata-preparation and C2PA-context results.
+struct PrepareTransferC2paSigningContextResult final {
+    PrepareTransferResult prepare;
+    BuildPreparedC2paBindingResult binding;
+};
+
 /// Result details for bundle emission.
 struct EmitTransferResult final {
     TransferStatus status       = TransferStatus::Ok;
@@ -2068,6 +2096,21 @@ struct ExecutePreparedTransferFileResult final {
     std::string xmp_sidecar_cleanup_path;
 };
 
+/**
+ * \brief Execute a previously prepared C2PA signing context against the
+ * original target stream.
+ *
+ * The context is validated before signer input is staged or an edit writer is
+ * called. \p apply controls whether edited output is produced. A writer is
+ * valid only when \p apply is true.
+ */
+ExecutePreparedTransferFileResult
+execute_prepared_c2pa_signing_context(
+    const PreparedTransferC2paSigningContext& context,
+    std::span<const std::byte> target_bytes,
+    const PreparedTransferC2paSignerInput& signer_input, bool apply = false,
+    TransferByteWriter* edit_output_writer = nullptr) noexcept;
+
 /// Options for \ref persist_prepared_transfer_file_result.
 struct PersistPreparedTransferFileOptions final {
     std::string output_path;
@@ -2289,6 +2332,40 @@ prepare_metadata_for_target_snapshot(
     const TransferSourceSnapshot& snapshot,
     const PrepareTransferRequest& request,
     PreparedTransferBundle* out_bundle) noexcept;
+
+/**
+ * \brief Prepare a source snapshot for an external C2PA signer against target
+ * bytes held by the host.
+ *
+ * The context owns the prepared bundle, handoff package, and normalized
+ * resource policy. It retains no view of \p target_bytes. A valid C2PA
+ * handoff can be returned even when ordinary metadata preparation reports
+ * \ref TransferStatus::Unsupported because C2PA is the only requested output.
+ * \p out_context is replaced only when binding materialization succeeds.
+ * Snapshot entry/arena ceilings are explicit; the binding ceiling defaults to
+ * unlimited and can allocate memory proportional to the target stream.
+ */
+PrepareTransferC2paSigningContextResult
+prepare_c2pa_signing_context(const TransferSourceSnapshot& snapshot,
+                             std::span<const std::byte> target_bytes,
+                             const PrepareTransferRequest& request,
+                             PreparedTransferC2paSigningContext* out_context,
+                             const OpenMetaResourcePolicy& policy
+                             = OpenMetaResourcePolicy {},
+                             const C2paSigningContextLimits& limits
+                             = C2paSigningContextLimits {}) noexcept;
+
+/**
+ * \brief Replan and validate a prepared signing context against target bytes.
+ *
+ * Validation compares the complete semantic request and materialized output
+ * binding bytes with the issued handoff package. It checks stream identity but
+ * does not authenticate a signature.
+ */
+BuildPreparedC2paBindingResult
+validate_prepared_c2pa_signing_context(
+    const PreparedTransferC2paSigningContext& context,
+    std::span<const std::byte> target_bytes) noexcept;
 
 /**
  * \brief Build a reusable decoded source snapshot from an existing \ref MetaStore.

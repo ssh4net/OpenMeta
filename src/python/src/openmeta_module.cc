@@ -3535,6 +3535,240 @@ namespace {
         return out;
     }
 
+    static nb::dict c2pa_context_request_to_python(
+        const PreparedTransferC2paSigningContext& context)
+    {
+        const PreparedTransferC2paSignRequest& request = context.handoff.request;
+        nb::dict out;
+        out["status"]        = request.status;
+        out["status_name"]   = nb::str(transfer_status_name(request.status));
+        out["rewrite_state"] = request.rewrite_state;
+        out["rewrite_state_name"] = nb::str(
+            transfer_c2pa_rewrite_state_name(request.rewrite_state));
+        out["source_kind"]      = request.source_kind;
+        out["source_kind_name"] = nb::str(
+            transfer_c2pa_source_kind_name(request.source_kind));
+        out["target_format"]      = request.target_format;
+        out["target_format_name"] = nb::str(
+            transfer_target_format_name(request.target_format));
+        out["carrier_route"]         = nb::str(request.carrier_route.data(),
+                                               request.carrier_route.size());
+        out["manifest_label"]        = nb::str(request.manifest_label.data(),
+                                               request.manifest_label.size());
+        out["content_binding_bytes"] = nb::int_(request.content_binding_bytes);
+        out["chunk_count"] = nb::int_(request.content_binding_chunks.size());
+        out["source_range_chunks"]     = nb::int_(request.source_range_chunks);
+        out["prepared_segment_chunks"] = nb::int_(
+            request.prepared_segment_chunks);
+        out["existing_carrier_segments"] = nb::int_(
+            request.existing_carrier_segments);
+        out["requires_manifest_builder"] = nb::bool_(
+            request.requires_manifest_builder);
+        out["requires_content_binding"] = nb::bool_(
+            request.requires_content_binding);
+        out["requires_certificate_chain"] = nb::bool_(
+            request.requires_certificate_chain);
+        out["requires_private_key"]  = nb::bool_(request.requires_private_key);
+        out["requires_signing_time"] = nb::bool_(request.requires_signing_time);
+        return out;
+    }
+
+    static nb::dict
+    c2pa_binding_result_to_python(const BuildPreparedC2paBindingResult& result)
+    {
+        nb::dict out;
+        out["status"]      = result.status;
+        out["status_name"] = nb::str(transfer_status_name(result.status));
+        out["code"]        = result.code;
+        out["code_name"]   = nb::str(emit_transfer_code_name(result.code));
+        out["written"]     = nb::int_(result.written);
+        out["errors"]      = nb::int_(result.errors);
+        out["message"] = nb::str(result.message.data(), result.message.size());
+        return out;
+    }
+
+    static nb::dict prepare_c2pa_context_to_python(
+        const TransferSourceSnapshot& snapshot, nb::bytes target_bytes,
+        TransferTargetFormat target_format, bool include_exif_app1,
+        bool include_xmp_app1, bool include_icc_app2, bool include_iptc_app13,
+        XmpConflictPolicy conflict_policy, TransferPolicyAction jumbf_policy,
+        TransferPolicyAction c2pa_policy,
+        TransferRawCarrierPassthroughMode raw_carrier_passthrough_mode,
+        nb::object policy_obj, uint32_t max_snapshot_entries,
+        uint64_t max_snapshot_arena_bytes, uint64_t max_binding_bytes)
+    {
+        PrepareTransferRequest request;
+        request.target_format                = target_format;
+        request.include_exif_app1            = include_exif_app1;
+        request.include_xmp_app1             = include_xmp_app1;
+        request.include_icc_app2             = include_icc_app2;
+        request.include_iptc_app13           = include_iptc_app13;
+        request.xmp_include_existing         = true;
+        request.xmp_conflict_policy          = conflict_policy;
+        request.profile.jumbf                = jumbf_policy;
+        request.profile.c2pa                 = c2pa_policy;
+        request.raw_carrier_passthrough_mode = raw_carrier_passthrough_mode;
+        OpenMetaResourcePolicy policy;
+        if (!policy_obj.is_none()) {
+            policy = nb::cast<OpenMetaResourcePolicy>(policy_obj);
+        }
+        C2paSigningContextLimits limits;
+        limits.max_snapshot_entries     = max_snapshot_entries;
+        limits.max_snapshot_arena_bytes = max_snapshot_arena_bytes;
+        limits.max_binding_bytes        = max_binding_bytes;
+        const std::span<const std::byte> target(
+            reinterpret_cast<const std::byte*>(target_bytes.data()),
+            target_bytes.size());
+        PreparedTransferC2paSigningContext context;
+        PrepareTransferC2paSigningContextResult result;
+        {
+            nb::gil_scoped_release release;
+            result = prepare_c2pa_signing_context(snapshot, target, request,
+                                                  &context, policy, limits);
+        }
+        nb::dict out;
+        out["prepare_status"]      = result.prepare.status;
+        out["prepare_status_name"] = nb::str(
+            transfer_status_name(result.prepare.status));
+        out["prepare_code"]      = result.prepare.code;
+        out["prepare_code_name"] = nb::str(
+            prepare_transfer_code_name(result.prepare.code));
+        out["prepare_warnings"] = nb::int_(result.prepare.warnings);
+        out["prepare_errors"]   = nb::int_(result.prepare.errors);
+        out["prepare_message"]  = nb::str(result.prepare.message.data(),
+                                          result.prepare.message.size());
+        out["prepare_xmp_text_sanitized"] = nb::bool_(
+            result.prepare.xmp_text_sanitized);
+        out["binding"] = c2pa_binding_result_to_python(result.binding);
+        const bool metadata_usable
+            = result.prepare.status == TransferStatus::Ok
+              || (result.prepare.status == TransferStatus::Unsupported
+                  && result.prepare.code
+                         == PrepareTransferCode::RequestedMetadataNotSerializable);
+        const TransferStatus overall_status = metadata_usable
+                                                  ? result.binding.status
+                                                  : result.prepare.status;
+        out["overall_status"]               = overall_status;
+        out["overall_status_name"]          = nb::str(
+            transfer_status_name(overall_status));
+        if (overall_status == TransferStatus::Ok) {
+            out["request"] = c2pa_context_request_to_python(context);
+            out["context"] = nb::cast(std::move(context));
+        } else {
+            out["request"] = nb::none();
+            out["context"] = nb::none();
+        }
+        return out;
+    }
+
+    static nb::dict validate_c2pa_context_to_python(
+        const PreparedTransferC2paSigningContext& context,
+        nb::bytes target_bytes)
+    {
+        const std::span<const std::byte> target(
+            reinterpret_cast<const std::byte*>(target_bytes.data()),
+            target_bytes.size());
+        BuildPreparedC2paBindingResult result;
+        {
+            nb::gil_scoped_release release;
+            result = validate_prepared_c2pa_signing_context(context, target);
+        }
+        return c2pa_binding_result_to_python(result);
+    }
+
+    static nb::bytes unsafe_c2pa_context_binding_to_python(
+        const PreparedTransferC2paSigningContext& context)
+    {
+        return nb::bytes(reinterpret_cast<const char*>(
+                             context.handoff.binding_bytes.data()),
+                         context.handoff.binding_bytes.size());
+    }
+
+    static nb::dict unsafe_c2pa_context_handoff_to_python(
+        const PreparedTransferC2paSigningContext& context)
+    {
+        std::vector<std::byte> bytes;
+        PreparedTransferC2paPackageIoResult result;
+        {
+            nb::gil_scoped_release release;
+            result = serialize_prepared_c2pa_handoff_package(context.handoff,
+                                                             &bytes);
+        }
+        nb::dict out;
+        out["status"]      = result.status;
+        out["status_name"] = nb::str(transfer_status_name(result.status));
+        out["code"]        = result.code;
+        out["code_name"]   = nb::str(emit_transfer_code_name(result.code));
+        out["message"] = nb::str(result.message.data(), result.message.size());
+        out["bytes"]   = result.status == TransferStatus::Ok
+                             ? nb::object(nb::bytes(reinterpret_cast<const char*>(
+                                                      bytes.data()),
+                                                    bytes.size()))
+                             : nb::object(nb::none());
+        return out;
+    }
+
+    static nb::dict execute_c2pa_context_python_impl(
+        const PreparedTransferC2paSigningContext& context,
+        nb::bytes target_bytes, nb::object signed_payload,
+        nb::object certificate_chain, const std::string& private_key_reference,
+        const std::string& signing_time, nb::object manifest_builder_output,
+        bool apply, bool unsafe_output)
+    {
+        PreparedTransferC2paSignerInput input;
+        input.signed_c2pa_logical_payload = bytes_object_to_vector(
+            signed_payload);
+        input.certificate_chain_bytes = bytes_object_to_vector(
+            certificate_chain);
+        input.private_key_reference   = private_key_reference;
+        input.signing_time            = signing_time;
+        input.manifest_builder_output = bytes_object_to_vector(
+            manifest_builder_output);
+        const std::span<const std::byte> target(
+            reinterpret_cast<const std::byte*>(target_bytes.data()),
+            target_bytes.size());
+        ExecutePreparedTransferFileResult result;
+        {
+            nb::gil_scoped_release release;
+            result = execute_prepared_c2pa_signing_context(context, target,
+                                                           input, apply);
+        }
+        const bool expose_output
+            = unsafe_output && apply
+              && result.execute.c2pa_stage.status == TransferStatus::Ok
+              && result.execute.edit_plan_status == TransferStatus::Ok
+              && result.execute.edit_apply.status == TransferStatus::Ok;
+        return transfer_snapshot_result_to_python(
+            result, PersistPreparedTransferFileResult {}, false, apply,
+            expose_output, expose_output);
+    }
+
+    static nb::dict execute_c2pa_context_to_python(
+        const PreparedTransferC2paSigningContext& context,
+        nb::bytes target_bytes, nb::object signed_payload,
+        nb::object certificate_chain, const std::string& private_key_reference,
+        const std::string& signing_time, nb::object manifest_builder_output,
+        bool apply)
+    {
+        return execute_c2pa_context_python_impl(
+            context, target_bytes, signed_payload, certificate_chain,
+            private_key_reference, signing_time, manifest_builder_output, apply,
+            false);
+    }
+
+    static nb::dict unsafe_execute_c2pa_context_to_python(
+        const PreparedTransferC2paSigningContext& context,
+        nb::bytes target_bytes, nb::object signed_payload,
+        nb::object certificate_chain, const std::string& private_key_reference,
+        const std::string& signing_time, nb::object manifest_builder_output,
+        bool apply)
+    {
+        return execute_c2pa_context_python_impl(
+            context, target_bytes, signed_payload, certificate_chain,
+            private_key_reference, signing_time, manifest_builder_output, apply,
+            true);
+    }
+
     static nb::dict build_exr_attribute_batch_from_file_to_python(
         const std::string& path, XmpSidecarFormat format,
         bool include_pointer_tags, bool decode_makernote,
@@ -11057,6 +11291,36 @@ NB_MODULE(_openmeta, m)
             text.push_back(')');
             return text;
         });
+
+    nb::class_<PreparedTransferC2paSigningContext>(m, "C2paSigningContext")
+        .def("request", &c2pa_context_request_to_python)
+        .def("validate", &validate_c2pa_context_to_python, "target_bytes"_a)
+        .def("unsafe_binding_bytes", &unsafe_c2pa_context_binding_to_python)
+        .def("unsafe_handoff_bytes", &unsafe_c2pa_context_handoff_to_python)
+        .def("execute", &execute_c2pa_context_to_python, "target_bytes"_a,
+             "signed_payload"_a    = nb::none(),
+             "certificate_chain"_a = nb::none(), "private_key_reference"_a = "",
+             "signing_time"_a = "", "manifest_builder_output"_a = nb::none(),
+             "apply"_a = false)
+        .def("unsafe_execute", &unsafe_execute_c2pa_context_to_python,
+             "target_bytes"_a, "signed_payload"_a = nb::none(),
+             "certificate_chain"_a = nb::none(), "private_key_reference"_a = "",
+             "signing_time"_a = "", "manifest_builder_output"_a = nb::none(),
+             "apply"_a = false);
+
+    m.def("prepare_c2pa_signing_context", &prepare_c2pa_context_to_python,
+          "snapshot"_a, "target_bytes"_a,
+          "target_format"_a     = TransferTargetFormat::Jpeg,
+          "include_exif_app1"_a = true, "include_xmp_app1"_a = true,
+          "include_icc_app2"_a = true, "include_iptc_app13"_a = true,
+          "conflict_policy"_a = XmpConflictPolicy::CurrentBehavior,
+          "jumbf_policy"_a    = TransferPolicyAction::Keep,
+          "c2pa_policy"_a     = TransferPolicyAction::Rewrite,
+          "raw_carrier_passthrough_mode"_a
+          = TransferRawCarrierPassthroughMode::Disabled,
+          "policy"_a = nb::none(), "max_snapshot_entries"_a = 200000U,
+          "max_snapshot_arena_bytes"_a = 64ULL * 1024ULL * 1024ULL,
+          "max_binding_bytes"_a        = 0ULL);
 
     nb::class_<PyDocument>(m, "Document")
         .def_prop_ro("path", [](const PyDocument& d) { return d.path; })
