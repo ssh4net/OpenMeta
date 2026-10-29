@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <utility>
@@ -88,6 +89,46 @@ namespace {
         append_u32be(out, static_cast<uint32_t>(8 + payload.size()));
         append_fourcc(out, type);
         out->insert(out->end(), payload.begin(), payload.end());
+    }
+
+    static std::vector<std::byte> make_primary_item_box_file(
+        bool overflowing_size, bool split_extended_header_across_parent)
+    {
+        std::vector<std::byte> file;
+        std::vector<std::byte> ftyp_payload;
+        append_fourcc(&ftyp_payload, fourcc('h', 'e', 'i', 'c'));
+        append_u32be(&ftyp_payload, 0U);
+        append_fourcc(&ftyp_payload, fourcc('m', 'i', 'f', '1'));
+        append_bmff_box(&file, fourcc('f', 't', 'y', 'p'), ftyp_payload);
+
+        std::vector<std::byte> pitm_payload;
+        append_fullbox_header(&pitm_payload, 0U);
+        append_u16be(&pitm_payload, 0x1234U);
+
+        std::vector<std::byte> meta_payload;
+        append_fullbox_header(&meta_payload, 0U);
+        if (overflowing_size) {
+            append_u32be(&meta_payload, 1U);
+            append_fourcc(&meta_payload, fourcc('p', 'i', 't', 'm'));
+            if (split_extended_header_across_parent) {
+                append_u32be(&meta_payload, UINT32_MAX);
+            } else {
+                append_u64be(&meta_payload,
+                             std::numeric_limits<uint64_t>::max());
+                meta_payload.insert(meta_payload.end(), pitm_payload.begin(),
+                                    pitm_payload.end());
+            }
+        } else {
+            append_bmff_box(&meta_payload, fourcc('p', 'i', 't', 'm'),
+                            pitm_payload);
+        }
+        append_bmff_box(&file, fourcc('m', 'e', 't', 'a'), meta_payload);
+
+        if (overflowing_size && split_extended_header_across_parent) {
+            append_u32be(&file, UINT32_MAX);
+            file.insert(file.end(), pitm_payload.begin(), pitm_payload.end());
+        }
+        return file;
     }
 
     static void append_iref_v0_edge(std::vector<std::byte>* out, uint32_t type,
@@ -5656,6 +5697,32 @@ TEST(BmffDerivedFieldsDecode, RejectsIncompleteTiledImageLayouts)
                   std::vector<uint8_t>({ 0U }))
             << "external case " << i;
     }
+}
+
+
+TEST(BmffDerivedFieldsDecode, RejectsWrappingNonzeroOffsetBoxes)
+{
+    const std::vector<std::byte> control_file
+        = make_primary_item_box_file(false, false);
+    MetaStore control_store;
+    decode_bmff_test_file(control_file, &control_store);
+    EXPECT_EQ(collect_u32_values(control_store, "meta.primary_item_id"),
+              std::vector<uint32_t>({ 0x1234U }));
+
+    const std::vector<std::byte> wrapping_file
+        = make_primary_item_box_file(true, false);
+    MetaStore wrapping_store;
+    decode_bmff_test_file(wrapping_file, &wrapping_store);
+    EXPECT_TRUE(
+        collect_u32_values(wrapping_store, "meta.primary_item_id").empty());
+
+    const std::vector<std::byte> parent_truncated_file
+        = make_primary_item_box_file(true, true);
+    MetaStore parent_truncated_store;
+    decode_bmff_test_file(parent_truncated_file, &parent_truncated_store);
+    EXPECT_TRUE(collect_u32_values(parent_truncated_store,
+                                   "meta.primary_item_id")
+                    .empty());
 }
 
 }  // namespace openmeta

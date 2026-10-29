@@ -31,6 +31,7 @@
 #include "openmeta/validate.h"
 #include "openmeta/vendor_raw_processing.h"
 #include "openmeta/xmp_dump.h"
+#include "array_bytes.h"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/pair.h>
@@ -530,17 +531,8 @@ namespace {
     }
 
 
-    template<typename T>
-    static std::span<const T> array_span(const ByteArena& arena,
-                                         const MetaValue& v)
-    {
-        const std::span<const std::byte> bytes = arena.span(v.data.span);
-        if (bytes.size() != static_cast<size_t>(v.count) * sizeof(T)) {
-            return {};
-        }
-        return std::span<const T>(reinterpret_cast<const T*>(bytes.data()),
-                                  static_cast<size_t>(v.count));
-    }
+    using python_detail::ArrayBytes;
+    using python_detail::array_span;
 
 
     static nb::object value_to_python(const ByteArena& arena,
@@ -568,63 +560,63 @@ namespace {
 
         switch (v.elem_type) {
         case MetaElementType::U8: {
-            const std::span<const uint8_t> s = array_span<uint8_t>(arena, v);
+            const ArrayBytes<uint8_t> s = array_span<uint8_t>(arena, v);
             for (uint32_t i = 0; i < n && i < s.size(); ++i) {
                 out.append(nb::int_(s[i]));
             }
             break;
         }
         case MetaElementType::I8: {
-            const std::span<const int8_t> s = array_span<int8_t>(arena, v);
+            const ArrayBytes<int8_t> s = array_span<int8_t>(arena, v);
             for (uint32_t i = 0; i < n && i < s.size(); ++i) {
                 out.append(nb::int_(s[i]));
             }
             break;
         }
         case MetaElementType::U16: {
-            const std::span<const uint16_t> s = array_span<uint16_t>(arena, v);
+            const ArrayBytes<uint16_t> s = array_span<uint16_t>(arena, v);
             for (uint32_t i = 0; i < n && i < s.size(); ++i) {
                 out.append(nb::int_(s[i]));
             }
             break;
         }
         case MetaElementType::I16: {
-            const std::span<const int16_t> s = array_span<int16_t>(arena, v);
+            const ArrayBytes<int16_t> s = array_span<int16_t>(arena, v);
             for (uint32_t i = 0; i < n && i < s.size(); ++i) {
                 out.append(nb::int_(s[i]));
             }
             break;
         }
         case MetaElementType::U32: {
-            const std::span<const uint32_t> s = array_span<uint32_t>(arena, v);
+            const ArrayBytes<uint32_t> s = array_span<uint32_t>(arena, v);
             for (uint32_t i = 0; i < n && i < s.size(); ++i) {
                 out.append(nb::int_(s[i]));
             }
             break;
         }
         case MetaElementType::I32: {
-            const std::span<const int32_t> s = array_span<int32_t>(arena, v);
+            const ArrayBytes<int32_t> s = array_span<int32_t>(arena, v);
             for (uint32_t i = 0; i < n && i < s.size(); ++i) {
                 out.append(nb::int_(s[i]));
             }
             break;
         }
         case MetaElementType::U64: {
-            const std::span<const uint64_t> s = array_span<uint64_t>(arena, v);
+            const ArrayBytes<uint64_t> s = array_span<uint64_t>(arena, v);
             for (uint32_t i = 0; i < n && i < s.size(); ++i) {
                 out.append(nb::int_(s[i]));
             }
             break;
         }
         case MetaElementType::I64: {
-            const std::span<const int64_t> s = array_span<int64_t>(arena, v);
+            const ArrayBytes<int64_t> s = array_span<int64_t>(arena, v);
             for (uint32_t i = 0; i < n && i < s.size(); ++i) {
                 out.append(nb::int_(s[i]));
             }
             break;
         }
         case MetaElementType::F32: {
-            const std::span<const uint32_t> s = array_span<uint32_t>(arena, v);
+            const ArrayBytes<uint32_t> s = array_span<uint32_t>(arena, v);
             for (uint32_t i = 0; i < n && i < s.size(); ++i) {
                 out.append(nb::float_(
                     static_cast<double>(std::bit_cast<float>(s[i]))));
@@ -632,15 +624,14 @@ namespace {
             break;
         }
         case MetaElementType::F64: {
-            const std::span<const uint64_t> s = array_span<uint64_t>(arena, v);
+            const ArrayBytes<uint64_t> s = array_span<uint64_t>(arena, v);
             for (uint32_t i = 0; i < n && i < s.size(); ++i) {
                 out.append(nb::float_(std::bit_cast<double>(s[i])));
             }
             break;
         }
         case MetaElementType::URational: {
-            const std::span<const URational> s = array_span<URational>(arena,
-                                                                       v);
+            const ArrayBytes<URational> s = array_span<URational>(arena, v);
             for (uint32_t i = 0; i < n && i < s.size(); ++i) {
                 out.append(
                     nb::make_tuple(nb::int_(s[i].numer), nb::int_(s[i].denom)));
@@ -648,8 +639,7 @@ namespace {
             break;
         }
         case MetaElementType::SRational: {
-            const std::span<const SRational> s = array_span<SRational>(arena,
-                                                                       v);
+            const ArrayBytes<SRational> s = array_span<SRational>(arena, v);
             for (uint32_t i = 0; i < n && i < s.size(); ++i) {
                 out.append(
                     nb::make_tuple(nb::int_(s[i].numer), nb::int_(s[i].denom)));

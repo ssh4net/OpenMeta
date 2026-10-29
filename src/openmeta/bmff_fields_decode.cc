@@ -23,10 +23,17 @@ namespace {
     }
 
 
+    static constexpr bool checked_range(uint64_t offset, uint64_t length,
+                                        uint64_t total) noexcept
+    {
+        return offset <= total && length <= total - offset;
+    }
+
+
     static bool read_u16be(std::span<const std::byte> bytes, uint64_t offset,
                            uint16_t* out) noexcept
     {
-        if (!out || offset + 2 > bytes.size()) {
+        if (!out || !checked_range(offset, 2U, bytes.size())) {
             return false;
         }
         const uint16_t v = static_cast<uint16_t>(u8(bytes[offset + 0]) << 8)
@@ -39,7 +46,7 @@ namespace {
     static bool read_u32be(std::span<const std::byte> bytes, uint64_t offset,
                            uint32_t* out) noexcept
     {
-        if (!out || offset + 4 > bytes.size()) {
+        if (!out || !checked_range(offset, 4U, bytes.size())) {
             return false;
         }
         uint32_t v = 0;
@@ -70,7 +77,7 @@ namespace {
     static bool read_u64be(std::span<const std::byte> bytes, uint64_t offset,
                            uint64_t* out) noexcept
     {
-        if (!out || offset + 8 > bytes.size()) {
+        if (!out || !checked_range(offset, 8U, bytes.size())) {
             return false;
         }
         uint64_t v = 0;
@@ -112,10 +119,9 @@ namespace {
                                uint64_t offset, uint64_t parent_end,
                                BmffBox* out) noexcept
     {
-        if (!out) {
-            return false;
-        }
-        if (offset + 8 > parent_end || offset + 8 > bytes.size()) {
+        const uint64_t bytes_size = static_cast<uint64_t>(bytes.size());
+        if (!out || !checked_range(offset, 8U, parent_end)
+            || !checked_range(offset, 8U, bytes_size)) {
             return false;
         }
         uint32_t size32 = 0;
@@ -129,7 +135,9 @@ namespace {
         uint64_t box_size    = size32;
         if (size32 == 1) {
             uint64_t size64 = 0;
-            if (!read_u64be(bytes, offset + 8, &size64)) {
+            if (!checked_range(offset, 16U, parent_end)
+                || !checked_range(offset, 16U, bytes_size)
+                || !read_u64be(bytes, offset + 8U, &size64)) {
                 return false;
             }
             header_size = 16;
@@ -141,8 +149,8 @@ namespace {
         if (box_size < header_size) {
             return false;
         }
-        if (offset + box_size > parent_end
-            || offset + box_size > bytes.size()) {
+        if (!checked_range(offset, box_size, parent_end)
+            || !checked_range(offset, box_size, bytes_size)) {
             return false;
         }
 
@@ -154,7 +162,7 @@ namespace {
             }
             has_uuid                = true;
             const uint64_t uuid_off = offset + header_size;
-            if (uuid_off + 16 > bytes.size()) {
+            if (!checked_range(uuid_off, 16U, bytes_size)) {
                 return false;
             }
             for (uint32_t i = 0; i < 16; ++i) {

@@ -1809,8 +1809,10 @@ namespace {
     print_transfer_payload_view_summary(const PreparedTransferPayloadView& view,
                                         uint32_t index)
     {
+        const std::string route = console_path(view.route);
+        const std::string semantic = console_path(view.semantic_name);
         std::printf("  [%u] semantic=%s route=%s size=%llu op=%s", index,
-                    view.semantic_name.data(), view.route.data(),
+                    semantic.c_str(), route.c_str(),
                     static_cast<unsigned long long>(view.payload.size()),
                     transfer_adapter_op_kind_name(view.op.kind));
         switch (view.op.kind) {
@@ -1872,10 +1874,10 @@ namespace {
     {
         const std::string_view semantic = transfer_semantic_name(
             view.semantic_kind);
-        const char* route = view.route.empty() ? "-" : view.route.data();
+        const std::string route = view.route.empty() ? "-" : console_path(view.route);
         std::printf(
             "  [%u] semantic=%.*s route=%s size=%llu chunk=%s offset=%llu",
-            index, static_cast<int>(semantic.size()), semantic.data(), route,
+            index, static_cast<int>(semantic.size()), semantic.data(), route.c_str(),
             static_cast<unsigned long long>(view.bytes.size()),
             transfer_package_chunk_kind_name(view.package_kind),
             static_cast<unsigned long long>(view.output_offset));

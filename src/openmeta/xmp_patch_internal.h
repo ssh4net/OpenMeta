@@ -14,6 +14,7 @@ struct XmpScalarPatchSlot final {
     uint64_t byte_offset = 0U;
     uint64_t byte_width  = 0U;
     uint32_t matches     = 0U;
+    bool invalid_utf8    = false;
 };
 
 XmpDumpResult

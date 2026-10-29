@@ -560,6 +560,8 @@ namespace {
             if (source.matches != 1U)
                 return metadata_patch_error(MetadataPatchCode::AmbiguousProperty,
                                             i);
+            if (source.invalid_utf8)
+                return metadata_patch_error(MetadataPatchCode::InvalidMetadata, i);
             if (source.byte_width != requests[i].escaped_width)
                 return metadata_patch_error(MetadataPatchCode::WidthMismatch,
                                             i);

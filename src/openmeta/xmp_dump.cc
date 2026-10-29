@@ -120,6 +120,7 @@ namespace {
         uint64_t written    = 0;
         uint64_t needed     = 0;
         bool limit_hit      = false;
+        bool invalid_scalar_utf8 = false;
         std::span<detail::XmpScalarPatchSlot> patch_slots;
         std::span<const XmpNsDecl> patch_namespaces;
 
@@ -139,6 +140,7 @@ namespace {
                 if (slot.ns_uri == uri && slot.property_path == name) {
                     slot.byte_offset = begin;
                     slot.byte_width  = needed - begin;
+                    slot.invalid_utf8 = invalid_scalar_utf8;
                     if (slot.matches != UINT32_MAX)
                         ++slot.matches;
                 }
@@ -334,6 +336,51 @@ namespace {
 
         for (size_t i = 0; i < s.size(); ++i) {
             const uint8_t c = static_cast<uint8_t>(s[i]);
+            if (c >= 0x80U) {
+                size_t length = 0U;
+                uint32_t codepoint = 0U;
+                if (c >= 0xc2U && c <= 0xdfU) {
+                    length = 2U;
+                    codepoint = c & 0x1fU;
+                } else if (c >= 0xe0U && c <= 0xefU) {
+                    length = 3U;
+                    codepoint = c & 0x0fU;
+                } else if (c >= 0xf0U && c <= 0xf4U) {
+                    length = 4U;
+                    codepoint = c & 0x07U;
+                }
+                bool valid = length != 0U && length <= s.size() - i;
+                for (size_t j = 1U; valid && j < length; ++j) {
+                    const uint8_t next = static_cast<uint8_t>(s[i + j]);
+                    if ((next & 0xc0U) != 0x80U) {
+                        valid = false;
+                    } else {
+                        codepoint = (codepoint << 6U) | (next & 0x3fU);
+                    }
+                }
+                if (valid && ((length == 3U && codepoint < 0x800U)
+                              || (length == 4U && codepoint < 0x10000U)
+                              || (codepoint >= 0xd800U && codepoint <= 0xdfffU)
+                              || codepoint > 0x10ffffU || codepoint == 0xfffeU
+                              || codepoint == 0xffffU)) {
+                    valid = false;
+                }
+                if (valid) {
+                    w->append(s.substr(i, length));
+                    i += length - 1U;
+                } else {
+                    w->invalid_scalar_utf8 = true;
+                    char buf[5];
+                    static constexpr char hex[] = "0123456789ABCDEF";
+                    buf[0] = '\\';
+                    buf[1] = 'x';
+                    buf[2] = hex[(c >> 4) & 0x0fU];
+                    buf[3] = hex[c & 0x0fU];
+                    buf[4] = '\0';
+                    w->append(buf);
+                }
+                continue;
+            }
             if (c == static_cast<uint8_t>('&')) {
                 w->append("&amp;");
                 continue;
@@ -998,8 +1045,8 @@ namespace {
             w->append("psirb_field:");
             append_u16_hex(e.key.data.photoshop_irb_field.resource_id, w);
             w->append(":");
-            w->append(
-                arena_string(arena, e.key.data.photoshop_irb_field.field));
+            append_xml_safe_ascii(
+                arena_string(arena, e.key.data.photoshop_irb_field.field), w);
             break;
         case MetaKeyKind::GeotiffKey:
             w->append("geotiff:");
@@ -3262,6 +3309,7 @@ namespace {
         w->append(name);
         w->append(">");
         const uint64_t patch_begin = w->needed;
+        w->invalid_scalar_utf8 = false;
         if ((prefix == "exif" || prefix == "exifEX")
             && (name == "Gamma" || name == "CompressedBitsPerPixel")
             && v.kind == MetaValueKind::Scalar
@@ -3328,6 +3376,7 @@ namespace {
         w->append(name);
         w->append(">");
         const uint64_t patch_begin = w->needed;
+        w->invalid_scalar_utf8 = false;
         append_xml_safe_ascii(value, w);
         w->record_scalar(prefix, name, patch_begin);
         w->append("</");
@@ -3353,6 +3402,7 @@ namespace {
         w->append(name);
         w->append(">");
         const uint64_t patch_begin = w->needed;
+        w->invalid_scalar_utf8 = false;
         append_xml_safe_utf8(value, w);
         w->record_scalar(prefix, name, patch_begin);
         w->append("</");
@@ -14444,6 +14494,7 @@ dump_xmp_portable_impl(const MetaStore& store, std::span<std::byte> out,
         slot.byte_offset = 0U;
         slot.byte_width  = 0U;
         slot.matches     = 0U;
+        slot.invalid_utf8 = false;
     }
     w.patch_slots = patch_slots;
 

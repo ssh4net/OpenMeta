@@ -1,10 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "openmeta/meta_edit.h"
+#include "../src/python/src/array_bytes.h"
 
 #include <gtest/gtest.h>
 
 namespace openmeta {
+
+TEST(MetaStoreTest, PythonArrayAccessHandlesUnalignedArenaBytes)
+{
+    ByteArena arena;
+    arena.append_string("x");
+    const uint32_t values[] = { 0x12345678U, 0x90abcdefU };
+    const auto bytes = std::as_bytes(std::span(values));
+    const MetaValue value = make_array(arena, MetaElementType::U32, bytes,
+                                       sizeof(uint32_t));
+    ASSERT_EQ(value.data.span.offset, 1U);
+    ASSERT_NE(reinterpret_cast<uintptr_t>(arena.span(value.data.span).data())
+                  % alignof(uint32_t),
+              0U);
+    const python_detail::ArrayBytes<uint32_t> view
+        = python_detail::array_span<uint32_t>(arena, value);
+    ASSERT_EQ(view.size(), 2U);
+    EXPECT_EQ(view[0], values[0]);
+    EXPECT_EQ(view[1], values[1]);
+    MetaValue malformed = value;
+    malformed.count = 3U;
+    EXPECT_EQ(python_detail::array_span<uint32_t>(arena, malformed).size(), 0U);
+}
 
 static MetaStore
 make_finalized_empty_store(uint32_t max_entries, uint64_t max_arena_bytes)

@@ -239,7 +239,9 @@ namespace {
                                uint64_t offset, uint64_t parent_end,
                                BmffBox* out) noexcept
     {
-        if (!out || offset + 8U > parent_end || offset + 8U > bytes.size()) {
+        const uint64_t bytes_size = static_cast<uint64_t>(bytes.size());
+        if (!out || offset > parent_end || offset > bytes_size
+            || 8U > parent_end - offset || 8U > bytes_size - offset) {
             return false;
         }
 
@@ -254,7 +256,8 @@ namespace {
         uint64_t box_size    = size32;
         if (size32 == 1U) {
             uint64_t size64 = 0;
-            if (!read_u64be(bytes, offset + 8U, &size64)) {
+            if (16U > parent_end - offset || 16U > bytes_size - offset
+                || !read_u64be(bytes, offset + 8U, &size64)) {
                 return false;
             }
             header_size = 16U;
@@ -266,8 +269,7 @@ namespace {
         if (box_size < header_size) {
             return false;
         }
-        if (offset + box_size > parent_end
-            || offset + box_size > bytes.size()) {
+        if (box_size > parent_end - offset || box_size > bytes_size - offset) {
             return false;
         }
 

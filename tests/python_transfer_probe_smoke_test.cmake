@@ -55,6 +55,20 @@ p_orient_default = Path(r'''${WORK_DIR}/orient_default.tif''')
 p_orient_xmp = Path(r'''${WORK_DIR}/orient_xmp.jpg''')
 p_dng_target = Path(r'''${WORK_DIR}/target_sdk.dng''')
 p_dng_target_helper = Path(r'''${WORK_DIR}/target_sdk_helper.dng''')
+p_array = Path(r'''${WORK_DIR}/array_values.tif''')
+array_tiff = bytearray([73, 73, 42, 0])
+array_tiff += (8).to_bytes(4, 'little')
+array_tiff += (2).to_bytes(2, 'little')
+array_tiff += (0x010f).to_bytes(2, 'little') + (2).to_bytes(2, 'little')
+array_tiff += (3).to_bytes(4, 'little') + bytes([97, 98, 0, 0])
+array_tiff += (0x0102).to_bytes(2, 'little') + (3).to_bytes(2, 'little')
+array_tiff += (3).to_bytes(4, 'little') + (38).to_bytes(4, 'little')
+array_tiff += (0).to_bytes(4, 'little')
+array_tiff += (8).to_bytes(2, 'little') + (12).to_bytes(2, 'little') + (16).to_bytes(2, 'little')
+p_array.write_bytes(array_tiff)
+array_entry = openmeta.read(str(p_array)).find_exif('ifd0', 0x0102)[0]
+assert list(array_entry.value()) == [8, 12, 16]
+assert list(array_entry.value(max_elements=2)) == [8, 12]
 t = bytearray()
 t += b'II*\\x00'
 t += (8).to_bytes(4, 'little')

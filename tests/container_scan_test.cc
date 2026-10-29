@@ -1151,6 +1151,59 @@ namespace {
         EXPECT_EQ(est_auto.needed, 4U);
     }
 
+    TEST(ContainerScan, JpegSignatureProbesStayWithinSegmentPayload)
+    {
+        struct SignatureCase final {
+            uint16_t marker;
+            ContainerBlockKind kind;
+            std::string_view signature;
+        };
+        const std::array<SignatureCase, 3U> cases = {{
+            { 0xFFE1U, ContainerBlockKind::Xmp,
+              std::string_view("http://ns.adobe.com/xap/1.0/\0", 29U) },
+            { 0xFFE2U, ContainerBlockKind::Mpf,
+              std::string_view("MPF\0", 4U) },
+            { 0xFFEDU, ContainerBlockKind::PhotoshopIrB,
+              std::string_view("Photoshop 3.0\0", 14U) },
+        }};
+
+        for (const SignatureCase& test_case : cases) {
+            std::vector<std::byte> valid_jpeg = {
+                std::byte { 0xFF }, std::byte { 0xD8 } };
+            std::vector<std::byte> valid_payload;
+            append_bytes(&valid_payload, test_case.signature);
+            append_bytes(&valid_payload, "DATA");
+            append_jpeg_segment(&valid_jpeg, test_case.marker, valid_payload);
+            valid_jpeg.push_back(std::byte { 0xFF });
+            valid_jpeg.push_back(std::byte { 0xD9 });
+
+            std::array<ContainerBlockRef, 4U> valid_blocks {};
+            const ScanResult valid = scan_jpeg(valid_jpeg, valid_blocks);
+            ASSERT_EQ(valid.status, ScanStatus::Ok);
+            ASSERT_EQ(valid.written, 1U);
+            EXPECT_EQ(valid_blocks[0].kind, test_case.kind);
+            EXPECT_EQ(valid_blocks[0].data_offset,
+                      6U + static_cast<uint64_t>(test_case.signature.size()));
+            EXPECT_EQ(valid_blocks[0].data_size, 4U);
+            EXPECT_LE(valid_blocks[0].data_offset + valid_blocks[0].data_size,
+                      valid_jpeg.size());
+
+            std::vector<std::byte> short_jpeg = {
+                std::byte { 0xFF }, std::byte { 0xD8 } };
+            std::vector<std::byte> short_payload;
+            append_bytes(&short_payload, test_case.signature.substr(0U, 1U));
+            append_jpeg_segment(&short_jpeg, test_case.marker, short_payload);
+            append_bytes(&short_jpeg, test_case.signature.substr(1U));
+            short_jpeg.push_back(std::byte { 0xFF });
+            short_jpeg.push_back(std::byte { 0xD9 });
+
+            std::array<ContainerBlockRef, 4U> short_blocks {};
+            const ScanResult short_result = scan_jpeg(short_jpeg, short_blocks);
+            EXPECT_EQ(short_result.status, ScanStatus::Malformed);
+            EXPECT_EQ(short_result.written, 0U);
+        }
+    }
+
     TEST(ContainerScan, JpegRandomAccessMatchesContiguousDescriptors)
     {
         std::vector<std::byte> jpeg = { std::byte { 0xFF },
@@ -1206,6 +1259,17 @@ namespace {
         };
         append_ambiguous_app11("EF");
         append_ambiguous_app11("GH");
+
+        std::vector<std::byte> standard_xmp;
+        append_bytes(&standard_xmp,
+                     std::string_view("http://ns.adobe.com/xap/1.0/\0", 29U));
+        append_bytes(&standard_xmp, "DATA");
+        append_jpeg_segment(&jpeg, 0xFFE1U, standard_xmp);
+
+        std::vector<std::byte> mpf;
+        append_bytes(&mpf, std::string_view("MPF\0", 4U));
+        append_bytes(&mpf, "DATA");
+        append_jpeg_segment(&jpeg, 0xFFE2U, mpf);
 
         const std::array<std::byte, 4> app4 = {
             std::byte { 'D' },

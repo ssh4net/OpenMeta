@@ -166,6 +166,22 @@ namespace {
     };
 
     static bool
+    exr_projected_attribute_name_is_safe(std::string_view name) noexcept
+    {
+        if (name.empty() || name.size() > 255U) {
+            return false;
+        }
+        for (size_t i = 0U; i < name.size(); ++i) {
+            const unsigned char byte
+                = static_cast<unsigned char>(name[i]);
+            if (byte < 0x20U || byte == 0x7FU) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool
     exr_projected_name_is_numeric_unknown(std::string_view name) noexcept
     {
         for (size_t i = 0; i + 2 < name.size(); ++i) {
@@ -452,6 +468,17 @@ namespace {
 
             if (!has_value && !exr_projected_name_is_numeric_unknown(item.name)
                 && item.name != "Exif:MakerNote") {
+                return;
+            }
+            if (!exr_projected_attribute_name_is_safe(item.name)) {
+                status_ = InteropSafetyStatus::UnsafeData;
+                if (error_) {
+                    error_->reason     = InteropSafetyReason::UnsafeBytes;
+                    error_->field_name = "EXR attribute name";
+                    error_->key_path   = "EXR attribute name";
+                    error_->message = "EXR attribute name is empty, exceeds "
+                                      "255 bytes, or contains a control byte";
+                }
                 return;
             }
 
@@ -14125,19 +14152,33 @@ prepare_metadata_for_target_impl(const MetaStore& store,
             return r;
         }
 
-        std::vector<std::string> used_names;
-        used_names.reserve(attrs.size());
-        uint32_t order = next_prepared_block_order(bundle, 100U);
+        std::vector<std::string> unique_names;
+        unique_names.reserve(attrs.size());
         for (size_t i = 0; i < attrs.size(); ++i) {
             const std::string unique_name
-                = make_unique_exr_attribute_name(used_names, attrs[i].name);
-            used_names.push_back(unique_name);
+                = make_unique_exr_attribute_name(unique_names, attrs[i].name);
+            if (!exr_projected_attribute_name_is_safe(unique_name)) {
+                r.status = TransferStatus::Unsupported;
+                r.code
+                    = PrepareTransferCode::RequestedMetadataNotSerializable;
+                r.errors  = 1U;
+                r.message = "exr attribute name exceeds the 255-byte limit "
+                            "after duplicate suffixing";
+                *out_bundle = std::move(bundle);
+                return r;
+            }
+            unique_names.push_back(unique_name);
+        }
+
+        uint32_t order = next_prepared_block_order(bundle, 100U);
+        for (size_t i = 0; i < attrs.size(); ++i) {
 
             PreparedTransferBlock block;
             block.kind  = TransferBlockKind::ExrAttribute;
             block.order = order;
             block.route = "exr:attribute-string";
-            serialize_exr_string_attribute_payload(unique_name, attrs[i].value,
+            serialize_exr_string_attribute_payload(unique_names[i],
+                                                   attrs[i].value,
                                                    &block.payload);
             bundle.blocks.push_back(std::move(block));
             order += 1U;
@@ -32974,6 +33015,12 @@ namespace {
                 }
                 break;
             }
+            default:
+                out.status = TransferStatus::InvalidArgument;
+                out.code = EmitTransferCode::PlanMismatch;
+                out.errors = 1U;
+                out.message = "prepared transfer payload batch unknown op kind";
+                return out;
             }
         }
 

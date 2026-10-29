@@ -85,6 +85,17 @@ namespace {
     }
 
 
+    static bool match_segment_payload(std::span<const std::byte> bytes,
+                                      uint64_t payload_offset,
+                                      uint64_t payload_size, const char* s,
+                                      uint32_t s_len) noexcept
+    {
+        return s_len <= payload_size
+               && checked_range(payload_offset, payload_size, bytes.size())
+               && match(bytes, payload_offset, s, s_len);
+    }
+
+
     static bool match_bytes(std::span<const std::byte> bytes, uint64_t offset,
                             const std::byte* data, uint32_t data_len) noexcept
     {
@@ -762,7 +773,8 @@ scan_jpeg(std::span<const std::byte> bytes,
 
         if (marker == 0xFFE1) {
             if (seg_payload_size >= 10
-                && match(bytes, seg_payload_off, "Exif", 4)
+                && match_segment_payload(bytes, seg_payload_off,
+                                         seg_payload_size, "Exif", 4)
                 && u8(bytes[seg_payload_off + 4]) == 0) {
                 ContainerBlockRef block;
                 block.format       = ContainerFormat::Jpeg;
@@ -776,8 +788,9 @@ scan_jpeg(std::span<const std::byte> bytes,
                 if (block.data_offset != seg_payload_off) {
                     sink_emit(&sink, block);
                 }
-            } else if (match(bytes, seg_payload_off,
-                             "http://ns.adobe.com/xap/1.0/\0", 29)) {
+            } else if (match_segment_payload(
+                           bytes, seg_payload_off, seg_payload_size,
+                           "http://ns.adobe.com/xap/1.0/\0", 29)) {
                 ContainerBlockRef block;
                 block.format       = ContainerFormat::Jpeg;
                 block.kind         = ContainerBlockKind::Xmp;
@@ -798,8 +811,9 @@ scan_jpeg(std::span<const std::byte> bytes,
                 block.data_size    = seg_payload_size;
                 block.id           = marker;
                 sink_emit(&sink, block);
-            } else if (match(bytes, seg_payload_off,
-                             "http://ns.adobe.com/xmp/extension/\0", 35)) {
+            } else if (match_segment_payload(
+                           bytes, seg_payload_off, seg_payload_size,
+                           "http://ns.adobe.com/xmp/extension/\0", 35)) {
                 // Extended XMP:
                 // signature (35) + guid (32) + full_len (4) + offset (4) + data...
                 if (seg_payload_size >= 35 + 32 + 8) {
@@ -828,7 +842,8 @@ scan_jpeg(std::span<const std::byte> bytes,
                     }
                 }
             } else if (seg_payload_size >= 4
-                       && match(bytes, seg_payload_off, "QVCI", 4)) {
+                       && match_segment_payload(bytes, seg_payload_off,
+                                                seg_payload_size, "QVCI", 4)) {
                 // Casio QV-7000SX: APP1 "QVCI" maker note directory.
                 ContainerBlockRef block;
                 block.format       = ContainerFormat::Jpeg;
@@ -841,7 +856,8 @@ scan_jpeg(std::span<const std::byte> bytes,
                 block.aux_u32      = fourcc('Q', 'V', 'C', 'I');
                 sink_emit(&sink, block);
             } else if (seg_payload_size >= 8
-                       && match(bytes, seg_payload_off, "FLIR", 4)
+                       && match_segment_payload(bytes, seg_payload_off,
+                                                seg_payload_size, "FLIR", 4)
                        && u8(bytes[seg_payload_off + 4]) == 0) {
                 // FLIR: APP1 multi-part stream containing an FFF/AFF payload.
                 // Preamble:
@@ -863,7 +879,8 @@ scan_jpeg(std::span<const std::byte> bytes,
                 sink_emit(&sink, block);
             }
         } else if (marker == 0xFFE2) {
-            if (match(bytes, seg_payload_off, "ICC_PROFILE\0", 12)) {
+            if (match_segment_payload(bytes, seg_payload_off, seg_payload_size,
+                                      "ICC_PROFILE\0", 12)) {
                 if (seg_payload_size >= 14) {
                     const uint8_t seq = u8(bytes[seg_payload_off + 12]);
                     const uint8_t tot = u8(bytes[seg_payload_off + 13]);
@@ -882,7 +899,8 @@ scan_jpeg(std::span<const std::byte> bytes,
                     block.part_count   = tot;
                     sink_emit(&sink, block);
                 }
-            } else if (match(bytes, seg_payload_off, "MPF\0", 4)) {
+            } else if (match_segment_payload(bytes, seg_payload_off,
+                                             seg_payload_size, "MPF\0", 4)) {
                 ContainerBlockRef block;
                 block.format       = ContainerFormat::Jpeg;
                 block.kind         = ContainerBlockKind::Mpf;
@@ -967,7 +985,8 @@ scan_jpeg(std::span<const std::byte> bytes,
                 }
             }
         } else if (marker == 0xFFED) {
-            if (match(bytes, seg_payload_off, "Photoshop 3.0\0", 14)) {
+            if (match_segment_payload(bytes, seg_payload_off, seg_payload_size,
+                                      "Photoshop 3.0\0", 14)) {
                 ContainerBlockRef block;
                 block.format       = ContainerFormat::Jpeg;
                 block.kind         = ContainerBlockKind::PhotoshopIrB;

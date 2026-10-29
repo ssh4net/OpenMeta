@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -164,6 +165,27 @@ namespace {
         return bytes;
     }
 
+
+    static std::vector<std::byte> make_cr3_with_wrapping_size64_box()
+    {
+        std::vector<std::byte> bytes;
+
+        // The trailing zero word makes a sum-based range check resume one byte
+        // before the oversized box as a zero-sized box.
+        append_u32be(&bytes, 28U);
+        append_bytes(&bytes, "ftyp");
+        append_bytes(&bytes, "crx ");
+        append_u32be(&bytes, 0U);
+        append_bytes(&bytes, "isom");
+        append_bytes(&bytes, "crx ");
+        append_u32be(&bytes, 0U);
+
+        append_u32be(&bytes, 1U);
+        append_bytes(&bytes, "free");
+        append_u64be(&bytes, std::numeric_limits<uint64_t>::max());
+        return bytes;
+    }
+
 }  // namespace
 
 TEST(PreviewExtract, FindsExifJpegInterchangeCandidate)
@@ -309,6 +331,25 @@ TEST(PreviewExtract, FindsCr3PrvwJpegCandidate)
     EXPECT_EQ(static_cast<uint8_t>(out[0]), 0xFFU);
     EXPECT_EQ(static_cast<uint8_t>(out[1]), 0xD8U);
     EXPECT_EQ(static_cast<uint8_t>(out[3]), 0xD9U);
+}
+
+
+TEST(PreviewExtract, RejectsCr3BoxWithWrappingSize64)
+{
+    const std::vector<std::byte> bytes = make_cr3_with_wrapping_size64_box();
+    std::array<PreviewCandidate, 4U> previews {};
+    PreviewScanOptions options;
+    options.include_exif_jpeg_interchange = false;
+    options.include_jpg_from_raw          = false;
+    options.include_cr3_prvw_jpeg         = true;
+
+    const PreviewScanResult res = find_preview_candidates(
+        std::span<const std::byte>(bytes.data(), bytes.size()),
+        std::span<const ContainerBlockRef> {},
+        std::span<PreviewCandidate>(previews.data(), previews.size()), options);
+
+    EXPECT_EQ(res.status, PreviewScanStatus::Malformed);
+    EXPECT_EQ(res.written, 0U);
 }
 
 }  // namespace openmeta

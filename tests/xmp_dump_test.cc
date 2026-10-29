@@ -295,6 +295,49 @@ TEST(XmpDump, SidecarRequestPortableEscapesUnsafeText)
               std::string_view::npos);
 }
 
+TEST(XmpDump, EscapesOpaqueKeysAndMalformedUtf8)
+{
+    MetaStore store;
+    const BlockId block = store.add_block(BlockInfo {});
+    Entry key;
+    key.key.kind = MetaKeyKind::PhotoshopIrbField;
+    key.key.data.photoshop_irb_field.resource_id = 0x0404U;
+    key.key.data.photoshop_irb_field.field = store.arena().append_string(
+        "</omd:key><evil a='x'>&");
+    key.value = make_u32(1U);
+    key.origin.block = block;
+    ASSERT_NE(store.add_entry(key), kInvalidEntryId);
+
+    Entry label;
+    label.key = make_xmp_property_key(store.arena(),
+                                      "http://ns.adobe.com/xap/1.0/", "Label");
+    std::string text = "valid ";
+    text.append("\xc3\xa9", 2U);
+    text.append("\xc0\xaf\xed\xa0\x80\xef\xbf\xbe\xf4\x90\x80\x80", 12U);
+    label.value = make_text(store.arena(), text, TextEncoding::Utf8);
+    label.origin.block = block;
+    ASSERT_NE(store.add_entry(label), kInvalidEntryId);
+    store.finalize();
+
+    XmpSidecarOptions lossless;
+    lossless.format = XmpSidecarFormat::Lossless;
+    std::vector<std::byte> output;
+    ASSERT_EQ(dump_xmp_sidecar(store, &output, lossless).status, XmpDumpStatus::Ok);
+    std::string xml(reinterpret_cast<const char*>(output.data()), output.size());
+    EXPECT_EQ(xml.find("</omd:key><evil"), std::string::npos);
+    EXPECT_NE(xml.find("&lt;/omd:key&gt;&lt;evil a='x'&gt;&amp;"), std::string::npos);
+
+    XmpSidecarRequest portable;
+    portable.format = XmpSidecarFormat::Portable;
+    portable.include_exif = false;
+    portable.include_existing_xmp = true;
+    ASSERT_EQ(dump_xmp_sidecar(store, &output, portable).status, XmpDumpStatus::Ok);
+    xml.assign(reinterpret_cast<const char*>(output.data()), output.size());
+    EXPECT_NE(xml.find("valid \xc3\xa9\\xC0\\xAF\\xED\\xA0\\x80"
+                       "\\xEF\\xBF\\xBE\\xF4\\x90\\x80\\x80"),
+              std::string::npos);
+}
+
 
 TEST(XmpDump, EmitsPortablePacketWithExifAndTiff)
 {

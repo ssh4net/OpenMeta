@@ -380,6 +380,24 @@ namespace {
         ASSERT_EQ(dump_xmp_sidecar(store, &ordinary, dump_options).status,
                   XmpDumpStatus::Ok);
         EXPECT_TRUE(same(plan.payload(MetadataPatchPayload::Xmp), ordinary));
+
+        const std::array shadowed_entries = {
+            author(make_exif_tag_key_view("exififd", 0x9003U),
+                   make_value_view_text("2026:09:12 23:59:59", TextEncoding::Ascii)),
+            author(make_xmp_property_key_view(kExif, "DateTimeOriginal"),
+                   make_value_view_text("\xC0\xAF", TextEncoding::Utf8)),
+        };
+        MetaStore shadowed_store;
+        ASSERT_TRUE(create_metadata_store(shadowed_entries, &shadowed_store,
+                                          { .validate = false }).ok());
+        options.validate = false;
+        options.xmp.conflict_policy = XmpConflictPolicy::GeneratedWins;
+        EXPECT_TRUE(prepare_metadata_patch_plan(shadowed_store, { &request, 1U },
+                                               options, { &handle, 1U }, &plan).ok());
+        options.xmp.conflict_policy = XmpConflictPolicy::ExistingWins;
+        EXPECT_EQ(prepare_metadata_patch_plan(shadowed_store, { &request, 1U },
+                                              options, { &handle, 1U }, &plan).code,
+                  MetadataPatchCode::InvalidMetadata);
         options.xmp.conflict_policy = XmpConflictPolicy::ExistingWins;
         EXPECT_EQ(prepare_metadata_patch_plan(store, { &request, 1U }, options,
                                               { &handle, 1U }, &plan)
