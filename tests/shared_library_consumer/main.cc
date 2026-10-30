@@ -22,6 +22,67 @@
 #include <vector>
 
 static bool
+native_iptc_patch_contract_matches()
+{
+    openmeta::MetadataAuthoringEntry entry;
+    entry.key   = openmeta::make_iptc_dataset_key_view(2U, 5U);
+    entry.value = openmeta::make_value_view_text("Before",
+                                                 openmeta::TextEncoding::Utf8);
+    openmeta::MetaStore store;
+    if (!openmeta::create_metadata_store({ &entry, 1U }, &store).ok()) {
+        return false;
+    }
+    openmeta::MetadataPatchRequest request;
+    request.key      = entry.key;
+    request.expected = { openmeta::MetaValueKind::Text,
+                         openmeta::MetaElementType::U8,
+                         openmeta::TextEncoding::Utf8, 6U };
+    openmeta::MetadataPatchPlanOptions options { .plan_id = 2U };
+    options.iptc.max_output_bytes = 64U;
+    std::array<openmeta::MetadataPatchHandle, 1U> handles;
+    openmeta::PreparedMetadataPatchPlan plan;
+    const openmeta::MetadataPatchResult prepared
+        = openmeta::prepare_metadata_patch_plan(store, { &request, 1U },
+                                                options, handles, &plan);
+    if (!prepared.ok()
+        || prepared.iptc_status != openmeta::IptcIimSerializeStatus::Ok) {
+        return false;
+    }
+    openmeta::PreparedMetadataPatchInstance worker;
+    if (!openmeta::create_prepared_metadata_patch_instance(plan, &worker).ok()) {
+        return false;
+    }
+    options.plan_id               = 3U;
+    options.iptc.max_output_bytes = 10U;
+    const openmeta::MetadataPatchResult limited
+        = openmeta::prepare_metadata_patch_plan(store, { &request, 1U },
+                                                options, handles, &plan);
+    const openmeta::MetadataPatchUpdate update {
+        handles[0],
+        openmeta::make_value_view_text("After!", openmeta::TextEncoding::Utf8)
+    };
+    const openmeta::MetadataPatchResult patched
+        = openmeta::patch_prepared_metadata_instance(&worker, { &update, 1U });
+    const std::span<const std::byte> initial = plan.payload(
+        openmeta::MetadataPatchPayload::IptcIim);
+    const std::span<const std::byte> changed = worker.payload(
+        openmeta::MetadataPatchPayload::IptcIim);
+    return openmeta::metadata_patch_contract_version() == 2U
+           && limited.code == openmeta::MetadataPatchCode::LimitExceeded
+           && limited.iptc_status
+                  == openmeta::IptcIimSerializeStatus::LimitExceeded
+           && patched.ok() && initial.size() == 11U && changed.size() == 11U
+           && std::string_view(reinterpret_cast<const char*>(initial.data()
+                                                             + 5U),
+                               6U)
+                  == "Before"
+           && std::string_view(reinterpret_cast<const char*>(changed.data()
+                                                             + 5U),
+                               6U)
+                  == "After!";
+}
+
+static bool
 tiff_deletion_contract_matches()
 {
     openmeta::MetaStore source;
@@ -888,6 +949,7 @@ main()
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
                    || !canonical_patch_contract_matches
+                   || !native_iptc_patch_contract_matches()
                    || !tiff_deletion_matches || handoff.valid()
                    || instance.valid()
                    || created.code

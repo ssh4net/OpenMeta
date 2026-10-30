@@ -12,6 +12,8 @@
 namespace openmeta {
 namespace {
 
+    using detail::IptcIimPatchCapture;
+
     struct IptcDatasetItem final {
         EntryId entry_ordinal = kInvalidEntryId;
         uint16_t record       = 0U;
@@ -154,6 +156,30 @@ namespace {
     }
 
 
+    static IptcIimPatchCapture*
+    find_iptc_capture(std::vector<IptcIimPatchCapture>* capture,
+                      EntryId entry_id) noexcept
+    {
+        if (!capture) {
+            return nullptr;
+        }
+        size_t lo = 0U;
+        size_t hi = capture->size();
+        while (lo < hi) {
+            const size_t mid = lo + (hi - lo) / 2U;
+            if ((*capture)[mid].entry_id < entry_id) {
+                lo = mid + 1U;
+            } else {
+                hi = mid;
+            }
+        }
+        if (lo == capture->size() || (*capture)[lo].entry_id != entry_id) {
+            return nullptr;
+        }
+        return &(*capture)[lo];
+    }
+
+
     static bool pointer_ranges_overlap(const void* first_data,
                                        uint64_t first_size,
                                        const void* second_data,
@@ -180,12 +206,15 @@ namespace {
 }  // namespace
 
 IptcIimSerializeResult
-detail::build_iptc_iim_payload(const MetaStore& store,
-                               const IptcIimSerializeOptions& options,
-                               bool skip_unsupported,
-                               std::vector<std::byte>* output) noexcept
+detail::build_iptc_iim_payload(
+    const MetaStore& store, const IptcIimSerializeOptions& options,
+    bool skip_unsupported, std::vector<std::byte>* output,
+    std::vector<IptcIimPatchCapture>* capture) noexcept
 {
     if (!iptc_serialize_options_valid(options)) {
+        return iptc_serialize_error(IptcIimSerializeStatus::InvalidOptions);
+    }
+    if (!output && capture) {
         return iptc_serialize_error(IptcIimSerializeStatus::InvalidOptions);
     }
     uint32_t active_count                = 0U;
@@ -239,6 +268,16 @@ detail::build_iptc_iim_payload(const MetaStore& store,
         return result;
     }
 
+    std::vector<IptcIimPatchCapture> captured;
+    if (capture) {
+        captured = *capture;
+        for (IptcIimPatchCapture& selected : captured) {
+            selected.byte_offset = 0U;
+            selected.byte_width  = 0U;
+            selected.emitted     = false;
+        }
+    }
+
     std::vector<IptcDatasetItem> items;
     items.reserve(serialized_count);
     for (size_t index = 0U; index < entries.size(); ++index) {
@@ -266,6 +305,8 @@ detail::build_iptc_iim_payload(const MetaStore& store,
     std::vector<std::byte> built;
     built.reserve(static_cast<size_t>(total_output_size));
     for (const IptcDatasetItem& item : items) {
+        const uint32_t header_size = item.payload.size() <= 0x7FFFU ? 5U : 9U;
+        const size_t value_offset  = built.size() + header_size;
         built.push_back(std::byte { 0x1CU });
         built.push_back(static_cast<std::byte>(item.record));
         built.push_back(static_cast<std::byte>(item.dataset));
@@ -275,10 +316,30 @@ detail::build_iptc_iim_payload(const MetaStore& store,
             append_u16be(&built, 0x8004U);
             append_u32be(&built, static_cast<uint32_t>(item.payload.size()));
         }
+        IptcIimPatchCapture* selected = find_iptc_capture(capture ? &captured
+                                                                  : nullptr,
+                                                          item.entry_ordinal);
+        if (selected) {
+            selected->byte_offset = static_cast<uint32_t>(value_offset);
+            selected->byte_width  = static_cast<uint32_t>(item.payload.size());
+            selected->emitted     = true;
+        }
         built.insert(built.end(), item.payload.begin(), item.payload.end());
     }
 
+    if (capture) {
+        for (const IptcIimPatchCapture& selected : captured) {
+            if (!selected.emitted) {
+                return iptc_serialize_error(
+                    IptcIimSerializeStatus::InvalidMetadata, selected.entry_id);
+            }
+        }
+    }
+
     output->swap(built);
+    if (capture) {
+        capture->swap(captured);
+    }
     result.written = total_output_size;
     return result;
 }

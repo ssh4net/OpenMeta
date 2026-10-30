@@ -418,11 +418,12 @@ obtain the exact width and slot count without exposing payload offsets.
 
 ### Target-neutral prepared metadata patching
 
-Use `openmeta/metadata_patch.h` for host-owned canonical TIFF/EXIF and portable
-XMP payloads. EXIF requests select typed key occurrences; XMP requests select
+Use `openmeta/metadata_patch.h` for host-owned canonical TIFF/EXIF, portable
+XMP and native IPTC-IIM payloads. EXIF/IPTC requests select typed active key occurrences; XMP requests select
 emitted namespace URI/simple-property identities with exact escaped widths.
-One plan can contain both families. A single batch validates all updates before
-writing either payload, so a rejected XMP update cannot leave newer EXIF bytes.
+One plan can contain all three families. A single batch validates all updates
+before writing any payload. A rejected update leaves every family unchanged.
+Native IPTC values retain raw bytes and exact widths; hosts own charset policy.
 
 Preparation and worker creation may allocate. Patching, payload access and
 library replay do not. Independent worker instances own their storage and

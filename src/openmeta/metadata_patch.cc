@@ -2,11 +2,13 @@
 
 #include "openmeta/metadata_patch.h"
 
+#include "iptc_iim_serialize_internal.h"
 #include "metadata_logical_field_internal.h"
 #include "metadata_patch_internal.h"
 #include "openmeta/validate.h"
 #include "xmp_patch_internal.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <limits>
@@ -91,8 +93,9 @@ namespace detail {
         return false;
     }
 
-    bool exif_patch_specs_equal(const MetadataPatchValueSpec& first,
-                                const MetadataPatchValueSpec& second) noexcept
+    bool
+    metadata_patch_specs_equal(const MetadataPatchValueSpec& first,
+                               const MetadataPatchValueSpec& second) noexcept
     {
         return first.kind == second.kind && first.elem_type == second.elem_type
                && first.text_encoding == second.text_encoding
@@ -100,7 +103,7 @@ namespace detail {
     }
 
     static MetadataPatchValueSpec
-    exif_patch_value_spec_from_view(const MetaValueView& value) noexcept
+    metadata_patch_value_spec_from_view(const MetaValueView& value) noexcept
     {
         MetadataPatchValueSpec spec;
         spec.kind          = value.kind;
@@ -136,12 +139,52 @@ namespace detail {
     }
 
     static bool
+    valid_iptc_patch_spec(const MetadataPatchValueSpec& spec) noexcept
+    {
+        if (spec.kind == MetaValueKind::Bytes) {
+            return spec.elem_type == MetaElementType::U8
+                   && spec.text_encoding == TextEncoding::Unknown;
+        }
+        if (spec.kind == MetaValueKind::Text) {
+            return spec.elem_type == MetaElementType::U8
+                   && static_cast<uint8_t>(spec.text_encoding)
+                          <= static_cast<uint8_t>(TextEncoding::Utf16BE);
+        }
+        if (spec.kind == MetaValueKind::Array) {
+            const uint32_t element_width = meta_element_width(spec.elem_type);
+            return spec.text_encoding == TextEncoding::Unknown
+                   && element_width != 0U
+                   && spec.count <= UINT32_MAX / element_width;
+        }
+        return false;
+    }
+
+    static bool iptc_patch_width(const MetadataPatchValueSpec& spec,
+                                 uint32_t* out_width) noexcept
+    {
+        if (!out_width || !valid_iptc_patch_spec(spec)) {
+            return false;
+        }
+        if (spec.kind == MetaValueKind::Bytes
+            || spec.kind == MetaValueKind::Text) {
+            *out_width = spec.count;
+            return true;
+        }
+        const uint32_t element_width = meta_element_width(spec.elem_type);
+        if (element_width == 0U || spec.count > UINT32_MAX / element_width) {
+            return false;
+        }
+        *out_width = spec.count * element_width;
+        return true;
+    }
+
+    static bool
     exif_patch_value_view_valid(const MetaValueView& value,
                                 const MetadataPatchValueSpec& expected) noexcept
     {
-        const MetadataPatchValueSpec actual = exif_patch_value_spec_from_view(
-            value);
-        if (!exif_patch_specs_equal(actual, expected)) {
+        const MetadataPatchValueSpec actual
+            = metadata_patch_value_spec_from_view(value);
+        if (!metadata_patch_specs_equal(actual, expected)) {
             return false;
         }
         uint32_t serialized_width = 0U;
@@ -373,7 +416,7 @@ namespace {
 
     struct MetadataPatchState final {
         uint64_t plan_id = 0U;
-        std::array<std::vector<std::byte>, 2> payloads;
+        std::array<std::vector<std::byte>, 3> payloads;
         std::vector<CompiledMetadataPatchSlot> slots;
         std::vector<uint32_t> seen;
         uint32_t seen_epoch = 0U;
@@ -381,7 +424,9 @@ namespace {
 
     static uint64_t payload_size(const MetadataPatchState& state) noexcept
     {
-        return state.payloads[0].size() + state.payloads[1].size();
+        return static_cast<uint64_t>(state.payloads[0].size())
+               + static_cast<uint64_t>(state.payloads[1].size())
+               + static_cast<uint64_t>(state.payloads[2].size());
     }
 
     static std::span<const std::byte>
@@ -578,6 +623,188 @@ namespace {
         return {};
     }
 
+    static bool
+    iptc_capture_less(const detail::IptcIimPatchCapture& first,
+                      const detail::IptcIimPatchCapture& second) noexcept
+    {
+        if (first.entry_id != second.entry_id) {
+            return first.entry_id < second.entry_id;
+        }
+        return first.request_index < second.request_index;
+    }
+
+    static const detail::IptcIimPatchCapture*
+    find_iptc_capture(std::span<const detail::IptcIimPatchCapture> capture,
+                      EntryId entry_id) noexcept
+    {
+        size_t lo = 0U;
+        size_t hi = capture.size();
+        while (lo < hi) {
+            const size_t mid = lo + (hi - lo) / 2U;
+            if (capture[mid].entry_id < entry_id) {
+                lo = mid + 1U;
+            } else {
+                hi = mid;
+            }
+        }
+        if (lo == capture.size() || capture[lo].entry_id != entry_id) {
+            return nullptr;
+        }
+        return &capture[lo];
+    }
+
+    static MetadataPatchResult
+    compile_iptc(const MetaStore& store,
+                 std::span<const MetadataPatchRequest> requests,
+                 const IptcIimSerializeOptions& options,
+                 MetadataPatchState* state) noexcept
+    {
+        std::vector<detail::IptcIimPatchCapture> capture;
+        capture.reserve(requests.size());
+        const std::span<const Entry> entries = store.entries();
+        for (uint32_t i = 0U; i < requests.size(); ++i) {
+            const MetadataPatchRequest& request = requests[i];
+            if (request.key.kind != MetaKeyKind::IptcDataset) {
+                continue;
+            }
+            if (request.escaped_width != 0U
+                || request.key.data.iptc_dataset.record > UINT8_MAX
+                || request.key.data.iptc_dataset.dataset > UINT8_MAX
+                || !detail::valid_iptc_patch_spec(request.expected)) {
+                return metadata_patch_error(MetadataPatchCode::InvalidRequest,
+                                            i);
+            }
+            const std::span<const EntryId> ids = store.find_all(request.key);
+            if (ids.empty()) {
+                return metadata_patch_error(MetadataPatchCode::KeyNotFound, i);
+            }
+            if (request.occurrence >= ids.size()) {
+                return metadata_patch_error(
+                    MetadataPatchCode::OccurrenceOutOfRange, i);
+            }
+            const EntryId source_entry = ids[request.occurrence];
+            if (source_entry >= entries.size()) {
+                return metadata_patch_error(MetadataPatchCode::InvalidMetadata,
+                                            i);
+            }
+            const Entry& entry = entries[source_entry];
+            if (any(entry.flags, EntryFlags::Deleted)
+                || any(entry.flags, EntryFlags::Truncated)
+                || any(entry.flags, EntryFlags::Unreadable)) {
+                return metadata_patch_error(
+                    MetadataPatchCode::EntryNotSerializable, i);
+            }
+            if (entry.value.kind != MetaValueKind::Bytes
+                && entry.value.kind != MetaValueKind::Text
+                && entry.value.kind != MetaValueKind::Array) {
+                return metadata_patch_error(
+                    MetadataPatchCode::EntryNotSerializable, i);
+            }
+            const MetadataPatchValueSpec actual { entry.value.kind,
+                                                  entry.value.elem_type,
+                                                  entry.value.text_encoding,
+                                                  entry.value.count };
+            if (!detail::valid_iptc_patch_spec(actual)) {
+                return metadata_patch_error(
+                    MetadataPatchCode::EntryNotSerializable, i);
+            }
+            if (!detail::metadata_patch_specs_equal(actual, request.expected)) {
+                return metadata_patch_error(MetadataPatchCode::ValueTypeMismatch,
+                                            i);
+            }
+            capture.push_back(detail::IptcIimPatchCapture {
+                .entry_id      = source_entry,
+                .request_index = i,
+            });
+        }
+
+        std::sort(capture.begin(), capture.end(), iptc_capture_less);
+        for (size_t i = 1U; i < capture.size(); ++i) {
+            if (capture[i - 1U].entry_id == capture[i].entry_id) {
+                return metadata_patch_error(MetadataPatchCode::DuplicateRequest,
+                                            capture[i].request_index);
+            }
+        }
+
+        const IptcIimSerializeResult serialized
+            = detail::build_iptc_iim_payload(store, options, false,
+                                             &state->payloads[2], &capture);
+        MetadataPatchResult result;
+        result.iptc_status = serialized.status;
+        if (serialized.status != IptcIimSerializeStatus::Ok) {
+            MetadataPatchCode code = MetadataPatchCode::SerializationFailed;
+            switch (serialized.status) {
+            case IptcIimSerializeStatus::Ok: break;
+            case IptcIimSerializeStatus::OutputTruncated:
+                code = MetadataPatchCode::SerializationFailed;
+                break;
+            case IptcIimSerializeStatus::InvalidOptions:
+                code = MetadataPatchCode::InvalidOptions;
+                break;
+            case IptcIimSerializeStatus::StoreNotFinalized:
+                code = MetadataPatchCode::StoreNotFinalized;
+                break;
+            case IptcIimSerializeStatus::InvalidMetadata: {
+                code = MetadataPatchCode::InvalidMetadata;
+                const detail::IptcIimPatchCapture* selected
+                    = find_iptc_capture(capture, serialized.failed_entry);
+                if (selected) {
+                    code = MetadataPatchCode::EntryNotSerializable;
+                    result.failed_index = selected->request_index;
+                }
+                break;
+            }
+            case IptcIimSerializeStatus::NoIptcData:
+                code = MetadataPatchCode::NoIptcData;
+                break;
+            case IptcIimSerializeStatus::LimitExceeded: {
+                code = MetadataPatchCode::LimitExceeded;
+                const detail::IptcIimPatchCapture* selected
+                    = find_iptc_capture(capture, serialized.failed_entry);
+                if (selected) {
+                    result.failed_index = selected->request_index;
+                }
+                break;
+            }
+            }
+            result.code = code;
+            return result;
+        }
+        if (serialized.entries_serialized == 0U) {
+            result.code        = MetadataPatchCode::NoIptcData;
+            result.iptc_status = IptcIimSerializeStatus::NoIptcData;
+            return result;
+        }
+
+        for (const detail::IptcIimPatchCapture& selected : capture) {
+            const uint32_t request_index = selected.request_index;
+            if (!selected.emitted) {
+                return metadata_patch_error(
+                    MetadataPatchCode::EntryNotSerializable, request_index);
+            }
+            const MetadataPatchRequest& request = requests[request_index];
+            uint32_t expected_width             = 0U;
+            if (!detail::iptc_patch_width(request.expected, &expected_width)
+                || expected_width != selected.byte_width) {
+                return metadata_patch_error(MetadataPatchCode::WidthMismatch,
+                                            request_index);
+            }
+            if (selected.byte_offset > state->payloads[2].size()
+                || selected.byte_width
+                       > state->payloads[2].size() - selected.byte_offset) {
+                return metadata_patch_error(
+                    MetadataPatchCode::SerializationFailed, request_index);
+            }
+            detail::CompiledMetadataPatchSlot& slot
+                = state->slots[request_index];
+            slot.family      = MetadataPatchPayload::IptcIim;
+            slot.byte_offset = selected.byte_offset;
+            slot.byte_width  = selected.byte_width;
+            slot.value       = request.expected;
+        }
+        return result;
+    }
+
 }  // namespace
 
 PreparedMetadataPatchPlan::PreparedMetadataPatchPlan() noexcept = default;
@@ -705,6 +932,7 @@ prepare_metadata_patch_plan(const MetaStore& store,
     }
     bool exif = false;
     bool xmp  = false;
+    bool iptc = false;
     for (uint32_t i = 0; i < requests.size(); ++i) {
         const MetadataPatchRequest& request = requests[i];
         if (request.key.kind == MetaKeyKind::ExifTag) {
@@ -714,6 +942,11 @@ prepare_metadata_patch_plan(const MetaStore& store,
             exif = true;
         } else if (request.key.kind == MetaKeyKind::XmpProperty) {
             xmp = true;
+        } else if (request.key.kind == MetaKeyKind::IptcDataset) {
+            if (request.escaped_width != 0U)
+                return metadata_patch_error(MetadataPatchCode::InvalidRequest,
+                                            i);
+            iptc = true;
         } else
             return metadata_patch_error(MetadataPatchCode::InvalidRequest, i);
     }
@@ -737,6 +970,14 @@ prepare_metadata_patch_plan(const MetaStore& store,
                    > static_cast<uint8_t>(
                        XmpExistingStandardNamespacePolicy::CanonicalizeManaged)))
         return metadata_patch_error(MetadataPatchCode::InvalidOptions);
+    if (iptc
+        && (options.iptc.max_datasets == 0U
+            || options.iptc.max_dataset_bytes == 0U
+            || options.iptc.max_output_bytes == 0U
+            || options.iptc.max_output_bytes > UINT32_MAX
+            || options.iptc.max_output_bytes
+                   > std::numeric_limits<size_t>::max()))
+        return metadata_patch_error(MetadataPatchCode::InvalidOptions);
 
     MetadataPatchState* state = new (std::nothrow) MetadataPatchState;
     if (!state)
@@ -753,6 +994,12 @@ prepare_metadata_patch_plan(const MetaStore& store,
     if (xmp) {
         const MetadataPatchResult result = compile_xmp(store, requests,
                                                        options.xmp, state);
+        if (!result.ok())
+            return result;
+    }
+    if (iptc) {
+        const MetadataPatchResult result = compile_iptc(store, requests,
+                                                        options.iptc, state);
         if (!result.ok())
             return result;
     }
@@ -841,10 +1088,21 @@ patch_prepared_metadata_instance(
             if (width != slot.byte_width)
                 return metadata_patch_error(MetadataPatchCode::WidthMismatch,
                                             i);
+        } else if (slot.family == MetadataPatchPayload::IptcIim) {
+            const MetadataPatchValueSpec actual
+                = detail::metadata_patch_value_spec_from_view(update.value);
+            if (!detail::metadata_patch_specs_equal(actual, slot.value))
+                return metadata_patch_error(MetadataPatchCode::ValueTypeMismatch,
+                                            i);
+            if (update.value.payload.size() != slot.byte_width)
+                return metadata_patch_error(MetadataPatchCode::WidthMismatch,
+                                            i);
+            if (slot.byte_width != 0U && !update.value.payload.data())
+                return metadata_patch_error(MetadataPatchCode::InvalidValue, i);
         } else {
             const MetadataPatchValueSpec actual
-                = detail::exif_patch_value_spec_from_view(update.value);
-            if (!detail::exif_patch_specs_equal(actual, slot.value))
+                = detail::metadata_patch_value_spec_from_view(update.value);
+            if (!detail::metadata_patch_specs_equal(actual, slot.value))
                 return metadata_patch_error(MetadataPatchCode::ValueTypeMismatch,
                                             i);
             if (!detail::exif_patch_value_view_valid(update.value, slot.value))
@@ -865,10 +1123,16 @@ patch_prepared_metadata_instance(
         std::byte* output
             = state->payloads[static_cast<uint32_t>(slot.family)].data()
               + slot.byte_offset;
-        if (slot.family == MetadataPatchPayload::Xmp)
+        if (slot.family == MetadataPatchPayload::Xmp) {
             write_xmp_value(output, update.value);
-        else
+        } else if (slot.family == MetadataPatchPayload::IptcIim) {
+            if (slot.byte_width != 0U) {
+                std::memcpy(output, update.value.payload.data(),
+                            slot.byte_width);
+            }
+        } else {
             detail::patch_write_value(output, update.value);
+        }
     }
     MetadataPatchResult result;
     result.payload_size    = payload_size(*state);
@@ -888,7 +1152,7 @@ replay_prepared_metadata_instance(const PreparedMetadataPatchInstance& instance,
         return metadata_patch_error(MetadataPatchCode::NullReplayCallback);
     MetadataPatchResult result;
     result.handle_count = instance.handle_count();
-    for (uint32_t i = 0; i < 2U; ++i) {
+    for (uint32_t i = 0; i < 3U; ++i) {
         const MetadataPatchPayload family = static_cast<MetadataPatchPayload>(
             i);
         const std::span<const std::byte> bytes = instance.payload(family);
@@ -937,6 +1201,7 @@ metadata_patch_code_name(MetadataPatchCode code) noexcept
     case MetadataPatchCode::AmbiguousProperty: return "ambiguous_property";
     case MetadataPatchCode::NullReplayCallback: return "null_replay_callback";
     case MetadataPatchCode::ReplayFailed: return "replay_failed";
+    case MetadataPatchCode::NoIptcData: return "no_iptc_data";
     }
     return "unknown";
 }

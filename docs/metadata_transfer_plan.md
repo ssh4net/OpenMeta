@@ -1,5 +1,15 @@
 # Metadata Transfer Plan (Draft)
 
+## Prepared IPTC patching (0.8.24)
+
+Native IPTC-IIM now joins EXIF/XMP prepared patch contract 2: exact active
+occurrences, raw fixed-shape values, all-family preflight and allocation-free
+patch/replay after preparation. Host-owned framing carries patched payloads
+through JPEG, TIFF and DNG; no container wrapper is added to the patch API.
+ABI 4 remains unfrozen; matching 0.8.24 headers/binaries are required for the
+appended IIM policy/status fields. See [canonical_patching.md](canonical_patching.md).
+Full RDF authoring and fresh ICC construction remain separate gaps.
+
 ## Edited-snapshot C2PA context (0.8.23)
 
 The explicit signing-context API prepares an edited source snapshot against
@@ -12,8 +22,8 @@ ABI 4 and the existing snapshot/package wire formats remain unchanged.
 See [canonical_serialization.md](canonical_serialization.md).
 
 Host signing, certificate trust and cryptographic verification remain external.
-Full RDF authoring, fresh ICC construction and prepared IPTC patching remain
-separate gaps. Downstream OIIO/iRAW work stays on hold; fuzzy search remains last.
+Full RDF authoring and fresh ICC construction remain separate gaps; prepared
+IPTC patching is covered by 0.8.24 above. Downstream OIIO/iRAW work stays on hold; fuzzy search remains last.
 
 ## Canonical IPTC-IIM follow-up (0.8.15)
 
@@ -39,7 +49,8 @@ and verifies removal of stale time fields by nonempty JPEG/TIFF payload replacem
 Version 0.8.20 adds explicit IPTC carrier removal after the last native dataset
 is deleted. Omission and disabled IPTC output preserve the target. Active charset
 and version records retain the carrier. See [canonical_serialization.md](canonical_serialization.md).
-Full RDF authoring, fresh ICC construction and prepared IPTC patching remain open.
+Full RDF authoring and fresh ICC construction remain open; prepared IPTC
+patching is covered by 0.8.24 above.
 
 Date: March 5, 2026
 

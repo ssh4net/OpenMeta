@@ -4,6 +4,7 @@
 
 #include "openmeta/api.h"
 #include "openmeta/exif_tiff_serialize.h"
+#include "openmeta/iptc_iim_serialize.h"
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_value.h"
 #include "openmeta/xmp_dump.h"
@@ -13,18 +14,18 @@
 #include <span>
 
 /** \file metadata_patch.h
- *  \brief Prepared transactional TIFF/EXIF and scalar XMP payload patching.
+ *  \brief Prepared transactional EXIF, XMP, and native IPTC payload patching.
  */
 
 OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
-inline constexpr uint32_t kMetadataPatchContractVersion    = 1U;
+inline constexpr uint32_t kMetadataPatchContractVersion    = 2U;
 inline constexpr uint32_t kMaxPreparedMetadataPatchHandles = 65534U;
 inline constexpr uint64_t kMaxMetadataPatchPlanId = 0x0000FFFFFFFFFFFFULL;
 
 /// Unwrapped payload selected independently of any image container.
-enum class MetadataPatchPayload : uint8_t { ExifTiff, Xmp };
+enum class MetadataPatchPayload : uint8_t { ExifTiff, Xmp, IptcIim };
 
 enum class MetadataPatchCode : uint16_t {
     None = 0,
@@ -57,9 +58,10 @@ enum class MetadataPatchCode : uint16_t {
     AmbiguousProperty,
     NullReplayCallback,
     ReplayFailed,
+    NoIptcData,
 };
 
-/// Exact native TIFF value shape. XMP requests use escaped_width instead.
+/// Exact native family value shape. XMP requests use escaped_width instead.
 struct MetadataPatchValueSpec final {
     MetaValueKind kind         = MetaValueKind::Scalar;
     MetaElementType elem_type  = MetaElementType::U8;
@@ -68,11 +70,12 @@ struct MetadataPatchValueSpec final {
 };
 
 /**
- * An EXIF key/occurrence with an exact native shape, or an XMP namespace URI
- * and simple property path in the final portable serializer output.
- * XMP occurrence must be zero; duplicates and structural paths are rejected.
- * escaped_width is required for XMP and includes XML escaping, not a NUL.
- * It must be zero for EXIF. Requests never add properties or pad values.
+ * An EXIF or IPTC key/occurrence with an exact native shape, or an XMP
+ * namespace URI and simple property path in the final portable serializer
+ * output. XMP occurrence must be zero; duplicates and structural paths are
+ * rejected. escaped_width is required for XMP and includes XML escaping, not a
+ * NUL. It must be zero for EXIF and IPTC. Requests never add properties or
+ * pad values.
  */
 struct MetadataPatchRequest final {
     MetaKeyView key;
@@ -98,7 +101,7 @@ struct MetadataPatchUpdate final {
     MetaValueView value;
 };
 
-/// TIFF serialization policy; store validation is shared by both families.
+/// TIFF serialization policy; store validation is shared by all families.
 struct MetadataPatchExifOptions final {
     bool include_subifds                     = false;
     bool inject_minimal_dng_version          = false;
@@ -123,6 +126,7 @@ struct MetadataPatchPlanOptions final {
     };
     uint32_t max_patch_requests = 4096U;
     bool validate               = true;
+    IptcIimSerializeOptions iptc;
 };
 
 struct MetadataPatchResult final {
@@ -133,6 +137,7 @@ struct MetadataPatchResult final {
     uint32_t handle_count                    = 0U;
     uint32_t patched_handles                 = 0U;
     uint32_t failed_index                    = 0xFFFFFFFFU;
+    IptcIimSerializeStatus iptc_status       = IptcIimSerializeStatus::Ok;
 
     bool ok() const noexcept { return code == MetadataPatchCode::None; }
 };
@@ -227,10 +232,11 @@ create_prepared_metadata_patch_instance(
     PreparedMetadataPatchInstance* out_instance) noexcept;
 
 /**
- * Validate the complete batch before writing either payload. All errors leave
+ * Validate the complete batch before writing any payload. All errors leave
  * every payload byte unchanged. XMP validation includes UTF-8, XML characters,
- * and the exact escaped width. Input payloads may not alias either destination.
- * Input views and values must remain immutable for the duration of this call.
+ * and the exact escaped width. Native IPTC Bytes, Text, and Array values are
+ * copied as raw bytes. Input payloads may not alias any destination. Input
+ * views and values must remain immutable for the duration of this call.
  */
 MetadataPatchResult
 patch_prepared_metadata_instance(
@@ -242,7 +248,8 @@ using MetadataPatchReplayCallback
                std::span<const std::byte> payload) noexcept;
 
 /**
- * Replay existing payloads in EXIF, XMP order without allocation or mutation.
+ * Replay existing payloads in EXIF, XMP, IPTC order without allocation or
+ * mutation.
  * A false callback stops replay; prior callback effects belong to the caller.
  * Callbacks must not reset, move, destroy or patch the instance during replay.
  */

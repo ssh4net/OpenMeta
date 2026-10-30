@@ -1,5 +1,29 @@
 # Development
 
+## Prepared native IPTC patching (0.8.24)
+
+Prepared patch contract 2 adds native IPTC-IIM beside EXIF and scalar XMP in one
+transactional plan. Select an active dataset occurrence and exact native shape;
+the canonical serializer records value offsets by source entry ID. Fixed-width
+updates preserve dataset ordering, duplicate identity and short/extended headers.
+Text, bytes and well-formed arrays are copied raw; no implicit transcoding,
+terminator insertion or numeric endian conversion occurs. Source whole-store
+validation remains independent of raw IPTC update semantics.
+
+Preparation and worker creation may allocate. Patch success/failure, payload
+views and replay remain allocation-free, with stable payload addresses and sizes.
+Every family is preflighted before any write; alias checks cover all payloads.
+Replay preserves EXIF then XMP order and appends IPTC. Hosts own synchronization,
+framing and publication. The native IIM limits are explicit in `options.iptc`;
+new widths or fields require preparing a new plan. No Python patch binding is
+added. See [canonical_patching.md](canonical_patching.md) for the full contract.
+
+Version 0.8.24 retains unfrozen ABI 4 and appends IIM options/status to public
+patch structures. Rebuild consumers with matching headers and binaries. Source
+snapshot v1, IIM serializer contract 1, signer packages and Host Adoption Profile
+v1 are unchanged. No atomics, mutexes or automatic cross-family synchronization
+were added. Full RDF authoring and fresh ICC construction remain open.
+
 ## Edited-snapshot C2PA signing (0.8.23)
 
 `prepare_c2pa_signing_context()` combines an edited `TransferSourceSnapshot`

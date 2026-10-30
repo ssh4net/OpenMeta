@@ -19,8 +19,8 @@ metadata_patch_error(MetadataPatchCode code,
 bool
 valid_exif_patch_spec(const MetadataPatchValueSpec& spec) noexcept;
 bool
-exif_patch_specs_equal(const MetadataPatchValueSpec& first,
-                       const MetadataPatchValueSpec& second) noexcept;
+metadata_patch_specs_equal(const MetadataPatchValueSpec& first,
+                           const MetadataPatchValueSpec& second) noexcept;
 bool
 exif_patch_width(const MetadataPatchValueSpec& spec, uint32_t* width) noexcept;
 

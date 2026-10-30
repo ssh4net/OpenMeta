@@ -13374,7 +13374,7 @@ detail::compile_exif_patch_payload(
         const MetadataPatchValueSpec actual { value.kind, value.elem_type,
                                               value.text_encoding,
                                               value.count };
-        if (!detail::exif_patch_specs_equal(actual, request.expected)) {
+        if (!detail::metadata_patch_specs_equal(actual, request.expected)) {
             return detail::metadata_patch_error(
                 MetadataPatchCode::ValueTypeMismatch, request_index);
         }

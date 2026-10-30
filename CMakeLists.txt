@@ -1024,6 +1024,8 @@ if(OPENMETA_BUILD_TESTS)
     tests/exr_decode_test.cc
     tests/exif_tiff_patch_test.cc
     tests/metadata_patch_xmp_test.cc
+    tests/metadata_patch_iptc_test.cc
+    tests/metadata_patch_iptc_transfer_test.cc
     tests/exif_tiff_decode_test.cc
     tests/exif_value_names_test.cc
     tests/geotiff_decode_test.cc

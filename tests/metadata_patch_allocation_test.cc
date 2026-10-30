@@ -318,22 +318,30 @@ main()
     using namespace openmeta;
     const std::string padding(48U * 1024U, 's');
     constexpr std::string_view ns = "https://example.test/patch/1.0/";
-    const std::array entries      = {
+    const std::array<std::byte, 4> iptc_initial
+        = { std::byte { 0x10U }, std::byte { 0x20U }, std::byte { 0x30U },
+            std::byte { 0x40U } };
+    const std::array<std::byte, 4> iptc_next
+        = { std::byte { 0xA1U }, std::byte { 0xB2U }, std::byte { 0xC3U },
+            std::byte { 0xD4U } };
+    const std::array entries = {
         entry(make_exif_tag_key_view("exififd", 0x9211U),
-                   make_value_view_u32(1U)),
+              make_value_view_u32(1U)),
         entry(make_exif_tag_key_view("exififd", 0x9291U),
-                   make_value_view_text("000000001", TextEncoding::Ascii)),
+              make_value_view_text("000000001", TextEncoding::Ascii)),
         entry(make_xmp_property_key_view(ns, "Frame"),
-                   make_value_view_text("0000000001", TextEncoding::Utf8)),
+              make_value_view_text("0000000001", TextEncoding::Utf8)),
         entry(make_xmp_property_key_view(ns, "Clock"),
-                   make_value_view_text("00000000000000000001", TextEncoding::Utf8)),
+              make_value_view_text("00000000000000000001", TextEncoding::Utf8)),
         entry(make_xmp_property_key_view(ns, "Calibration"),
-                   make_value_view_text(padding, TextEncoding::Utf8)),
+              make_value_view_text(padding, TextEncoding::Utf8)),
+        entry(make_iptc_dataset_key_view(1U, 5U),
+              make_value_view_bytes(iptc_initial)),
     };
     MetaStore store;
     if (!create_metadata_store(entries, &store, {}).ok())
         return 2;
-    std::array<MetadataPatchRequest, 4> requests;
+    std::array<MetadataPatchRequest, 5> requests;
     requests[0].key                = entries[0].key;
     requests[0].expected.elem_type = MetaElementType::U32;
     requests[1].key                = entries[1].key;
@@ -343,7 +351,10 @@ main()
     requests[2].escaped_width      = 10U;
     requests[3].key                = entries[3].key;
     requests[3].escaped_width      = 20U;
-    std::array<MetadataPatchHandle, 4> handles;
+    requests[4].key                = entries[5].key;
+    requests[4].expected = { MetaValueKind::Bytes, MetaElementType::U8,
+                             TextEncoding::Unknown, 4U };
+    std::array<MetadataPatchHandle, 5> handles;
     PreparedMetadataPatchPlan plan;
     if (!prepare_metadata_patch_plan(store, requests, { .plan_id = 1U },
                                      handles, &plan)
@@ -354,32 +365,53 @@ main()
         if (!create_prepared_metadata_patch_instance(plan, &worker).ok())
             return 4;
     plan.reset();
-    const std::array<MetadataPatchUpdate, 4> good = { {
+    const std::array<MetadataPatchUpdate, 5> good = { {
         { handles[0], make_value_view_u32(UINT32_MAX) },
         { handles[1], make_value_view_text("123456789", TextEncoding::Ascii) },
         { handles[2], make_value_view_text("4294967295", TextEncoding::Utf8) },
         { handles[3],
           make_value_view_text("00000000000000000042", TextEncoding::Utf8) },
+        { handles[4], make_value_view_bytes(iptc_next) },
     } };
-    std::array bad                                = good;
-    bad.back().value = make_value_view_text("short", TextEncoding::Utf8);
-    allocations      = 0U;
-    counting         = true;
-    bool ok          = true;
+    std::array<MetadataPatchUpdate, 5> bad_xmp    = good;
+    bad_xmp[3].value = make_value_view_text("short", TextEncoding::Utf8);
+    const std::array<std::byte, 3> short_iptc
+        = { std::byte { 1U }, std::byte { 2U }, std::byte { 3U } };
+    std::array<MetadataPatchUpdate, 5> bad_iptc = good;
+    bad_iptc[4].value = make_value_view_bytes(short_iptc);
+    std::array<MetadataPatchUpdate, 5> bad_iptc_width = good;
+    bad_iptc_width[4].value.payload                   = short_iptc;
+    allocations                                       = 0U;
+    counting                                          = true;
+    bool ok                                           = true;
     for (uint32_t i = 0; i < 10000U; ++i) {
         PreparedMetadataPatchInstance& worker = workers[i % workers.size()];
         const std::span<const std::byte> exif = worker.payload(
             MetadataPatchPayload::ExifTiff);
         const std::span<const std::byte> xmp = worker.payload(
             MetadataPatchPayload::Xmp);
+        const std::span<const std::byte> iptc = worker.payload(
+            MetadataPatchPayload::IptcIim);
         ok = ok && patch_prepared_metadata_instance(&worker, good).ok();
+        const uint32_t rejection_case = i % 3U;
+        const std::span<const MetadataPatchUpdate> rejected_updates
+            = rejection_case == 0U
+                  ? std::span<const MetadataPatchUpdate>(bad_xmp)
+              : rejection_case == 1U
+                  ? std::span<const MetadataPatchUpdate>(bad_iptc)
+                  : std::span<const MetadataPatchUpdate>(bad_iptc_width);
+        const MetadataPatchResult rejected
+            = patch_prepared_metadata_instance(&worker, rejected_updates);
+        const MetadataPatchCode expected_rejection
+            = rejection_case == 1U ? MetadataPatchCode::ValueTypeMismatch
+                                   : MetadataPatchCode::WidthMismatch;
         ok = ok
-             && patch_prepared_metadata_instance(&worker, bad).code
-                    == MetadataPatchCode::WidthMismatch;
+             && rejected.code == expected_rejection;
         ReplayCount count;
         ok = ok
              && replay_prepared_metadata_instance(worker, replay, &count).ok();
-        ok = ok && count.calls == 2U && count.bytes == exif.size() + xmp.size();
+        ok = ok && count.calls == 3U
+             && count.bytes == exif.size() + xmp.size() + iptc.size();
         ok = ok
              && replay_prepared_metadata_instance(worker, reject_replay,
                                                   nullptr)
@@ -390,6 +422,9 @@ main()
                     == exif.data();
         ok = ok
              && worker.payload(MetadataPatchPayload::Xmp).data() == xmp.data();
+        ok = ok
+             && worker.payload(MetadataPatchPayload::IptcIim).data()
+                    == iptc.data();
     }
     counting = false;
     if (!ok || allocations != 0U) {
@@ -408,6 +443,7 @@ main()
         "zero allocations: C++ new overrides; C heap interception unavailable in this configuration");
 #endif
     std::puts(
-        "64 owning instances; 10000 successful and 10000 rejected batches; successful and rejected replay");
+        "64 owning instances; exactly 10000 successful mixed batches and "
+        "exactly 10000 rejected mixed batches; successful and rejected replay");
     return 0;
 }
