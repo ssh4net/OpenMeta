@@ -3,6 +3,7 @@
 #include <openmeta/build_info.h>
 #include <openmeta/exif_tiff_serialize.h>
 #include <openmeta/host_adoption.h>
+#include <openmeta/icc_serialize.h>
 #include <openmeta/meta_key.h>
 #include <openmeta/meta_value.h>
 #include <openmeta/metadata_authoring.h>
@@ -20,6 +21,85 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+static bool
+native_icc_authoring_contract_matches()
+{
+    const std::array<uint16_t, 6U> date { 2026U, 11U, 2U, 0U, 0U, 0U };
+    const std::array<openmeta::SRational, 3U> illuminant {
+        openmeta::SRational { 63190, 65536 },
+        openmeta::SRational { 65536, 65536 },
+        openmeta::SRational { 54061, 65536 }
+    };
+    const std::array<std::byte, 9U> tag { std::byte { 't' }, std::byte { 'e' },
+                                          std::byte { 'x' }, std::byte { 't' },
+                                          std::byte { 0 },   std::byte { 0 },
+                                          std::byte { 0 },   std::byte { 0 },
+                                          std::byte { 'A' } };
+    const std::array entries {
+        openmeta::MetadataAuthoringEntry {
+            openmeta::make_icc_header_field_key_view(8U),
+            openmeta::make_value_view_u32(0x04400000U) },
+        openmeta::MetadataAuthoringEntry {
+            openmeta::make_icc_header_field_key_view(12U),
+            openmeta::make_value_view_u32(0x6D6E7472U) },
+        openmeta::MetadataAuthoringEntry {
+            openmeta::make_icc_header_field_key_view(16U),
+            openmeta::make_value_view_u32(0x52474220U) },
+        openmeta::MetadataAuthoringEntry {
+            openmeta::make_icc_header_field_key_view(20U),
+            openmeta::make_value_view_u32(0x58595A20U) },
+        openmeta::MetadataAuthoringEntry {
+            openmeta::make_icc_header_field_key_view(24U),
+            openmeta::make_value_view_array(openmeta::MetaElementType::U16,
+                                            std::as_bytes(std::span(date)),
+                                            6U) },
+        openmeta::MetadataAuthoringEntry {
+            openmeta::make_icc_header_field_key_view(68U),
+            openmeta::make_value_view_array(
+                openmeta::MetaElementType::SRational,
+                std::as_bytes(std::span(illuminant)), 3U) },
+        openmeta::MetadataAuthoringEntry {
+            openmeta::make_icc_tag_key_view(0x74657374U),
+            openmeta::make_value_view_bytes(tag) }
+    };
+    openmeta::MetaStore store;
+    if (!openmeta::create_metadata_store(entries, &store).ok())
+        return false;
+    const openmeta::MetadataTypedEditingOperation creator {
+        openmeta::MetadataEditingOperationKind::Add,
+        { openmeta::make_icc_header_field_key_view(80U),
+          openmeta::make_value_view_u32(0x54455354U) }
+    };
+    if (!openmeta::edit_metadata_typed(store, { &creator, 1U }, &store).ok())
+        return false;
+    const openmeta::IccProfileSerializeResult measured
+        = openmeta::serialize_icc_profile(store, {});
+    if (measured.status != openmeta::IccProfileSerializeStatus::OutputTruncated
+        || measured.needed != 156U)
+        return false;
+    std::vector<std::byte> profile(static_cast<size_t>(measured.needed));
+    if (!openmeta::serialize_icc_profile(store, profile).ok())
+        return false;
+    const std::array<std::byte, 12U> fixed {
+        std::byte { 0 },    std::byte { 0 },    std::byte { 0xF6 },
+        std::byte { 0xD6 }, std::byte { 0 },    std::byte { 1 },
+        std::byte { 0 },    std::byte { 0 },    std::byte { 0 },
+        std::byte { 0 },    std::byte { 0xD3 }, std::byte { 0x2D }
+    };
+    for (size_t i = 0U; i < fixed.size(); ++i)
+        if (profile[68U + i] != fixed[i])
+            return false;
+    for (size_t i = 84U; i < 100U; ++i)
+        if (profile[i] != std::byte { 0 })
+            return false;
+    return openmeta::kIccProfileSerializeContractVersion == 1U
+           && openmeta::kMetadataTypedEditingContractVersion == 2U
+           && profile[80U] == std::byte { 'T' }
+           && profile[81U] == std::byte { 'E' }
+           && profile[82U] == std::byte { 'S' }
+           && profile[83U] == std::byte { 'T' };
+}
 
 static bool
 native_iptc_patch_contract_matches()
@@ -859,7 +939,7 @@ main()
     const openmeta::ExifTiffSerializeResult serialized
         = openmeta::serialize_exif_tiff(authored, exif);
     const bool authoring_contract_matches
-        = openmeta::kMetadataAuthoringContractVersion == 1U
+        = openmeta::kMetadataAuthoringContractVersion == 2U
           && openmeta::kMetadataValidationContractVersion == 1U
           && openmeta::kExifTiffSerializeContractVersion == 1U && authoring.ok()
           && validation.ok()
@@ -948,6 +1028,7 @@ main()
                    || !capture_sync_contract_matches || !typed_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
+                   || !native_icc_authoring_contract_matches()
                    || !canonical_patch_contract_matches
                    || !native_iptc_patch_contract_matches()
                    || !tiff_deletion_matches || handoff.valid()

@@ -406,6 +406,7 @@ set(OPENMETA_SOURCES
   src/openmeta/host_adoption.cc
   src/openmeta/icc_decode.cc
   src/openmeta/icc_interpret.cc
+  src/openmeta/icc_serialize.cc
   src/openmeta/interop_export.cc
   src/openmeta/interop_import.cc
   src/openmeta/interop_safety_internal.cc
@@ -1019,6 +1020,9 @@ if(OPENMETA_BUILD_TESTS)
     tests/dng_sdk_adapter_test.cc
     tests/icc_decode_test.cc
     tests/icc_interpret_test.cc
+    tests/icc_serialize_test.cc
+    tests/metadata_icc_authoring_test.cc
+    tests/metadata_icc_transfer_test.cc
     tests/exif_tag_names_test.cc
     tests/exr_adapter_test.cc
     tests/exr_decode_test.cc

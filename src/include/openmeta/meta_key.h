@@ -211,6 +211,12 @@ make_iptc_dataset_key_view(uint16_t record, uint16_t dataset) noexcept;
 MetaKeyView
 make_xmp_property_key_view(std::string_view schema_ns,
                            std::string_view property_path) noexcept;
+/// Creates a borrowed key for one ICC header field at its byte offset.
+MetaKeyView
+make_icc_header_field_key_view(uint32_t offset) noexcept;
+/// Creates a borrowed key for one ICC tag signature.
+MetaKeyView
+make_icc_tag_key_view(uint32_t signature) noexcept;
 
 /// Creates a key for an EXIF/TIFF tag within a named IFD token (e.g. "ifd0", "exififd").
 MetaKey

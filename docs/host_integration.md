@@ -416,6 +416,14 @@ payload storage. Generic hosts can call
 `prepared_transfer_handoff_instance_time_patch_field(...)` during setup to
 obtain the exact width and slot count without exposing payload offsets.
 
+### ICC creation and serialization
+
+C++ hosts can author ICC header fields and raw typed tag payloads through generic
+construction/editing contract 2, then measure/write with `serialize_icc_profile()`.
+This shares checked encoding with existing ICC transfer targets. Profile IDs clear
+by default; hosts supply coherent color data and class-specific tags. These calls
+prepare metadata and may allocate. See [ICC lifecycle](icc_authoring.md).
+
 ### Target-neutral prepared metadata patching
 
 Use `openmeta/metadata_patch.h` for host-owned canonical TIFF/EXIF, portable

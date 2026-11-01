@@ -62,6 +62,26 @@ make_xmp_property_key_view(std::string_view schema_ns,
 }
 
 
+MetaKeyView
+make_icc_header_field_key_view(uint32_t offset) noexcept
+{
+    MetaKeyView key;
+    key.kind                         = MetaKeyKind::IccHeaderField;
+    key.data.icc_header_field.offset = offset;
+    return key;
+}
+
+
+MetaKeyView
+make_icc_tag_key_view(uint32_t signature) noexcept
+{
+    MetaKeyView key;
+    key.kind                   = MetaKeyKind::IccTag;
+    key.data.icc_tag.signature = signature;
+    return key;
+}
+
+
 MetaKey
 make_exif_tag_key(ByteArena& arena, std::string_view ifd, uint16_t tag)
 {

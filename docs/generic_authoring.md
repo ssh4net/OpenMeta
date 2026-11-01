@@ -1,5 +1,16 @@
 # Generic Typed Metadata Authoring
 
+## ICC authoring and serialization (0.8.25)
+
+ICC authoring/editing contracts 2 and canonical ICC serialization contract 1
+support fresh host-provided header/tag data, transactional exact-key changes,
+checked measure/write, deterministic layout and existing ICC carrier paths.
+Profile IDs clear by default; dirty deletion intent is retained before transfer
+filtering. Clean transfer compatibility remains, with corrected fixed-point
+illuminant encoding. ABI 4 and existing layouts are retained. Full RDF authoring
+remains open; ICC class/tag/color semantics stay host-owned.
+See [ICC lifecycle contract](icc_authoring.md) for shapes, limits and compatibility.
+
 ## Structured XMP transactions (0.8.14)
 
 Bounded whole-record, array-item and language-alternative creation/editing now
@@ -15,7 +26,7 @@ is preserved. Option layouts grow under unfrozen ABI 4; rebuild consumers with
 matching headers and binaries. See [the target-profile contract](target_profile_validation.md)
 for profiles, required and forbidden fields, transaction behavior and limits.
 
-`openmeta/metadata_authoring.h` provides the C++ v1 construction path for
+`openmeta/metadata_authoring.h` provides the C++ contract-2 construction path for
 applications that already know the exact metadata keys and types they need to
 write. It complements the logical-field API in `metadata_creation.h`; it does
 not replace that simpler API.
@@ -25,6 +36,7 @@ The API currently authors these writable families:
 - EXIF/TIFF and DNG-style tags by IFD token plus numeric tag ID
 - XMP properties by namespace URI plus property path
 - IPTC-IIM datasets by record plus dataset number
+- ICC header fields by byte offset and opaque typed tags by signature
 
 Unknown/private EXIF tags and custom XMP namespace URIs do not require an
 OpenMeta registry update. Inputs are borrowed for the call and copied into a

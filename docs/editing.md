@@ -1,5 +1,16 @@
 # Metadata Editing
 
+## ICC authoring and serialization (0.8.25)
+
+ICC authoring/editing contracts 2 and canonical ICC serialization contract 1
+support fresh host-provided header/tag data, transactional exact-key changes,
+checked measure/write, deterministic layout and existing ICC carrier paths.
+Profile IDs clear by default; dirty deletion intent is retained before transfer
+filtering. Clean transfer compatibility remains, with corrected fixed-point
+illuminant encoding. ABI 4 and existing layouts are retained. Full RDF authoring
+remains open; ICC class/tag/color semantics stay host-owned.
+See [ICC lifecycle contract](icc_authoring.md) for shapes, limits and compatibility.
+
 ## Structured XMP transactions (0.8.14)
 
 Bounded whole-record, array-item and language-alternative creation/editing now

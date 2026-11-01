@@ -19,7 +19,7 @@ OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Stable generic typed authoring contract version.
-inline constexpr uint32_t kMetadataAuthoringContractVersion = 1U;
+inline constexpr uint32_t kMetadataAuthoringContractVersion = 2U;
 inline constexpr uint32_t kInvalidMetadataAuthoringEntry    = 0xffffffffU;
 
 /// Handling of repeated explicit keys during generic store construction.
@@ -77,8 +77,10 @@ struct MetadataAuthoringResult final {
 /**
  * \brief Build a finalized detached store from borrowed typed entries.
  *
- * Authorable key families are EXIF/TIFF tags, XMP properties, and IPTC-IIM
- * datasets. Unknown/private EXIF tags and custom XMP namespace URIs are
+ * Authorable key families are EXIF/TIFF tags, XMP properties, IPTC-IIM
+ * datasets, and ICC header fields/tags. ICC entry shapes are checked here;
+ * complete profile requirements are checked by serialize_icc_profile().
+ * Unknown/private EXIF tags and custom XMP namespace URIs are
  * accepted without registry changes. All borrowed keys and values are copied.
  * The output store is replaced only after the complete request passes resource,
  * structural, and enabled schema validation.

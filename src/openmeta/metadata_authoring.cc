@@ -5,6 +5,7 @@
 #include "openmeta/meta_edit.h"
 #include "openmeta/metadata_editing.h"
 
+#include "icc_serialize_internal.h"
 #include "metadata_validation_options_internal.h"
 
 #include <algorithm>
@@ -69,7 +70,9 @@ namespace {
         case MetaKeyKind::XmpProperty:
             return static_cast<uint64_t>(key.data.xmp_property.schema_ns.size())
                    + key.data.xmp_property.property_path.size();
-        case MetaKeyKind::IptcDataset: return 0U;
+        case MetaKeyKind::IptcDataset:
+        case MetaKeyKind::IccHeaderField:
+        case MetaKeyKind::IccTag: return 0U;
         default: return std::numeric_limits<uint64_t>::max();
         }
     }
@@ -90,6 +93,8 @@ namespace {
         case MetaKeyKind::IptcDataset:
             return key.data.iptc_dataset.record <= 255U
                    && key.data.iptc_dataset.dataset <= 255U;
+        case MetaKeyKind::IccHeaderField:
+        case MetaKeyKind::IccTag: return detail::icc_authoring_key_valid(key);
         default: return false;
         }
     }
@@ -108,6 +113,11 @@ namespace {
         case MetaKeyKind::IptcDataset:
             return make_iptc_dataset_key(source.data.iptc_dataset.record,
                                          source.data.iptc_dataset.dataset);
+        case MetaKeyKind::IccHeaderField:
+            return make_icc_header_field_key(
+                source.data.icc_header_field.offset);
+        case MetaKeyKind::IccTag:
+            return make_icc_tag_key(source.data.icc_tag.signature);
         default: return MetaKey {};
         }
     }
@@ -183,7 +193,9 @@ create_metadata_store(std::span<const MetadataAuthoringEntry> entries,
         const MetadataAuthoringEntry& item = entries[i];
         if (item.key.kind != MetaKeyKind::ExifTag
             && item.key.kind != MetaKeyKind::XmpProperty
-            && item.key.kind != MetaKeyKind::IptcDataset) {
+            && item.key.kind != MetaKeyKind::IptcDataset
+            && item.key.kind != MetaKeyKind::IccHeaderField
+            && item.key.kind != MetaKeyKind::IccTag) {
             return error(MetadataAuthoringStatus::UnsupportedKeyKind,
                          static_cast<uint32_t>(i));
         }
@@ -192,7 +204,10 @@ create_metadata_store(std::span<const MetadataAuthoringEntry> entries,
                          static_cast<uint32_t>(i));
         }
         if (!value_view_is_valid(item.value)
-            || item.value.payload.size() > options.max_value_bytes) {
+            || item.value.payload.size() > options.max_value_bytes
+            || ((item.key.kind == MetaKeyKind::IccHeaderField
+                 || item.key.kind == MetaKeyKind::IccTag)
+                && !detail::icc_authoring_value_valid(item.key, item.value))) {
             return error(MetadataAuthoringStatus::InvalidValue,
                          static_cast<uint32_t>(i));
         }
@@ -381,14 +396,20 @@ edit_metadata_typed(const MetaStore& base,
         const MetadataAuthoringEntry& entry = operation.entry;
         if (entry.key.kind != MetaKeyKind::ExifTag
             && entry.key.kind != MetaKeyKind::XmpProperty
-            && entry.key.kind != MetaKeyKind::IptcDataset)
+            && entry.key.kind != MetaKeyKind::IptcDataset
+            && entry.key.kind != MetaKeyKind::IccHeaderField
+            && entry.key.kind != MetaKeyKind::IccTag)
             return typed_edit_error(Status::UnsupportedKeyKind, i);
         if (!key_is_valid(entry.key, options.max_key_bytes))
             return typed_edit_error(Status::InvalidKey, i);
         uint64_t bytes = key_bytes(entry.key);
         if (operation.kind != MetadataEditingOperationKind::Remove) {
             if (!value_view_is_valid(entry.value)
-                || entry.value.payload.size() > options.max_value_bytes)
+                || entry.value.payload.size() > options.max_value_bytes
+                || ((entry.key.kind == MetaKeyKind::IccHeaderField
+                     || entry.key.kind == MetaKeyKind::IccTag)
+                    && !detail::icc_authoring_value_valid(entry.key,
+                                                          entry.value)))
                 return typed_edit_error(Status::InvalidValue, i);
             bytes += entry.value.payload.size();
             supplied_entries.push_back(entry);

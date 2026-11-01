@@ -1,6 +1,18 @@
 Developer Notes
 ===============
 
+ICC authoring and serialization (0.8.25)
+----------------------------------------
+
+ICC authoring/editing contracts 2 and canonical ICC serialization contract 1
+support fresh host-provided header/tag data, transactional exact-key changes,
+checked measure/write, deterministic layout and existing ICC carrier paths.
+Profile IDs clear by default; dirty deletion intent is retained before transfer
+filtering. Clean transfer compatibility remains, with corrected fixed-point
+illuminant encoding. ABI 4 and existing layouts are retained. Full RDF authoring
+remains open; ICC class/tag/color semantics stay host-owned.
+See :doc:`icc_authoring` for the complete contract.
+
 Prepared native IPTC patching (0.8.24)
 --------------------------------------
 
@@ -24,7 +36,7 @@ Version 0.8.24 retains unfrozen ABI 4 and appends IIM options/status to public
 patch structures. Rebuild consumers with matching headers and binaries. Source
 snapshot v1, IIM serializer contract 1, signer packages and Host Adoption Profile
 v1 are unchanged. No atomics, mutexes or automatic cross-family synchronization
-were added. Full RDF authoring and fresh ICC construction remain open.
+were added. Full RDF authoring remains open; bounded ICC construction is covered by 0.8.25 above.
 
 Edited-snapshot C2PA signing (0.8.23)
 -------------------------------------

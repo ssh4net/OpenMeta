@@ -16,6 +16,7 @@
 #include "openmeta/exif_tag_names.h"
 #include "openmeta/exif_tiff_decode.h"
 #include "openmeta/exif_tiff_serialize.h"
+#include "openmeta/icc_serialize.h"
 #include "openmeta/interop_export.h"
 #include "openmeta/jumbf_decode.h"
 #include "openmeta/mapped_file.h"
@@ -24,7 +25,7 @@
 #include "openmeta/xmp_dump.h"
 
 #include "crw_ciff_decode_internal.h"
-#include "icc_profile_layout_internal.h"
+#include "icc_serialize_internal.h"
 #include "interop_safety_internal.h"
 #include "interop_value_format_internal.h"
 #include "metadata_logical_field_internal.h"
@@ -6970,18 +6971,6 @@ namespace {
         (*out)[off + 3U] = static_cast<std::byte>((v >> 24) & 0xFFU);
     }
 
-    static void put_u32be(std::vector<std::byte>* out, uint32_t off,
-                          uint32_t v) noexcept
-    {
-        if (!out || off + 4U > out->size()) {
-            return;
-        }
-        (*out)[off + 0U] = static_cast<std::byte>((v >> 24) & 0xFFU);
-        (*out)[off + 1U] = static_cast<std::byte>((v >> 16) & 0xFFU);
-        (*out)[off + 2U] = static_cast<std::byte>((v >> 8) & 0xFFU);
-        (*out)[off + 3U] = static_cast<std::byte>((v >> 0) & 0xFFU);
-    }
-
     static uint16_t tiff_type_from_elem(MetaElementType elem) noexcept
     {
         switch (elem) {
@@ -8257,95 +8246,35 @@ namespace {
         if (tags.empty()) {
             return false;
         }
-
-        internal::IccProfileLayout layout;
-        if (!internal::icc_profile_layout_begin(
-                static_cast<uint64_t>(tags.size()), &layout)) {
-            return false;
-        }
-
-        uint64_t cursor = layout.data_offset;
-        for (const IccTagItem& t : tags) {
-            internal::IccProfileTagLayout tag_layout;
-            if (!internal::icc_profile_layout_tag(
-                    cursor, static_cast<uint64_t>(t.bytes.size()),
-                    &tag_layout)) {
-                return false;
-            }
-            cursor = tag_layout.end_offset;
-        }
-
-        uint32_t profile_size = 0U;
-        if (!internal::icc_profile_layout_finish(cursor, &profile_size)) {
-            return false;
-        }
-        const size_t output_size = static_cast<size_t>(profile_size);
-        if (output_size > out_profile->max_size()) {
-            return false;
-        }
-
-        struct TagPos final {
-            uint32_t signature                  = 0;
-            uint32_t offset                     = 0;
-            uint32_t size                       = 0;
-            const std::vector<std::byte>* bytes = nullptr;
-        };
-
-        std::vector<TagPos> positions;
-        positions.reserve(tags.size());
-        cursor = layout.data_offset;
-        for (const IccTagItem& t : tags) {
-            internal::IccProfileTagLayout tag_layout;
-            if (!internal::icc_profile_layout_tag(
-                    cursor, static_cast<uint64_t>(t.bytes.size()),
-                    &tag_layout)) {
-                return false;
-            }
-            TagPos p;
-            p.signature = t.signature;
-            p.offset    = tag_layout.offset;
-            p.size      = tag_layout.size;
-            p.bytes     = &t.bytes;
-            positions.push_back(p);
-            cursor = tag_layout.end_offset;
-        }
-
-        out_profile->assign(output_size, std::byte { 0x00 });
+        std::array<std::byte, 128U> header {};
         for (const IccHeaderFieldItem& h : headers) {
             if (h.offset >= 128U || h.bytes.empty()) {
                 continue;
             }
             const size_t avail = static_cast<size_t>(128U - h.offset);
             const size_t n     = std::min(avail, h.bytes.size());
-            std::memcpy(out_profile->data() + h.offset, h.bytes.data(), n);
+            std::memcpy(header.data() + h.offset, h.bytes.data(), n);
         }
 
-        (*out_profile)[36] = std::byte { 'a' };
-        (*out_profile)[37] = std::byte { 'c' };
-        (*out_profile)[38] = std::byte { 's' };
-        (*out_profile)[39] = std::byte { 'p' };
-
-        put_u32be(out_profile, 128U, layout.tag_count);
-        uint32_t table_pos = 132U;
-        for (const TagPos& p : positions) {
-            put_u32be(out_profile, table_pos + 0U, p.signature);
-            put_u32be(out_profile, table_pos + 4U, p.offset);
-            put_u32be(out_profile, table_pos + 8U, p.size);
-            table_pos += 12U;
+        std::vector<detail::IccProfileTagView> tag_views;
+        tag_views.reserve(tags.size());
+        for (const IccTagItem& tag : tags) {
+            detail::IccProfileTagView view;
+            view.signature = tag.signature;
+            view.bytes     = std::span<const std::byte>(tag.bytes.data(),
+                                                        tag.bytes.size());
+            tag_views.push_back(view);
         }
-        for (const TagPos& p : positions) {
-            if (!p.bytes || p.bytes->empty()) {
-                continue;
-            }
-            std::memcpy(out_profile->data() + p.offset, p.bytes->data(),
-                        p.bytes->size());
-        }
-        put_u32be(out_profile, 0U, profile_size);
-        return true;
+        // Clean legacy transfer keeps its historical final profile length.
+        return detail::build_icc_profile_bytes_from_items(
+            header, tag_views,
+            detail::IccProfileFinalTagPadding::PreserveLegacyLength,
+            out_profile);
     }
 
-    static bool value_to_icc_bytes(const MetaStore& store, const MetaValue& v,
-                                   std::vector<std::byte>* out) noexcept
+    static bool value_to_icc_bytes_untyped(const MetaStore& store,
+                                           const MetaValue& v,
+                                           std::vector<std::byte>* out) noexcept
     {
         if (!out) {
             return false;
@@ -8479,77 +8408,138 @@ namespace {
         }
     }
 
+    static bool value_to_icc_bytes(const MetaStore& store, const MetaValue& v,
+                                   std::vector<std::byte>* out,
+                                   uint32_t header_offset = UINT32_MAX) noexcept
+    {
+        if (!out) {
+            return false;
+        }
+        out->clear();
+        if (header_offset == 68U && v.kind == MetaValueKind::Array
+            && v.elem_type == MetaElementType::SRational) {
+            const std::span<const std::byte> bytes = store.arena().span(
+                v.data.span);
+            std::array<std::byte, 12U> encoded {};
+            if (!detail::icc_srational_triplet_to_s15fixed16(bytes, v.count,
+                                                             encoded)) {
+                return false;
+            }
+            out->assign(encoded.begin(), encoded.end());
+            return true;
+        }
+        if (!value_to_icc_bytes_untyped(store, v, out)) {
+            return false;
+        }
+        return header_offset != 68U || out->size() == 12U;
+    }
+
+    static bool
+    build_strict_icc_profile_bytes(const MetaStore& store,
+                                   std::vector<std::byte>* out_profile) noexcept
+    {
+        if (!out_profile) {
+            return false;
+        }
+        out_profile->clear();
+        const IccProfileSerializeResult measured = serialize_icc_profile(store,
+                                                                         {});
+        if (measured.status != IccProfileSerializeStatus::OutputTruncated
+            || measured.needed == 0U
+            || measured.needed > out_profile->max_size()) {
+            return false;
+        }
+        std::vector<std::byte> profile(static_cast<size_t>(measured.needed));
+        const IccProfileSerializeResult emitted
+            = serialize_icc_profile(store, profile);
+        if (!emitted.ok() || emitted.written != measured.needed
+            || emitted.needed != measured.needed) {
+            return false;
+        }
+        out_profile->swap(profile);
+        return true;
+    }
+
     static IccPackBuild
-    build_jpeg_icc_app2_blocks(const MetaStore& store) noexcept
+    build_jpeg_icc_app2_blocks(const MetaStore& store,
+                               bool strict_canonical) noexcept
     {
         IccPackBuild out;
-
-        std::vector<IccHeaderFieldItem> headers;
-        std::vector<IccTagItem> tags;
-
-        for (const Entry& e : store.entries()) {
-            if (any(e.flags, EntryFlags::Deleted)) {
-                continue;
-            }
-            if (e.key.kind == MetaKeyKind::IccHeaderField) {
-                std::vector<std::byte> bytes;
-                if (!value_to_icc_bytes(store, e.value, &bytes)) {
-                    out.skipped_count += 1U;
-                    continue;
-                }
-                bool exists = false;
-                for (const IccHeaderFieldItem& h : headers) {
-                    if (h.offset == e.key.data.icc_header_field.offset) {
-                        exists = true;
-                        break;
-                    }
-                }
-                if (!exists) {
-                    IccHeaderFieldItem h;
-                    h.offset = e.key.data.icc_header_field.offset;
-                    h.bytes  = std::move(bytes);
-                    headers.push_back(std::move(h));
-                }
-                continue;
-            }
-
-            if (e.key.kind == MetaKeyKind::IccTag) {
-                std::vector<std::byte> bytes;
-                if (!value_to_icc_bytes(store, e.value, &bytes)) {
-                    out.skipped_count += 1U;
-                    continue;
-                }
-                if (bytes.empty()) {
-                    out.skipped_count += 1U;
-                    continue;
-                }
-                bool exists = false;
-                for (const IccTagItem& t : tags) {
-                    if (t.signature == e.key.data.icc_tag.signature) {
-                        exists = true;
-                        break;
-                    }
-                }
-                if (!exists) {
-                    IccTagItem t;
-                    t.signature = e.key.data.icc_tag.signature;
-                    t.bytes     = std::move(bytes);
-                    tags.push_back(std::move(t));
-                }
-                continue;
-            }
-        }
-
-        if (tags.empty()) {
-            return out;
-        }
-
-        std::stable_sort(tags.begin(), tags.end(), IccTagItemLess {});
-
         std::vector<std::byte> profile;
-        if (!build_icc_profile_bytes_from_items(headers, tags, &profile)
-            || profile.empty()) {
-            out.skipped_count += 1U;
+        if (strict_canonical) {
+            if (!build_strict_icc_profile_bytes(store, &profile)) {
+                return out;
+            }
+        } else {
+            std::vector<IccHeaderFieldItem> headers;
+            std::vector<IccTagItem> tags;
+
+            for (const Entry& e : store.entries()) {
+                if (any(e.flags, EntryFlags::Deleted)) {
+                    continue;
+                }
+                if (e.key.kind == MetaKeyKind::IccHeaderField) {
+                    std::vector<std::byte> bytes;
+                    if (!value_to_icc_bytes(store, e.value, &bytes,
+                                            e.key.data.icc_header_field.offset)) {
+                        out.skipped_count += 1U;
+                        continue;
+                    }
+                    bool exists = false;
+                    for (const IccHeaderFieldItem& h : headers) {
+                        if (h.offset == e.key.data.icc_header_field.offset) {
+                            exists = true;
+                            break;
+                        }
+                    }
+                    if (!exists) {
+                        IccHeaderFieldItem h;
+                        h.offset = e.key.data.icc_header_field.offset;
+                        h.bytes  = std::move(bytes);
+                        headers.push_back(std::move(h));
+                    }
+                    continue;
+                }
+
+                if (e.key.kind == MetaKeyKind::IccTag) {
+                    std::vector<std::byte> bytes;
+                    if (!value_to_icc_bytes(store, e.value, &bytes)) {
+                        out.skipped_count += 1U;
+                        continue;
+                    }
+                    if (bytes.empty()) {
+                        out.skipped_count += 1U;
+                        continue;
+                    }
+                    bool exists = false;
+                    for (const IccTagItem& tag : tags) {
+                        if (tag.signature == e.key.data.icc_tag.signature) {
+                            exists = true;
+                            break;
+                        }
+                    }
+                    if (!exists) {
+                        IccTagItem tag;
+                        tag.signature = e.key.data.icc_tag.signature;
+                        tag.bytes     = std::move(bytes);
+                        tags.push_back(std::move(tag));
+                    }
+                    continue;
+                }
+            }
+
+            if (tags.empty()) {
+                return out;
+            }
+            std::stable_sort(tags.begin(), tags.end(), IccTagItemLess {});
+            if (!build_icc_profile_bytes_from_items(headers, tags, &profile)
+                || profile.empty()) {
+                out.skipped_count += 1U;
+                return out;
+            }
+        }
+
+        if (profile.empty()) {
             return out;
         }
 
@@ -8588,6 +8578,7 @@ namespace {
     }
 
     static bool build_icc_profile_bytes(const MetaStore& store,
+                                        bool strict_canonical,
                                         std::vector<std::byte>* out_profile,
                                         uint32_t* skipped_count) noexcept
     {
@@ -8597,6 +8588,9 @@ namespace {
         out_profile->clear();
         if (skipped_count) {
             *skipped_count = 0U;
+        }
+        if (strict_canonical) {
+            return build_strict_icc_profile_bytes(store, out_profile);
         }
 
         std::vector<IccHeaderFieldItem> headers;
@@ -8608,7 +8602,8 @@ namespace {
             }
             if (e.key.kind == MetaKeyKind::IccHeaderField) {
                 std::vector<std::byte> bytes;
-                if (!value_to_icc_bytes(store, e.value, &bytes)) {
+                if (!value_to_icc_bytes(store, e.value, &bytes,
+                                        e.key.data.icc_header_field.offset)) {
                     if (skipped_count) {
                         *skipped_count += 1U;
                     }
@@ -8702,6 +8697,18 @@ namespace {
             if (entry.key.kind == MetaKeyKind::IptcDataset
                 && any(entry.flags, EntryFlags::Dirty)
                 && any(entry.flags, EntryFlags::Deleted)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool has_dirty_icc_entry(const MetaStore& store) noexcept
+    {
+        for (const Entry& entry : store.entries()) {
+            if ((entry.key.kind == MetaKeyKind::IccHeaderField
+                 || entry.key.kind == MetaKeyKind::IccTag)
+                && any(entry.flags, EntryFlags::Dirty)) {
                 return true;
             }
         }
@@ -13617,6 +13624,7 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         = request.has_source_raw_data_descriptor
               ? &request.source_raw_data_descriptor
               : nullptr;
+    const bool dirty_icc_input = has_dirty_icc_entry(store);
 
     if (request.target_format != TransferTargetFormat::Jpeg
         && !transfer_target_is_tiff_family(request.target_format)
@@ -13768,7 +13776,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                           || has_kind(prepared_store,
                                       MetaKeyKind::PhotoshopIrb);
     const bool has_icc = has_kind(prepared_store, MetaKeyKind::IccHeaderField)
-                         || has_kind(prepared_store, MetaKeyKind::IccTag);
+                         || has_kind(prepared_store, MetaKeyKind::IccTag)
+                         || dirty_icc_input;
     const bool include_icc_app2 = request.include_icc_app2
                                   && !transfer_safety_mode_is_rendered(
                                       effective_profile.safety);
@@ -14483,7 +14492,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
 
     if (include_icc_app2 && has_icc) {
         if (request.target_format == TransferTargetFormat::Jpeg) {
-            IccPackBuild icc_build = build_jpeg_icc_app2_blocks(prepared_store);
+            IccPackBuild icc_build
+                = build_jpeg_icc_app2_blocks(prepared_store, dirty_icc_input);
             if (icc_build.produced && !icc_build.blocks.empty()) {
                 for (PreparedTransferBlock& b : icc_build.blocks) {
                     bundle.blocks.push_back(std::move(b));
@@ -14508,8 +14518,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         } else if (transfer_target_is_tiff_family(request.target_format)) {
             std::vector<std::byte> icc_profile;
             uint32_t skipped_icc = 0U;
-            if (build_icc_profile_bytes(prepared_store, &icc_profile,
-                                        &skipped_icc)
+            if (build_icc_profile_bytes(prepared_store, dirty_icc_input,
+                                        &icc_profile, &skipped_icc)
                 && !icc_profile.empty()) {
                 PreparedTransferBlock b;
                 b.kind    = TransferBlockKind::Icc;
@@ -14537,8 +14547,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         } else if (request.target_format == TransferTargetFormat::Png) {
             std::vector<std::byte> icc_profile;
             uint32_t skipped_icc = 0U;
-            if (build_icc_profile_bytes(prepared_store, &icc_profile,
-                                        &skipped_icc)
+            if (build_icc_profile_bytes(prepared_store, dirty_icc_input,
+                                        &icc_profile, &skipped_icc)
                 && !icc_profile.empty()) {
                 PreparedTransferBlock b;
                 std::string err;
@@ -14581,8 +14591,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         } else if (request.target_format == TransferTargetFormat::Jp2) {
             std::vector<std::byte> icc_profile;
             uint32_t skipped_icc = 0U;
-            if (build_icc_profile_bytes(prepared_store, &icc_profile,
-                                        &skipped_icc)
+            if (build_icc_profile_bytes(prepared_store, dirty_icc_input,
+                                        &icc_profile, &skipped_icc)
                 && !icc_profile.empty()) {
                 PreparedTransferBlock b;
                 std::string err;
@@ -14626,8 +14636,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         } else if (request.target_format == TransferTargetFormat::Webp) {
             std::vector<std::byte> icc_profile;
             uint32_t skipped_icc = 0U;
-            if (build_icc_profile_bytes(prepared_store, &icc_profile,
-                                        &skipped_icc)
+            if (build_icc_profile_bytes(prepared_store, dirty_icc_input,
+                                        &icc_profile, &skipped_icc)
                 && !icc_profile.empty()) {
                 PreparedTransferBlock b;
                 b.kind    = TransferBlockKind::Icc;
@@ -14655,8 +14665,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         } else if (transfer_target_is_bmff(request.target_format)) {
             std::vector<std::byte> icc_profile;
             uint32_t skipped_icc = 0U;
-            if (build_icc_profile_bytes(prepared_store, &icc_profile,
-                                        &skipped_icc)
+            if (build_icc_profile_bytes(prepared_store, dirty_icc_input,
+                                        &icc_profile, &skipped_icc)
                 && !icc_profile.empty()) {
                 PreparedTransferBlock b;
                 b.kind  = TransferBlockKind::Icc;
@@ -14687,8 +14697,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         } else {
             std::vector<std::byte> icc_profile;
             uint32_t skipped_icc = 0U;
-            if (build_icc_profile_bytes(prepared_store, &icc_profile,
-                                        &skipped_icc)
+            if (build_icc_profile_bytes(prepared_store, dirty_icc_input,
+                                        &icc_profile, &skipped_icc)
                 && !icc_profile.empty()) {
                 PreparedTransferBlock b;
                 b.kind    = TransferBlockKind::Icc;

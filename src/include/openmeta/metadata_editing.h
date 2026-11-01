@@ -129,7 +129,7 @@ metadata_editing_operation_kind_name(MetadataEditingOperationKind kind) noexcept
 const char*
 metadata_editing_status_name(MetadataEditingStatus status) noexcept;
 
-inline constexpr uint32_t kMetadataTypedEditingContractVersion  = 1U;
+inline constexpr uint32_t kMetadataTypedEditingContractVersion  = 2U;
 inline constexpr uint32_t kMetadataTypedEditingUniqueOccurrence = 0xfffffffeU;
 inline constexpr uint32_t kMetadataTypedEditingMaxOperations    = 4096U;
 
@@ -195,7 +195,7 @@ struct MetadataTypedEditingResult final {
 };
 
 /**
- * Applies ordered EXIF/TIFF, IPTC and XMP edits to a detached candidate.
+ * Applies ordered EXIF/TIFF, IPTC, XMP and ICC edits to a detached candidate.
  * Every supplied value and the complete result are validated. Set retains
  * entry identity, source block/order and flags, but replaces wire hints with
  * those supplied for the new value; default hints request inferred encoding.

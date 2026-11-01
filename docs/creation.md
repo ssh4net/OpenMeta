@@ -141,5 +141,6 @@ The logical-field API does not expose arbitrary custom properties, binary
 values, or direct EXIF/IPTC construction. C++ hosts that know exact keys and
 types can use the transactional generic builder in
 [generic_authoring.md](generic_authoring.md), including safe scalar/indexed
-custom XMP. Full arbitrary RDF structures and fresh ICC profile construction
-remain outside the current authoring scope.
+custom XMP. Full arbitrary RDF structures remain outside the current authoring scope.
+ICC header/tag construction uses the C++ generic contract-2 API; see
+[ICC authoring](icc_authoring.md).

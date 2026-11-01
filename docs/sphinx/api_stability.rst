@@ -1,6 +1,15 @@
 API Stability
 =============
 
+ICC authoring and serialization (0.8.25)
+----------------------------------------
+
+Generic authoring and typed editing contract 2 accept ICC header/tag entries.
+Canonical ``serialize_icc_profile()`` contract 1 shares checked encoding with
+transfer, explicit ID policy and bounded transactional publication. ABI 4 and
+existing layouts remain; use matching headers/binaries. See :doc:`icc_authoring`.
+Prepared metadata patching is contract 2 for EXIF/XMP/IPTC.
+
 IPTC carrier removal (0.8.20)
 -----------------------------
 
@@ -228,9 +237,9 @@ Host-facing API map
        borrowed key/value helpers, and ``MetaStore::reserve(...)``
      - ``openmeta/metadata_authoring.h``, ``openmeta/meta_key.h``,
        ``openmeta/meta_value.h``, ``openmeta/meta_store.h``
-     - Experimental v1
+     - Experimental v2
      - Transactional bounded construction of finalized EXIF/TIFF/DNG-style,
-       XMP, and IPTC-IIM entries. Unknown/private EXIF and custom XMP
+       XMP, IPTC-IIM and ICC header/tag entries. Unknown/private EXIF and custom XMP
        namespaces remain authorable; safe scalar/indexed custom XMP is
        supported. C++ only in this milestone. See :doc:`generic_authoring`.
    * - Detached store/schema validation: ``validate_entry(...)`` and
@@ -246,14 +255,20 @@ Host-facing API map
      - Deterministic measure/write for unwrapped little-endian TIFF bytes. The
        same payload feeds existing target wrappers. Opaque MakerNotes drop by
        default. See :doc:`canonical_serialization`.
-   * - Prepared TIFF/EXIF and scalar XMP patching:
+   * - Canonical ICC serialization: ``serialize_icc_profile(...)``
+     - ``openmeta/icc_serialize.h``
+     - Experimental v1
+     - Bounded header/tag measure/write with strict profile preflight,
+       deterministic sorted/padded layout and explicit ID policy. Shared with
+       creation/editing and transfer. See :doc:`icc_authoring`.
+   * - Prepared EXIF, scalar XMP and native IPTC patching:
        ``prepare_metadata_patch_plan(...)``, immutable plans, worker
        instances, and transactional typed patches
      - ``openmeta/metadata_patch.h``
-     - Experimental v1
-     - Target-neutral opaque handles for typed EXIF and emitted scalar XMP
+     - Experimental v2
+     - Target-neutral opaque handles for typed EXIF/IPTC and emitted scalar XMP
        values. Preparation and worker creation may allocate; mixed batches,
-       payload access and library replay do not. Failure changes neither payload. See :doc:`canonical_patching`.
+       payload access and library replay do not. Failure changes no payload. See :doc:`canonical_patching`.
    * - Logical metadata editing: ``edit_metadata(...)`` and add/set/remove
        helpers
      - ``openmeta/metadata_editing.h``
@@ -263,6 +278,11 @@ Host-facing API map
        and tombstones; add handles deterministic repeated fields and explicit
        singleton conflicts. Python returns a detached edited ``Document``
        without mutating its source. See :doc:`editing`.
+   * - Exact-key typed editing: ``edit_metadata_typed(...)``
+     - ``openmeta/metadata_editing.h``
+     - Experimental v2
+     - Transactional C++ EXIF/IPTC/XMP/ICC Add/Set/Remove, explicit occurrence
+       and conflict policy, wire hints and resource limits. See :doc:`editing`.
    * - Reverse creation-date translation:
        ``translate_xmp_creation_dates(...)``
      - ``openmeta/metadata_translation.h``

@@ -1,5 +1,16 @@
 # Metadata Transfer Plan (Draft)
 
+## ICC authoring and serialization (0.8.25)
+
+ICC authoring/editing contracts 2 and canonical ICC serialization contract 1
+support fresh host-provided header/tag data, transactional exact-key changes,
+checked measure/write, deterministic layout and existing ICC carrier paths.
+Profile IDs clear by default; dirty deletion intent is retained before transfer
+filtering. Clean transfer compatibility remains, with corrected fixed-point
+illuminant encoding. ABI 4 and existing layouts are retained. Full RDF authoring
+remains open; ICC class/tag/color semantics stay host-owned.
+See [ICC lifecycle contract](icc_authoring.md) for shapes, limits and compatibility.
+
 ## Prepared IPTC patching (0.8.24)
 
 Native IPTC-IIM now joins EXIF/XMP prepared patch contract 2: exact active
