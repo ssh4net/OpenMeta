@@ -1,5 +1,19 @@
 # Metadata Transfer Plan (Draft)
 
+## Shared descriptive lifecycle (0.8.27)
+
+Experimental C++ reconciliation contract 1 shares authority, deletion and bounds
+across five DC/IPTC groups plus the opt-in IFD0 description/artist/copyright
+bridge. Custom trees survive explicit high-level reader retention and source
+reconciliation. Destination XMP precedence is orthogonal; select the complete
+source first or retain source precedence for synchronized native output.
+See [descriptive reconciliation](descriptive_reconciliation.md).
+
+This closes a bounded shared-field lifecycle gap. General RDF and arbitrary
+schema synchronization remain open. ICC construction is covered by 0.8.25;
+explicit ICC carrier removal remains a next task. OIIO/iRAW work stays on hold
+and fuzzy search stays last. ABI 4 remains unfrozen with matching headers/binaries.
+
 ## ICC authoring and serialization (0.8.25)
 
 ICC authoring/editing contracts 2 and canonical ICC serialization contract 1
@@ -19,7 +33,7 @@ patch/replay after preparation. Host-owned framing carries patched payloads
 through JPEG, TIFF and DNG; no container wrapper is added to the patch API.
 ABI 4 remains unfrozen; matching 0.8.24 headers/binaries are required for the
 appended IIM policy/status fields. See [canonical_patching.md](canonical_patching.md).
-Full RDF authoring and fresh ICC construction remain separate gaps.
+Full RDF authoring remains open; fresh ICC construction is covered by 0.8.25 above.
 
 ## Edited-snapshot C2PA context (0.8.23)
 
@@ -60,7 +74,7 @@ and verifies removal of stale time fields by nonempty JPEG/TIFF payload replacem
 Version 0.8.20 adds explicit IPTC carrier removal after the last native dataset
 is deleted. Omission and disabled IPTC output preserve the target. Active charset
 and version records retain the carrier. See [canonical_serialization.md](canonical_serialization.md).
-Full RDF authoring and fresh ICC construction remain open; prepared IPTC
+Full RDF authoring remains open; ICC construction is covered by 0.8.25 and prepared IPTC
 patching is covered by 0.8.24 above.
 
 Date: March 5, 2026
@@ -217,6 +231,7 @@ suite and individual smoke registrations; aggregate gates are not CTest tests.
 
 In a non-Python test tree it runs:
 - `MetadataTransferApi.*`
+- `MetadataReconcile*.*`
 - `XmpDump.*`
 - `ExrAdapter.*`
 - `DngSdkAdapter.*`
@@ -901,7 +916,7 @@ Status legend:
 | Work package | Why it matters for parity | Status | Remaining package count | Main target families |
 | --- | --- | --- | --- | --- |
 | Public writer contract for primary targets | The bounded preserve/replace behavior is explicit and release-gated across the first-class target family | `Done` | `0` | `TIFF`, `DNG`, `PNG`, `WebP`, `JP2`, `JXL`, `HEIF/AVIF/CR3` |
-| General EXIF / IPTC / XMP sync engine | One of the biggest remaining gaps for general editing adoption | `Partial` | `1-2` | Cross-cutting |
+| General EXIF / IPTC / XMP sync engine | Bounded five-field descriptive reconciliation and optional three-field EXIF bridge are covered by 0.8.27; broader schemas and MWG semantics remain | `Partial` | `1-2` | Cross-cutting |
 | Compare-backed release validation | Repeatable release-facing read-back and compare gates cover the primary writer family and writeback modes | `Done` | `0` | Cross-cutting |
 | MakerNote rewrite trust | Generic preserve/rewrite/drop trust is explicit; Nikon type 1/type 3 and Canon source-dependent layout evidence are present, but vendor-private relocation, checksum repair, and semantic guarantees still trail mature tools | `Partial` | `1` | `JPEG`, `TIFF`, `DNG`, RAW-derived lanes |
 | TIFF / DNG deeper rewrite guarantees | The bounded root/ExifIFD/preview/SubIFD contract and compare-backed target modes are complete for the current scope | `Done` | `0` | `TIFF`, `DNG` |

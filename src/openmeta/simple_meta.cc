@@ -991,11 +991,14 @@ namespace {
 
 
     static void merge_xmp_status(XmpDecodeStatus* out,
-                                 XmpDecodeStatus in) noexcept
+                                 XmpDecodeStatus in,
+                                 bool require_supported = false) noexcept
     {
         if (!out) {
             return;
         }
+        if (require_supported && in == XmpDecodeStatus::Unsupported)
+            in = XmpDecodeStatus::Malformed;
         if (*out == XmpDecodeStatus::LimitExceeded) {
             return;
         }
@@ -1319,7 +1322,8 @@ namespace {
 
         const XmpDecodeResult one
             = decode_xmp_packet(packet, store, EntryFlags::None, options);
-        merge_xmp_status(&xmp->status, one.status);
+        merge_xmp_status(&xmp->status, one.status,
+                         options.preserve_custom_structures);
         xmp->entries_decoded += one.entries_decoded;
         return one.entries_decoded > 0U;
     }
@@ -1456,7 +1460,8 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
                                      XmpDecodeStatus::OutputTruncated);
                     break;
                 case PayloadStatus::Unsupported:
-                    merge_xmp_status(&xmp.status, XmpDecodeStatus::Unsupported);
+                    merge_xmp_status(&xmp.status, XmpDecodeStatus::Unsupported,
+                                     options.xmp.preserve_custom_structures);
                     break;
                 case PayloadStatus::Malformed:
                     merge_xmp_status(&xmp.status, XmpDecodeStatus::Malformed);
@@ -1722,7 +1727,8 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
                             any_xmp                  = true;
                             const XmpDecodeResult xr = decode_xmp_packet(
                                 inner, store, EntryFlags::None, options.xmp);
-                            merge_xmp_status(&xmp.status, xr.status);
+                            merge_xmp_status(&xmp.status, xr.status,
+                                             options.xmp.preserve_custom_structures);
                             xmp.entries_decoded += xr.entries_decoded;
                         }
                     }
@@ -1765,7 +1771,8 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
             const XmpDecodeResult one = decode_xmp_packet(block_bytes, store,
                                                           EntryFlags::None,
                                                           options.xmp);
-            merge_xmp_status(&xmp.status, one.status);
+            merge_xmp_status(&xmp.status, one.status,
+                             options.xmp.preserve_custom_structures);
             xmp.entries_decoded += one.entries_decoded;
         } else if (block.kind == ContainerBlockKind::Text) {
             const bool payload_decompressed = (block.compression
@@ -1927,7 +1934,8 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
                 const XmpDecodeResult one
                     = decode_xmp_packet(block_bytes, store, EntryFlags::None,
                                         options.xmp);
-                merge_xmp_status(&xmp.status, one.status);
+                merge_xmp_status(&xmp.status, one.status,
+                             options.xmp.preserve_custom_structures);
                 xmp.entries_decoded += one.entries_decoded;
             } else if (block.aux_u32 == fourcc('j', 'u', 'm', 'b')
                        || block.aux_u32 == fourcc('c', '2', 'p', 'a')) {
@@ -1947,7 +1955,8 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
         const XmpDecodeResult one = decode_xmp_packet(file_bytes, store,
                                                       EntryFlags::None,
                                                       options.xmp);
-        merge_xmp_status(&xmp.status, one.status);
+        merge_xmp_status(&xmp.status, one.status,
+                             options.xmp.preserve_custom_structures);
         xmp.entries_decoded += one.entries_decoded;
     }
 

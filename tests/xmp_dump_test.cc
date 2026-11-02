@@ -11285,3 +11285,48 @@ TEST(XmpDump, PortableGpsEncodedTextPreservesUnicodeAndSkipsUnknownEncodings)
                       std::string_view::npos);
     }
 }
+
+namespace openmeta {
+TEST(XmpDump, PortableExistingLanguageAlternativesKeepFirstMergedValue)
+{
+    constexpr std::string_view dc = "http://purl.org/dc/elements/1.1/";
+    const std::array paths { std::string_view("title[@xml:lang=x-default]"),
+                             std::string_view("title[@xml:lang=fr-FR]"),
+                             std::string_view(
+                                 "description[@xml:lang=x-default]"),
+                             std::string_view("description[@xml:lang=fr-FR]"),
+                             std::string_view("rights[@xml:lang=x-default]"),
+                             std::string_view("rights[@xml:lang=fr-FR]") };
+    MetaStore store;
+    const BlockId block = store.add_block(BlockInfo {});
+    for (uint32_t carrier = 0U; carrier < 3U; ++carrier) {
+        for (std::string_view path : paths) {
+            Entry entry;
+            entry.key          = make_xmp_property_key(store.arena(), dc, path);
+            entry.value        = make_text(store.arena(),
+                                    carrier == 0U ? "selected-first"
+                                                         : "discard-later",
+                                           TextEncoding::Utf8);
+            entry.origin.block = block;
+            entry.origin.order_in_block = static_cast<uint32_t>(
+                store.entries().size());
+            ASSERT_NE(store.add_entry(entry), kInvalidEntryId);
+        }
+    }
+    store.finalize();
+    XmpSidecarRequest request;
+    request.format               = XmpSidecarFormat::Portable;
+    request.include_exif         = false;
+    request.include_iptc         = false;
+    request.include_existing_xmp = true;
+    std::vector<std::byte> output;
+    ASSERT_EQ(dump_xmp_sidecar(store, &output, request).status,
+              XmpDumpStatus::Ok);
+    const std::string_view packet(reinterpret_cast<const char*>(output.data()),
+                                  output.size());
+    EXPECT_EQ(count_substring(packet, "selected-first"), 6U);
+    EXPECT_EQ(packet.find("discard-later"), std::string_view::npos);
+    EXPECT_EQ(count_substring(packet, "xml:lang=\"x-default\""), 3U);
+    EXPECT_EQ(count_substring(packet, "xml:lang=\"fr-FR\""), 3U);
+}
+}  // namespace openmeta

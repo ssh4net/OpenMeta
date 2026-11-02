@@ -8248,7 +8248,8 @@ namespace {
             bool new_claim = false;
             if (!claim_portable_lang_alt_property_key(
                     claims, lang_alt_claims, prefix, portable_base, lang,
-                    PortablePropertyOwner::ExistingXmp, &new_claim)) {
+                    PortablePropertyOwner::ExistingXmp, &new_claim)
+                || !new_claim) {
                 return false;
             }
 

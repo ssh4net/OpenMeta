@@ -1540,6 +1540,9 @@ struct ReadTransferSourceSnapshotFileOptions final {
     bool preserve_raw_carriers      = false;
     uint64_t max_raw_carrier_bytes  = 64ULL * 1024ULL * 1024ULL;
     OpenMetaResourcePolicy policy;
+    /// Retain bounded custom XMP container kinds and empty nodes while reading.
+    /// Opt-in; default decoding retains the historical flat representation.
+    bool preserve_custom_xmp_structures = false;
 };
 
 /// Generic decode options for transfer source snapshot reads.
@@ -1610,6 +1613,9 @@ struct ReadTransferSourceSnapshotRandomAccessOptions final {
     bool preserve_raw_carriers      = false;
     uint64_t max_raw_carrier_bytes  = 64ULL * 1024ULL * 1024ULL;
     OpenMetaResourcePolicy policy;
+    /// Retain bounded custom XMP container kinds and empty nodes while reading.
+    /// Opt-in; default decoding retains the historical flat representation.
+    bool preserve_custom_xmp_structures = false;
 };
 
 /// Stable v1 result of bounded positional source snapshot assembly.
@@ -1696,6 +1702,9 @@ struct PrepareTransferFileOptions final {
 
     OpenMetaResourcePolicy policy;
     PrepareTransferRequest prepare;
+    /// Retain bounded custom XMP container kinds and empty nodes while reading.
+    /// Opt-in; default decoding retains the historical flat representation.
+    bool preserve_custom_xmp_structures = false;
 };
 
 /// High-level file read/prepare result.
@@ -2057,6 +2066,9 @@ struct ExecutePreparedTransferSnapshotOptions final {
     PreparedTransferC2paSignerInput c2pa_signer_input;
     bool c2pa_signed_package_provided = false;
     PreparedTransferC2paSignedPackage c2pa_signed_package;
+    /// Retain bounded custom XMP container kinds and empty nodes while reading.
+    /// Opt-in; default decoding retains the historical flat representation.
+    bool preserve_custom_xmp_structures = false;
 };
 
 /// Options for \ref execute_prepared_transfer_bundle.

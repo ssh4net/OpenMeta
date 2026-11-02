@@ -436,6 +436,7 @@ set(OPENMETA_SOURCES
   src/openmeta/metadata_fuzzy_search.cc
   src/openmeta/metadata_interpretation.cc
   src/openmeta/metadata_query.cc
+  src/openmeta/metadata_reconcile.cc
   src/openmeta/metadata_snapshot_io.cc
   src/openmeta/metadata_store_validate.cc
   src/openmeta/metadata_transfer.cc
@@ -1026,6 +1027,9 @@ if(OPENMETA_BUILD_TESTS)
     tests/metadata_icc_transfer_test.cc
     tests/metadata_custom_xmp_test.cc
     tests/metadata_custom_xmp_transfer_test.cc
+    tests/metadata_reconcile_test.cc
+    tests/metadata_reconcile_read_test.cc
+    tests/metadata_reconcile_transfer_test.cc
     tests/exif_tag_names_test.cc
     tests/exr_adapter_test.cc
     tests/exr_decode_test.cc
@@ -1560,6 +1564,18 @@ if(OPENMETA_BUILD_FUZZERS)
       -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
 
   endif()
+
+  add_executable(openmeta_fuzz_reconciliation
+    ${OPENMETA_SOURCES}
+    tests/fuzz/metadata_reconcile_libfuzzer.cc
+  )
+  openmeta_apply_target_settings(openmeta_fuzz_reconciliation)
+  openmeta_apply_core_deps(openmeta_fuzz_reconciliation)
+  openmeta_apply_libfuzzer_stdlib(openmeta_fuzz_reconciliation)
+  target_compile_options(openmeta_fuzz_reconciliation PRIVATE
+    -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+  target_link_options(openmeta_fuzz_reconciliation PRIVATE
+    -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
 
   add_executable(openmeta_fuzz_container_payload
     ${OPENMETA_SOURCES}

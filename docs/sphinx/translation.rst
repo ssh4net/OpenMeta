@@ -1,6 +1,15 @@
 Metadata Translation
 ====================
 
+Shared descriptive reconciliation (0.8.27)
+------------------------------------------
+
+C++ contract 1 resolves five DC/IPTC fields and an opt-in EXIF bridge in one
+externally visible transaction. Custom-XMP retention reaches high-level readers
+and file helpers through an explicit flag. Authority, deletion, limits and
+subsequent destination XMP precedence remain explicit. Use matching 0.8.27
+headers/binaries within unfrozen ABI 4. See :doc:`descriptive_reconciliation`.
+
 Native IPTC creation dates to XMP (0.8.18)
 ------------------------------------------
 

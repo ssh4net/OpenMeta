@@ -1,5 +1,14 @@
 # Metadata Creation
 
+## Shared descriptive reconciliation (0.8.27)
+
+The new C++ reconciliation contract 1 resolves five shared DC/IPTC fields and
+an opt-in three-field EXIF bridge in one externally visible transaction.
+Custom-XMP retention now reaches high-level snapshot and file helpers through
+an explicit flag. Host authority, deletion, resource limits and destination
+XMP precedence remain explicit. Use matching headers/binaries within unfrozen
+ABI 4. See [descriptive reconciliation](descriptive_reconciliation.md).
+
 `openmeta/metadata_creation.h` provides the first high-level Creation contract
 for fresh metadata. A host supplies logical fields rather than EXIF tag IDs or
 XMP namespace paths. OpenMeta validates the complete request and returns one

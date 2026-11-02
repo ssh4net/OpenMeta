@@ -109,6 +109,7 @@ suite and the public transfer smoke coverage into one named check.
 - In a non-Python test tree it runs:
 
   - ``MetadataTransferApi.*``
+  - ``MetadataReconcile*.*``
   - ``XmpDump.*``
   - ``ExrAdapter.*``
   - ``DngSdkAdapter.*``

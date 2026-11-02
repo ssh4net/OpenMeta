@@ -1,5 +1,14 @@
 # XMP Sync And Writeback Policy
 
+## Shared descriptive reconciliation (0.8.27)
+
+The new C++ reconciliation contract 1 resolves five shared DC/IPTC fields and
+an opt-in three-field EXIF bridge in one externally visible transaction.
+Custom-XMP retention now reaches high-level snapshot and file helpers through
+an explicit flag. Host authority, deletion, resource limits and destination
+XMP precedence remain explicit. Use matching headers/binaries within unfrozen
+ABI 4. See [descriptive reconciliation](descriptive_reconciliation.md).
+
 For the combined capture audit, shared-target composition and the 0.5.5
 portable round-trip fixes, see [Capture synchronization milestone](capture_sync_milestone.md).
 
@@ -36,6 +45,10 @@ The default transfer behavior is conservative:
 | `xmp_writeback_mode` | `EmbeddedOnly` | Keep generated XMP in the managed embedded carrier. |
 | `xmp_destination_embedded_mode` | `PreserveExisting` | Preserve existing embedded XMP when sidecar-only writeback suppresses generated embedded XMP. |
 | `xmp_destination_sidecar_mode` | `PreserveExisting` | Preserve an existing sibling `.xmp` when embedded-only writeback is used. |
+
+In 0.8.27, an existing language-alternative key follows the same first-merged
+winner rule as scalar keys. Later values for that exact property/language pair
+are omitted; distinct language siblings remain.
 
 Native EXIF and IPTC carrier emission is independent from XMP projection.
 Turning off `xmp_project_exif` or `xmp_project_iptc` suppresses only the

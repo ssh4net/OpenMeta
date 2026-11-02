@@ -52,6 +52,7 @@ and must not be used as an asset-authenticity or trust gate.
    icc_authoring
    target_profile_validation
    structured_xmp_editing
+   descriptive_reconciliation
    editing
    translation
    capture_sync_milestone

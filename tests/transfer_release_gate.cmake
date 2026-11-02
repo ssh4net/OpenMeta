@@ -20,7 +20,7 @@ file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
 
 set(_gtest_filter
-  "MetadataTransferApi.*:XmpDump.*:ExrAdapter.*:DngSdkAdapter.*")
+  "MetadataTransferApi.*:MetadataReconcile*.*:XmpDump.*:ExrAdapter.*:DngSdkAdapter.*")
 
 execute_process(
   COMMAND "${OPENMETA_TESTS_BIN}" "--gtest_filter=${_gtest_filter}"

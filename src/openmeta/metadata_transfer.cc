@@ -3218,7 +3218,10 @@ namespace {
         }
 
         *out_loaded = false;
-        *out_status = decoded_status == XmpDecodeStatus::LimitExceeded
+        *out_status = (decoded_status == XmpDecodeStatus::LimitExceeded
+                       || (decode_options.preserve_custom_structures
+                           && decoded_status
+                                  == XmpDecodeStatus::OutputTruncated))
                           ? TransferStatus::LimitExceeded
                           : TransferStatus::Malformed;
         out_message->assign("existing xmp sidecar decode failed");
@@ -3497,7 +3500,10 @@ namespace {
         }
         if (read.xmp.status != XmpDecodeStatus::Ok) {
             *out_loaded  = false;
-            *out_status  = read.xmp.status == XmpDecodeStatus::LimitExceeded
+            *out_status  = (read.xmp.status == XmpDecodeStatus::LimitExceeded
+                            || (decode_options.preserve_custom_structures
+                                && read.xmp.status
+                                       == XmpDecodeStatus::OutputTruncated))
                                ? TransferStatus::LimitExceeded
                                : TransferStatus::Malformed;
             *out_message = "existing destination embedded xmp decode failed";
@@ -4866,8 +4872,12 @@ namespace {
         return TransferFileStatus::ReadFailed;
     }
 
-    static bool has_read_failure(const SimpleMetaResult& r) noexcept
+    static bool has_read_failure(const SimpleMetaResult& r,
+                                  bool require_complete_xmp = false) noexcept
     {
+        if (require_complete_xmp
+            && r.xmp.status == XmpDecodeStatus::OutputTruncated)
+            return true;
         if (r.scan.status == ScanStatus::Malformed
             || r.payload.status == PayloadStatus::Malformed
             || r.payload.status == PayloadStatus::LimitExceeded
@@ -17077,8 +17087,12 @@ namespace {
         decode_options.exif.decode_embedded_containers
             = options.decode_embedded_containers;
         decode_options.payload.decompress = options.decompress;
+        decode_options.xmp.preserve_custom_structures
+            = options.preserve_custom_xmp_structures;
         decode_options.xmp.malformed_mode
-            = XmpDecodeMalformedMode::OutputTruncated;
+            = options.preserve_custom_xmp_structures
+                  ? XmpDecodeMalformedMode::Malformed
+                  : XmpDecodeMalformedMode::OutputTruncated;
         *out_decode_options = decode_options;
     }
 
@@ -17131,7 +17145,7 @@ namespace {
             }
         }
 
-        if (has_read_failure(out.read)) {
+        if (has_read_failure(out.read, options.preserve_custom_xmp_structures)) {
             out.decode_failed = true;
             return out;
         }
@@ -17565,10 +17579,16 @@ namespace {
         }
         if (block.kind == ContainerBlockKind::Xmp
             || block.kind == ContainerBlockKind::XmpExtended) {
-            merge_xmp_decode_result(&read->xmp,
-                                    decode_xmp_packet(payload, *store,
-                                                      EntryFlags::None,
-                                                      options.xmp));
+            const XmpDecodeResult decoded = decode_xmp_packet(
+                payload, *store, EntryFlags::None, options.xmp);
+            merge_xmp_decode_result(&read->xmp, decoded);
+            if (options.xmp.preserve_custom_structures
+                && decoded.status != XmpDecodeStatus::Ok) {
+                read->xmp.status = decoded.status == XmpDecodeStatus::Unsupported
+                                       ? XmpDecodeStatus::Malformed
+                                       : decoded.status;
+                return false;
+            }
             return true;
         }
         if (block.kind == ContainerBlockKind::Jumbf) {
@@ -17943,6 +17963,11 @@ namespace {
                                                block_options, &out->read,
                                                &out->residual_metadata_paths)) {
                 out->status = TransferStatus::Malformed;
+                if (block_options.xmp.preserve_custom_structures) {
+                    if (out->read.xmp.status == XmpDecodeStatus::LimitExceeded
+                        || out->read.xmp.status == XmpDecodeStatus::OutputTruncated)
+                        out->status = TransferStatus::LimitExceeded;
+                }
                 out->code
                     = ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
                 return false;
@@ -17992,6 +18017,8 @@ namespace {
             = options.decode_embedded_containers;
         decode_request.decompress = options.decompress;
         decode_request.policy     = options.policy;
+        decode_request.preserve_custom_xmp_structures
+            = options.preserve_custom_xmp_structures;
         SimpleMetaDecodeOptions decode_options;
         build_transfer_source_snapshot_decode_options(decode_request,
                                                       &decode_options);
@@ -18276,6 +18303,7 @@ namespace {
             || r.exr.status == ExrDecodeStatus::LimitExceeded
             || r.exif.status == ExifDecodeStatus::LimitExceeded
             || r.xmp.status == XmpDecodeStatus::LimitExceeded
+            || r.xmp.status == XmpDecodeStatus::OutputTruncated
             || r.jumbf.status == JumbfDecodeStatus::LimitExceeded) {
             return TransferStatus::LimitExceeded;
         }
@@ -23707,7 +23735,12 @@ prepare_metadata_for_target_file_impl(const char* path,
     decode_options.exif.decode_embedded_containers
         = options.decode_embedded_containers;
     decode_options.payload.decompress = options.decompress;
-    decode_options.xmp.malformed_mode = XmpDecodeMalformedMode::OutputTruncated;
+    decode_options.xmp.preserve_custom_structures
+        = options.preserve_custom_xmp_structures;
+    decode_options.xmp.malformed_mode
+        = options.preserve_custom_xmp_structures
+              ? XmpDecodeMalformedMode::Malformed
+              : XmpDecodeMalformedMode::OutputTruncated;
 
     MappedFile mapped;
     const MappedFileStatus file_status = mapped.open(path,
@@ -23867,10 +23900,12 @@ prepare_metadata_for_target_file_impl(const char* path,
 
     apply_existing_xmp_merge_stage(true, true);
 
-    if (has_read_failure(out.read)) {
+    if (has_read_failure(out.read, options.preserve_custom_xmp_structures)) {
         out.file_status    = TransferFileStatus::ReadFailed;
         out.code           = PrepareTransferFileCode::DecodeFailed;
-        out.prepare.status = TransferStatus::Malformed;
+        out.prepare.status = options.preserve_custom_xmp_structures
+                                 ? map_snapshot_decode_failure_status(out.read)
+                                 : TransferStatus::Malformed;
         out.prepare.errors = 1U;
         out.prepare.message
             = "read/decode phase failed before transfer preparation";
@@ -37528,8 +37563,12 @@ namespace {
         SimpleMetaDecodeOptions decode_options;
         apply_resource_policy(policy, &decode_options.xmp, nullptr, nullptr,
                               nullptr, nullptr, nullptr);
+        decode_options.xmp.preserve_custom_structures
+            = options.preserve_custom_xmp_structures;
         decode_options.xmp.malformed_mode
-            = XmpDecodeMalformedMode::OutputTruncated;
+            = options.preserve_custom_xmp_structures
+                  ? XmpDecodeMalformedMode::Malformed
+                  : XmpDecodeMalformedMode::OutputTruncated;
 
         std::vector<std::byte> existing_xmp_sidecar_bytes;
         MetaStore store;

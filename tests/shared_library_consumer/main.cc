@@ -9,6 +9,7 @@
 #include <openmeta/metadata_authoring.h>
 #include <openmeta/metadata_editing.h>
 #include <openmeta/metadata_patch.h>
+#include <openmeta/metadata_reconcile.h>
 #include <openmeta/metadata_translation.h>
 #include <openmeta/prepared_transfer_handoff.h>
 #include <openmeta/simple_meta.h>
@@ -21,6 +22,49 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+static bool
+descriptive_reconciliation_contract_matches()
+{
+    constexpr std::string_view dc = "http://purl.org/dc/elements/1.1/";
+    const std::array entries {
+        openmeta::MetadataAuthoringEntry {
+            openmeta::make_xmp_property_key_view(
+                dc, "description[@xml:lang=x-default]"),
+            openmeta::make_value_view_text("Selected",
+                                           openmeta::TextEncoding::Utf8) },
+        openmeta::MetadataAuthoringEntry {
+            openmeta::make_iptc_dataset_key_view(2U, 120U),
+            openmeta::make_value_view_text("Previous",
+                                           openmeta::TextEncoding::Utf8) }
+    };
+    openmeta::MetaStore store;
+    if (!openmeta::create_metadata_store(entries, &store).ok())
+        return false;
+    openmeta::MetadataReconcileOptions options;
+    options.enable_exif_bridge = true;
+    options.conflict_policy
+        = openmeta::MetadataReconcileConflictPolicy::PreferSourceOrder;
+    const auto result = openmeta::reconcile_descriptive_metadata(store, options,
+                                                                 &store);
+    if (openmeta::kMetadataReconcileContractVersion != 1U
+        || result.status != openmeta::MetadataReconcileStatus::Ok)
+        return false;
+    const auto ids = store.find_all(
+        openmeta::make_exif_tag_key_view("ifd0", 0x010EU));
+    for (openmeta::EntryId id : ids) {
+        const auto& entry = store.entry(id);
+        if ((entry.flags & openmeta::EntryFlags::Deleted)
+            != openmeta::EntryFlags::None)
+            continue;
+        const auto bytes = store.arena().span(entry.value.data.span);
+        if (std::string_view(reinterpret_cast<const char*>(bytes.data()),
+                             bytes.size())
+            == "Selected")
+            return true;
+    }
+    return false;
+}
 
 static bool
 native_icc_authoring_contract_matches()
@@ -1031,6 +1075,7 @@ main()
                    || !capture_sync_contract_matches || !typed_contract_matches
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
+                   || !descriptive_reconciliation_contract_matches()
                    || !native_icc_authoring_contract_matches()
                    || !canonical_patch_contract_matches
                    || !native_iptc_patch_contract_matches()
