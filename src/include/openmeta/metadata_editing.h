@@ -129,7 +129,7 @@ metadata_editing_operation_kind_name(MetadataEditingOperationKind kind) noexcept
 const char*
 metadata_editing_status_name(MetadataEditingStatus status) noexcept;
 
-inline constexpr uint32_t kMetadataTypedEditingContractVersion  = 2U;
+inline constexpr uint32_t kMetadataTypedEditingContractVersion  = 3U;
 inline constexpr uint32_t kMetadataTypedEditingUniqueOccurrence = 0xfffffffeU;
 inline constexpr uint32_t kMetadataTypedEditingMaxOperations    = 4096U;
 

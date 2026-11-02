@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "icc_authoring_test_fixture.h"
+#include "metadata_container_test_fixture.h"
 
 #include "openmeta/container_payload.h"
 #include "openmeta/container_scan.h"
@@ -24,6 +25,15 @@
 
 namespace openmeta {
 namespace {
+
+    using container_test::JpegFixture;
+    using container_test::kWebpFree;
+    using container_test::kWebpVp8l;
+    using container_test::make_jpeg_fixture;
+    using container_test::make_png_fixture;
+    using container_test::make_tiff_fixture;
+    using container_test::make_webp_fixture;
+    using container_test::TiffFixtureVariant;
 
     static constexpr uint32_t kFirstTagSignature     = 0x7A7A7A31U;
     static constexpr uint32_t kRemovedTagSignature   = 0x61616131U;
@@ -76,122 +86,7 @@ namespace {
         return value;
     }
 
-    static void append_tiff_uint(std::vector<std::byte>* bytes, size_t width,
-                                 uint64_t value, bool big_endian)
-    {
-        for (size_t index = 0U; index < width; ++index) {
-            const size_t shift = big_endian ? (width - 1U - index) * 8U
-                                            : index * 8U;
-            bytes->push_back(static_cast<std::byte>((value >> shift) & 0xFFU));
-        }
-    }
-
-    static std::array<std::byte, 8U>
-    encode_tiff_uint(uint64_t value, size_t width, bool big_endian) noexcept
-    {
-        std::array<std::byte, 8U> encoded {};
-        for (size_t index = 0U; index < width; ++index) {
-            const size_t shift = big_endian ? (width - 1U - index) * 8U
-                                            : index * 8U;
-            encoded[index] = static_cast<std::byte>((value >> shift) & 0xFFU);
-        }
-        return encoded;
-    }
-
-    static void append_bytes(std::vector<std::byte>* output,
-                             std::span<const std::byte> bytes)
-    {
-        output->insert(output->end(), bytes.begin(), bytes.end());
-    }
-
-    static void append_u32_be(std::vector<std::byte>* bytes, uint32_t value)
-    {
-        for (uint32_t shift = 24U;; shift -= 8U) {
-            bytes->push_back(static_cast<std::byte>((value >> shift) & 0xFFU));
-            if (shift == 0U) {
-                break;
-            }
-        }
-    }
-
-    static void append_u32_le(std::vector<std::byte>* bytes, uint32_t value)
-    {
-        for (uint32_t shift = 0U; shift < 32U; shift += 8U) {
-            bytes->push_back(static_cast<std::byte>((value >> shift) & 0xFFU));
-        }
-    }
-
 #if defined(OPENMETA_HAS_ZLIB) && OPENMETA_HAS_ZLIB
-    static uint32_t png_crc32(uint32_t type,
-                              std::span<const std::byte> data) noexcept
-    {
-        uint32_t crc = 0xFFFFFFFFU;
-        for (uint32_t shift = 24U;; shift -= 8U) {
-            crc ^= (type >> shift) & 0xFFU;
-            for (uint32_t bit = 0U; bit < 8U; ++bit) {
-                const uint32_t mask = 0U - (crc & 1U);
-                crc                 = (crc >> 1U) ^ (0xEDB88320U & mask);
-            }
-            if (shift == 0U) {
-                break;
-            }
-        }
-        for (const std::byte value : data) {
-            crc ^= std::to_integer<uint8_t>(value);
-            for (uint32_t bit = 0U; bit < 8U; ++bit) {
-                const uint32_t mask = 0U - (crc & 1U);
-                crc                 = (crc >> 1U) ^ (0xEDB88320U & mask);
-            }
-        }
-        return ~crc;
-    }
-
-    static void append_png_chunk(std::vector<std::byte>* png, uint32_t type,
-                                 std::span<const std::byte> data)
-    {
-        append_u32_be(png, static_cast<uint32_t>(data.size()));
-        append_u32_be(png, type);
-        append_bytes(png, data);
-        append_u32_be(png, png_crc32(type, data));
-    }
-
-    static constexpr std::array<std::byte, 14U> kPngIdat = {
-        std::byte { 0x78U }, std::byte { 0xDAU }, std::byte { 0x63U },
-        std::byte { 0x10U }, std::byte { 0x54U }, std::byte { 0x62U },
-        std::byte { 0x30U }, std::byte { 0x76U }, std::byte { 0x01U },
-        std::byte { 0x00U }, std::byte { 0x01U }, std::byte { 0x8DU },
-        std::byte { 0x00U }, std::byte { 0xABU },
-    };
-
-    static constexpr std::array<std::byte, 12U> kPngText = {
-        std::byte { 'C' }, std::byte { 'o' }, std::byte { 'm' },
-        std::byte { 'm' }, std::byte { 'e' }, std::byte { 'n' },
-        std::byte { 't' }, std::byte { 0U },  std::byte { 'k' },
-        std::byte { 'e' }, std::byte { 'e' }, std::byte { 'p' },
-    };
-
-    static std::vector<std::byte> make_png_fixture()
-    {
-        std::vector<std::byte> png = {
-            std::byte { 0x89U }, std::byte { 'P' },   std::byte { 'N' },
-            std::byte { 'G' },   std::byte { 0x0DU }, std::byte { 0x0AU },
-            std::byte { 0x1AU }, std::byte { 0x0AU },
-        };
-        std::vector<std::byte> ihdr;
-        append_u32_be(&ihdr, 2U);
-        append_u32_be(&ihdr, 2U);
-        ihdr.push_back(std::byte { 8U });
-        ihdr.push_back(std::byte { 0U });
-        ihdr.push_back(std::byte { 0U });
-        ihdr.push_back(std::byte { 0U });
-        ihdr.push_back(std::byte { 0U });
-        append_png_chunk(&png, fourcc('I', 'H', 'D', 'R'), ihdr);
-        append_png_chunk(&png, fourcc('I', 'D', 'A', 'T'), kPngIdat);
-        append_png_chunk(&png, fourcc('t', 'E', 'X', 't'), kPngText);
-        append_png_chunk(&png, fourcc('I', 'E', 'N', 'D'), {});
-        return png;
-    }
-
     static bool find_png_chunk(std::span<const std::byte> png, uint32_t type,
                                std::span<const std::byte>* data) noexcept
     {
@@ -218,59 +113,6 @@ namespace {
         return false;
     }
 #endif
-
-    static void append_webp_chunk(std::vector<std::byte>* webp, uint32_t type,
-                                  std::span<const std::byte> data)
-    {
-        append_u32_be(webp, type);
-        append_u32_le(webp, static_cast<uint32_t>(data.size()));
-        append_bytes(webp, data);
-        if ((data.size() & 1U) != 0U) {
-            webp->push_back(std::byte { 0U });
-        }
-    }
-
-    static constexpr std::array<std::byte, 3U> kOldWebpIcc = {
-        std::byte { 'o' },
-        std::byte { 'l' },
-        std::byte { 'd' },
-    };
-
-    static constexpr std::array<std::byte, 4U> kWebpFree = {
-        std::byte { 'k' },
-        std::byte { 'e' },
-        std::byte { 'e' },
-        std::byte { 'p' },
-    };
-
-    static constexpr std::array<std::byte, 6U> kWebpVp8l = {
-        std::byte { 0x2FU }, std::byte { 0x01U }, std::byte { 0x40U },
-        std::byte { 0U },    std::byte { 0U },    std::byte { 0U },
-    };
-
-    static std::vector<std::byte> make_webp_fixture()
-    {
-        std::vector<std::byte> webp = {
-            std::byte { 'R' }, std::byte { 'I' }, std::byte { 'F' },
-            std::byte { 'F' }, std::byte { 0U },  std::byte { 0U },
-            std::byte { 0U },  std::byte { 0U },  std::byte { 'W' },
-            std::byte { 'E' }, std::byte { 'B' }, std::byte { 'P' },
-        };
-        std::array<std::byte, 10U> vp8x {};
-        vp8x[0U] = std::byte { 0x20U };
-        vp8x[4U] = std::byte { 1U };
-        vp8x[7U] = std::byte { 1U };
-        append_webp_chunk(&webp, fourcc('V', 'P', '8', 'X'), vp8x);
-        append_webp_chunk(&webp, fourcc('I', 'C', 'C', 'P'), kOldWebpIcc);
-        append_webp_chunk(&webp, fourcc('F', 'R', 'E', 'E'), kWebpFree);
-        append_webp_chunk(&webp, fourcc('V', 'P', '8', 'L'), kWebpVp8l);
-        const uint32_t riff_size = static_cast<uint32_t>(webp.size() - 8U);
-        webp[4U]                 = static_cast<std::byte>(riff_size & 0xFFU);
-        webp[5U] = static_cast<std::byte>((riff_size >> 8U) & 0xFFU);
-        webp[6U] = static_cast<std::byte>((riff_size >> 16U) & 0xFFU);
-        webp[7U] = static_cast<std::byte>((riff_size >> 24U) & 0xFFU);
-        return webp;
-    }
 
     static bool find_webp_chunk(std::span<const std::byte> webp, uint32_t type,
                                 std::span<const std::byte>* data) noexcept
@@ -306,47 +148,6 @@ namespace {
         return false;
     }
 
-    struct JpegFixture final {
-        std::vector<std::byte> bytes;
-        size_t scan_offset = 0U;
-    };
-
-    static JpegFixture make_jpeg_fixture()
-    {
-        JpegFixture fixture;
-        fixture.bytes       = { std::byte { 0xFFU }, std::byte { 0xD8U },
-                                std::byte { 0xFFU }, std::byte { 0xFEU },
-                                std::byte { 0x00U }, std::byte { 0x06U },
-                                std::byte { 'k' },   std::byte { 'e' },
-                                std::byte { 'e' },   std::byte { 'p' } };
-        fixture.scan_offset = fixture.bytes.size();
-        const std::array<std::byte, 6U> scan_header = {
-            std::byte { 1U }, std::byte { 1U },  std::byte { 0U },
-            std::byte { 0U }, std::byte { 63U }, std::byte { 0U },
-        };
-        fixture.bytes.push_back(std::byte { 0xFFU });
-        fixture.bytes.push_back(std::byte { 0xDAU });
-        fixture.bytes.push_back(std::byte { 0x00U });
-        fixture.bytes.push_back(std::byte { 0x08U });
-        append_bytes(&fixture.bytes, scan_header);
-        fixture.bytes.push_back(std::byte { 0x12U });
-        fixture.bytes.push_back(std::byte { 0xFFU });
-        fixture.bytes.push_back(std::byte { 0x00U });
-        fixture.bytes.push_back(std::byte { 0xA5U });
-        fixture.bytes.push_back(std::byte { 0xFFU });
-        fixture.bytes.push_back(std::byte { 0xD0U });
-        fixture.bytes.push_back(std::byte { 0x31U });
-        fixture.bytes.push_back(std::byte { 0xFFU });
-        fixture.bytes.push_back(std::byte { 0xD9U });
-        return fixture;
-    }
-
-    struct TiffFixtureVariant final {
-        bool big_tiff   = false;
-        bool big_endian = false;
-        bool dng        = false;
-    };
-
     static size_t tiff_type_width(uint16_t type) noexcept
     {
         switch (type) {
@@ -368,108 +169,6 @@ namespace {
         case 18U: return 8U;
         default: return 0U;
         }
-    }
-
-    static void append_tiff_entry(std::vector<std::byte>* tiff,
-                                  TiffFixtureVariant variant, uint16_t tag,
-                                  uint16_t type, uint64_t count,
-                                  std::span<const std::byte> value_bytes,
-                                  uint64_t external_offset)
-    {
-        const size_t inline_width = variant.big_tiff ? 8U : 4U;
-        const size_t count_width  = variant.big_tiff ? 8U : 4U;
-        const size_t type_width   = tiff_type_width(type);
-        append_tiff_uint(tiff, 2U, tag, variant.big_endian);
-        append_tiff_uint(tiff, 2U, type, variant.big_endian);
-        append_tiff_uint(tiff, count_width, count, variant.big_endian);
-        const uint64_t payload_size = count * type_width;
-        if (payload_size <= inline_width) {
-            tiff->insert(tiff->end(), value_bytes.begin(), value_bytes.end());
-            for (size_t index = value_bytes.size(); index < inline_width;
-                 ++index) {
-                tiff->push_back(std::byte { 0U });
-            }
-        } else {
-            append_tiff_uint(tiff, inline_width, external_offset,
-                             variant.big_endian);
-        }
-    }
-
-    static void append_tiff_scalar_entry(std::vector<std::byte>* tiff,
-                                         TiffFixtureVariant variant,
-                                         uint16_t tag, uint16_t type,
-                                         uint64_t value)
-    {
-        const size_t width = tiff_type_width(type);
-        const std::array<std::byte, 8U> encoded
-            = encode_tiff_uint(value, width, variant.big_endian);
-        append_tiff_entry(tiff, variant, tag, type, 1U,
-                          std::span<const std::byte>(encoded.data(), width),
-                          0U);
-    }
-
-    static std::vector<std::byte> make_tiff_fixture(TiffFixtureVariant variant)
-    {
-        std::vector<std::byte> tiff;
-        const uint64_t ifd_offset     = variant.big_tiff ? 16U : 8U;
-        const uint64_t entry_count    = variant.dng ? 10U : 9U;
-        const uint64_t count_width    = variant.big_tiff ? 8U : 2U;
-        const uint64_t entry_width    = variant.big_tiff ? 20U : 12U;
-        const uint64_t next_ifd_width = variant.big_tiff ? 8U : 4U;
-        const uint64_t end_of_ifd     = ifd_offset + count_width
-                                    + entry_count * entry_width
-                                    + next_ifd_width;
-        const uint64_t strip_offset = (end_of_ifd + 3U) & ~uint64_t { 3U };
-
-        tiff.push_back(variant.big_endian ? std::byte { 'M' }
-                                          : std::byte { 'I' });
-        tiff.push_back(variant.big_endian ? std::byte { 'M' }
-                                          : std::byte { 'I' });
-        append_tiff_uint(&tiff, 2U, variant.big_tiff ? 43U : 42U,
-                         variant.big_endian);
-        if (variant.big_tiff) {
-            append_tiff_uint(&tiff, 2U, 8U, variant.big_endian);
-            append_tiff_uint(&tiff, 2U, 0U, variant.big_endian);
-            append_tiff_uint(&tiff, 8U, ifd_offset, variant.big_endian);
-        } else {
-            append_tiff_uint(&tiff, 4U, ifd_offset, variant.big_endian);
-        }
-        append_tiff_uint(&tiff, variant.big_tiff ? 8U : 2U, entry_count,
-                         variant.big_endian);
-
-        append_tiff_scalar_entry(&tiff, variant, 0x0100U, 4U, 2U);
-        append_tiff_scalar_entry(&tiff, variant, 0x0101U, 4U, 2U);
-        append_tiff_scalar_entry(&tiff, variant, 0x0102U, 3U, 8U);
-        append_tiff_scalar_entry(&tiff, variant, 0x0103U, 3U, 1U);
-        append_tiff_scalar_entry(&tiff, variant, 0x0106U, 3U, 1U);
-        const std::array<std::byte, 8U> strip_offset_bytes
-            = encode_tiff_uint(strip_offset, 4U, variant.big_endian);
-        append_tiff_entry(&tiff, variant, 0x0111U, 4U, 1U,
-                          std::span<const std::byte>(strip_offset_bytes.data(),
-                                                     4U),
-                          0U);
-        append_tiff_scalar_entry(&tiff, variant, 0x0115U, 3U, 1U);
-        append_tiff_scalar_entry(&tiff, variant, 0x0116U, 4U, 2U);
-        append_tiff_scalar_entry(&tiff, variant, 0x0117U, 4U, 4U);
-        if (variant.dng) {
-            const std::array<std::byte, 4U> dng_version = {
-                std::byte { 1U },
-                std::byte { 4U },
-                std::byte { 0U },
-                std::byte { 0U },
-            };
-            append_tiff_entry(&tiff, variant, 0xC612U, 1U, 4U, dng_version, 0U);
-        }
-        append_tiff_uint(&tiff, variant.big_tiff ? 8U : 4U, 0U,
-                         variant.big_endian);
-        while (tiff.size() < strip_offset) {
-            tiff.push_back(std::byte { 0U });
-        }
-        tiff.push_back(std::byte { 0x11U });
-        tiff.push_back(std::byte { 0x22U });
-        tiff.push_back(std::byte { 0x33U });
-        tiff.push_back(std::byte { 0x44U });
-        return tiff;
     }
 
     static bool find_tiff_entry(std::span<const std::byte> tiff,

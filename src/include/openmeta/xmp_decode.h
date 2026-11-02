@@ -70,6 +70,9 @@ struct XmpDecodeOptions final {
     /// best-effort OutputTruncated.
     XmpDecodeMalformedMode malformed_mode = XmpDecodeMalformedMode::Malformed;
     XmpDecodeLimits limits;
+    /// Retains explicit custom RDF container declarations. The default keeps
+    /// the historical leaf-only flattened output.
+    bool preserve_custom_structures = false;
 };
 
 struct XmpDecodeResult final {
@@ -83,6 +86,10 @@ struct XmpDecodeResult final {
  * The decoder emits one \ref Entry per decoded property value with:
  * - \ref MetaKeyKind::XmpProperty (`schema_ns` URI + `property_path`)
  * - \ref MetaValueKind::Text (UTF-8)
+ *
+ * When `preserve_custom_structures` is enabled, custom RDF container nodes
+ * also produce persistent declarations. Standard namespace roots keep the
+ * existing flattened behavior.
  *
  * Duplicate properties are preserved. The six camera/lens/spectral ASCII
  * writeback properties retain leading/trailing XML-decoded whitespace in their

@@ -5,6 +5,7 @@
 #include "metadata_learning_fields_internal.h"
 #include "metadata_text_fields_internal.h"
 #include "metadata_validation_options_internal.h"
+#include "xmp_structure_internal.h"
 
 #include "openmeta/validate.h"
 
@@ -880,8 +881,8 @@ namespace {
             = entry.value.kind == MetaValueKind::Text
                   ? detail::exif_text_wire_type(store.arena(), entry)
                   : inferred_tiff_type(entry.value);
-        uint16_t type              = inferred;
-        uint32_t count             = inferred_tiff_count(entry.value);
+        uint16_t type  = inferred;
+        uint32_t count = inferred_tiff_count(entry.value);
         if (inferred == 129U && entry.value.kind == MetaValueKind::Text) {
             std::string_view text;
             if (detail::exif_text_view(store.arena(), entry.value, true,
@@ -896,8 +897,7 @@ namespace {
             && entry.value.kind == MetaValueKind::Text
             && entry.value.count == 33U
             && detail::standard_capture_value_valid(store.arena(), tag,
-                                                     entry.value,
-                                                     entry.flags)) {
+                                                    entry.value, entry.flags)) {
             count = 33U;
         }
 
@@ -967,9 +967,8 @@ namespace {
             && count >= schema->min_count
             && (schema->max_count == 0U || count <= schema->max_count)
             && ((ifd == "exififd"
-                 && !detail::standard_capture_value_valid(store.arena(), tag,
-                                                          entry.value,
-                                                          entry.flags))
+                 && !detail::standard_capture_value_valid(
+                     store.arena(), tag, entry.value, entry.flags))
                 || (ifd == "gpsifd"
                     && !detail::gps_field_value_valid(store.arena(), tag,
                                                       entry.value)))) {
@@ -1049,13 +1048,35 @@ namespace {
                          MetadataValidationIssueCode::InvalidXmpNamespace, id,
                          kInvalidEntryId, entry.key.kind, 0U);
         }
-        if (!span_is_valid(path_span, store.arena().bytes().size())
-            || path_span.size == 0U || path_span.size > options.max_key_bytes
-            || !xmp_property_path_is_valid(
-                arena_string(store.arena(), path_span))) {
+        bool path_valid = false;
+        if (span_is_valid(path_span, store.arena().bytes().size())
+            && path_span.size != 0U
+            && path_span.size <= options.max_key_bytes) {
+            const std::string_view path = arena_string(store.arena(),
+                                                       path_span);
+            path_valid                  = xmp_property_path_is_valid(path);
+            if (!path_valid
+                && detail::xmp_structure_namespace_is_custom(
+                    arena_string(store.arena(), ns_span))) {
+                detail::XmpStructurePath parsed;
+                path_valid = detail::xmp_structure_parse_path(path, 8U, 65535U,
+                                                              &parsed);
+            }
+        }
+        if (!path_valid) {
             append_issue(out, options, ValidateIssueSeverity::Error,
                          MetadataValidationIssueCode::InvalidXmpPropertyPath,
                          id, kInvalidEntryId, entry.key.kind, 0U);
+        }
+        if (entry.origin.wire_type.family == WireFamily::Other
+            && detail::xmp_structure_wire_code_reserved(
+                entry.origin.wire_type.code)
+            && (!detail::xmp_container_entry_shape_is_valid(entry)
+                || !detail::xmp_structure_namespace_is_custom(
+                    arena_string(store.arena(), ns_span)))) {
+            append_issue(out, options, ValidateIssueSeverity::Error,
+                         MetadataValidationIssueCode::InvalidXmpStructure, id,
+                         kInvalidEntryId, entry.key.kind, 0U);
         }
         if (entry.value.kind == MetaValueKind::Text) {
             const std::span<const std::byte> bytes = store.arena().span(
@@ -2359,6 +2380,24 @@ validate_store(const MetaStore& store,
             return out;
         }
     }
+    detail::XmpStructureTree structures;
+    const detail::XmpStructureBuildResult structured
+        = detail::prepare_xmp_structure_tree(store, options.structures,
+                                             &structures);
+    if (!structured.ok()) {
+        const bool limited = structured.status
+                             == detail::XmpStructureStatus::LimitExceeded;
+        append_issue(&out, options, ValidateIssueSeverity::Error,
+                     limited
+                         ? MetadataValidationIssueCode::XmpStructureLimitExceeded
+                         : MetadataValidationIssueCode::InvalidXmpStructure,
+                     structured.failed_entry, kInvalidEntryId,
+                     MetaKeyKind::XmpProperty, 0U);
+        if (limited) {
+            out.status = MetadataValidationStatus::LimitExceeded;
+            return out;
+        }
+    }
     validate_duplicate_singletons(store, options, &out);
     if (options.validate_schema
         && !detail::composite_group_valid(store.arena(), store.entries())) {
@@ -2451,6 +2490,10 @@ metadata_validation_issue_code_name(MetadataValidationIssueCode code) noexcept
         return "target_profile_context_conflict";
     case MetadataValidationIssueCode::TargetProfileMissingAuthority:
         return "target_profile_missing_authority";
+    case MetadataValidationIssueCode::InvalidXmpStructure:
+        return "invalid_xmp_structure";
+    case MetadataValidationIssueCode::XmpStructureLimitExceeded:
+        return "xmp_structure_limit_exceeded";
     }
     return "unknown";
 }

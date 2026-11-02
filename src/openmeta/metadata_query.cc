@@ -8,8 +8,10 @@
 #include "openmeta/phaseone_geometry.h"
 #include "openmeta/vendor_raw_processing.h"
 
-#include <cstddef>
+#include "xmp_structure_internal.h"
+
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <span>
@@ -2600,6 +2602,11 @@ namespace {
                                              const Entry& entry,
                                              MetadataQueryKind kind)
     {
+        if (entry.origin.wire_type.family == WireFamily::Other
+            && detail::xmp_structure_wire_code_reserved(
+                entry.origin.wire_type.code)) {
+            return;
+        }
         const std::string_view ns
             = arena_string(store.arena(),
                            entry.key.data.xmp_property.schema_ns);

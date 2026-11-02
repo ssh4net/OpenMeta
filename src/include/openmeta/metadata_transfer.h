@@ -970,6 +970,8 @@ struct PrepareTransferRequest final {
         = XmpExistingStandardNamespacePolicy::PreserveAll;
     XmpConflictPolicy xmp_conflict_policy = XmpConflictPolicy::CurrentBehavior;
     bool xmp_exiftool_gpsdatetime_alias   = false;
+    /// Shared bounds for selected explicit custom-XMP structures.
+    XmpStructureLimits xmp_structures;
 };
 
 /// Result details for preparation.

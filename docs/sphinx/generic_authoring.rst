@@ -1,6 +1,17 @@
 Generic Typed Metadata Authoring
 ================================
 
+Custom structured XMP (0.8.26)
+------------------------------
+
+Explicit bounded custom Struct/Bag/Seq/LangAlt declarations share whole-tree
+validation, transactional creation/editing and portable transfer. Authoring and
+typed editing contracts are 3, structured editing is 2, validation is 2 and the
+new declaration contract is 1. Opt-in decode retains kinds and exact custom
+text; default flattening remains. Option layouts grow within unfrozen ABI 4:
+rebuild with matching headers/binaries. Snapshot wire 1 and prepared patch
+contract 2 remain. See :doc:`structured_xmp_editing`.
+
 ICC authoring and serialization (0.8.25)
 ----------------------------------------
 

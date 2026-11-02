@@ -1,5 +1,15 @@
 # API Stability
 
+## Custom structured XMP (0.8.26)
+
+Explicit bounded custom Struct/Bag/Seq/LangAlt declarations share whole-tree
+validation, transactional creation/editing and portable transfer. Authoring and
+typed editing contracts are 3, structured editing is 2, validation is 2 and the
+new declaration contract is 1. Opt-in decode retains kinds and exact custom
+text; default flattening remains. ABI 4 is unfrozen and option layouts grow:
+rebuild with matching headers/binaries. Snapshot wire 1 and prepared patch
+contract 2 remain. See [structured XMP editing](structured_xmp_editing.md).
+
 ## IPTC carrier removal (0.8.20)
 
 Prepared bundles now carry explicit `remove_existing_iptc` edit intent. Preparation
@@ -124,6 +134,7 @@ See [the migration guide](migration_0_8.md).
 | Detached store/schema validation: `validate_entry(...)`, `validate_store(...)` | `openmeta/validate.h` | Experimental v1 | Structured structural and initial TIFF/EXIF/GPS/DNG/XMP schema diagnostics with resource limits, permissive unknown-tag policy, duplicate-singleton checks, rational/text checks, and optional image/CFA/color context. This does not prove that semantically valid metadata describes the destination pixels. |
 | Canonical TIFF/EXIF serialization: `serialize_exif_tiff(...)` | `openmeta/exif_tiff_serialize.h` | Experimental v1 | Deterministic measure/write API for unwrapped little-endian TIFF bytes. The same payload feeds target transfer wrapping; JPEG/TIFF, PNG/WebP, and boxed EXIF framing remain separate. Opaque MakerNotes drop by default. See [canonical_serialization.md](canonical_serialization.md). |
 | Canonical IPTC-IIM serialization: `serialize_iptc_iim(...)` | `openmeta/iptc_iim_serialize.h` | Experimental v1 | Bounded measure/write API for raw dataset bytes, preserving duplicates and deterministic ordering. Strict selected-entry checks; shared JPEG/TIFF dataset encoding. No charset conversion or IIM field-level semantic validation. See [canonical_serialization.md](canonical_serialization.md). |
+| Custom XMP declarations and whole-tree validation | `openmeta/xmp_structure.h`, `openmeta/metadata_xmp_editing.h` | Experimental | Declaration contract 1 and editor contract 2: bounded Struct/Bag/Seq/LangAlt lifecycle, opt-in exact custom decode, transactional edits and portable output. See [structured XMP editing](structured_xmp_editing.md). |
 | Canonical ICC serialization: `serialize_icc_profile(...)` | `openmeta/icc_serialize.h` | Experimental v1 | Bounded measure/write for explicit header/tag stores; strict profile structure, deterministic sorted/padded layout and explicit Clear/Preserve ID policy. Shared creation/editing and transfer engine. See [ICC lifecycle](icc_authoring.md). |
 | Prepared EXIF, scalar XMP and native IPTC patching: `prepare_metadata_patch_plan(...)`, `PreparedMetadataPatchPlan`, `PreparedMetadataPatchInstance`, and `patch_prepared_metadata_instance(...)` | `openmeta/metadata_patch.h` | Experimental v2 | Target-neutral opaque handles for typed EXIF/IPTC and emitted scalar XMP values. Preparation and worker creation may allocate; mixed EXIF/XMP/IPTC batches, payload access and library replay do not. Failed batches change no payload. Handles expose no offsets and belong to one preparation generation. See [canonical_patching.md](canonical_patching.md). |
 | Logical metadata editing: `edit_metadata(...)` and add/set/remove helpers | `openmeta/metadata_editing.h` | Experimental | Transactional v1 contract over finalized stores and the Creation logical field map. Set/remove preserve provenance through dirty values and tombstones; add handles deterministic repeated fields and explicit singleton conflicts. Python returns a detached edited `Document` without mutating its source. See [editing.md](editing.md). |

@@ -12,6 +12,7 @@ enum class XmpStructuredEditScopeKind : uint8_t {
     StructuredArray,
     LangAlt,
     IndexedTextArray,
+    Custom,
 };
 
 enum class XmpStructuredEditLeafShape : uint8_t {
@@ -25,34 +26,36 @@ struct XmpStructuredEditScope final {
     std::string_view property_path;
     std::string_view root;
     std::string_view language;
-    uint32_t item_index = 0U;
-    XmpStructuredEditScopeKind kind
-        = XmpStructuredEditScopeKind::CoreStructure;
-    bool has_item_index = false;
-    bool has_language = false;
+    uint32_t item_index             = 0U;
+    XmpStructuredEditScopeKind kind = XmpStructuredEditScopeKind::CoreStructure;
+    bool has_item_index             = false;
+    bool has_language               = false;
 };
 
 struct XmpStructuredEditLeaf final {
     std::string_view root;
     std::string_view shape_path;
     std::string_view language;
-    uint32_t item_index = 0U;
+    uint32_t item_index              = 0U;
     XmpStructuredEditLeafShape shape = XmpStructuredEditLeafShape::Scalar;
-    uint8_t path_depth = 0U;
-    bool has_item_index = false;
-    bool has_language = false;
+    uint8_t path_depth               = 0U;
+    bool has_item_index              = false;
+    bool has_language                = false;
 };
 
-bool parse_xmp_structured_edit_scope(std::string_view schema_ns,
-                                     std::string_view property_path,
-                                     XmpStructuredEditScope* out) noexcept;
+bool
+parse_xmp_structured_edit_scope(std::string_view schema_ns,
+                                std::string_view property_path,
+                                XmpStructuredEditScope* out) noexcept;
 
-bool parse_xmp_structured_edit_leaf(std::string_view schema_ns,
-                                    std::string_view property_path,
-                                    XmpStructuredEditLeaf* out) noexcept;
+bool
+parse_xmp_structured_edit_leaf(std::string_view schema_ns,
+                               std::string_view property_path,
+                               XmpStructuredEditLeaf* out) noexcept;
 
-bool xmp_structured_edit_path_has_root(std::string_view schema_ns,
-                                       std::string_view property_path,
-                                       std::string_view root) noexcept;
+bool
+xmp_structured_edit_path_has_root(std::string_view schema_ns,
+                                  std::string_view property_path,
+                                  std::string_view root) noexcept;
 
 }  // namespace openmeta::detail

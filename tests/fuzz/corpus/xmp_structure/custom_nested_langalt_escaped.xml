@@ -1,0 +1,18 @@
+<x:xmpmeta xmlns:x='adobe:ns:meta/'
+           xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'
+           xmlns:xml='http://www.w3.org/XML/1998/namespace'
+           xmlns:m='urn:test:custom:root'
+           xmlns:n='urn:test:custom:nest&amp;ed'>
+  <rdf:RDF><rdf:Description>
+    <m:Record rdf:parseType='Resource'>
+      <m:Items><rdf:Seq><rdf:li><rdf:Alt>
+        <rdf:li xml:lang='en-US'>  item &amp; &lt;Ω&#13;&#10;  </rdf:li>
+        <rdf:li xml:lang='x-default'>default</rdf:li>
+      </rdf:Alt></rdf:li></rdf:Seq></m:Items>
+      <m:Bag><rdf:Bag><rdf:li>one</rdf:li>
+        <rdf:li>two</rdf:li></rdf:Bag></m:Bag>
+      <m:Empty><rdf:Seq/></m:Empty>
+      <n:Value>  A &amp; &lt; &gt; Ω&#13;&#9;&#10;B  </n:Value>
+    </m:Record>
+  </rdf:Description></rdf:RDF>
+</x:xmpmeta>

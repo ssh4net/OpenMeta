@@ -16,8 +16,9 @@
 #include "openmeta/meta_value.h"
 #include "openmeta/metadata_xmp_editing.h"
 
-#include "xmp_patch_internal.h"
 #include "metadata_xmp_editing_internal.h"
+#include "xmp_patch_internal.h"
+#include "xmp_structure_internal.h"
 
 #include <algorithm>
 #include <array>
@@ -116,14 +117,15 @@ namespace {
 
     struct SpanWriter final {
         std::span<std::byte> out;
-        uint64_t max_output = 0;
-        uint64_t written    = 0;
-        uint64_t needed     = 0;
-        bool limit_hit      = false;
+        uint64_t max_output      = 0;
+        uint64_t written         = 0;
+        uint64_t needed          = 0;
+        bool limit_hit           = false;
         bool text_sanitized      = false;
         bool invalid_scalar_utf8 = false;
         std::span<detail::XmpScalarPatchSlot> patch_slots;
         std::span<const XmpNsDecl> patch_namespaces;
+        std::span<const EntryId> declared_structure_entries;
 
         void record_scalar(std::string_view prefix, std::string_view name,
                            uint64_t begin) noexcept
@@ -139,8 +141,8 @@ namespace {
             }
             for (detail::XmpScalarPatchSlot& slot : patch_slots) {
                 if (slot.ns_uri == uri && slot.property_path == name) {
-                    slot.byte_offset = begin;
-                    slot.byte_width  = needed - begin;
+                    slot.byte_offset  = begin;
+                    slot.byte_width   = needed - begin;
                     slot.invalid_utf8 = invalid_scalar_utf8;
                     if (slot.matches != UINT32_MAX)
                         ++slot.matches;
@@ -209,6 +211,183 @@ namespace {
         std::string uri;
     };
 
+    static bool xmp_ns_to_portable_prefix(std::string_view ns,
+                                          std::string_view* out_prefix) noexcept;
+    static bool portable_custom_ns_prefix_for_uri(
+        std::string_view ns, std::span<const PortableCustomNsDecl> decls,
+        std::string_view* out_prefix) noexcept;
+
+    static void append_xml_safe_utf8(std::string_view s,
+                                     SpanWriter* w) noexcept;
+
+    static bool portable_custom_ns_uri_less(const std::string& a,
+                                            const std::string& b) noexcept
+    {
+        return a < b;
+    }
+
+    static bool append_unique_portable_ns_uri(std::vector<std::string>* uris,
+                                              std::string_view uri) noexcept
+    {
+        if (!uris || uri.empty())
+            return false;
+        for (const std::string& current : *uris) {
+            if (current == uri)
+                return true;
+        }
+        uris->emplace_back(uri.data(), uri.size());
+        return true;
+    }
+
+    static bool memory_ranges_overlap(const void* a, size_t a_size,
+                                      const void* b, size_t b_size) noexcept
+    {
+        if (a_size == 0U || b_size == 0U || !a || !b)
+            return false;
+        const std::uintptr_t a_address = reinterpret_cast<std::uintptr_t>(a);
+        const std::uintptr_t b_address = reinterpret_cast<std::uintptr_t>(b);
+        const std::uintptr_t a_length  = static_cast<std::uintptr_t>(a_size);
+        const std::uintptr_t b_length  = static_cast<std::uintptr_t>(b_size);
+        if (static_cast<size_t>(a_length) != a_size
+            || static_cast<size_t>(b_length) != b_size) {
+            return true;
+        }
+        return a_address <= b_address ? b_address - a_address < a_length
+                                      : a_address - b_address < b_length;
+    }
+
+    static XmpDumpStatus
+    prepare_portable_structures(const MetaStore& store,
+                                std::span<std::byte> out,
+                                const XmpPortableOptions& options,
+                                detail::XmpStructureTree* tree) noexcept
+    {
+        if (!tree || !detail::xmp_structure_limits_valid(options.structures))
+            return XmpDumpStatus::InvalidOptions;
+        const std::span<const std::byte> arena = store.arena().bytes();
+        if (memory_ranges_overlap(out.data(), out.size(), arena.data(),
+                                  arena.size())) {
+            return XmpDumpStatus::InvalidOptions;
+        }
+
+        const bool select_custom_structures
+            = options.include_existing_xmp
+              && options.existing_namespace_policy
+                     == XmpExistingNamespacePolicy::PreserveCustom;
+        if (!select_custom_structures) {
+            tree->clear();
+            return XmpDumpStatus::Ok;
+        }
+
+        const detail::XmpStructureBuildResult result
+            = detail::prepare_xmp_structure_tree(store, options.structures,
+                                                 tree);
+        switch (result.status) {
+        case detail::XmpStructureStatus::Ok: return XmpDumpStatus::Ok;
+        case detail::XmpStructureStatus::InvalidOptions:
+            return XmpDumpStatus::InvalidOptions;
+        case detail::XmpStructureStatus::InvalidMetadata:
+            return XmpDumpStatus::InvalidMetadata;
+        case detail::XmpStructureStatus::LimitExceeded:
+            return XmpDumpStatus::LimitExceeded;
+        }
+        return XmpDumpStatus::InvalidMetadata;
+    }
+
+    static bool ensure_portable_ns_decl(std::vector<XmpNsDecl>* decls,
+                                        std::string_view prefix,
+                                        std::string_view uri) noexcept
+    {
+        if (!decls || prefix.empty() || uri.empty())
+            return false;
+        if (prefix == "rdf" || prefix == "xml")
+            return true;
+        for (const XmpNsDecl& existing : *decls) {
+            if (existing.prefix == prefix && existing.uri == uri)
+                return true;
+            if (existing.prefix == prefix && existing.uri != uri)
+                return false;
+        }
+        decls->push_back(XmpNsDecl { prefix, uri });
+        return true;
+    }
+
+    static bool build_structure_namespace_prefixes(
+        const detail::XmpStructureTree& tree,
+        std::span<const PortableCustomNsDecl> custom_decls,
+        std::vector<std::string>* uris,
+        std::vector<std::string>* prefixes) noexcept
+    {
+        if (!uris || !prefixes)
+            return false;
+        uris->clear();
+        prefixes->clear();
+        uris->reserve(tree.namespaces.size());
+        prefixes->reserve(tree.namespaces.size());
+        for (const detail::XmpStructureNamespace& name_space :
+             tree.namespaces) {
+            char storage[detail::kXmpStructureMaxUriBytes + 1U];
+            std::string_view uri;
+            if (!detail::xmp_structure_namespace_uri(name_space.ref, storage,
+                                                     sizeof(storage), &uri)) {
+                return false;
+            }
+            uris->emplace_back(uri.data(), uri.size());
+
+            std::string_view prefix;
+            if (xmp_ns_to_portable_prefix(uri, &prefix)) {
+                prefixes->emplace_back(prefix.data(), prefix.size());
+                continue;
+            }
+            if (uri == kXmpNsRdf) {
+                prefixes->emplace_back("rdf");
+                continue;
+            }
+            if (uri == "http://www.w3.org/XML/1998/namespace") {
+                prefixes->emplace_back("xml");
+                continue;
+            }
+            if (detail::xmp_structure_namespace_is_custom(uri)
+                && portable_custom_ns_prefix_for_uri(uri, custom_decls, &prefix)
+                && !prefix.empty()) {
+                prefixes->emplace_back(prefix.data(), prefix.size());
+                continue;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    static void append_structure_indent(SpanWriter* w, uint32_t level) noexcept
+    {
+        if (!w)
+            return;
+        for (uint32_t i = 0U; i < level; ++i)
+            w->append("  ");
+    }
+
+    static void append_xml_attribute_utf8(std::string_view value,
+                                          SpanWriter* w) noexcept
+    {
+        if (!w)
+            return;
+        size_t begin = 0U;
+        for (size_t i = 0U; i <= value.size(); ++i) {
+            if (i != value.size() && value[i] != '\t' && value[i] != '\n'
+                && value[i] != '\r') {
+                continue;
+            }
+            if (i > begin)
+                append_xml_safe_utf8(value.substr(begin, i - begin), w);
+            if (i < value.size()) {
+                w->append(value[i] == '\t'   ? "&#9;"
+                          : value[i] == '\n' ? "&#10;"
+                                             : "&#13;");
+            }
+            begin = i + 1U;
+        }
+    }
+
     static void emit_xmp_packet_begin(SpanWriter* w,
                                       std::span<const XmpNsDecl> decls) noexcept
     {
@@ -232,7 +411,7 @@ namespace {
             w->append(" xmlns:");
             w->append(d.prefix);
             w->append("=\"");
-            w->append(d.uri);
+            append_xml_safe_utf8(d.uri, w);
             w->append("\"");
         }
         w->append(">\n");
@@ -6059,7 +6238,8 @@ namespace {
 
         for (size_t i = 0; i < entries.size(); ++i) {
             const Entry& e = entries[i];
-            if (e.key.kind != MetaKeyKind::XmpProperty) {
+            if (e.key.kind != MetaKeyKind::XmpProperty
+                || any(e.flags, EntryFlags::Deleted)) {
                 continue;
             }
             const std::string_view ns
@@ -10285,6 +10465,7 @@ namespace {
     static void collect_portable_custom_ns_decls(
         const ByteArena& arena, std::span<const Entry> entries,
         const XmpPortableOptions& options,
+        const detail::XmpStructureTree& structure_tree,
         std::vector<PortableCustomNsDecl>* out) noexcept
     {
         if (!out) {
@@ -10297,10 +10478,12 @@ namespace {
             return;
         }
 
-        uint32_t next_index = 1U;
+        std::vector<std::string> uris;
+        uris.reserve(structure_tree.namespaces.size() + 64U);
         for (size_t i = 0; i < entries.size(); ++i) {
             const Entry& e = entries[i];
-            if (e.key.kind != MetaKeyKind::XmpProperty) {
+            if (e.key.kind != MetaKeyKind::XmpProperty
+                || any(e.flags, EntryFlags::Deleted)) {
                 continue;
             }
 
@@ -10308,12 +10491,7 @@ namespace {
                 = arena_string(arena, e.key.data.xmp_property.schema_ns);
             std::string_view prefix;
             if (xmp_ns_to_portable_prefix(ns, &prefix)
-                || !xmp_namespace_uri_is_xml_attr_safe(ns)
-                || portable_custom_ns_prefix_for_uri(
-                    ns,
-                    std::span<const PortableCustomNsDecl>(out->data(),
-                                                          out->size()),
-                    &prefix)) {
+                || !xmp_namespace_uri_is_xml_attr_safe(ns)) {
                 continue;
             }
 
@@ -10410,12 +10588,28 @@ namespace {
                 || !portable_scalar_like_value_supported(arena, e.value)) {
                 continue;
             }
+            (void)append_unique_portable_ns_uri(&uris, ns);
+        }
 
+        for (const detail::XmpStructureNamespace& name_space :
+             structure_tree.namespaces) {
+            char storage[detail::kXmpStructureMaxUriBytes + 1U];
+            std::string_view uri;
+            if (detail::xmp_structure_namespace_uri(name_space.ref, storage,
+                                                    sizeof(storage), &uri)
+                && detail::xmp_structure_namespace_is_custom(uri)) {
+                (void)append_unique_portable_ns_uri(&uris, uri);
+            }
+        }
+
+        std::sort(uris.begin(), uris.end(), portable_custom_ns_uri_less);
+        uris.erase(std::unique(uris.begin(), uris.end()), uris.end());
+        out->reserve(uris.size());
+        for (size_t i = 0U; i < uris.size(); ++i) {
             PortableCustomNsDecl decl;
-            decl.prefix = "omns" + std::to_string(next_index);
-            decl.uri.assign(ns.data(), ns.size());
+            decl.prefix = "omns" + std::to_string(i + 1U);
+            decl.uri    = uris[i];
             out->push_back(std::move(decl));
-            next_index += 1U;
         }
     }
 
@@ -14384,6 +14578,13 @@ namespace {
             if (any(e.flags, EntryFlags::Deleted)) {
                 continue;
             }
+            if (e.key.kind == MetaKeyKind::XmpProperty
+                && (detail::xmp_structure_is_declaration(e)
+                    || std::binary_search(w->declared_structure_entries.begin(),
+                                          w->declared_structure_entries.end(),
+                                          static_cast<EntryId>(i)))) {
+                continue;
+            }
 
             if (pass == PortablePassKind::Exif) {
                 if (!options.include_exif
@@ -14484,6 +14685,258 @@ namespace {
         }
     }
 
+    static bool structure_child_range(const detail::XmpStructureTree& tree,
+                                      uint32_t parent_node, size_t* begin,
+                                      size_t* end) noexcept
+    {
+        if (!begin || !end)
+            return false;
+        size_t low  = 0U;
+        size_t high = tree.ordered_children.size();
+        while (low < high) {
+            const size_t middle = low + (high - low) / 2U;
+            if (tree.ordered_children[middle].parent_node < parent_node)
+                low = middle + 1U;
+            else
+                high = middle;
+        }
+        *begin = low;
+        high   = tree.ordered_children.size();
+        while (low < high) {
+            const size_t middle = low + (high - low) / 2U;
+            if (tree.ordered_children[middle].parent_node <= parent_node)
+                low = middle + 1U;
+            else
+                high = middle;
+        }
+        *end = low;
+        return true;
+    }
+
+    static bool structure_namespace_prefix(const detail::XmpStructureTree& tree,
+                                           std::span<const std::string> prefixes,
+                                           uint32_t namespace_index,
+                                           std::string_view* prefix) noexcept
+    {
+        if (!prefix || namespace_index >= tree.namespaces.size()
+            || namespace_index >= prefixes.size()) {
+            return false;
+        }
+        *prefix = prefixes[namespace_index];
+        return !prefix->empty();
+    }
+
+    static void append_structure_qname(std::string_view prefix,
+                                       std::string_view local_name,
+                                       SpanWriter* w) noexcept
+    {
+        if (!w)
+            return;
+        w->append(prefix);
+        w->append_char(':');
+        w->append(local_name);
+    }
+
+    static void emit_structure_text(const MetaStore& store, const Entry& entry,
+                                    SpanWriter* w) noexcept
+    {
+        if (!w)
+            return;
+        const std::span<const std::byte> raw = store.arena().span(
+            entry.value.data.span);
+        const std::string_view text(reinterpret_cast<const char*>(raw.data()),
+                                    raw.size());
+        append_xml_safe_utf8(text, w);
+    }
+
+    static bool emit_structure_node_body(const MetaStore& store,
+                                         const detail::XmpStructureTree& tree,
+                                         std::span<const std::string> prefixes,
+                                         uint32_t node_index, uint32_t level,
+                                         SpanWriter* w) noexcept;
+
+    static bool emit_structure_named_node(const MetaStore& store,
+                                          const detail::XmpStructureTree& tree,
+                                          std::span<const std::string> prefixes,
+                                          uint32_t node_index, uint32_t level,
+                                          SpanWriter* w) noexcept
+    {
+        if (!w || node_index >= tree.nodes.size())
+            return false;
+        const detail::XmpStructureNode& node = tree.nodes[node_index];
+        std::string_view prefix;
+        if (!structure_namespace_prefix(tree, prefixes,
+                                        node.field_namespace_index, &prefix)) {
+            return false;
+        }
+
+        append_structure_indent(w, level);
+        w->append_char('<');
+        append_structure_qname(prefix, node.last_segment.local_name, w);
+        if (node.container_kind == XmpContainerKind::Struct)
+            w->append(" rdf:parseType=\"Resource\">");
+        else
+            w->append_char('>');
+
+        if (node.container_kind == XmpContainerKind::None) {
+            emit_structure_text(store, store.entry(node.entry), w);
+            w->append("</");
+            append_structure_qname(prefix, node.last_segment.local_name, w);
+            w->append(">\n");
+            return !w->limit_hit;
+        }
+
+        w->append("\n");
+        if (!emit_structure_node_body(store, tree, prefixes, node_index,
+                                      level + 1U, w)) {
+            return false;
+        }
+        append_structure_indent(w, level);
+        w->append("</");
+        append_structure_qname(prefix, node.last_segment.local_name, w);
+        w->append(">\n");
+        return !w->limit_hit;
+    }
+
+    static bool emit_structure_array_item(
+        const MetaStore& store, const detail::XmpStructureTree& tree,
+        std::span<const std::string> prefixes,
+        const detail::XmpStructureChildRef& child, XmpContainerKind parent_kind,
+        uint32_t level, SpanWriter* w) noexcept
+    {
+        if (!w || child.node_index >= tree.nodes.size())
+            return false;
+        const detail::XmpStructureNode& node = tree.nodes[child.node_index];
+        append_structure_indent(w, level);
+        if (parent_kind == XmpContainerKind::LangAlt) {
+            w->append("<rdf:li xml:lang=\"");
+            append_xml_attribute_utf8(child.language, w);
+            w->append("\">");
+            emit_structure_text(store, store.entry(node.entry), w);
+            w->append("</rdf:li>\n");
+            return !w->limit_hit;
+        }
+
+        w->append("<rdf:li");
+        if (node.container_kind == XmpContainerKind::Struct)
+            w->append(" rdf:parseType=\"Resource\"");
+        w->append_char('>');
+        if (node.container_kind == XmpContainerKind::None) {
+            emit_structure_text(store, store.entry(node.entry), w);
+            w->append("</rdf:li>\n");
+            return !w->limit_hit;
+        }
+
+        w->append("\n");
+        if (!emit_structure_node_body(store, tree, prefixes, child.node_index,
+                                      level + 1U, w)) {
+            return false;
+        }
+        append_structure_indent(w, level);
+        w->append("</rdf:li>\n");
+        return !w->limit_hit;
+    }
+
+    static bool emit_structure_node_body(const MetaStore& store,
+                                         const detail::XmpStructureTree& tree,
+                                         std::span<const std::string> prefixes,
+                                         uint32_t node_index, uint32_t level,
+                                         SpanWriter* w) noexcept
+    {
+        if (!w || node_index >= tree.nodes.size())
+            return false;
+        const detail::XmpStructureNode& node = tree.nodes[node_index];
+        size_t begin                         = 0U;
+        size_t end                           = 0U;
+        if (!structure_child_range(tree, node_index, &begin, &end))
+            return false;
+
+        if (node.container_kind == XmpContainerKind::Struct) {
+            for (size_t i = begin; i < end && !w->limit_hit; ++i) {
+                if (!emit_structure_named_node(
+                        store, tree, prefixes,
+                        tree.ordered_children[i].node_index, level, w)) {
+                    return false;
+                }
+            }
+            return !w->limit_hit;
+        }
+        if (node.container_kind != XmpContainerKind::Bag
+            && node.container_kind != XmpContainerKind::Seq
+            && node.container_kind != XmpContainerKind::LangAlt) {
+            return false;
+        }
+
+        const std::string_view container_name
+            = node.container_kind == XmpContainerKind::Bag
+                  ? std::string_view("Bag")
+              : node.container_kind == XmpContainerKind::Seq
+                  ? std::string_view("Seq")
+                  : std::string_view("Alt");
+        append_structure_indent(w, level);
+        w->append("<rdf:");
+        w->append(container_name);
+        w->append(">\n");
+
+        if (node.container_kind == XmpContainerKind::LangAlt) {
+            for (size_t i = begin; i < end && !w->limit_hit; ++i) {
+                const detail::XmpStructureChildRef& child
+                    = tree.ordered_children[i];
+                if (!detail::xmp_structure_language_is_default(child.language)) {
+                    continue;
+                }
+                if (!emit_structure_array_item(store, tree, prefixes, child,
+                                               node.container_kind, level + 1U,
+                                               w)) {
+                    return false;
+                }
+                break;
+            }
+        }
+        for (size_t i = begin; i < end && !w->limit_hit; ++i) {
+            const detail::XmpStructureChildRef& child = tree.ordered_children[i];
+            if (node.container_kind == XmpContainerKind::LangAlt
+                && detail::xmp_structure_language_is_default(child.language)) {
+                continue;
+            }
+            if (!emit_structure_array_item(store, tree, prefixes, child,
+                                           node.container_kind, level + 1U,
+                                           w)) {
+                return false;
+            }
+        }
+        append_structure_indent(w, level);
+        w->append("</rdf:");
+        w->append(container_name);
+        w->append(">\n");
+        return !w->limit_hit;
+    }
+
+    static bool emit_structure_roots(const MetaStore& store,
+                                     const detail::XmpStructureTree& tree,
+                                     std::span<const std::string> prefixes,
+                                     uint32_t max_entries, uint32_t* emitted,
+                                     SpanWriter* w) noexcept
+    {
+        if (!emitted || !w)
+            return false;
+        for (size_t i = 0U; i < tree.nodes.size() && !w->limit_hit; ++i) {
+            if (tree.nodes[i].parent_node != detail::kInvalidXmpStructureNode) {
+                continue;
+            }
+            if (max_entries != 0U && *emitted >= max_entries) {
+                w->limit_hit = true;
+                return false;
+            }
+            if (!emit_structure_named_node(store, tree, prefixes,
+                                           static_cast<uint32_t>(i), 2U, w)) {
+                return false;
+            }
+            *emitted += 1U;
+        }
+        return !w->limit_hit;
+    }
+
 }  // namespace
 
 
@@ -14493,12 +14946,25 @@ dump_xmp_portable_impl(const MetaStore& store, std::span<std::byte> out,
                        std::span<detail::XmpScalarPatchSlot> patch_slots) noexcept
 {
     XmpDumpResult r;
+    detail::XmpStructureTree structure_tree;
+    r.status = prepare_portable_structures(store, out, options,
+                                           &structure_tree);
+    if (r.status != XmpDumpStatus::Ok)
+        return r;
+
     SpanWriter w(out, options.limits.max_output_bytes);
 
+    std::vector<EntryId> structure_entry_ids;
+    structure_entry_ids.reserve(structure_tree.nodes.size());
+    for (const detail::XmpStructureNode& node : structure_tree.nodes)
+        structure_entry_ids.push_back(node.entry);
+    std::sort(structure_entry_ids.begin(), structure_entry_ids.end());
+    w.declared_structure_entries = structure_entry_ids;
+
     for (detail::XmpScalarPatchSlot& slot : patch_slots) {
-        slot.byte_offset = 0U;
-        slot.byte_width  = 0U;
-        slot.matches     = 0U;
+        slot.byte_offset  = 0U;
+        slot.byte_width   = 0U;
+        slot.matches      = 0U;
         slot.invalid_utf8 = false;
     }
     w.patch_slots = patch_slots;
@@ -14521,10 +14987,29 @@ dump_xmp_portable_impl(const MetaStore& store, std::span<std::byte> out,
     const std::span<const Entry> es = store.entries();
 
     std::vector<PortableCustomNsDecl> custom_decls;
-    collect_portable_custom_ns_decls(arena, es, options, &custom_decls);
+    collect_portable_custom_ns_decls(arena, es, options, structure_tree,
+                                     &custom_decls);
+
+    const bool emit_custom_structures
+        = options.include_existing_xmp
+          && options.existing_namespace_policy
+                 == XmpExistingNamespacePolicy::PreserveCustom
+          && !structure_tree.nodes.empty();
+    std::vector<std::string> structure_uris;
+    std::vector<std::string> structure_prefixes;
+    if (emit_custom_structures
+        && !build_structure_namespace_prefixes(
+            structure_tree,
+            std::span<const PortableCustomNsDecl>(custom_decls.data(),
+                                                  custom_decls.size()),
+            &structure_uris, &structure_prefixes)) {
+        r.status = XmpDumpStatus::InvalidMetadata;
+        return r;
+    }
 
     std::vector<XmpNsDecl> decls;
-    decls.reserve(kDecls.size() + custom_decls.size());
+    decls.reserve(kDecls.size() + custom_decls.size()
+                  + structure_tree.namespaces.size());
     for (size_t i = 0; i < kDecls.size(); ++i) {
         decls.push_back(kDecls[i]);
     }
@@ -14592,8 +15077,20 @@ dump_xmp_portable_impl(const MetaStore& store, std::span<std::byte> out,
         decls.push_back(XmpNsDecl { "xmpG", kXmpNsXmpG });
     }
     for (size_t i = 0; i < custom_decls.size(); ++i) {
-        decls.push_back(
-            XmpNsDecl { custom_decls[i].prefix, custom_decls[i].uri });
+        if (!ensure_portable_ns_decl(&decls, custom_decls[i].prefix,
+                                     custom_decls[i].uri)) {
+            r.status = XmpDumpStatus::InvalidMetadata;
+            return r;
+        }
+    }
+    if (emit_custom_structures) {
+        for (size_t i = 0U; i < structure_uris.size(); ++i) {
+            if (!ensure_portable_ns_decl(&decls, structure_prefixes[i],
+                                         structure_uris[i])) {
+                r.status = XmpDumpStatus::InvalidMetadata;
+                return r;
+            }
+        }
     }
     w.patch_namespaces = decls;
     emit_xmp_packet_begin(&w, std::span<const XmpNsDecl>(decls.data(),
@@ -15004,9 +15501,18 @@ dump_xmp_portable_impl(const MetaStore& store, std::span<std::byte> out,
         &indexed_structured_indexed_nested, &indexed_structured_indexed,
         options.limits.max_entries, &emitted);
 
+    if (emit_custom_structures && !w.limit_hit
+        && !emit_structure_roots(
+            store, structure_tree,
+            std::span<const std::string>(structure_prefixes.data(),
+                                         structure_prefixes.size()),
+            options.limits.max_entries, &emitted, &w)) {
+        w.limit_hit = true;
+    }
+
     emit_xmp_packet_end(&w);
 
-    r.entries = emitted;
+    r.entries        = emitted;
     r.text_sanitized = w.text_sanitized;
     if (w.limit_hit) {
         r.status = XmpDumpStatus::LimitExceeded;
@@ -15499,10 +16005,11 @@ dump_xmp_sidecar(const MetaStore& store, std::vector<std::byte>* out,
         r.status = XmpDumpStatus::LimitExceeded;
         return r;
     }
-    out->assign(static_cast<size_t>(initial_bytes), std::byte { 0 });
+    std::vector<std::byte> staged;
+    staged.assign(static_cast<size_t>(initial_bytes), std::byte { 0 });
 
     for (;;) {
-        const std::span<std::byte> span(out->data(), out->size());
+        const std::span<std::byte> span(staged.data(), staged.size());
         if (options.format == XmpSidecarFormat::Portable) {
             r = dump_xmp_portable(store, span, options.portable);
         } else {
@@ -15510,20 +16017,24 @@ dump_xmp_sidecar(const MetaStore& store, std::vector<std::byte>* out,
         }
 
         if (r.status == XmpDumpStatus::OutputTruncated
-            && r.needed > out->size()) {
+            && r.needed > staged.size()) {
             if (r.needed > static_cast<uint64_t>(SIZE_MAX)) {
                 r.status = XmpDumpStatus::LimitExceeded;
                 return r;
             }
-            out->resize(static_cast<size_t>(r.needed));
+            staged.resize(static_cast<size_t>(r.needed));
             continue;
         }
         break;
     }
 
-    if (r.status == XmpDumpStatus::Ok && r.written <= out->size()) {
-        out->resize(static_cast<size_t>(r.written));
+    if (r.status == XmpDumpStatus::InvalidMetadata
+        || r.status == XmpDumpStatus::InvalidOptions) {
+        return r;
     }
+    if (r.status == XmpDumpStatus::Ok && r.written <= staged.size())
+        staged.resize(static_cast<size_t>(r.written));
+    out->swap(staged);
     return r;
 }
 
@@ -15546,6 +16057,7 @@ make_xmp_sidecar_options(const XmpSidecarRequest& request) noexcept
     options.portable.conflict_policy = request.portable_conflict_policy;
     options.portable.exiftool_gpsdatetime_alias
         = request.portable_exiftool_gpsdatetime_alias;
+    options.portable.structures = request.portable_structures;
 
     options.lossless.limits         = request.limits;
     options.lossless.include_origin = request.include_origin;

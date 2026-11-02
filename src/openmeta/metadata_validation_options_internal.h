@@ -2,6 +2,7 @@
 #pragma once
 
 #include "openmeta/validate.h"
+#include "xmp_structure_internal.h"
 
 namespace openmeta::detail {
 
@@ -36,6 +37,7 @@ metadata_validation_options_are_valid(
            && static_cast<uint8_t>(options.unknown_exif_tags)
                   <= static_cast<uint8_t>(MetadataUnknownTagPolicy::Error)
            && target_profile_valid
+           && xmp_structure_limits_valid(options.structures)
            && (!options.context.has_dimensions
                || (options.context.width != 0U && options.context.height != 0U))
            && (!options.context.has_samples_per_pixel

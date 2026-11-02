@@ -5,6 +5,7 @@
 #include "openmeta/api.h"
 
 #include "openmeta/meta_store.h"
+#include "openmeta/xmp_structure.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -57,6 +58,10 @@ enum class XmpDumpStatus : uint8_t {
     OutputTruncated,
     /// Caller-specified limits prevented generating a complete dump.
     LimitExceeded,
+    /// A selected custom structured XMP graph is malformed.
+    InvalidMetadata,
+    /// Custom structured XMP limits are invalid.
+    InvalidOptions,
 };
 
 /// Resource limits applied during dump to bound output generation.
@@ -153,6 +158,8 @@ struct XmpPortableOptions final {
     /// Default keeps standard portable naming. This compatibility mode is
     /// useful for tools that normalize XMP GPS time under `GPSDateTime`.
     bool exiftool_gpsdatetime_alias = false;
+    /// Shared limits for explicit custom structured XMP declarations.
+    XmpStructureLimits structures;
 };
 
 /// Sidecar format selection for \ref dump_xmp_sidecar.
@@ -179,9 +186,9 @@ struct XmpSidecarRequest final {
     XmpDumpLimits limits;
 
     /// Portable mode options (applied when format == Portable).
-    bool include_exif                        = true;
-    bool include_iptc                        = true;
-    bool include_existing_xmp                = false;
+    bool include_exif         = true;
+    bool include_iptc         = true;
+    bool include_existing_xmp = false;
     XmpExistingNamespacePolicy portable_existing_namespace_policy
         = XmpExistingNamespacePolicy::KnownPortableOnly;
     XmpExistingStandardNamespacePolicy portable_existing_standard_namespace_policy
@@ -198,6 +205,8 @@ struct XmpSidecarRequest final {
 
     /// Initial output buffer size before automatic growth (0 uses default).
     uint64_t initial_output_bytes = 0;
+    /// Shared limits for explicit custom structured XMP declarations.
+    XmpStructureLimits portable_structures;
 };
 
 /// Dump result (size stats + how many entries were emitted).

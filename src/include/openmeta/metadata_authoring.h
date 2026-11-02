@@ -6,9 +6,11 @@
 
 #include "openmeta/meta_store.h"
 #include "openmeta/validate.h"
+#include "openmeta/xmp_structure.h"
 
 #include <cstdint>
 #include <span>
+#include <string_view>
 
 /**
  * \file metadata_authoring.h
@@ -19,7 +21,7 @@ OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Stable generic typed authoring contract version.
-inline constexpr uint32_t kMetadataAuthoringContractVersion = 2U;
+inline constexpr uint32_t kMetadataAuthoringContractVersion = 3U;
 inline constexpr uint32_t kInvalidMetadataAuthoringEntry    = 0xffffffffU;
 
 /// Handling of repeated explicit keys during generic store construction.
@@ -35,6 +37,14 @@ struct MetadataAuthoringEntry final {
     WireType wire_type;
     uint32_t wire_count = 0U;
 };
+
+/// Creates one borrowed custom-XMP container declaration. The Empty value and
+/// reserved Other wire form retain Struct/Bag/Seq/LangAlt identity in a store
+/// and source snapshot. Invalid kinds fail normal authoring validation.
+MetadataAuthoringEntry
+make_xmp_container_entry(std::string_view schema_ns,
+                         std::string_view property_path,
+                         XmpContainerKind kind) noexcept;
 
 /// Resource and validation policy for generic metadata construction.
 struct MetadataAuthoringOptions final {

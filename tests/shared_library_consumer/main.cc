@@ -94,7 +94,7 @@ native_icc_authoring_contract_matches()
         if (profile[i] != std::byte { 0 })
             return false;
     return openmeta::kIccProfileSerializeContractVersion == 1U
-           && openmeta::kMetadataTypedEditingContractVersion == 2U
+           && openmeta::kMetadataTypedEditingContractVersion == 3U
            && profile[80U] == std::byte { 'T' }
            && profile[81U] == std::byte { 'E' }
            && profile[82U] == std::byte { 'S' }
@@ -332,20 +332,23 @@ main()
           && iptc_translated.is_finalized();
     const openmeta::MetadataAuthoringEntry native_title {
         openmeta::make_iptc_dataset_key_view(2U, 5U),
-        openmeta::make_value_view_text("Native title", openmeta::TextEncoding::Ascii),
+        openmeta::make_value_view_text("Native title",
+                                       openmeta::TextEncoding::Ascii),
     };
     openmeta::MetaStore native_title_source;
     const auto native_title_authored = openmeta::create_metadata_store(
         std::span<const openmeta::MetadataAuthoringEntry>(&native_title, 1U),
         &native_title_source);
     openmeta::MetaStore native_title_translated;
-    const auto native_title_translation = openmeta::translate_iptc_to_xmp(
-        native_title_source, openmeta::MetadataIptcToXmpOptions {},
-        &native_title_translated);
+    const auto native_title_translation
+        = openmeta::translate_iptc_to_xmp(native_title_source,
+                                          openmeta::MetadataIptcToXmpOptions {},
+                                          &native_title_translated);
     const bool native_title_contract_matches
         = native_title_authored.ok()
           && openmeta::kMetadataIptcToXmpContractVersion == 1U
-          && native_title_translation.status == openmeta::MetadataIptcToXmpStatus::Ok
+          && native_title_translation.status
+                 == openmeta::MetadataIptcToXmpStatus::Ok
           && native_title_translation.entries_added == 1U
           && native_title_translated.is_finalized();
     const openmeta::MetadataAuthoringEntry native_date {
@@ -939,8 +942,8 @@ main()
     const openmeta::ExifTiffSerializeResult serialized
         = openmeta::serialize_exif_tiff(authored, exif);
     const bool authoring_contract_matches
-        = openmeta::kMetadataAuthoringContractVersion == 2U
-          && openmeta::kMetadataValidationContractVersion == 1U
+        = openmeta::kMetadataAuthoringContractVersion == 3U
+          && openmeta::kMetadataValidationContractVersion == 2U
           && openmeta::kExifTiffSerializeContractVersion == 1U && authoring.ok()
           && validation.ok()
           && measured.status

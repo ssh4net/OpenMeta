@@ -9570,7 +9570,9 @@ NB_MODULE(_openmeta, m)
     nb::enum_<XmpDumpStatus>(m, "XmpDumpStatus")
         .value("Ok", XmpDumpStatus::Ok)
         .value("OutputTruncated", XmpDumpStatus::OutputTruncated)
-        .value("LimitExceeded", XmpDumpStatus::LimitExceeded);
+        .value("LimitExceeded", XmpDumpStatus::LimitExceeded)
+        .value("InvalidMetadata", XmpDumpStatus::InvalidMetadata)
+        .value("InvalidOptions", XmpDumpStatus::InvalidOptions);
 
     nb::enum_<JumbfDecodeStatus>(m, "JumbfDecodeStatus")
         .value("Ok", JumbfDecodeStatus::Ok)

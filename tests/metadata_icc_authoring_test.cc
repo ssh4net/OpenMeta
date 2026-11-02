@@ -26,8 +26,8 @@ namespace {
 
     TEST(MetadataIccAuthoring, OwnsInputsAndAppliesOneMixedEditTransaction)
     {
-        EXPECT_EQ(kMetadataAuthoringContractVersion, 2U);
-        EXPECT_EQ(kMetadataTypedEditingContractVersion, 2U);
+        EXPECT_EQ(kMetadataAuthoringContractVersion, 3U);
+        EXPECT_EQ(kMetadataTypedEditingContractVersion, 3U);
         test::IccAuthoringFixtureData data;
         const std::array fields = test::icc_authoring_fixture_entries(data);
         std::vector<MetadataAuthoringEntry> entries(fields.begin(),

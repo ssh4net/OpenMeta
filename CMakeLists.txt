@@ -459,6 +459,7 @@ set(OPENMETA_SOURCES
   src/openmeta/simple_meta.cc
   src/openmeta/validate.cc
   src/openmeta/vendor_raw_processing.cc
+  src/openmeta/xmp_structure.cc
   src/openmeta/xmp_decode.cc
   src/openmeta/xmp_dump.cc
   src/openmeta/x3f_decode.cc
@@ -1023,6 +1024,8 @@ if(OPENMETA_BUILD_TESTS)
     tests/icc_serialize_test.cc
     tests/metadata_icc_authoring_test.cc
     tests/metadata_icc_transfer_test.cc
+    tests/metadata_custom_xmp_test.cc
+    tests/metadata_custom_xmp_transfer_test.cc
     tests/exif_tag_names_test.cc
     tests/exr_adapter_test.cc
     tests/exr_decode_test.cc
@@ -1091,6 +1094,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/simple_meta_xmp_test.cc
     tests/vendor_raw_processing_test.cc
     tests/validate_test.cc
+    tests/xmp_structure_io_test.cc
     tests/xmp_decode_test.cc
     tests/xmp_dump_test.cc
   )
@@ -1100,6 +1104,11 @@ if(OPENMETA_BUILD_TESTS)
     # hidden, so compile the test-only copy into the test executable.
     target_sources(openmeta_tests PRIVATE
       src/openmeta/interop_value_format_internal.cc)
+  endif()
+  if(NOT OPENMETA_BUILD_SHARED)
+    # Direct private-model probes need static linkage. Public lifecycle and I/O
+    # tests still run against shared builds without exporting private symbols.
+    target_sources(openmeta_tests PRIVATE tests/xmp_structure_test.cc)
   endif()
   target_link_libraries(openmeta_tests PRIVATE ${OPENMETA_LIB_TARGET} gtest_main)
   if(MSVC)
@@ -1535,6 +1544,21 @@ if(OPENMETA_BUILD_FUZZERS)
         -fsanitize=fuzzer,address,undefined
         -fno-omit-frame-pointer
     )
+  endif()
+
+  if(OPENMETA_EXPAT_FOUND)
+    add_executable(openmeta_fuzz_xmp_structure
+      ${OPENMETA_SOURCES}
+      tests/fuzz/xmp_structure_libfuzzer.cc
+    )
+    openmeta_apply_target_settings(openmeta_fuzz_xmp_structure)
+    openmeta_apply_core_deps(openmeta_fuzz_xmp_structure)
+    openmeta_apply_libfuzzer_stdlib(openmeta_fuzz_xmp_structure)
+    target_compile_options(openmeta_fuzz_xmp_structure PRIVATE
+      -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+    target_link_options(openmeta_fuzz_xmp_structure PRIVATE
+      -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+
   endif()
 
   add_executable(openmeta_fuzz_container_payload

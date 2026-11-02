@@ -123,6 +123,7 @@ struct MetadataPatchPlanOptions final {
         .include_existing_xmp      = true,
         .existing_namespace_policy = XmpExistingNamespacePolicy::PreserveCustom,
         .conflict_policy           = XmpConflictPolicy::ExistingWins,
+        .structures                = {},
     };
     uint32_t max_patch_requests = 4096U;
     bool validate               = true;

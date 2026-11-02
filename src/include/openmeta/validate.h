@@ -9,6 +9,7 @@
 #include "openmeta/meta_store.h"
 #include "openmeta/resource_policy.h"
 #include "openmeta/simple_meta.h"
+#include "openmeta/xmp_structure.h"
 
 #include <cstdint>
 #include <string>
@@ -23,7 +24,7 @@ OPENMETA_PUBLIC_BEGIN
 namespace openmeta {
 
 /// Stable detached entry/store validation contract version.
-inline constexpr uint32_t kMetadataValidationContractVersion = 1U;
+inline constexpr uint32_t kMetadataValidationContractVersion = 2U;
 /// Stable optional destination-profile validation contract version.
 inline constexpr uint32_t kMetadataTargetProfileValidationContractVersion = 1U;
 
@@ -102,6 +103,8 @@ enum class MetadataValidationIssueCode : uint16_t {
     TargetProfileForbiddenField,
     TargetProfileContextConflict,
     TargetProfileMissingAuthority,
+    InvalidXmpStructure,
+    XmpStructureLimitExceeded,
 };
 
 /// Optional destination/raw-image facts used for cross-entry validation.
@@ -142,6 +145,8 @@ struct MetadataValidationOptions final {
     MetadataUnknownTagPolicy unknown_exif_tags = MetadataUnknownTagPolicy::Allow;
     MetadataValidationContext context;
     MetadataTargetProfileContext target_profile;
+    /// Caller-lowerable bounds for explicitly declared custom XMP trees.
+    XmpStructureLimits structures;
 };
 
 /// One fixed-field structured issue from detached validation.

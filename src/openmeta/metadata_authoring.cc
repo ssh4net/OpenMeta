@@ -7,6 +7,7 @@
 
 #include "icc_serialize_internal.h"
 #include "metadata_validation_options_internal.h"
+#include "xmp_structure_internal.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -61,6 +62,16 @@ namespace {
         case MetaValueKind::Text: return value.count == value.payload.size();
         }
         return false;
+    }
+
+    static bool
+    xmp_container_view_is_valid(const MetadataAuthoringEntry& entry) noexcept
+    {
+        return entry.key.kind != MetaKeyKind::XmpProperty
+               || entry.wire_type.family != WireFamily::Other
+               || !detail::xmp_structure_wire_code_reserved(
+                   entry.wire_type.code)
+               || detail::xmp_container_view_shape_is_valid(entry);
     }
 
     static uint64_t key_bytes(const MetaKeyView& key) noexcept
@@ -204,6 +215,7 @@ create_metadata_store(std::span<const MetadataAuthoringEntry> entries,
                          static_cast<uint32_t>(i));
         }
         if (!value_view_is_valid(item.value)
+            || !xmp_container_view_is_valid(item)
             || item.value.payload.size() > options.max_value_bytes
             || ((item.key.kind == MetaKeyKind::IccHeaderField
                  || item.key.kind == MetaKeyKind::IccTag)
@@ -283,6 +295,9 @@ create_metadata_store(std::span<const MetadataAuthoringEntry> entries,
                 if (issue.severity == ValidateIssueSeverity::Error) {
                     result.validation_issue = issue.code;
                     result.failed_entry     = issue.entry;
+                    if (issue.code
+                        == MetadataValidationIssueCode::XmpStructureLimitExceeded)
+                        result.status = MetadataAuthoringStatus::LimitExceeded;
                     break;
                 }
             }
@@ -345,6 +360,9 @@ namespace {
                 || validation.error_count == 0U) {
                 result.validation_issue = issue.code;
                 result.failed_entry     = issue.entry;
+                if (issue.code
+                    == MetadataValidationIssueCode::XmpStructureLimitExceeded)
+                    result.status = MetadataTypedEditingStatus::LimitExceeded;
                 break;
             }
         }
@@ -405,6 +423,7 @@ edit_metadata_typed(const MetaStore& base,
         uint64_t bytes = key_bytes(entry.key);
         if (operation.kind != MetadataEditingOperationKind::Remove) {
             if (!value_view_is_valid(entry.value)
+                || !xmp_container_view_is_valid(entry)
                 || entry.value.payload.size() > options.max_value_bytes
                 || ((entry.key.kind == MetaKeyKind::IccHeaderField
                      || entry.key.kind == MetaKeyKind::IccTag)

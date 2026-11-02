@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "metadata_text_fields_internal.h"
 #include "metadata_capture_fields_internal.h"
 #include "metadata_learning_fields_internal.h"
+#include "metadata_text_fields_internal.h"
 
 #include "openmeta/metadata_transfer.h"
 
@@ -31,6 +31,7 @@
 #include "metadata_logical_field_internal.h"
 #include "raf_decode_internal.h"
 #include "x3f_decode_internal.h"
+#include "xmp_structure_internal.h"
 
 #include <algorithm>
 #include <array>
@@ -175,8 +176,7 @@ namespace {
             return false;
         }
         for (size_t i = 0U; i < name.size(); ++i) {
-            const unsigned char byte
-                = static_cast<unsigned char>(name[i]);
+            const unsigned char byte = static_cast<unsigned char>(name[i]);
             if (byte < 0x20U || byte == 0x7FU) {
                 return false;
             }
@@ -479,8 +479,8 @@ namespace {
                     error_->reason     = InteropSafetyReason::UnsafeBytes;
                     error_->field_name = "EXR attribute name";
                     error_->key_path   = "EXR attribute name";
-                    error_->message = "EXR attribute name is empty, exceeds "
-                                      "255 bytes, or contains a control byte";
+                    error_->message    = "EXR attribute name is empty, exceeds "
+                                         "255 bytes, or contains a control byte";
                 }
                 return;
             }
@@ -1249,7 +1249,7 @@ namespace {
         size_t payload_off = 0;
         size_t payload_len = 0;
         std::string route;
-        bool route_known = false;
+        bool route_known        = false;
         bool preserve_photoshop = false;
         std::vector<std::byte> photoshop_residual;
     };
@@ -6991,11 +6991,11 @@ namespace {
     static uint32_t tiff_type_size(uint16_t type) noexcept
     {
         switch (type) {
-        case 1U:  // BYTE
-        case 2U:  // ASCII
+        case 1U:    // BYTE
+        case 2U:    // ASCII
         case 129U:  // EXIF UTF-8
-        case 6U:  // SBYTE
-        case 7U:  // UNDEFINED
+        case 6U:    // SBYTE
+        case 7U:    // UNDEFINED
             return 1U;
         case 3U:  // SHORT
         case 8U:  // SSHORT
@@ -7324,21 +7324,21 @@ namespace {
         }
         if (detail::primary_exif_entry(store.arena(), e,
                                        detail::kLearningOptOutInTag)) {
-            if (v.kind != MetaValueKind::Bytes
-                || v.count != v.data.span.size) {
+            if (v.kind != MetaValueKind::Bytes || v.count != v.data.span.size) {
                 return false;
             }
-            const std::span<const std::byte> raw
-                = store.arena().span(v.data.span);
-            const bool source_little
-                = !any(e.flags, EntryFlags::ValueBigEndian);
+            const std::span<const std::byte> raw = store.arena().span(
+                v.data.span);
+            const bool source_little = !any(e.flags,
+                                            EntryFlags::ValueBigEndian);
             if (raw.size() != v.count
                 || !detail::learning_opt_out_in_bytes_valid(raw,
                                                             source_little)) {
                 return false;
             }
             out->value.assign(raw.begin(), raw.end());
-            if (!source_little && !detail::learning_opt_out_in_swap_words(
+            if (!source_little
+                && !detail::learning_opt_out_in_swap_words(
                     std::span<std::byte>(out->value.data(), out->value.size()),
                     false, true)) {
                 return false;
@@ -7382,11 +7382,11 @@ namespace {
                 const bool terminated_identity
                     = detail::primary_exif_entry(store.arena(), e, 0xA420U)
                       && v.count == 33U
-                      && detail::standard_capture_value_valid(
-                          store.arena(), 0xA420U, v, e.flags);
+                      && detail::standard_capture_value_valid(store.arena(),
+                                                              0xA420U, v,
+                                                              e.flags);
                 const std::span<const std::byte> logical_text
-                    = terminated_identity ? text_bytes.first(32U)
-                                          : text_bytes;
+                    = terminated_identity ? text_bytes.first(32U) : text_bytes;
                 out->value.assign(logical_text.begin(), logical_text.end());
             }
             out->value.push_back(std::byte { 0x00 });
@@ -7631,7 +7631,7 @@ namespace {
         bool explicit_empty_exif_ifd        = false,
         bool dirty_supported_gps_only       = false,
         bool include_gps_version_for_update = false,
-        bool skip_clean_dng_version          = false) noexcept
+        bool skip_clean_dng_version         = false) noexcept
     {
         ExifPackBuild out;
 
@@ -8771,8 +8771,9 @@ namespace {
         if (has_dirty_iptc_dataset(store)
             || !first_photoshop_iptc_payload(store, &iptc_iim)) {
             const IptcIimSerializeResult serialized
-                = detail::build_iptc_iim_payload(
-                    store, IptcIimSerializeOptions {}, true, &iptc_iim);
+                = detail::build_iptc_iim_payload(store,
+                                                 IptcIimSerializeOptions {},
+                                                 true, &iptc_iim);
             out.skipped_count = serialized.entries_skipped;
             if (!serialized.ok()) {
                 return out;
@@ -9159,11 +9160,11 @@ namespace {
 
         std::vector<std::byte>& v = *bytes;
         switch (type) {
-        case 1U:  // BYTE
-        case 2U:  // ASCII
+        case 1U:    // BYTE
+        case 2U:    // ASCII
         case 129U:  // EXIF UTF-8
-        case 6U:  // SBYTE
-        case 7U:  // UNDEFINED
+        case 6U:    // SBYTE
+        case 7U:    // UNDEFINED
             return true;
         case 3U:  // SHORT
         case 8U:  // SSHORT
@@ -9230,8 +9231,7 @@ namespace {
             if (composite && e.tag == detail::kLearningOptOutInTag
                 && e.type == 7U && from_endian != to_endian) {
                 if (!detail::learning_opt_out_in_swap_words(
-                        std::span<std::byte>(e.payload.data(),
-                                             e.payload.size()),
+                        std::span<std::byte>(e.payload.data(), e.payload.size()),
                         from_endian == TiffEndian::Little,
                         to_endian == TiffEndian::Little)) {
                     return false;
@@ -9579,8 +9579,7 @@ namespace {
             count_u64 = read_u64_tiff(input, static_cast<size_t>(ifd_off_u64),
                                       endian);
         }
-        const uint64_t entries_off_u64
-            = ifd_off_u64 + layout.ifd_count_size;
+        const uint64_t entries_off_u64 = ifd_off_u64 + layout.ifd_count_size;
         if (entries_off_u64 > static_cast<uint64_t>(input.size())
             || layout.ifd_next_offset_size
                    > static_cast<uint64_t>(input.size()) - entries_off_u64) {
@@ -9592,8 +9591,7 @@ namespace {
         const uint64_t available_entry_bytes
             = static_cast<uint64_t>(input.size()) - entries_off_u64
               - layout.ifd_next_offset_size;
-        if (count_u64
-            > available_entry_bytes / layout.ifd_entry_size) {
+        if (count_u64 > available_entry_bytes / layout.ifd_entry_size) {
             if (err) {
                 *err = "ifd next offset field out of range";
             }
@@ -9741,8 +9739,7 @@ namespace {
         const uint64_t available_entry_bytes
             = static_cast<uint64_t>(input.size()) - entries_off_u64
               - layout.ifd_next_offset_size;
-        if (count_u64
-            > available_entry_bytes / layout.ifd_entry_size) {
+        if (count_u64 > available_entry_bytes / layout.ifd_entry_size) {
             if (err) {
                 *err = "target TIFF IFD entries truncated";
             }
@@ -10446,7 +10443,8 @@ namespace {
 
     static std::vector<uint8_t>
     raw_inapplicable_entry_mask(const MetaStore& store,
-                                const MetadataRawDataDescriptor* descriptor)
+                                const MetadataRawDataDescriptor* descriptor,
+                                std::span<const uint8_t> custom_entries)
     {
         std::vector<uint8_t> mask;
         if (!descriptor
@@ -10465,11 +10463,15 @@ namespace {
             if (mask.empty()) {
                 mask.resize(store.entries().size(), 0U);
             }
-            if (candidate.entry_id < mask.size()) {
+            if (candidate.entry_id < mask.size()
+                && (candidate.entry_id >= custom_entries.size()
+                    || custom_entries[candidate.entry_id] == 0U)) {
                 mask[candidate.entry_id] = 1U;
             }
             for (EntryId id : candidate.source_entries) {
-                if (id < mask.size()) {
+                if (id < mask.size()
+                    && (id >= custom_entries.size()
+                        || custom_entries[id] == 0U)) {
                     mask[id] = 1U;
                 }
             }
@@ -11457,17 +11459,14 @@ namespace {
 
     static constexpr std::array<uint16_t, 85U> kTiffExifRemovalTags = {
         0x829AU, 0x829DU, 0x8822U, 0x8827U, 0x8828U, 0x8830U, 0x8831U, 0x8832U,
-        0x8833U, 0x8834U, 0x8835U, 0x9000U, 0x9003U, 0x9004U, 0x9010U,
-        0x9011U, 0x9012U, 0x9201U, 0x9202U, 0x9203U, 0x9204U, 0x9205U, 0x9206U,
-        0x9207U, 0x9209U, 0x920AU, 0x9214U, 0x9286U, 0x9287U, 0x9290U, 0x9291U,
-        0x9292U,
-        0x9400U, 0x9401U, 0x9402U, 0x9403U,
-        0x9404U, 0x9405U, 0xA000U, 0xA004U, 0xA20BU, 0xA20CU,
-        0xA20EU, 0xA20FU, 0xA210U,
-        0xA214U, 0xA215U, 0xA217U, 0xA300U, 0xA301U, 0xA302U, 0xA401U, 0xA402U,
-        0xA403U, 0xA404U, 0xA405U, 0xA406U, 0xA407U, 0xA408U, 0xA409U, 0xA40AU,
-        0xA40BU, 0xA40CU, 0xA40DU, 0xA40EU, 0xA40FU, 0xA410U, 0xA411U, 0xA412U,
-        0xA420U, 0xA430U, 0xA432U,
+        0x8833U, 0x8834U, 0x8835U, 0x9000U, 0x9003U, 0x9004U, 0x9010U, 0x9011U,
+        0x9012U, 0x9201U, 0x9202U, 0x9203U, 0x9204U, 0x9205U, 0x9206U, 0x9207U,
+        0x9209U, 0x920AU, 0x9214U, 0x9286U, 0x9287U, 0x9290U, 0x9291U, 0x9292U,
+        0x9400U, 0x9401U, 0x9402U, 0x9403U, 0x9404U, 0x9405U, 0xA000U, 0xA004U,
+        0xA20BU, 0xA20CU, 0xA20EU, 0xA20FU, 0xA210U, 0xA214U, 0xA215U, 0xA217U,
+        0xA300U, 0xA301U, 0xA302U, 0xA401U, 0xA402U, 0xA403U, 0xA404U, 0xA405U,
+        0xA406U, 0xA407U, 0xA408U, 0xA409U, 0xA40AU, 0xA40BU, 0xA40CU, 0xA40DU,
+        0xA40EU, 0xA40FU, 0xA410U, 0xA411U, 0xA412U, 0xA420U, 0xA430U, 0xA432U,
         0xA433U, 0xA434U, 0xA435U, 0xA436U, 0xA437U, 0xA438U, 0xA439U, 0xA43AU,
         0xA43BU, 0xA43CU, 0xA460U, 0xA461U, 0xA462U,
     };
@@ -12179,16 +12178,15 @@ namespace {
         const uint64_t available_entry_bytes
             = static_cast<uint64_t>(input.size()) - entries_off_u64
               - layout.ifd_next_offset_size;
-        if (count_u64
-            > available_entry_bytes / layout.ifd_entry_size) {
+        if (count_u64 > available_entry_bytes / layout.ifd_entry_size) {
             if (err) {
                 *err = "ifd0 entries truncated";
             }
             return false;
         }
-        const size_t count             = static_cast<size_t>(count_u64);
-        const uint64_t table_bytes     = count_u64 * layout.ifd_entry_size;
-        const uint64_t entries_end_u64 = entries_off_u64 + table_bytes;
+        const size_t count                = static_cast<size_t>(count_u64);
+        const uint64_t table_bytes        = count_u64 * layout.ifd_entry_size;
+        const uint64_t entries_end_u64    = entries_off_u64 + table_bytes;
         const uint64_t next_field_end_u64 = entries_end_u64
                                             + layout.ifd_next_offset_size;
         if (entries_end_u64 < entries_off_u64
@@ -12259,7 +12257,7 @@ namespace {
             removal.remove = true;
             merged_updates.push_back(std::move(removal));
         }
-        const bool clear_gps_ifd                  = parsed_exif.gps_ifd.present
+        const bool clear_gps_ifd = parsed_exif.gps_ifd.present
                                    && parsed_exif.gps_ifd.entries.empty();
         if (clear_gps_ifd) {
             if (merge_existing_gps || !gps_removals.empty()) {
@@ -12281,7 +12279,7 @@ namespace {
             if (has_update_for_tag(updates, src.tag)) {
                 continue;
             }
-            bool replaced            = false;
+            bool replaced = false;
             for (size_t j = 0; j < merged_updates.size(); ++j) {
                 if (merged_updates[j].tag == src.tag) {
                     merged_updates[j] = src;
@@ -12298,9 +12296,9 @@ namespace {
                                                            700U);
         const bool preserve_missing_exif_entries = merge_existing_exif
                                                    || !exif_removals.empty();
-        bool need_exif_ptr            = parsed_exif.exif_ifd.present;
-        bool need_gps_ptr = parsed_exif.gps_ifd.present || merge_gps_directory;
-        const bool need_subifd_ptr    = !parsed_exif.subifds.empty();
+        bool need_exif_ptr = parsed_exif.exif_ifd.present;
+        bool need_gps_ptr  = parsed_exif.gps_ifd.present || merge_gps_directory;
+        const bool need_subifd_ptr = !parsed_exif.subifds.empty();
         const bool inspect_existing_exif_ifd
             = !clear_exif_ifd
               && (need_exif_ptr || strip_existing_xmp
@@ -13406,9 +13404,9 @@ detail::compile_exif_patch_payload(
         }
 
         detail::CompiledMetadataPatchSlot slot;
-        slot.byte_offset = source_slot->byte_offset;
-        slot.byte_width  = source_slot->byte_width;
-        slot.value       = request.expected;
+        slot.byte_offset     = source_slot->byte_offset;
+        slot.byte_width      = source_slot->byte_width;
+        slot.value           = request.expected;
         slots[request_index] = slot;
     }
 
@@ -13655,6 +13653,39 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         return r;
     }
 
+    detail::XmpStructureTree custom_structures;
+    const detail::XmpStructureBuildResult custom_check
+        = detail::prepare_xmp_structure_tree(store, request.xmp_structures,
+                                             &custom_structures);
+    const bool portable_xmp_requested
+        = transfer_target_supports_xmp_blocks(request.target_format)
+          && request.include_xmp_app1 && request.xmp_portable;
+    const bool custom_xmp_selected
+        = portable_xmp_requested && request.xmp_include_existing
+          && request.xmp_existing_namespace_policy
+                 == XmpExistingNamespacePolicy::PreserveCustom;
+    if (!custom_check.ok()
+        && (custom_xmp_selected
+            || (portable_xmp_requested
+                && custom_check.status
+                       == detail::XmpStructureStatus::InvalidOptions))) {
+        r.status    = custom_check.status
+                           == detail::XmpStructureStatus::LimitExceeded
+                          ? TransferStatus::LimitExceeded
+                          : TransferStatus::InvalidArgument;
+        r.code      = PrepareTransferCode::XmpPackFailed;
+        r.errors    = 1U;
+        r.message   = "custom XMP structure preflight failed";
+        *out_bundle = std::move(bundle);
+        return r;
+    }
+    std::vector<uint8_t> custom_entries;
+    if (custom_check.ok() && !custom_structures.nodes.empty()) {
+        custom_entries.resize(store.entries().size(), 0U);
+        for (const detail::XmpStructureNode& node : custom_structures.nodes)
+            custom_entries[node.entry] = 1U;
+    }
+
     const bool native_tiff_exif_enabled = transfer_target_is_tiff_family(
                                               request.target_format)
                                           && request.include_exif_app1;
@@ -13664,10 +13695,10 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                                        &bundle.tiff_exif_removals);
     collect_tiff_gps_profile_removals(store, native_tiff_exif_enabled,
                                       &bundle.tiff_gps_removals);
-    bundle.tiff_merge_existing_exif = native_tiff_exif_enabled
-                                      && (has_dirty_tiff_native_edit(store)
-                                          || request.target_image_spec
-                                                 .has_exif_color_space);
+    bundle.tiff_merge_existing_exif
+        = native_tiff_exif_enabled
+          && (has_dirty_tiff_native_edit(store)
+              || request.target_image_spec.has_exif_color_space);
     bundle.tiff_merge_existing_gps = native_tiff_exif_enabled
                                      && has_dirty_tiff_native_gps_edit(store);
 
@@ -13677,7 +13708,8 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         request.target_image_spec);
     TransferSafetyFilterCounts filter_counts;
     const std::vector<uint8_t> raw_inapplicable_entries
-        = raw_inapplicable_entry_mask(store, source_raw_descriptor);
+        = raw_inapplicable_entry_mask(store, source_raw_descriptor,
+                                      custom_entries);
     count_transfer_safety_filter_entries(store, effective_profile.safety,
                                          source_raw_descriptor,
                                          raw_inapplicable_entries,
@@ -14234,11 +14266,10 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                 = make_unique_exr_attribute_name(unique_names, attrs[i].name);
             if (!exr_projected_attribute_name_is_safe(unique_name)) {
                 r.status = TransferStatus::Unsupported;
-                r.code
-                    = PrepareTransferCode::RequestedMetadataNotSerializable;
-                r.errors  = 1U;
-                r.message = "exr attribute name exceeds the 255-byte limit "
-                            "after duplicate suffixing";
+                r.code = PrepareTransferCode::RequestedMetadataNotSerializable;
+                r.errors    = 1U;
+                r.message   = "exr attribute name exceeds the 255-byte limit "
+                              "after duplicate suffixing";
                 *out_bundle = std::move(bundle);
                 return r;
             }
@@ -14247,7 +14278,6 @@ prepare_metadata_for_target_impl(const MetaStore& store,
 
         uint32_t order = next_prepared_block_order(bundle, 100U);
         for (size_t i = 0; i < attrs.size(); ++i) {
-
             PreparedTransferBlock block;
             block.kind  = TransferBlockKind::ExrAttribute;
             block.order = order;
@@ -14268,8 +14298,7 @@ prepare_metadata_for_target_impl(const MetaStore& store,
     if (request.include_exif_app1 && has_exif) {
         const bool inject_minimal_dng_version
             = request.target_format == TransferTargetFormat::Dng
-              && request.dng_target_mode
-                     == DngTargetMode::MinimalFreshScaffold;
+              && request.dng_target_mode == DngTargetMode::MinimalFreshScaffold;
         const bool skip_clean_dng_version
             = request.target_format == TransferTargetFormat::Dng
               && (request.dng_target_mode == DngTargetMode::ExistingTarget
@@ -14277,11 +14306,9 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         ExifPackBuild exif_build = build_exif_tiff_payload(
             prepared_store, effective_makernote,
             transfer_target_is_tiff_family(request.target_format),
-            inject_minimal_dng_version, true,
-            kMaxJpegExifTiffBytes, false, false, explicit_empty_exif_ifd,
-            bundle.tiff_merge_existing_gps,
-            has_dirty_tiff_native_gps_update(store),
-            skip_clean_dng_version);
+            inject_minimal_dng_version, true, kMaxJpegExifTiffBytes, false,
+            false, explicit_empty_exif_ifd, bundle.tiff_merge_existing_gps,
+            has_dirty_tiff_native_gps_update(store), skip_clean_dng_version);
         if (exif_build.produced && !exif_build.tiff_payload.empty()) {
             const uint32_t block_index = static_cast<uint32_t>(
                 bundle.blocks.size());
@@ -14412,6 +14439,7 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         xmp_req.portable_conflict_policy = request.xmp_conflict_policy;
         xmp_req.portable_exiftool_gpsdatetime_alias
             = request.xmp_exiftool_gpsdatetime_alias;
+        xmp_req.portable_structures = request.xmp_structures;
 
         std::vector<std::byte> xmp_packet;
         const XmpDumpResult xr = dump_xmp_sidecar(prepared_store, &xmp_packet,
@@ -14760,9 +14788,9 @@ prepare_metadata_for_target_impl(const MetaStore& store,
             if (has_dirty_iptc_dataset(prepared_store)
                 || !first_photoshop_iptc_payload(prepared_store, &iptc_iim)) {
                 const IptcIimSerializeResult serialized
-                    = detail::build_iptc_iim_payload(
-                        prepared_store, IptcIimSerializeOptions {}, true,
-                        &iptc_iim);
+                    = detail::build_iptc_iim_payload(prepared_store,
+                                                     IptcIimSerializeOptions {},
+                                                     true, &iptc_iim);
                 skipped_iptc = serialized.entries_skipped;
                 if (!serialized.ok()) {
                     iptc_iim.clear();
@@ -14804,6 +14832,7 @@ prepare_metadata_for_target_impl(const MetaStore& store,
                 xmp_req.portable_existing_standard_namespace_policy
                     = request.xmp_existing_standard_namespace_policy;
                 xmp_req.portable_conflict_policy = request.xmp_conflict_policy;
+                xmp_req.portable_structures      = request.xmp_structures;
 
                 std::vector<std::byte> xmp_packet;
                 const XmpDumpResult xr = dump_xmp_sidecar(prepared_store,
@@ -19334,9 +19363,9 @@ emit_prepared_bundle_tiff(const PreparedTransferBundle& bundle,
         return r;
     }
     if (bundle_has_tiff_removals(bundle)) {
-        r.status  = TransferStatus::Unsupported;
-        r.code    = EmitTransferCode::InvalidArgument;
-        r.errors  = 1U;
+        r.status = TransferStatus::Unsupported;
+        r.code   = EmitTransferCode::InvalidArgument;
+        r.errors = 1U;
         r.message
             = "fresh TIFF/DNG emit cannot represent native TIFF destination edits";
         return r;
@@ -19422,9 +19451,9 @@ compile_prepared_bundle_tiff(const PreparedTransferBundle& bundle,
         return r;
     }
     if (bundle_has_tiff_removals(bundle)) {
-        r.status  = TransferStatus::Unsupported;
-        r.code    = EmitTransferCode::InvalidArgument;
-        r.errors  = 1U;
+        r.status = TransferStatus::Unsupported;
+        r.code   = EmitTransferCode::InvalidArgument;
+        r.errors = 1U;
         r.message
             = "fresh TIFF/DNG emit cannot represent native TIFF destination edits";
         return r;
@@ -19501,9 +19530,9 @@ emit_prepared_bundle_tiff_compiled(const PreparedTransferBundle& bundle,
         return r;
     }
     if (bundle_has_tiff_removals(bundle)) {
-        r.status  = TransferStatus::Unsupported;
-        r.code    = EmitTransferCode::InvalidArgument;
-        r.errors  = 1U;
+        r.status = TransferStatus::Unsupported;
+        r.code   = EmitTransferCode::InvalidArgument;
+        r.errors = 1U;
         r.message
             = "fresh TIFF/DNG emit cannot represent native TIFF destination edits";
         return r;
@@ -19930,9 +19959,9 @@ build_prepared_jxl_encoder_handoff_view(
         return r;
     }
     if (bundle_has_tiff_removals(bundle)) {
-        r.status  = TransferStatus::Unsupported;
-        r.code    = EmitTransferCode::InvalidArgument;
-        r.errors  = 1U;
+        r.status = TransferStatus::Unsupported;
+        r.code   = EmitTransferCode::InvalidArgument;
+        r.errors = 1U;
         r.message
             = "JXL encoder handoff cannot represent native TIFF destination edits";
         return r;
@@ -21436,9 +21465,9 @@ plan_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
     }
     plan.emitted_segments = static_cast<uint32_t>(desired.size());
 
-    JpegScanResult scan       = scan_leading_jpeg_segments(input_jpeg);
-    plan.leading_scan_end     = static_cast<uint64_t>(scan.scan_end);
-    plan.strip_existing_xmp   = options.strip_existing_xmp;
+    JpegScanResult scan     = scan_leading_jpeg_segments(input_jpeg);
+    plan.leading_scan_end   = static_cast<uint64_t>(scan.scan_end);
+    plan.strip_existing_xmp = options.strip_existing_xmp;
     if (scan.status != TransferStatus::Ok) {
         plan.status  = scan.status;
         plan.message = scan.message;
@@ -21706,11 +21735,12 @@ plan_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
                         || !bundle.tiff_exif_removals.empty()
                         || !bundle.tiff_gps_removals.empty();
     plan.strip_existing_xmp = options.strip_existing_xmp;
-    const std::span<const std::byte> exif_payload_span(
-        exif_app1_payload.data(), exif_app1_payload.size());
-    const bool has_semantic_updates = has_tiff_semantic_updates(
-        updates, exif_payload_span, bundle.tiff_exif_removals,
-        bundle.tiff_gps_removals);
+    const std::span<const std::byte> exif_payload_span(exif_app1_payload.data(),
+                                                       exif_app1_payload.size());
+    const bool has_semantic_updates
+        = has_tiff_semantic_updates(updates, exif_payload_span,
+                                    bundle.tiff_exif_removals,
+                                    bundle.tiff_gps_removals);
 
     if (options.require_updates && !has_semantic_updates) {
         plan.status  = TransferStatus::Unsupported;
@@ -21721,10 +21751,9 @@ plan_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
     TiffRewriteTail rewrite;
     std::string err;
     if (!build_tiff_rewrite_tail(
-            input_tiff, updates, exif_payload_span,
-            bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
-            bundle.tiff_gps_removals, bundle.tiff_merge_existing_gps, &rewrite,
-            &err)) {
+            input_tiff, updates, exif_payload_span, bundle.tiff_exif_removals,
+            bundle.tiff_merge_existing_exif, bundle.tiff_gps_removals,
+            bundle.tiff_merge_existing_gps, &rewrite, &err)) {
         plan.status  = tiff_edit_status_from_error(err);
         plan.message = err;
         return plan;
@@ -21793,8 +21822,8 @@ apply_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         return out;
     }
 
-    const std::span<const std::byte> exif_payload_span(
-        exif_app1_payload.data(), exif_app1_payload.size());
+    const std::span<const std::byte> exif_payload_span(exif_app1_payload.data(),
+                                                       exif_app1_payload.size());
     if (!has_tiff_semantic_updates(updates, exif_payload_span,
                                    bundle.tiff_exif_removals,
                                    bundle.tiff_gps_removals)) {
@@ -21808,11 +21837,12 @@ apply_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         }
         TiffRewriteTail validation;
         std::string err;
-        if (!build_tiff_rewrite_tail(
-                input_tiff, updates, exif_payload_span,
-                bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
-                bundle.tiff_gps_removals, bundle.tiff_merge_existing_gps,
-                &validation, &err)) {
+        if (!build_tiff_rewrite_tail(input_tiff, updates, exif_payload_span,
+                                     bundle.tiff_exif_removals,
+                                     bundle.tiff_merge_existing_exif,
+                                     bundle.tiff_gps_removals,
+                                     bundle.tiff_merge_existing_gps,
+                                     &validation, &err)) {
             out.status  = tiff_edit_status_from_error(err);
             out.code    = EmitTransferCode::PlanMismatch;
             out.errors  = 1U;
@@ -22433,8 +22463,8 @@ build_prepared_bundle_tiff_package(
         return out;
     }
 
-    const std::span<const std::byte> exif_payload_span(
-        exif_app1_payload.data(), exif_app1_payload.size());
+    const std::span<const std::byte> exif_payload_span(exif_app1_payload.data(),
+                                                       exif_app1_payload.size());
     if (!has_tiff_semantic_updates(updates, exif_payload_span,
                                    bundle.tiff_exif_removals,
                                    bundle.tiff_gps_removals)) {
@@ -22448,11 +22478,12 @@ build_prepared_bundle_tiff_package(
         }
         TiffRewriteTail validation;
         std::string err;
-        if (!build_tiff_rewrite_tail(
-                input_tiff, updates, exif_payload_span,
-                bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
-                bundle.tiff_gps_removals, bundle.tiff_merge_existing_gps,
-                &validation, &err)) {
+        if (!build_tiff_rewrite_tail(input_tiff, updates, exif_payload_span,
+                                     bundle.tiff_exif_removals,
+                                     bundle.tiff_merge_existing_exif,
+                                     bundle.tiff_gps_removals,
+                                     bundle.tiff_merge_existing_gps,
+                                     &validation, &err)) {
             out.status  = tiff_edit_status_from_error(err);
             out.code    = EmitTransferCode::PlanMismatch;
             out.errors  = 1U;
@@ -22466,7 +22497,7 @@ build_prepared_bundle_tiff_package(
         unchanged.output_size      = static_cast<uint64_t>(input_tiff.size());
         append_package_source_chunk(&unchanged, 0U,
                                     static_cast<uint64_t>(input_tiff.size()));
-        *out_plan = std::move(unchanged);
+        *out_plan  = std::move(unchanged);
         out.status = TransferStatus::Ok;
         out.code   = EmitTransferCode::None;
         return out;
@@ -22481,10 +22512,9 @@ build_prepared_bundle_tiff_package(
     TiffRewriteTail rewrite;
     std::string err;
     if (!build_tiff_rewrite_tail(
-            input_tiff, updates, exif_payload_span,
-            bundle.tiff_exif_removals, bundle.tiff_merge_existing_exif,
-            bundle.tiff_gps_removals, bundle.tiff_merge_existing_gps, &rewrite,
-            &err)) {
+            input_tiff, updates, exif_payload_span, bundle.tiff_exif_removals,
+            bundle.tiff_merge_existing_exif, bundle.tiff_gps_removals,
+            bundle.tiff_merge_existing_gps, &rewrite, &err)) {
         out.status  = tiff_edit_status_from_error(err);
         out.code    = EmitTransferCode::PlanMismatch;
         out.errors  = 1U;
@@ -24548,8 +24578,8 @@ namespace {
             return out;
         }
         *out_version = version;
-        out.status = TransferStatus::Ok;
-        out.code   = EmitTransferCode::None;
+        out.status   = TransferStatus::Ok;
+        out.code     = EmitTransferCode::None;
         return out;
     }
 
@@ -25494,7 +25524,7 @@ deserialize_prepared_c2pa_handoff_package(
         out.message = "out_package is null";
         return out;
     }
-    size_t off = 0U;
+    size_t off       = 0U;
     uint32_t version = 0U;
     out = deserialize_c2pa_package_header(bytes, kC2paHandoffMagic, &off,
                                           &version);
@@ -25566,7 +25596,7 @@ deserialize_prepared_c2pa_signed_package(
         out.message = "out_package is null";
         return out;
     }
-    size_t off = 0U;
+    size_t off       = 0U;
     uint32_t version = 0U;
     out = deserialize_c2pa_package_header(bytes, kC2paSignedMagic, &off,
                                           &version);
@@ -30117,7 +30147,7 @@ namespace {
         }
 
         const size_t index_size = static_cast<size_t>(ctx.iloc_sizes1 & 0x0FU);
-        bool nested_path_seen       = false;
+        bool nested_path_seen   = false;
         uint64_t pending_outer_work = 0U;
         for (size_t i = 0; i < record.extents.size(); ++i) {
             if (nested_path_seen) {
@@ -30804,7 +30834,7 @@ namespace {
             if (bmff_removed_item_id(removed_item_ids, records[i].item_id)) {
                 continue;
             }
-            uint64_t base_offset = records[i].base_offset;
+            uint64_t base_offset           = records[i].base_offset;
             const bool adjust_file_offsets = records[i].construction_method
                                              == 0U;
             const bool fold_file_offsets = output_base_offset_size == 0U
@@ -31013,8 +31043,7 @@ namespace {
 
             const size_t input_id_width = input_version == 0U ? 2U : 4U;
             uint64_t child_off          = payload_begin + 4U;
-            while (child_off <= payload_end
-                   && payload_end - child_off >= 8U) {
+            while (child_off <= payload_end && payload_end - child_off >= 8U) {
                 TransferBmffBox child;
                 if (!parse_transfer_bmff_box(bytes, child_off, payload_end,
                                              &child)) {
@@ -32900,7 +32929,7 @@ namespace {
             }
 
             if (box.type == fourcc('f', 't', 'y', 'p')) {
-                found_ftyp = true;
+                found_ftyp                    = true;
                 const uint64_t payload_offset = box.offset + box.header_size;
                 const uint64_t payload_size   = box.size - box.header_size;
                 if (payload_size >= 8U) {
@@ -33583,9 +33612,9 @@ namespace {
                 break;
             }
             default:
-                out.status = TransferStatus::InvalidArgument;
-                out.code = EmitTransferCode::PlanMismatch;
-                out.errors = 1U;
+                out.status  = TransferStatus::InvalidArgument;
+                out.code    = EmitTransferCode::PlanMismatch;
+                out.errors  = 1U;
                 out.message = "prepared transfer payload batch unknown op kind";
                 return out;
             }
@@ -35527,15 +35556,15 @@ build_prepared_bundle_jp2_package(std::span<const std::byte> input_jp2,
     plan.target_format    = bundle.target_format;
     plan.input_size       = static_cast<uint64_t>(input_jp2.size());
 
-    bool found_signature     = false;
-    bool found_ftyp          = false;
-    bool found_jp2h          = false;
-    bool rewrote_jp2h        = false;
+    bool found_signature = false;
+    bool found_ftyp      = false;
+    bool found_jp2h      = false;
+    bool rewrote_jp2h    = false;
     TransferBmffBox terminal_source_box;
     bool has_terminal_source_box = false;
-    uint32_t removed_boxes   = 0U;
-    uint32_t emitted_updates = 0U;
-    uint64_t offset          = 0U;
+    uint32_t removed_boxes       = 0U;
+    uint32_t emitted_updates     = 0U;
+    uint64_t offset              = 0U;
     while (offset < input_jp2.size()) {
         TransferBmffBox box;
         if (!parse_transfer_bmff_box(input_jp2, offset, input_jp2.size(),
@@ -35588,7 +35617,7 @@ build_prepared_bundle_jp2_package(std::span<const std::byte> input_jp2,
             read_u32be(input_jp2, box.offset, &encoded_size);
             if (encoded_size == 0U) {
                 // A to-end box must remain last so appended metadata is visible.
-                terminal_source_box = box;
+                terminal_source_box     = box;
                 has_terminal_source_box = true;
             } else {
                 append_package_source_chunk(&plan, box.offset, box.size);
