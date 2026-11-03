@@ -168,5 +168,12 @@ XmpStructureBuildResult
 prepare_xmp_structure_tree(const MetaStore& store,
                            const XmpStructureLimits& limits,
                            XmpStructureTree* output) noexcept;
+/// Builds the same tree for one provider's entry interval. Node EntryIds stay
+/// global so callers can validate merge inputs without copying stores.
+XmpStructureBuildResult
+prepare_xmp_structure_tree_range(const MetaStore& store, size_t begin,
+                                 size_t end,
+                                 const XmpStructureLimits& limits,
+                                 XmpStructureTree* output) noexcept;
 
 }  // namespace openmeta::detail

@@ -1355,13 +1355,131 @@ make_collection_snapshot(std::string_view title,
         make_xmp_text_entry(kDcNamespace, "creator[1]", creator_one),
         make_xmp_text_entry(kDcNamespace, "creator[3]", creator_two),
         make_xmp_text_entry(kDcNamespace, "subject[1]", repeated_keyword),
-        make_xmp_text_entry(kDcNamespace, "subject[3]", repeated_keyword)
+        make_xmp_text_entry(kDcNamespace, "subject[3]", repeated_keyword),
+        openmeta::make_xmp_container_entry(openmeta::custom_xmp_test::kSchema,
+                                           "Record",
+                                           openmeta::XmpContainerKind::Struct),
+        make_xmp_text_entry(openmeta::custom_xmp_test::kSchema, "Record/Owner",
+                            title),
+        openmeta::make_xmp_container_entry(openmeta::custom_xmp_test::kSchema,
+                                           "Record/Values",
+                                           openmeta::XmpContainerKind::Bag),
+        make_xmp_text_entry(openmeta::custom_xmp_test::kSchema,
+                            "Record/Values[1]", repeated_keyword),
+        make_xmp_text_entry(openmeta::custom_xmp_test::kSchema,
+                            "Record/Values[3]", repeated_keyword),
+        make_xmp_text_entry(openmeta::custom_xmp_test::kSchema,
+                            openmeta::custom_xmp_test::kOtherSchemaLocalPath,
+                            title),
+        openmeta::make_xmp_container_entry(openmeta::custom_xmp_test::kSchema,
+                                           "Sequence",
+                                           openmeta::XmpContainerKind::Seq),
+        make_xmp_text_entry(openmeta::custom_xmp_test::kSchema, "Sequence[2]",
+                            creator_one),
+        make_xmp_text_entry(openmeta::custom_xmp_test::kSchema, "Sequence[9]",
+                            creator_two),
+        openmeta::make_xmp_container_entry(openmeta::custom_xmp_test::kSchema,
+                                           "Tags",
+                                           openmeta::XmpContainerKind::Bag),
+        make_xmp_text_entry(openmeta::custom_xmp_test::kSchema, "Tags[1]",
+                            repeated_keyword),
+        make_xmp_text_entry(openmeta::custom_xmp_test::kSchema, "Tags[5]",
+                            repeated_keyword),
+        openmeta::make_xmp_container_entry(openmeta::custom_xmp_test::kSchema,
+                                           "Languages",
+                                           openmeta::XmpContainerKind::LangAlt),
+        make_xmp_text_entry(openmeta::custom_xmp_test::kSchema,
+                            "Languages[@xml:lang=x-default]", title),
+        make_xmp_text_entry(openmeta::custom_xmp_test::kSchema,
+                            "Languages[@xml:lang=en-US]", title),
+        openmeta::make_xmp_container_entry(
+            openmeta::custom_xmp_test::kOtherSchema, "Record",
+            openmeta::XmpContainerKind::Struct),
+        make_xmp_text_entry(openmeta::custom_xmp_test::kOtherSchema,
+                            "Record/Owner", title),
+        make_xmp_text_entry(openmeta::custom_xmp_test::kSchema,
+                            title == "Transfer source title" ? "OnlySource"
+                            : title == "Destination embedded title"
+                                ? "OnlyEmbedded"
+                                : "OnlySidecar",
+                            title)
     };
     openmeta::MetaStore store;
     if (!openmeta::create_metadata_store(entries, &store).ok())
         return false;
     *output = openmeta::build_transfer_source_snapshot(store);
     return output->store.is_finalized();
+}
+
+static void
+expect_custom_provider(const openmeta::MetaStore& store, std::string_view title)
+{
+    constexpr std::string_view ns = openmeta::custom_xmp_test::kSchema;
+    const std::string keyword     = std::string(title) + " keyword";
+    const std::string one         = std::string(title) + " creator one";
+    const std::string two         = std::string(title) + " creator two";
+    const std::array<std::string_view, 5U> roots { "Record", "Sequence", "Tags",
+                                                   "Languages", "Record" };
+    const std::array<openmeta::XmpContainerKind, 5U> kinds {
+        openmeta::XmpContainerKind::Struct, openmeta::XmpContainerKind::Seq,
+        openmeta::XmpContainerKind::Bag, openmeta::XmpContainerKind::LangAlt,
+        openmeta::XmpContainerKind::Struct
+    };
+    for (size_t i = 0U; i < roots.size(); ++i) {
+        const std::string_view schema
+            = i == 4U ? openmeta::custom_xmp_test::kOtherSchema : ns;
+        const std::span<const openmeta::EntryId> ids = store.find_all(
+            openmeta::make_xmp_property_key_view(schema, roots[i]));
+        ASSERT_EQ(ids.size(), 1U) << roots[i];
+        EXPECT_EQ(openmeta::xmp_container_kind(store.entry(ids[0U])), kinds[i]);
+    }
+    EXPECT_TRUE(
+        has_text(store,
+                 openmeta::make_xmp_property_key_view(ns, "Record/Owner"),
+                 title));
+    EXPECT_TRUE(
+        has_text(store,
+                 openmeta::make_xmp_property_key_view(
+                     ns, openmeta::custom_xmp_test::kOtherSchemaLocalPath),
+                 title));
+    EXPECT_TRUE(
+        has_text(store,
+                 openmeta::make_xmp_property_key_view(
+                     openmeta::custom_xmp_test::kOtherSchema, "Record/Owner"),
+                 title));
+    EXPECT_TRUE(
+        has_text(store,
+                 openmeta::make_xmp_property_key_view(ns, "Record/Values[1]"),
+                 keyword));
+    EXPECT_TRUE(
+        has_text(store,
+                 openmeta::make_xmp_property_key_view(ns, "Record/Values[2]"),
+                 keyword));
+    EXPECT_TRUE(
+        has_text(store, openmeta::make_xmp_property_key_view(ns, "Sequence[1]"),
+                 one));
+    EXPECT_TRUE(
+        has_text(store, openmeta::make_xmp_property_key_view(ns, "Sequence[2]"),
+                 two));
+    EXPECT_TRUE(has_text(store,
+                         openmeta::make_xmp_property_key_view(ns, "Tags[1]"),
+                         keyword));
+    EXPECT_TRUE(has_text(store,
+                         openmeta::make_xmp_property_key_view(ns, "Tags[2]"),
+                         keyword));
+    EXPECT_TRUE(has_text(store,
+                         openmeta::make_xmp_property_key_view(
+                             ns, "Languages[@xml:lang=x-default]"),
+                         title));
+    EXPECT_TRUE(has_text(
+        store,
+        openmeta::make_xmp_property_key_view(ns, "Languages[@xml:lang=en-US]"),
+        title));
+    for (std::string_view path :
+         { "Sequence[3]", "Tags[3]", "Record/Values[3]" })
+        EXPECT_TRUE(
+            store.find_all(openmeta::make_xmp_property_key_view(ns, path))
+                .empty());
 }
 
 static void
@@ -1372,6 +1490,7 @@ expect_selected_collection(const openmeta::MetaStore& store,
                          openmeta::make_xmp_property_key_view(
                              kDcNamespace, "title[@xml:lang=x-default]"),
                          title));
+    expect_custom_provider(store, title);
     const std::string creator_one = std::string(title) + " creator one";
     const std::string creator_two = std::string(title) + " creator two";
     const std::string keyword     = std::string(title) + " keyword";
@@ -1487,7 +1606,8 @@ TEST(MetadataReconcileTransfer,
         for (size_t selected = 0U; selected < labels.size(); ++selected) {
             SCOPED_TRACE(selected);
             openmeta::ExecutePreparedTransferSnapshotOptions options;
-            options.prepare = seed.prepare;
+            options.prepare                        = seed.prepare;
+            options.preserve_custom_xmp_structures = true;
             options.prepare.xmp_conflict_policy
                 = openmeta::XmpConflictPolicy::ExistingWins;
             options.xmp_existing_sidecar_base_path = target_path.string();
@@ -1528,20 +1648,43 @@ TEST(MetadataReconcileTransfer,
             ASSERT_TRUE(result.prepared.xmp_existing_sidecar_loaded);
             ASSERT_TRUE(result.xmp_existing_destination_embedded_loaded);
             ASSERT_EQ(result.xmp_sidecar_status, openmeta::TransferStatus::Ok);
+            openmeta::ReadTransferSourceSnapshotOptions read_options;
+            read_options.preserve_custom_xmp_structures = true;
             const openmeta::ReadTransferSourceSnapshotBytesResult read
                 = openmeta::read_transfer_source_snapshot_bytes(
-                    result.execute.edited_output);
+                    result.execute.edited_output, read_options);
             ASSERT_EQ(read.status, openmeta::TransferStatus::Ok);
             expect_selected_collection(read.snapshot.store, labels[selected]);
             openmeta::MetaStore sidecar_store;
+            openmeta::XmpDecodeOptions sidecar_decode_options;
+            sidecar_decode_options.preserve_custom_structures = true;
             ASSERT_EQ(openmeta::decode_xmp_packet(result.xmp_sidecar_output,
                                                   sidecar_store,
                                                   openmeta::EntryFlags::None,
-                                                  {})
+                                                  sidecar_decode_options)
                           .status,
                       openmeta::XmpDecodeStatus::Ok);
             sidecar_store.finalize();
             expect_selected_collection(sidecar_store, labels[selected]);
+            for (const openmeta::MetaStore* selected_store :
+                 { &read.snapshot.store,
+                   static_cast<const openmeta::MetaStore*>(&sidecar_store) }) {
+                EXPECT_TRUE(has_text(*selected_store,
+                                     openmeta::make_xmp_property_key_view(
+                                         openmeta::custom_xmp_test::kSchema,
+                                         "OnlySource"),
+                                     labels[2U]));
+                EXPECT_TRUE(has_text(*selected_store,
+                                     openmeta::make_xmp_property_key_view(
+                                         openmeta::custom_xmp_test::kSchema,
+                                         "OnlyEmbedded"),
+                                     labels[1U]));
+                EXPECT_TRUE(has_text(*selected_store,
+                                     openmeta::make_xmp_property_key_view(
+                                         openmeta::custom_xmp_test::kSchema,
+                                         "OnlySidecar"),
+                                     labels[0U]));
+            }
             for (std::string_view other : labels) {
                 if (other == labels[selected])
                     continue;
@@ -1553,6 +1696,7 @@ TEST(MetadataReconcileTransfer,
             }
             openmeta::ExecutePreparedTransferFileOptions file_options;
             file_options.prepare.prepare = options.prepare;
+            file_options.prepare.preserve_custom_xmp_structures = true;
             file_options.prepare.xmp_existing_sidecar_base_path
                 = target_path.string();
             file_options.prepare.xmp_existing_sidecar_mode
@@ -1579,7 +1723,7 @@ TEST(MetadataReconcileTransfer,
             ASSERT_EQ(from_file.execute.edit_apply.status,
                       openmeta::TransferStatus::Ok);
             const auto file_read = openmeta::read_transfer_source_snapshot_bytes(
-                from_file.execute.edited_output);
+                from_file.execute.edited_output, read_options);
             ASSERT_EQ(file_read.status, openmeta::TransferStatus::Ok);
             expect_selected_collection(file_read.snapshot.store,
                                        labels[selected]);
@@ -1602,7 +1746,7 @@ TEST(MetadataReconcileTransfer,
                           openmeta::TransferStatus::Ok);
                 const auto failover_read
                     = openmeta::read_transfer_source_snapshot_bytes(
-                        failover.execute.edited_output);
+                        failover.execute.edited_output, read_options);
                 ASSERT_EQ(failover_read.status, openmeta::TransferStatus::Ok);
                 expect_selected_collection(failover_read.snapshot.store,
                                            labels[1U]);

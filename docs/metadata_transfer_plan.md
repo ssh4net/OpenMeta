@@ -1,5 +1,10 @@
 # Metadata Transfer Plan (Draft)
 
+Version 0.8.29 adds complete-provider selection for explicitly declared custom
+XMP roots, with per-provider validation and grouped file/snapshot/carrier checks.
+ABI 4 remains unfrozen. General RDF/MWG synchronization and other ICC removal
+scopes remain open. See [custom XMP provider precedence](xmp_provider_precedence.md).
+
 ## Primary ICC removal and DC collection merging (0.8.28)
 
 Explicit primary ICC removal closes the JPEG/TIFF/DNG carrier deletion gap

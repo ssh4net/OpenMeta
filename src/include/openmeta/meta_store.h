@@ -187,6 +187,7 @@ public:
     std::span<const EntryId> find_all(const MetaKeyView& key) const noexcept;
 
 private:
+    friend struct MetaStoreResourceAccess;
     friend MetaStore commit(const MetaStore& base,
                             std::span<const MetaEdit> edits);
     friend MetaStore compact(const MetaStore& base);

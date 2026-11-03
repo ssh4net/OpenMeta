@@ -88,6 +88,12 @@ existing behavior. Active scalar promotion ignores deleted indexed candidates
 for these two DC fields. Dirty group deletion claims its field; clean tombstones
 do not. The host still chooses native projection and reconciliation separately.
 
+In 0.8.29, explicitly declared custom roots also use complete provider
+selection. The first active or dirty-deleted top-level property owns its whole
+namespace-scoped root, including nested containers and qualified children.
+Empty containers claim their roots; unrelated roots remain independent. Each
+provider is validated before competing scopes are discarded. See :doc:`custom XMP provider precedence <xmp_provider_precedence>`.
+
 Native EXIF and IPTC carrier emission is independent from XMP projection.
 Turning off ``xmp_project_exif`` or ``xmp_project_iptc`` suppresses only the
 generated XMP projection, not native EXIF/IPTC transfer.

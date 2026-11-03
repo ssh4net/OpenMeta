@@ -69,6 +69,7 @@ public:
     std::span<std::byte> span_mut(ByteSpan view) noexcept;
 
 private:
+    friend struct MetaStoreResourceAccess;
     std::vector<std::byte> buffer_;
     uint64_t max_size_bytes_ = UINT32_MAX;
     bool limit_exceeded_     = false;

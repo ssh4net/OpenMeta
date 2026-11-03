@@ -30,6 +30,7 @@
 #include "icc_serialize_internal.h"
 #include "interop_safety_internal.h"
 #include "interop_value_format_internal.h"
+#include "meta_store_resource_internal.h"
 #include "metadata_logical_field_internal.h"
 #include "raf_decode_internal.h"
 #include "x3f_decode_internal.h"
@@ -3195,6 +3196,10 @@ namespace {
         return false;
     }
 
+    static bool append_entries_from_store(const MetaStore& src,
+                                          MetaStore* dst,
+                                          uint32_t* out_appended) noexcept;
+
     static void decode_existing_xmp_sidecar_into_store(
         std::span<const std::byte> sidecar_bytes,
         const XmpDecodeOptions& decode_options, bool preserve_store_on_failure,
@@ -3203,6 +3208,47 @@ namespace {
     {
         if (sidecar_bytes.empty() || !store || !out_loaded || !out_status
             || !out_message) {
+            return;
+        }
+
+        if (decode_options.preserve_custom_structures) {
+            MetaStore provider_store;
+            const XmpDecodeResult decoded
+                = decode_xmp_packet(sidecar_bytes, provider_store,
+                                    EntryFlags::None, decode_options);
+            if (decoded.status == XmpDecodeStatus::Ok) {
+                MetaStore merged_store = *store;
+                MetaStoreResourceAccess::inherit(provider_store, merged_store);
+                if (merged_store.resource_limit_exceeded()
+                    || !append_entries_from_store(provider_store, &merged_store,
+                                                  nullptr)
+                    || merged_store.resource_limit_exceeded()) {
+                    *out_loaded = false;
+                    *out_status = TransferStatus::LimitExceeded;
+                    *out_message
+                        = "existing xmp sidecar merge exceeded resource limits";
+                    if (!preserve_store_on_failure) {
+                        *store = MetaStore();
+                    }
+                    return;
+                }
+                *store      = std::move(merged_store);
+                *out_loaded = true;
+                *out_status = TransferStatus::Ok;
+                out_message->clear();
+                return;
+            }
+
+            *out_loaded = false;
+            *out_status = (decoded.status == XmpDecodeStatus::LimitExceeded
+                           || decoded.status
+                                  == XmpDecodeStatus::OutputTruncated)
+                              ? TransferStatus::LimitExceeded
+                              : TransferStatus::Malformed;
+            out_message->assign("existing xmp sidecar decode failed");
+            if (!preserve_store_on_failure) {
+                *store = MetaStore();
+            }
             return;
         }
 
@@ -23973,6 +24019,303 @@ select_first_dc_collections(MetaStore* store,
     return true;
 }
 
+struct CustomXmpRootMergeRef final {
+    std::string_view schema_ns;
+    std::string_view root;
+    size_t first_declaration_scope = 0U;
+    size_t owner_scope             = 0U;
+};
+
+static bool
+custom_xmp_root_ref_less(const CustomXmpRootMergeRef& a,
+                         const CustomXmpRootMergeRef& b) noexcept
+{
+    if (a.schema_ns != b.schema_ns)
+        return a.schema_ns < b.schema_ns;
+    if (a.root != b.root)
+        return a.root < b.root;
+    return a.first_declaration_scope < b.first_declaration_scope;
+}
+
+static bool
+custom_xmp_root_ref_equal(const CustomXmpRootMergeRef& a,
+                          const CustomXmpRootMergeRef& b) noexcept
+{
+    return a.schema_ns == b.schema_ns && a.root == b.root;
+}
+
+static bool
+xmp_property_key_views(const MetaStore& store, const Entry& entry,
+                       std::string_view* schema_ns,
+                       std::string_view* property_path) noexcept
+{
+    if (!schema_ns || !property_path
+        || entry.key.kind != MetaKeyKind::XmpProperty) {
+        return false;
+    }
+    const std::span<const std::byte> ns_bytes
+        = store.arena().span(entry.key.data.xmp_property.schema_ns);
+    const std::span<const std::byte> path_bytes
+        = store.arena().span(entry.key.data.xmp_property.property_path);
+    if (ns_bytes.size() != entry.key.data.xmp_property.schema_ns.size
+        || path_bytes.size() != entry.key.data.xmp_property.property_path.size
+        || ns_bytes.empty() || path_bytes.empty()) {
+        return false;
+    }
+    *schema_ns = std::string_view(
+        reinterpret_cast<const char*>(ns_bytes.data()), ns_bytes.size());
+    *property_path = std::string_view(
+        reinterpret_cast<const char*>(path_bytes.data()), path_bytes.size());
+    return true;
+}
+
+static uint32_t
+find_custom_xmp_root(const std::vector<CustomXmpRootMergeRef>& roots,
+                     std::string_view schema_ns,
+                     std::string_view root) noexcept
+{
+    size_t low  = 0U;
+    size_t high = roots.size();
+    while (low < high) {
+        const size_t middle = low + (high - low) / 2U;
+        const CustomXmpRootMergeRef& current = roots[middle];
+        if (current.schema_ns < schema_ns
+            || (current.schema_ns == schema_ns && current.root < root)) {
+            low = middle + 1U;
+        } else {
+            high = middle;
+        }
+    }
+    if (low >= roots.size() || roots[low].schema_ns != schema_ns
+        || roots[low].root != root) {
+        return detail::kInvalidXmpStructureNode;
+    }
+    return static_cast<uint32_t>(low);
+}
+
+static std::string_view
+custom_xmp_root_prefix(std::string_view path) noexcept
+{
+    const size_t end = path.find_first_of("/[");
+    const std::string_view root = path.substr(0U, end);
+    if (root.empty() || root.find(':') != std::string_view::npos)
+        return {};
+    return root;
+}
+
+static detail::XmpStructureBuildResult
+select_first_custom_xmp_roots(
+    MetaStore* store, std::span<const DcCollectionMergeScope> scopes,
+    const XmpStructureLimits& limits)
+{
+    using detail::XmpStructureBuildResult;
+    using detail::XmpStructureStatus;
+    const size_t invalid_scope = std::numeric_limits<size_t>::max();
+    if (!store || scopes.size() > 3U) {
+        XmpStructureBuildResult invalid;
+        invalid.status = XmpStructureStatus::InvalidOptions;
+        return invalid;
+    }
+    const std::span<const Entry> entries = store->entries();
+    for (size_t scope_index = 0U; scope_index < scopes.size(); ++scope_index) {
+        if (scopes[scope_index].begin > scopes[scope_index].end
+            || scopes[scope_index].end > entries.size()) {
+            XmpStructureBuildResult invalid;
+            invalid.status = XmpStructureStatus::InvalidOptions;
+            return invalid;
+        }
+    }
+
+    detail::XmpStructureTree provider_tree;
+    size_t declaration_total = 0U;
+    for (size_t scope_index = 0U; scope_index < scopes.size(); ++scope_index) {
+        const XmpStructureBuildResult checked
+            = detail::prepare_xmp_structure_tree_range(
+                *store, scopes[scope_index].begin, scopes[scope_index].end,
+                limits, &provider_tree);
+        if (!checked.ok())
+            return checked;
+        for (size_t id = scopes[scope_index].begin;
+             id < scopes[scope_index].end; ++id) {
+            if (!detail::xmp_structure_is_declaration(entries[id]))
+                continue;
+            if (declaration_total == std::numeric_limits<size_t>::max()) {
+                XmpStructureBuildResult limited;
+                limited.status = XmpStructureStatus::LimitExceeded;
+                return limited;
+            }
+            ++declaration_total;
+        }
+    }
+
+    std::vector<CustomXmpRootMergeRef> roots;
+    roots.reserve(declaration_total);
+    for (size_t scope_index = 0U; scope_index < scopes.size(); ++scope_index) {
+        for (size_t id = scopes[scope_index].begin;
+             id < scopes[scope_index].end; ++id) {
+            const Entry& entry = entries[id];
+            if (!detail::xmp_structure_is_declaration(entry))
+                continue;
+            std::string_view schema_ns;
+            std::string_view path;
+            detail::XmpStructurePath parsed;
+            if (!xmp_property_key_views(*store, entry, &schema_ns, &path)
+                || !detail::xmp_structure_parse_path(
+                    path, static_cast<uint8_t>(detail::kXmpStructureMaxDepth),
+                    65535U, &parsed)) {
+                XmpStructureBuildResult invalid;
+                invalid.status = XmpStructureStatus::InvalidMetadata;
+                invalid.failed_entry = static_cast<EntryId>(id);
+                return invalid;
+            }
+            roots.push_back(CustomXmpRootMergeRef {
+                schema_ns, parsed.root, scope_index, invalid_scope });
+        }
+    }
+
+    std::sort(roots.begin(), roots.end(), custom_xmp_root_ref_less);
+    size_t root_count = 0U;
+    for (size_t i = 0U; i < roots.size(); ++i) {
+        if (root_count != 0U
+            && custom_xmp_root_ref_equal(roots[root_count - 1U], roots[i])) {
+            if (roots[i].first_declaration_scope
+                < roots[root_count - 1U].first_declaration_scope) {
+                roots[root_count - 1U].first_declaration_scope
+                    = roots[i].first_declaration_scope;
+            }
+            continue;
+        }
+        roots[root_count++] = roots[i];
+    }
+    roots.resize(root_count);
+
+    for (size_t scope_index = 0U; scope_index < scopes.size(); ++scope_index) {
+        for (size_t id = scopes[scope_index].begin;
+             id < scopes[scope_index].end; ++id) {
+            const Entry& entry = entries[id];
+            if (entry.key.kind != MetaKeyKind::XmpProperty
+                || (any(entry.flags, EntryFlags::Deleted)
+                    && !any(entry.flags, EntryFlags::Dirty))) {
+                continue;
+            }
+            std::string_view schema_ns;
+            std::string_view path;
+            if (!xmp_property_key_views(*store, entry, &schema_ns, &path))
+                continue;
+            const uint32_t root_index
+                = find_custom_xmp_root(roots, schema_ns, path);
+            if (root_index == detail::kInvalidXmpStructureNode
+                || roots[root_index].owner_scope != invalid_scope) {
+                continue;
+            }
+            roots[root_index].owner_scope = scope_index;
+        }
+    }
+
+    size_t operation_count = 0U;
+    for (size_t scope_index = 0U; scope_index < scopes.size(); ++scope_index) {
+        for (size_t id = scopes[scope_index].begin;
+             id < scopes[scope_index].end; ++id) {
+            const Entry& entry = entries[id];
+            std::string_view schema_ns;
+            std::string_view path;
+            if (!xmp_property_key_views(*store, entry, &schema_ns, &path))
+                continue;
+            const std::string_view root = custom_xmp_root_prefix(path);
+            if (root.empty())
+                continue;
+            const uint32_t root_index
+                = find_custom_xmp_root(roots, schema_ns, root);
+            if (root_index == detail::kInvalidXmpStructureNode)
+                continue;
+            const CustomXmpRootMergeRef& ref = roots[root_index];
+            const size_t selected_scope
+                = ref.owner_scope == invalid_scope
+                      ? ref.first_declaration_scope
+                      : ref.owner_scope;
+            if (scope_index == selected_scope)
+                continue;
+            const bool declaration
+                = detail::xmp_structure_is_declaration(entry);
+            const bool active = !any(entry.flags, EntryFlags::Deleted);
+            const size_t added = (declaration ? 2U : (active ? 1U : 0U));
+            if (added > std::numeric_limits<size_t>::max() - operation_count) {
+                XmpStructureBuildResult limited;
+                limited.status = XmpStructureStatus::LimitExceeded;
+                return limited;
+            }
+            operation_count += added;
+        }
+    }
+
+    if (operation_count != 0U) {
+        MetaEdit edit;
+        edit.reserve_ops(operation_count);
+        const MetaValue empty_value;
+        for (size_t scope_index = 0U; scope_index < scopes.size();
+             ++scope_index) {
+            for (size_t id = scopes[scope_index].begin;
+                 id < scopes[scope_index].end; ++id) {
+                const Entry& entry = entries[id];
+                std::string_view schema_ns;
+                std::string_view path;
+                if (!xmp_property_key_views(*store, entry, &schema_ns, &path))
+                    continue;
+                const std::string_view root = custom_xmp_root_prefix(path);
+                if (root.empty())
+                    continue;
+                const uint32_t root_index
+                    = find_custom_xmp_root(roots, schema_ns, root);
+                if (root_index == detail::kInvalidXmpStructureNode)
+                    continue;
+                const CustomXmpRootMergeRef& ref = roots[root_index];
+                const size_t selected_scope
+                    = ref.owner_scope == invalid_scope
+                          ? ref.first_declaration_scope
+                          : ref.owner_scope;
+                if (scope_index == selected_scope)
+                    continue;
+                if (detail::xmp_structure_is_declaration(entry)) {
+                    edit.set_value(static_cast<EntryId>(id), empty_value,
+                                   WireType {}, 0U);
+                    edit.tombstone(static_cast<EntryId>(id));
+                } else if (!any(entry.flags, EntryFlags::Deleted)) {
+                    edit.tombstone(static_cast<EntryId>(id));
+                }
+            }
+        }
+        store->finalize();
+        MetaStore selected = commit(*store, std::span<const MetaEdit>(&edit, 1U));
+        if (selected.resource_limit_exceeded()) {
+            XmpStructureBuildResult limited;
+            limited.status = XmpStructureStatus::LimitExceeded;
+            return limited;
+        }
+        detail::XmpStructureTree selected_tree;
+        const XmpStructureBuildResult selected_check
+            = detail::prepare_xmp_structure_tree(selected, limits,
+                                                 &selected_tree);
+        if (!selected_check.ok())
+            return selected_check;
+        *store = std::move(selected);
+        return XmpStructureBuildResult {};
+    }
+
+    detail::XmpStructureTree selected_tree;
+    return detail::prepare_xmp_structure_tree(*store, limits, &selected_tree);
+}
+
+static bool
+custom_xmp_provider_selection_requested(
+    const PrepareTransferRequest& request) noexcept
+{
+    return transfer_target_supports_xmp_blocks(request.target_format)
+           && request.include_xmp_app1 && request.xmp_portable
+           && request.xmp_include_existing
+           && request.xmp_existing_namespace_policy
+                  == XmpExistingNamespacePolicy::PreserveCustom;
+}
+
 static PrepareTransferFileResult
 prepare_metadata_for_target_file_impl(const char* path,
                                       const PrepareTransferFileOptions& options,
@@ -24148,17 +24491,48 @@ prepare_metadata_for_target_file_impl(const char* path,
 
     for (;;) {
         store = MetaStore();
+        if (options.preserve_custom_xmp_structures) {
+            store.constrain_resources(decode_options.max_total_entries,
+                                      decode_options.max_arena_bytes);
+        }
         collection_scope_count  = 0U;
         collection_scopes_valid = true;
         apply_existing_xmp_merge_stage(false, true);
         const size_t source_collection_begin = store.entries().size();
-        out.read = simple_meta_read(
-            mapped.bytes(), store,
-            std::span<ContainerBlockRef>(blocks.data(), blocks.size()),
-            std::span<ExifIfdRef>(ifds.data(), ifds.size()),
-            std::span<std::byte>(payload.data(), payload.size()),
-            std::span<uint32_t>(payload_parts.data(), payload_parts.size()),
-            decode_options);
+        if (options.preserve_custom_xmp_structures) {
+            MetaStore source_provider;
+            out.read = simple_meta_read(
+                mapped.bytes(), source_provider,
+                std::span<ContainerBlockRef>(blocks.data(), blocks.size()),
+                std::span<ExifIfdRef>(ifds.data(), ifds.size()),
+                std::span<std::byte>(payload.data(), payload.size()),
+                std::span<uint32_t>(payload_parts.data(), payload_parts.size()),
+                decode_options);
+            if (source_provider.resource_limit_exceeded()
+                && !has_read_failure(out.read, true)) {
+                out.read.xmp.status = XmpDecodeStatus::LimitExceeded;
+            }
+            if (!has_read_failure(out.read, true)) {
+                MetaStore merged_store = store;
+                MetaStoreResourceAccess::inherit(source_provider, merged_store);
+                if (merged_store.resource_limit_exceeded()
+                    || !append_entries_from_store(source_provider,
+                                                  &merged_store, nullptr)
+                    || merged_store.resource_limit_exceeded()) {
+                    out.read.xmp.status = XmpDecodeStatus::LimitExceeded;
+                } else {
+                    store = std::move(merged_store);
+                }
+            }
+        } else {
+            out.read = simple_meta_read(
+                mapped.bytes(), store,
+                std::span<ContainerBlockRef>(blocks.data(), blocks.size()),
+                std::span<ExifIfdRef>(ifds.data(), ifds.size()),
+                std::span<std::byte>(payload.data(), payload.size()),
+                std::span<uint32_t>(payload_parts.data(), payload_parts.size()),
+                decode_options);
+        }
         collection_scopes_valid
             = record_dc_collection_scope(source_collection_begin,
                                          store.entries().size(),
@@ -24221,6 +24595,25 @@ prepare_metadata_for_target_file_impl(const char* path,
         out.prepare.errors  = 1U;
         out.prepare.message = "XMP collection precedence preparation failed";
         return out;
+    }
+    if (custom_xmp_provider_selection_requested(options.prepare)) {
+        const detail::XmpStructureBuildResult selected_custom_roots
+            = select_first_custom_xmp_roots(
+                &store,
+                std::span<const DcCollectionMergeScope>(
+                    collection_scopes.data(), collection_scope_count),
+                options.prepare.xmp_structures);
+        if (!selected_custom_roots.ok()) {
+            out.prepare.status
+                = selected_custom_roots.status
+                          == detail::XmpStructureStatus::LimitExceeded
+                      ? TransferStatus::LimitExceeded
+                      : TransferStatus::InvalidArgument;
+            out.prepare.code    = PrepareTransferCode::XmpPackFailed;
+            out.prepare.errors  = 1U;
+            out.prepare.message = "custom XMP structure preflight failed";
+            return out;
+        }
     }
     store.finalize();
     out.entry_count = static_cast<uint32_t>(store.entries().size());
@@ -38475,10 +38868,32 @@ namespace {
         apply_existing_xmp_merge_stage(false, true);
 
         const size_t source_collection_begin = store.entries().size();
-        if (!append_entries_from_store(snapshot.store, &store, nullptr)) {
+        bool source_snapshot_appended        = false;
+        bool source_copy_limited             = false;
+        if (options.preserve_custom_xmp_structures) {
+            MetaStore merged_source_store = store;
+            MetaStoreResourceAccess::inherit(snapshot.store,
+                                             merged_source_store);
+            if (!merged_source_store.resource_limit_exceeded()
+                && append_entries_from_store(snapshot.store,
+                                             &merged_source_store, nullptr)
+                && !merged_source_store.resource_limit_exceeded()) {
+                store                    = std::move(merged_source_store);
+                source_snapshot_appended = true;
+            } else {
+                source_copy_limited
+                    = merged_source_store.resource_limit_exceeded();
+            }
+        } else {
+            source_snapshot_appended
+                = append_entries_from_store(snapshot.store, &store, nullptr);
+        }
+        if (!source_snapshot_appended) {
             out.prepared.file_status    = TransferFileStatus::ReadFailed;
             out.prepared.code           = PrepareTransferFileCode::DecodeFailed;
-            out.prepared.prepare.status = TransferStatus::InternalError;
+            out.prepared.prepare.status = source_copy_limited
+                                              ? TransferStatus::LimitExceeded
+                                              : TransferStatus::InternalError;
             out.prepared.prepare.errors = 1U;
             out.prepared.prepare.message
                 = "failed to copy source snapshot into transfer store";
@@ -38509,6 +38924,27 @@ namespace {
                 out.prepared.prepare.message
                     = "XMP collection precedence preparation failed";
                 return out;
+            }
+            if (custom_xmp_provider_selection_requested(options.prepare)) {
+                const detail::XmpStructureBuildResult selected_custom_roots
+                    = select_first_custom_xmp_roots(
+                        &store,
+                        std::span<const DcCollectionMergeScope>(
+                            collection_scopes.data(), collection_scope_count),
+                        options.prepare.xmp_structures);
+                if (!selected_custom_roots.ok()) {
+                    out.prepared.prepare.status
+                        = selected_custom_roots.status
+                                  == detail::XmpStructureStatus::LimitExceeded
+                              ? TransferStatus::LimitExceeded
+                              : TransferStatus::InvalidArgument;
+                    out.prepared.prepare.code
+                        = PrepareTransferCode::XmpPackFailed;
+                    out.prepared.prepare.errors = 1U;
+                    out.prepared.prepare.message
+                        = "custom XMP structure preflight failed";
+                    return out;
+                }
             }
             store.finalize();
             out.prepared.entry_count = static_cast<uint32_t>(

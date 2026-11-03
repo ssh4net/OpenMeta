@@ -1274,15 +1274,28 @@ prepare_xmp_structure_tree(const MetaStore& store,
                            const XmpStructureLimits& limits,
                            XmpStructureTree* output) noexcept
 {
-    if (!output || !xmp_structure_limits_valid(limits))
-        return build_error(XmpStructureStatus::InvalidOptions, kInvalidEntryId);
+    return prepare_xmp_structure_tree_range(store, 0U,
+                                            store.entries().size(), limits,
+                                            output);
+}
 
+XmpStructureBuildResult
+prepare_xmp_structure_tree_range(const MetaStore& store, size_t begin,
+                                 size_t end,
+                                 const XmpStructureLimits& limits,
+                                 XmpStructureTree* output) noexcept
+{
     const std::span<const Entry> entries = store.entries();
+    if (!output || !xmp_structure_limits_valid(limits) || begin > end
+        || end > entries.size()) {
+        return build_error(XmpStructureStatus::InvalidOptions, kInvalidEntryId);
+    }
+
     size_t declaration_count             = 0U;
     uint64_t request_bytes               = 0U;
 
     // Count and charge all retained declarations before reading any key bytes.
-    for (size_t i = 0U; i < entries.size(); ++i) {
+    for (size_t i = begin; i < end; ++i) {
         const Entry& entry = entries[i];
         if (!xmp_structure_is_declaration(entry))
             continue;
@@ -1319,7 +1332,7 @@ prepare_xmp_structure_tree(const MetaStore& store,
     std::vector<EntryId> raw_nodes;
     raw_nodes.reserve(limits.max_nodes);
 
-    for (size_t i = 0U; i < entries.size(); ++i) {
+    for (size_t i = begin; i < end; ++i) {
         const Entry& entry = entries[i];
         if (!xmp_structure_is_declaration(entry))
             continue;
@@ -1390,7 +1403,7 @@ prepare_xmp_structure_tree(const MetaStore& store,
     roots.resize(root_count);
 
     uint64_t selected_leaf_count = 0U;
-    for (size_t i = 0U; i < entries.size(); ++i) {
+    for (size_t i = begin; i < end; ++i) {
         const Entry& entry = entries[i];
         if (any(entry.flags, EntryFlags::Deleted)
             || entry.key.kind != MetaKeyKind::XmpProperty

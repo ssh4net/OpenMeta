@@ -5,9 +5,11 @@
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_store.h"
 #include "openmeta/meta_value.h"
+#include "openmeta/metadata_authoring.h"
 #include "openmeta/metadata_transfer.h"
 #include "openmeta/xmp_decode.h"
 #include "openmeta/xmp_dump.h"
+#include "openmeta/xmp_structure.h"
 
 #include <array>
 #include <cstddef>
@@ -27,6 +29,14 @@ namespace {
     static constexpr uint64_t kMaxArenaBytes = 64U * 1024U;
     static constexpr std::string_view kDcNamespace
         = "http://purl.org/dc/elements/1.1/";
+    static constexpr std::string_view kB39CustomNamespacePrefix
+        = "urn:openmeta:fuzz:b39:";
+    static constexpr std::string_view kB39SharedNamespace
+        = "urn:openmeta:fuzz:b39:shared";
+    static constexpr std::string_view kB39SourceNamespace
+        = "urn:openmeta:fuzz:b39:source";
+    static constexpr std::string_view kB39DestinationNamespace
+        = "urn:openmeta:fuzz:b39:destination";
     static constexpr char kJpegXmpPrefix[] = "http://ns.adobe.com/xap/1.0/";
     static constexpr std::array<std::byte, 12U> kJpegIccSignature = {
         std::byte { 'I' }, std::byte { 'C' }, std::byte { 'C' },
@@ -1276,6 +1286,30 @@ namespace {
         return true;
     }
 
+    static bool render_custom_xmp(const MetaStore& store,
+                                  std::vector<std::byte>* output)
+    {
+        if (output == nullptr) {
+            return false;
+        }
+        XmpPortableOptions options = fuzz_portable_options();
+        options.existing_namespace_policy
+            = XmpExistingNamespacePolicy::PreserveCustom;
+        const XmpDumpResult measured = dump_xmp_portable(store, {}, options);
+        if (measured.status != XmpDumpStatus::OutputTruncated
+            || measured.needed == 0U || measured.needed > kMaxOutputBytes) {
+            return false;
+        }
+        output->resize(static_cast<size_t>(measured.needed));
+        const XmpDumpResult written = dump_xmp_portable(store, *output,
+                                                        options);
+        if (written.status != XmpDumpStatus::Ok
+            || written.written != measured.needed) {
+            return false;
+        }
+        return true;
+    }
+
     static bool decode_xmp(std::span<const std::byte> packet, MetaStore* output)
     {
         if (output == nullptr || packet.empty()
@@ -1286,6 +1320,25 @@ namespace {
         const XmpDecodeResult decoded
             = decode_xmp_packet(packet, *output, EntryFlags::None,
                                 fuzz_decode_options());
+        if (decoded.status != XmpDecodeStatus::Ok) {
+            return false;
+        }
+        output->finalize();
+        return true;
+    }
+
+    static bool decode_custom_xmp(std::span<const std::byte> packet,
+                                  MetaStore* output)
+    {
+        if (output == nullptr || packet.empty()
+            || packet.size() > kMaxOutputBytes) {
+            return false;
+        }
+        output->constrain_resources(kMaxEntries, kMaxArenaBytes);
+        XmpDecodeOptions options           = fuzz_decode_options();
+        options.preserve_custom_structures = true;
+        const XmpDecodeResult decoded
+            = decode_xmp_packet(packet, *output, EntryFlags::None, options);
         if (decoded.status != XmpDecodeStatus::Ok) {
             return false;
         }
@@ -1315,10 +1368,25 @@ namespace {
                && left.value.elem_type == right.value.elem_type
                && left.value.text_encoding == right.value.text_encoding
                && left.value.count == right.value.count
-               && left.value.data.span.offset == right.value.data.span.offset
-               && left.value.data.span.size == right.value.data.span.size
+               && (left.value.kind == MetaValueKind::Empty
+                   || (left.value.kind == MetaValueKind::Text
+                       && left.value.data.span.offset
+                              == right.value.data.span.offset
+                       && left.value.data.span.size
+                              == right.value.data.span.size))
                && left.origin.block == right.origin.block
                && left.origin.order_in_block == right.origin.order_in_block
+               && left.origin.wire_type.family == right.origin.wire_type.family
+               && left.origin.wire_type.code == right.origin.wire_type.code
+               && left.origin.wire_count == right.origin.wire_count
+               && left.origin.wire_type_name.offset
+                      == right.origin.wire_type_name.offset
+               && left.origin.wire_type_name.size
+                      == right.origin.wire_type_name.size
+               && left.origin.name_context_kind
+                      == right.origin.name_context_kind
+               && left.origin.name_context_variant
+                      == right.origin.name_context_variant
                && left.flags == right.flags;
     }
 
@@ -1456,6 +1524,525 @@ namespace {
             offset += length;
         }
         return false;
+    }
+
+    struct CustomStoreWriter final {
+        MetaStore* store = nullptr;
+        std::array<BlockId, 2U> blocks { kInvalidBlockId, kInvalidBlockId };
+        std::array<uint32_t, 2U> next_order {};
+        uint32_t next_slot = 0U;
+        bool mixed_origins = false;
+    };
+
+    struct ExpectedCustomItem final {
+        std::string_view schema_ns;
+        std::array<char, 128U> path_storage {};
+        uint32_t path_size              = 0U;
+        XmpContainerKind container_kind = XmpContainerKind::None;
+        std::string_view text;
+
+        std::string_view path_view() const noexcept
+        {
+            return std::string_view(path_storage.data(), path_size);
+        }
+    };
+
+    static constexpr size_t kExpectedCustomItemCapacity = 24U;
+
+    struct ExpectedCustomSet final {
+        std::array<ExpectedCustomItem, kExpectedCustomItemCapacity> items {};
+        uint32_t count = 0U;
+    };
+
+    enum class CustomSourceRootMode : uint8_t {
+        Populated,
+        Empty,
+        Scalar,
+    };
+
+    static BlockId custom_next_origin(CustomStoreWriter* writer,
+                                      uint32_t* order) noexcept
+    {
+        const uint32_t slot = writer->mixed_origins ? writer->next_slot++ & 1U
+                                                    : 0U;
+        *order              = writer->next_order[slot]++;
+        return writer->blocks[slot];
+    }
+
+    static EntryId add_custom_container(CustomStoreWriter* writer,
+                                        std::string_view schema_ns,
+                                        std::string_view path,
+                                        XmpContainerKind kind)
+    {
+        const MetadataAuthoringEntry declaration
+            = make_xmp_container_entry(schema_ns, path, kind);
+        uint32_t order = 0U;
+        Entry entry;
+        entry.key = make_xmp_property_key(writer->store->arena(), schema_ns,
+                                          path);
+        entry.origin.block          = custom_next_origin(writer, &order);
+        entry.origin.order_in_block = order;
+        entry.origin.wire_type      = declaration.wire_type;
+        entry.origin.wire_count     = declaration.wire_count;
+        return writer->store->add_entry(entry);
+    }
+
+    static EntryId add_custom_text(CustomStoreWriter* writer,
+                                   std::string_view schema_ns,
+                                   std::string_view path, std::string_view text)
+    {
+        uint32_t order = 0U;
+        Entry entry;
+        entry.key   = make_xmp_property_key(writer->store->arena(), schema_ns,
+                                            path);
+        entry.value = make_text(writer->store->arena(), text,
+                                TextEncoding::Utf8);
+        entry.origin.block          = custom_next_origin(writer, &order);
+        entry.origin.order_in_block = order;
+        entry.origin.wire_type      = WireType { WireFamily::Other, 0U };
+        entry.origin.wire_count     = static_cast<uint32_t>(text.size());
+        return writer->store->add_entry(entry);
+    }
+
+    static void add_expected_custom_item(ExpectedCustomSet* expected,
+                                         std::string_view schema_ns,
+                                         std::string_view path,
+                                         XmpContainerKind container_kind,
+                                         std::string_view text) noexcept
+    {
+        require(expected->count < expected->items.size());
+        require(path.size() <= expected->items[0U].path_storage.size());
+        ExpectedCustomItem& item = expected->items[expected->count++];
+        item.schema_ns           = schema_ns;
+        item.path_size           = static_cast<uint32_t>(path.size());
+        for (uint32_t index = 0U; index < item.path_size; ++index) {
+            item.path_storage[index] = path[index];
+        }
+        item.container_kind = container_kind;
+        item.text           = text;
+    }
+
+    static void add_custom_container_expected(CustomStoreWriter* writer,
+                                              ExpectedCustomSet* expected,
+                                              std::string_view schema_ns,
+                                              std::string_view path,
+                                              XmpContainerKind kind)
+    {
+        require(add_custom_container(writer, schema_ns, path, kind)
+                != kInvalidEntryId);
+        add_expected_custom_item(expected, schema_ns, path, kind, {});
+    }
+
+    static void add_custom_text_expected(CustomStoreWriter* writer,
+                                         ExpectedCustomSet* expected,
+                                         std::string_view schema_ns,
+                                         std::string_view authored_path,
+                                         std::string_view readback_path,
+                                         std::string_view text)
+    {
+        require(add_custom_text(writer, schema_ns, authored_path, text)
+                != kInvalidEntryId);
+        add_expected_custom_item(expected, schema_ns, readback_path,
+                                 XmpContainerKind::None, text);
+    }
+
+    static bool is_b39_custom_namespace(std::string_view schema_ns) noexcept
+    {
+        return schema_ns.starts_with(kB39CustomNamespacePrefix);
+    }
+
+    static bool is_shared_custom_root(const ExpectedCustomItem& item) noexcept
+    {
+        constexpr std::string_view kRoot = "Record";
+        const std::string_view path      = item.path_view();
+        if (item.schema_ns != kB39SharedNamespace || !path.starts_with(kRoot)) {
+            return false;
+        }
+        return path.size() == kRoot.size() || path[kRoot.size()] == '/'
+               || path[kRoot.size()] == '[';
+    }
+
+    static void append_expected_custom_items(ExpectedCustomSet* destination,
+                                             const ExpectedCustomSet& source,
+                                             bool include_shared_root)
+    {
+        for (uint32_t index = 0U; index < source.count; ++index) {
+            const ExpectedCustomItem& item = source.items[index];
+            if (is_shared_custom_root(item) != include_shared_root) {
+                continue;
+            }
+            require(destination->count < destination->items.size());
+            destination->items[destination->count++] = item;
+        }
+    }
+
+    static bool
+    expected_custom_set_matches(const MetaStore& store,
+                                const ExpectedCustomSet& expected) noexcept
+    {
+        std::array<bool, kExpectedCustomItemCapacity> seen {};
+        uint32_t actual_count = 0U;
+        for (const Entry& entry : store.entries()) {
+            if (entry.key.kind != MetaKeyKind::XmpProperty) {
+                continue;
+            }
+            const std::string_view schema_ns
+                = arena_string(store, entry.key.data.xmp_property.schema_ns);
+            if (!is_b39_custom_namespace(schema_ns)) {
+                continue;
+            }
+            const std::string_view path
+                = arena_string(store,
+                               entry.key.data.xmp_property.property_path);
+            bool found = false;
+            for (uint32_t index = 0U; index < expected.count; ++index) {
+                const ExpectedCustomItem& wanted = expected.items[index];
+                if (schema_ns != wanted.schema_ns
+                    || path != wanted.path_view()) {
+                    continue;
+                }
+                if (seen[index]) {
+                    return false;
+                }
+                if (wanted.container_kind == XmpContainerKind::None) {
+                    if (xmp_container_kind(entry) != XmpContainerKind::None
+                        || !text_equals(store, entry, wanted.text)) {
+                        return false;
+                    }
+                } else if (xmp_container_kind(entry) != wanted.container_kind
+                           || entry.value.kind != MetaValueKind::Empty) {
+                    return false;
+                }
+                seen[index] = true;
+                found       = true;
+                break;
+            }
+            if (!found) {
+                return false;
+            }
+            actual_count += 1U;
+        }
+        if (actual_count != expected.count) {
+            return false;
+        }
+        for (uint32_t index = 0U; index < expected.count; ++index) {
+            if (!seen[index]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool
+    has_multiple_custom_origin_blocks(const MetaStore& store) noexcept
+    {
+        BlockId first_block = kInvalidBlockId;
+        for (const Entry& entry : store.entries()) {
+            if (entry.key.kind != MetaKeyKind::XmpProperty
+                || !is_b39_custom_namespace(
+                    arena_string(store,
+                                 entry.key.data.xmp_property.schema_ns))) {
+                continue;
+            }
+            if (first_block == kInvalidBlockId) {
+                first_block = entry.origin.block;
+            } else if (entry.origin.block != first_block) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static void init_custom_store_writer(MetaStore* store, bool mixed_origins,
+                                         CustomStoreWriter* writer)
+    {
+        store->constrain_resources(kMaxEntries, kMaxArenaBytes);
+        writer->store         = store;
+        writer->mixed_origins = mixed_origins;
+        writer->blocks[0U]    = store->add_block(BlockInfo {});
+        require(writer->blocks[0U] != kInvalidBlockId);
+        if (mixed_origins) {
+            writer->blocks[1U] = store->add_block(BlockInfo {});
+            require(writer->blocks[1U] != kInvalidBlockId);
+        }
+    }
+
+    static void build_custom_tree_items(
+        CustomStoreWriter* writer, ExpectedCustomSet* expected,
+        bool source_provider, XmpContainerKind kind, bool repeated_text,
+        uint32_t first_sparse_index, uint32_t second_sparse_index)
+    {
+        const std::string_view first_value  = source_provider
+                                                  ? "source_item_first"
+                                                  : "destination_item_first";
+        const std::string_view second_value = source_provider
+                                                  ? "source_item_second"
+                                                  : "destination_item_second";
+        const std::string_view repeated_value
+            = source_provider ? "source_repeated_text"
+                              : "destination_repeated_text";
+        if (kind == XmpContainerKind::Struct) {
+            add_custom_text_expected(writer, expected, kB39SharedNamespace,
+                                     "Record/Label", "Record/Label",
+                                     source_provider ? "source_label"
+                                                     : "destination_label");
+            add_custom_container_expected(writer, expected, kB39SharedNamespace,
+                                          "Record/Items",
+                                          XmpContainerKind::Seq);
+            std::array<char, 32U> first_path_storage {};
+            std::array<char, 32U> second_path_storage {};
+            const std::string_view first_path
+                = make_indexed_path(&first_path_storage, "Record/Items",
+                                    first_sparse_index);
+            const std::string_view second_path
+                = make_indexed_path(&second_path_storage, "Record/Items",
+                                    second_sparse_index);
+            add_custom_text_expected(writer, expected, kB39SharedNamespace,
+                                     first_path, "Record/Items[1]",
+                                     repeated_text ? repeated_value
+                                                   : first_value);
+            add_custom_text_expected(writer, expected, kB39SharedNamespace,
+                                     second_path, "Record/Items[2]",
+                                     repeated_text ? repeated_value
+                                                   : second_value);
+            return;
+        }
+        if (kind == XmpContainerKind::Bag || kind == XmpContainerKind::Seq) {
+            std::array<char, 32U> first_path_storage {};
+            std::array<char, 32U> second_path_storage {};
+            const std::string_view first_path
+                = make_indexed_path(&first_path_storage, "Record",
+                                    first_sparse_index);
+            const std::string_view second_path
+                = make_indexed_path(&second_path_storage, "Record",
+                                    second_sparse_index);
+            add_custom_text_expected(writer, expected, kB39SharedNamespace,
+                                     first_path, "Record[1]",
+                                     repeated_text ? repeated_value
+                                                   : first_value);
+            add_custom_text_expected(writer, expected, kB39SharedNamespace,
+                                     second_path, "Record[2]",
+                                     repeated_text ? repeated_value
+                                                   : second_value);
+            return;
+        }
+        require(kind == XmpContainerKind::LangAlt);
+        const std::string_view first_language_path
+            = source_provider ? "Record[@xml:lang=en-US]"
+                              : "Record[@xml:lang=fr-FR]";
+        const std::string_view default_language_path
+            = "Record[@xml:lang=x-default]";
+        add_custom_text_expected(writer, expected, kB39SharedNamespace,
+                                 first_language_path, first_language_path,
+                                 repeated_text ? repeated_value : first_value);
+        add_custom_text_expected(writer, expected, kB39SharedNamespace,
+                                 default_language_path, default_language_path,
+                                 repeated_text ? repeated_value : second_value);
+    }
+
+    static void build_custom_provider_store(
+        MetaStore* store, bool source_provider, XmpContainerKind selected_kind,
+        CustomSourceRootMode source_mode, bool repeated_text,
+        uint32_t first_sparse_index, uint32_t second_sparse_index,
+        ExpectedCustomSet* expected)
+    {
+        CustomStoreWriter writer;
+        init_custom_store_writer(store, source_provider, &writer);
+        if (source_provider && source_mode == CustomSourceRootMode::Scalar) {
+            add_custom_text_expected(&writer, expected, kB39SharedNamespace,
+                                     "Record", "Record", "source_root_scalar");
+        } else {
+            add_custom_container_expected(&writer, expected,
+                                          kB39SharedNamespace, "Record",
+                                          selected_kind);
+            if (!source_provider
+                || source_mode == CustomSourceRootMode::Populated) {
+                build_custom_tree_items(&writer, expected, source_provider,
+                                        selected_kind, repeated_text,
+                                        first_sparse_index,
+                                        second_sparse_index);
+            }
+        }
+
+        const std::string_view provider_namespace
+            = source_provider ? kB39SourceNamespace : kB39DestinationNamespace;
+        add_custom_container_expected(&writer, expected, provider_namespace,
+                                      "ProviderRoot", XmpContainerKind::Struct);
+        add_custom_text_expected(&writer, expected, provider_namespace,
+                                 "ProviderRoot/Value", "ProviderRoot/Value",
+                                 source_provider
+                                     ? "source_independent_root"
+                                     : "destination_independent_root");
+        store->finalize();
+    }
+
+    static void fuzz_custom_xmp_root_merge(std::span<const uint8_t> input)
+    {
+        static constexpr std::array<XmpContainerKind, 4U> kKinds = {
+            XmpContainerKind::Struct,
+            XmpContainerKind::Bag,
+            XmpContainerKind::Seq,
+            XmpContainerKind::LangAlt,
+        };
+        const XmpContainerKind selected_kind
+            = kKinds[input_byte(input, 5U) % kKinds.size()];
+        const XmpContainerKind destination_kind
+            = kKinds[input_byte(input, 10U) % kKinds.size()];
+        const uint8_t source_mode_selector = input_byte(input, 6U) % 3U;
+        CustomSourceRootMode source_mode   = CustomSourceRootMode::Populated;
+        if (source_mode_selector == 1U) {
+            source_mode = CustomSourceRootMode::Empty;
+        } else if (source_mode_selector == 2U) {
+            source_mode = CustomSourceRootMode::Scalar;
+        }
+        const bool repeated_text           = (input_byte(input, 7U) & 1U) != 0U;
+        const uint32_t source_first_index  = 2U + (input_byte(input, 8U) % 3U);
+        const uint32_t source_second_index = source_first_index + 5U;
+        const uint32_t destination_first_index = 12U
+                                                 + (input_byte(input, 9U) % 3U);
+        const uint32_t destination_second_index = destination_first_index + 5U;
+
+        MetaStore source;
+        MetaStore destination;
+        ExpectedCustomSet source_expected;
+        ExpectedCustomSet destination_expected;
+        build_custom_provider_store(&source, true, selected_kind, source_mode,
+                                    repeated_text, source_first_index,
+                                    source_second_index, &source_expected);
+        build_custom_provider_store(&destination, false, destination_kind,
+                                    CustomSourceRootMode::Populated,
+                                    repeated_text, destination_first_index,
+                                    destination_second_index,
+                                    &destination_expected);
+        require(source.entries().size() <= kMaxEntries
+                && source.arena().bytes().size() <= kMaxArenaBytes
+                && destination.entries().size() <= kMaxEntries
+                && destination.arena().bytes().size() <= kMaxArenaBytes);
+        require(has_multiple_custom_origin_blocks(source));
+
+        const std::vector<Entry> source_entries_before(source.entries().begin(),
+                                                       source.entries().end());
+        const std::vector<std::byte> source_arena_before(
+            source.arena().bytes().begin(), source.arena().bytes().end());
+        const uint32_t source_block_count_before = source.block_count();
+        const std::vector<Entry> destination_entries_before(
+            destination.entries().begin(), destination.entries().end());
+        const std::vector<std::byte> destination_arena_before(
+            destination.arena().bytes().begin(),
+            destination.arena().bytes().end());
+        const uint32_t destination_block_count_before
+            = destination.block_count();
+
+        std::vector<std::byte> source_packet;
+        std::vector<std::byte> destination_packet;
+        require(render_custom_xmp(source, &source_packet));
+        require(render_custom_xmp(destination, &destination_packet));
+        std::vector<std::byte> source_jpeg;
+        std::vector<std::byte> target_jpeg;
+        require(make_jpeg_with_xmp(source_packet, &source_jpeg));
+        require(make_jpeg_with_xmp(destination_packet, &target_jpeg));
+        require(source_jpeg.size() <= kMaxInputBytes
+                && target_jpeg.size() <= kMaxInputBytes);
+        const std::vector<std::byte> source_jpeg_before = source_jpeg;
+        const std::vector<std::byte> target_jpeg_before = target_jpeg;
+        std::span<const std::byte> source_carrier_packet;
+        std::span<const std::byte> target_carrier_packet;
+        require(jpeg_existing_xmp(source_jpeg, &source_carrier_packet)
+                && bytes_equal(source_carrier_packet, source_packet));
+        require(jpeg_existing_xmp(target_jpeg, &target_carrier_packet)
+                && bytes_equal(target_carrier_packet, destination_packet));
+
+        MetaStore source_readback;
+        MetaStore destination_readback;
+        require(decode_custom_xmp(source_carrier_packet, &source_readback));
+        require(
+            decode_custom_xmp(target_carrier_packet, &destination_readback));
+        require(expected_custom_set_matches(source_readback, source_expected));
+        require(expected_custom_set_matches(destination_readback,
+                                            destination_expected));
+
+        const TransferSourceSnapshot snapshot = build_transfer_source_snapshot(
+            source);
+        require(snapshot.store.is_finalized()
+                && snapshot.store.entries().size() <= kMaxEntries
+                && snapshot.store.arena().bytes().size() <= kMaxArenaBytes
+                && has_multiple_custom_origin_blocks(snapshot.store));
+        const std::vector<Entry> snapshot_entries_before(
+            snapshot.store.entries().begin(), snapshot.store.entries().end());
+        const std::vector<std::byte> snapshot_arena_before(
+            snapshot.store.arena().bytes().begin(),
+            snapshot.store.arena().bytes().end());
+        const uint32_t snapshot_block_count_before
+            = snapshot.store.block_count();
+
+        constexpr std::array<XmpExistingDestinationEmbeddedPrecedence, 2U>
+            kPrecedences = {
+                XmpExistingDestinationEmbeddedPrecedence::SourceWins,
+                XmpExistingDestinationEmbeddedPrecedence::DestinationWins,
+            };
+        for (const XmpExistingDestinationEmbeddedPrecedence precedence :
+             kPrecedences) {
+            ExecutePreparedTransferSnapshotOptions options;
+            options.prepare.target_format        = TransferTargetFormat::Jpeg;
+            options.prepare.include_exif_app1    = false;
+            options.prepare.include_icc_app2     = false;
+            options.prepare.include_iptc_app13   = false;
+            options.prepare.xmp_project_exif     = false;
+            options.prepare.xmp_project_iptc     = false;
+            options.prepare.xmp_include_existing = true;
+            options.prepare.xmp_existing_namespace_policy
+                = XmpExistingNamespacePolicy::PreserveCustom;
+            options.prepare.xmp_conflict_policy
+                = XmpConflictPolicy::ExistingWins;
+            options.execute.edit_apply             = true;
+            options.preserve_custom_xmp_structures = true;
+            options.xmp_existing_destination_embedded_mode
+                = XmpExistingDestinationEmbeddedMode::MergeIfPresent;
+            options.xmp_existing_destination_embedded_precedence = precedence;
+
+            const ExecutePreparedTransferFileResult result
+                = execute_prepared_transfer_snapshot(snapshot, target_jpeg,
+                                                     options);
+            require(result.xmp_existing_destination_embedded_loaded);
+            require(result.prepared.prepare.status == TransferStatus::Ok);
+            require(result.execute.edit_plan_status == TransferStatus::Ok);
+            require(result.execute.edit_apply.status == TransferStatus::Ok);
+            require(!result.execute.edited_output.empty()
+                    && result.execute.edited_output.size() <= kMaxOutputBytes);
+
+            std::span<const std::byte> output_packet;
+            require(jpeg_existing_xmp(result.execute.edited_output,
+                                      &output_packet));
+            MetaStore readback;
+            require(decode_custom_xmp(output_packet, &readback));
+
+            const bool source_wins
+                = precedence
+                  == XmpExistingDestinationEmbeddedPrecedence::SourceWins;
+            ExpectedCustomSet expected_merged;
+            append_expected_custom_items(&expected_merged, source_expected,
+                                         false);
+            append_expected_custom_items(&expected_merged, destination_expected,
+                                         false);
+            append_expected_custom_items(&expected_merged,
+                                         source_wins ? source_expected
+                                                     : destination_expected,
+                                         true);
+            require(expected_custom_set_matches(readback, expected_merged));
+            require(readback.entries().size() <= kMaxEntries
+                    && readback.arena().bytes().size() <= kMaxArenaBytes);
+        }
+        require(source_jpeg == source_jpeg_before
+                && target_jpeg == target_jpeg_before);
+        require(store_unchanged(source, source_entries_before,
+                                source_arena_before,
+                                source_block_count_before));
+        require(store_unchanged(destination, destination_entries_before,
+                                destination_arena_before,
+                                destination_block_count_before));
+        require(store_unchanged(snapshot.store, snapshot_entries_before,
+                                snapshot_arena_before,
+                                snapshot_block_count_before));
     }
 
     static void fuzz_dc_provider_merge(std::span<const uint8_t> input)
@@ -1641,6 +2228,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
         return 0;
     }
     openmeta::fuzz_dc_provider_merge(std::span<const uint8_t>(data, size));
+    openmeta::fuzz_custom_xmp_root_merge(std::span<const uint8_t>(data, size));
     switch (openmeta::input_byte(std::span<const uint8_t>(data, size), 2U)
             % 3U) {
     case 0U:

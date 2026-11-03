@@ -1030,6 +1030,7 @@ if(OPENMETA_BUILD_TESTS)
     tests/metadata_reconcile_test.cc
     tests/metadata_reconcile_read_test.cc
     tests/metadata_reconcile_transfer_test.cc
+    tests/xmp_provider_precedence_test.cc
     tests/xmp_array_precedence_test.cc
     tests/metadata_icc_removal_test.cc
     tests/exif_tag_names_test.cc
