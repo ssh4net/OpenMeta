@@ -63,6 +63,7 @@ and must not be used as an asset-authenticity or trust gate.
    canonical_patching
    raw_read_parity_plan
    build
+   linux_builds
    shared_library
    migration_0_6
    migration_0_8

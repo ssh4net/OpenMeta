@@ -1,0 +1,135 @@
+{
+  "version": 2,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "linux-clang-static",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "$env{HOME}/build/OpenMeta/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "OPENMETA_BUILD_STATIC": "ON",
+        "OPENMETA_BUILD_SHARED": "OFF",
+        "OPENMETA_BUILD_DOCS": "OFF",
+        "OPENMETA_BUILD_SPHINX_DOCS": "OFF"
+      }
+    },
+    {
+      "name": "linux-libcxx-release",
+      "inherits": "linux-clang-static",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OPENMETA_USE_LIBCXX": "ON",
+        "OPENMETA_BUILD_TESTS": "ON",
+        "OPENMETA_BUILD_TOOLS": "ON"
+      }
+    },
+    {
+      "name": "linux-libcxx-debug",
+      "inherits": "linux-clang-static",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "OPENMETA_USE_LIBCXX": "ON",
+        "OPENMETA_BUILD_TESTS": "ON",
+        "OPENMETA_BUILD_TOOLS": "ON"
+      }
+    },
+    {
+      "name": "linux-python-release",
+      "inherits": "linux-libcxx-release",
+      "cacheVariables": {
+        "OPENMETA_BUILD_PYTHON": "ON",
+        "OPENMETA_BUILD_TOOLS": "OFF",
+        "OPENMETA_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "linux-sanitizer-debug",
+      "inherits": "linux-clang-static",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "OPENMETA_USE_LIBCXX": "OFF",
+        "OPENMETA_BUILD_FUZZERS": "ON",
+        "OPENMETA_BUILD_TESTS": "OFF",
+        "OPENMETA_BUILD_TOOLS": "OFF",
+        "OPENMETA_BUILD_PYTHON": "OFF",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "CMAKE_CXX_FLAGS_DEBUG": "-O1 -g1"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux-libcxx-release",
+      "configurePreset": "linux-libcxx-release",
+      "jobs": 2
+    },
+    {
+      "name": "linux-libcxx-debug",
+      "configurePreset": "linux-libcxx-debug",
+      "jobs": 2
+    },
+    {
+      "name": "linux-python-release",
+      "configurePreset": "linux-python-release",
+      "targets": [
+        "openmeta_python"
+      ],
+      "jobs": 2
+    },
+    {
+      "name": "linux-sanitizer-debug",
+      "configurePreset": "linux-sanitizer-debug",
+      "targets": [
+        "openmeta_fuzz_write_lifecycle"
+      ],
+      "jobs": 2
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "linux-libcxx-release",
+      "configurePreset": "linux-libcxx-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "timeout": 300
+      }
+    },
+    {
+      "name": "linux-libcxx-debug",
+      "configurePreset": "linux-libcxx-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "timeout": 300
+      }
+    },
+    {
+      "name": "linux-python-release",
+      "configurePreset": "linux-python-release",
+      "filter": {
+        "include": {
+          "name": "^openmeta_python_"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "timeout": 300
+      }
+    }
+  ]
+}

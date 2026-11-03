@@ -316,6 +316,10 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
+For Linux builds from a CIFS or SMB source checkout, optional CMake presets
+provide separate build trees; see [Linux build workflows](docs/linux_builds.md)
+for native-filesystem output guidance.
+
 Useful options:
 - `-DOPENMETA_BUILD_STATIC=ON|OFF` and
   `-DOPENMETA_BUILD_SHARED=ON|OFF` to select library variants
