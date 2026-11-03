@@ -110,6 +110,8 @@ suite and the public transfer smoke coverage into one named check.
 
   - ``MetadataTransferApi.*``
   - ``MetadataReconcile*.*``
+  - ``MetadataIccRemoval.*``
+  - ``XmpArrayPrecedence.*``
   - ``XmpDump.*``
   - ``ExrAdapter.*``
   - ``DngSdkAdapter.*``

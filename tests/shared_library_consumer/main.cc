@@ -10,6 +10,7 @@
 #include <openmeta/metadata_editing.h>
 #include <openmeta/metadata_patch.h>
 #include <openmeta/metadata_reconcile.h>
+#include <openmeta/metadata_transfer.h>
 #include <openmeta/metadata_translation.h>
 #include <openmeta/prepared_transfer_handoff.h>
 #include <openmeta/simple_meta.h>
@@ -64,6 +65,28 @@ descriptive_reconciliation_contract_matches()
             return true;
     }
     return false;
+}
+
+static bool
+primary_icc_removal_contract_matches()
+{
+    openmeta::MetaStore empty;
+    empty.finalize();
+    openmeta::PrepareTransferRequest request;
+    request.target_format       = openmeta::TransferTargetFormat::Jpeg;
+    request.include_exif_app1   = false;
+    request.include_xmp_app1    = false;
+    request.include_iptc_app13  = false;
+    request.remove_existing_icc = true;
+    openmeta::PreparedTransferBundle bundle;
+    const openmeta::PrepareTransferResult prepared
+        = openmeta::prepare_metadata_for_target(empty, request, &bundle);
+    if (prepared.status != openmeta::TransferStatus::Ok
+        || !bundle.remove_existing_icc || !bundle.blocks.empty())
+        return false;
+    openmeta::PreparedTransferAdapterView view;
+    return openmeta::build_prepared_transfer_adapter_view(bundle, &view).status
+           == openmeta::TransferStatus::Unsupported;
 }
 
 static bool
@@ -1076,6 +1099,7 @@ main()
                    || !location_creation_contract_matches
                    || !authoring_contract_matches
                    || !descriptive_reconciliation_contract_matches()
+                   || !primary_icc_removal_contract_matches()
                    || !native_icc_authoring_contract_matches()
                    || !canonical_patch_contract_matches
                    || !native_iptc_patch_contract_matches()

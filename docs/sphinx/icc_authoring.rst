@@ -1,6 +1,15 @@
 ICC creation, editing and canonical serialization
 =================================================
 
+Primary ICC removal and collection precedence (0.8.28)
+------------------------------------------------------
+
+Explicit C++ primary ICC removal reaches JPEG and TIFF/DNG edits and exact
+packages. Omission and last-tag deletion keep their prior behavior. Request and
+bundle layouts grow within unfrozen ABI 4: match headers and binaries. See
+:doc:`icc_removal`. DC creator/subject merges select complete collections.
+
+
 OpenMeta 0.8.25 adds ``serialize_icc_profile()`` in
 ``openmeta/icc_serialize.h`` (contract 1). Generic authoring and exact-key typed
 editing contract 2 accept ICC header fields and opaque typed tag payloads.

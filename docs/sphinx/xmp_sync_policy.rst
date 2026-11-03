@@ -78,6 +78,16 @@ In 0.8.27, an existing language-alternative key follows the same first-merged
 winner rule as scalar keys. Later values for that exact property/language pair
 are omitted; distinct language siblings remain.
 
+In 0.8.28, DC creator and subject use complete collection precedence at the
+source/destination merge boundary. The first incoming provider containing the
+field owns all its items; later providers do not contribute extra indices.
+Each source file/store or destination carrier is one provider, regardless of
+its entries' provenance blocks. Sparse ordering, repeated values and mixed-origin
+items within the selected source survive. Other collection schemas keep their
+existing behavior. Active scalar promotion ignores deleted indexed candidates
+for these two DC fields. Dirty group deletion claims its field; clean tombstones
+do not. The host still chooses native projection and reconciliation separately.
+
 Native EXIF and IPTC carrier emission is independent from XMP projection.
 Turning off ``xmp_project_exif`` or ``xmp_project_iptc`` suppresses only the
 generated XMP projection, not native EXIF/IPTC transfer.

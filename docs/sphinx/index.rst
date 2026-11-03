@@ -50,6 +50,7 @@ and must not be used as an asset-authenticity or trust gate.
    creation
    generic_authoring
    icc_authoring
+   icc_removal
    target_profile_validation
    structured_xmp_editing
    descriptive_reconciliation

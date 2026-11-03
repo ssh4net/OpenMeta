@@ -1030,6 +1030,8 @@ if(OPENMETA_BUILD_TESTS)
     tests/metadata_reconcile_test.cc
     tests/metadata_reconcile_read_test.cc
     tests/metadata_reconcile_transfer_test.cc
+    tests/xmp_array_precedence_test.cc
+    tests/metadata_icc_removal_test.cc
     tests/exif_tag_names_test.cc
     tests/exr_adapter_test.cc
     tests/exr_decode_test.cc
@@ -1576,6 +1578,20 @@ if(OPENMETA_BUILD_FUZZERS)
     -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
   target_link_options(openmeta_fuzz_reconciliation PRIVATE
     -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+
+  if(OPENMETA_EXPAT_FOUND)
+    add_executable(openmeta_fuzz_write_lifecycle
+      ${OPENMETA_SOURCES}
+      tests/fuzz/write_lifecycle_libfuzzer.cc
+    )
+    openmeta_apply_target_settings(openmeta_fuzz_write_lifecycle)
+    openmeta_apply_core_deps(openmeta_fuzz_write_lifecycle)
+    openmeta_apply_libfuzzer_stdlib(openmeta_fuzz_write_lifecycle)
+    target_compile_options(openmeta_fuzz_write_lifecycle PRIVATE
+      -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+    target_link_options(openmeta_fuzz_write_lifecycle PRIVATE
+      -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+  endif()
 
   add_executable(openmeta_fuzz_container_payload
     ${OPENMETA_SOURCES}

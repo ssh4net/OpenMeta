@@ -1,5 +1,14 @@
 # API Stability
 
+## Primary ICC removal and collection precedence (0.8.28)
+
+Explicit C++ primary ICC removal now reaches JPEG and TIFF/DNG edits and exact
+packages. Omission and last-tag deletion preserve their prior behavior. Request
+and bundle layouts grow within unfrozen ABI 4; match headers and binaries.
+See [the removal contract](icc_removal.md). DC creator/subject carrier merges
+select complete collections while retaining mixed provenance within one source.
+
+
 ## Shared descriptive reconciliation (0.8.27)
 
 The new C++ reconciliation contract 1 resolves five shared DC/IPTC fields and

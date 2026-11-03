@@ -6279,7 +6279,10 @@ namespace {
 
         for (size_t i = 0; i < entries.size(); ++i) {
             const Entry& e = entries[i];
-            if (e.key.kind != MetaKeyKind::XmpProperty) {
+            // Later carrier collections are tombstoned before serialization.
+            if (e.key.kind != MetaKeyKind::XmpProperty
+                || (prefix == "dc" && (base == "creator" || base == "subject")
+                    && any(e.flags, EntryFlags::Deleted))) {
                 continue;
             }
             const std::string_view ns

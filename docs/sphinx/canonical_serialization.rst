@@ -1,6 +1,15 @@
 Canonical Metadata Serialization
 ================================
 
+Primary ICC removal and collection precedence (0.8.28)
+------------------------------------------------------
+
+Explicit C++ primary ICC removal reaches JPEG and TIFF/DNG edits and exact
+packages. Omission and last-tag deletion keep their prior behavior. Request and
+bundle layouts grow within unfrozen ABI 4: match headers and binaries. See
+:doc:`icc_removal`. DC creator/subject merges select complete collections.
+
+
 ICC authoring and serialization (0.8.25)
 ----------------------------------------
 

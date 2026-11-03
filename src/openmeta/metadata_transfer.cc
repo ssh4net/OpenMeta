@@ -6,6 +6,8 @@
 
 #include "openmeta/metadata_transfer.h"
 
+#include "openmeta/meta_edit.h"
+
 #include "iptc_iim_serialize_internal.h"
 #include "jp2_metadata_internal.h"
 #include "jpeg_photoshop_irb.h"
@@ -1403,7 +1405,7 @@ namespace {
         return out;
     }
 
-    static bool prepared_iptc_removal_intent_is_valid(
+    static bool prepared_carrier_removal_intents_are_valid(
         const PreparedTransferBundle& bundle) noexcept;
 
     static EmitTransferResult
@@ -1504,6 +1506,18 @@ namespace {
         return false;
     }
 
+    static const char* prepared_carrier_removal_conflict_message(
+        const PreparedTransferBundle& bundle) noexcept
+    {
+        if (bundle.remove_existing_iptc && !bundle.remove_existing_icc) {
+            return "prepared IPTC removal target or payload conflict is invalid";
+        }
+        if (bundle.remove_existing_icc && !bundle.remove_existing_iptc) {
+            return "prepared ICC removal target or payload conflict is invalid";
+        }
+        return "prepared primary carrier removal target or payload conflict is invalid";
+    }
+
     static TransferStatus
     prepare_jpeg_iptc_resources(std::span<const std::byte> input,
                                 const std::vector<PlannedJpegSegment>& desired,
@@ -1583,6 +1597,9 @@ namespace {
             && existing.route == "jpeg:app13-iptc") {
             return true;
         }
+        if (bundle.remove_existing_icc && existing.route == "jpeg:app2-icc") {
+            return true;
+        }
         if (strip_existing_xmp && existing.route == "jpeg:app1-xmp") {
             return true;
         }
@@ -1593,7 +1610,8 @@ namespace {
                    && decision->matched_entries > 0U;
         }
         if (existing.route == "jpeg:app11-c2pa") {
-            if (!desired.empty() || bundle.remove_existing_iptc) {
+            if (!desired.empty() || bundle.remove_existing_iptc
+                || bundle.remove_existing_icc) {
                 return true;
             }
             const PreparedTransferPolicyDecision* decision
@@ -1881,13 +1899,12 @@ namespace {
             }
             return false;
         }
-        if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+        if (!prepared_carrier_removal_intents_are_valid(bundle)) {
             if (failure_status) {
                 *failure_status = TransferStatus::InvalidArgument;
             }
             if (err) {
-                *err
-                    = "prepared IPTC removal target or payload conflict is invalid";
+                *err = prepared_carrier_removal_conflict_message(bundle);
             }
             return false;
         }
@@ -11467,6 +11484,8 @@ namespace {
         0x010EU, 0x010FU, 0x0110U, 0x0131U, 0x0132U, 0x013BU, 0x8298U,
     };
 
+    static constexpr uint32_t kMaxPrimaryIccScanItems = 4096U;
+
     static constexpr std::array<uint16_t, 85U> kTiffExifRemovalTags = {
         0x829AU, 0x829DU, 0x8822U, 0x8827U, 0x8828U, 0x8830U, 0x8831U, 0x8832U,
         0x8833U, 0x8834U, 0x8835U, 0x9000U, 0x9003U, 0x9004U, 0x9010U, 0x9011U,
@@ -11509,10 +11528,10 @@ namespace {
                       < kTiffExifRemovalTags.size();
     }
 
-    static bool prepared_iptc_removal_intent_is_valid(
+    static bool prepared_carrier_removal_intents_are_valid(
         const PreparedTransferBundle& bundle) noexcept
     {
-        if (!bundle.remove_existing_iptc) {
+        if (!bundle.remove_existing_iptc && !bundle.remove_existing_icc) {
             return true;
         }
         if (bundle.target_format != TransferTargetFormat::Jpeg
@@ -11524,6 +11543,14 @@ namespace {
             if (block.kind == TransferBlockKind::IptcIim
                 || block.route == "jpeg:app13-iptc"
                 || block.route == "tiff:tag-33723-iptc") {
+                if (bundle.remove_existing_iptc) {
+                    return false;
+                }
+            }
+            if (bundle.remove_existing_icc
+                && (block.kind == TransferBlockKind::Icc
+                    || block.route == "jpeg:app2-icc"
+                    || block.route == "tiff:tag-34675-icc")) {
                 return false;
             }
         }
@@ -11531,10 +11558,10 @@ namespace {
     }
 
     static bool
-    reject_iptc_removal_for_non_edit(const PreparedTransferBundle& bundle,
-                                     EmitTransferResult* result) noexcept
+    reject_carrier_removal_for_non_edit(const PreparedTransferBundle& bundle,
+                                        EmitTransferResult* result) noexcept
     {
-        if (!bundle.remove_existing_iptc) {
+        if (!bundle.remove_existing_iptc && !bundle.remove_existing_icc) {
             return false;
         }
         if (!result) {
@@ -11542,14 +11569,15 @@ namespace {
         }
         result->code   = EmitTransferCode::InvalidArgument;
         result->errors = 1U;
-        if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+        if (!prepared_carrier_removal_intents_are_valid(bundle)) {
             result->status = TransferStatus::InvalidArgument;
-            result->message
-                = "prepared IPTC removal target or payload conflict is invalid";
+            result->message = prepared_carrier_removal_conflict_message(bundle);
         } else {
             result->status = TransferStatus::Unsupported;
             result->message
-                = "fresh emit cannot represent native IPTC destination removal";
+                = bundle.remove_existing_icc
+                      ? "fresh emit cannot represent native ICC destination removal"
+                      : "fresh emit cannot represent native IPTC destination removal";
         }
         return true;
     }
@@ -11597,6 +11625,12 @@ namespace {
             u.remove = true;
             out.push_back(std::move(u));
         }
+        if (bundle.remove_existing_icc) {
+            TiffTagUpdate u;
+            u.tag    = 34675U;
+            u.remove = true;
+            out.push_back(std::move(u));
+        }
         bool has_xmp_update = false;
         for (size_t i = 0; i < out.size(); ++i) {
             if (out[i].tag == 700U) {
@@ -11615,10 +11649,100 @@ namespace {
         return out;
     }
 
+    static bool tiff_ifd0_contains_tag(std::span<const std::byte> input,
+                                       uint16_t wanted, bool* found,
+                                       std::string* err) noexcept
+    {
+        if (!found) {
+            return false;
+        }
+        *found            = false;
+        TiffEndian endian = TiffEndian::Little;
+        TiffLayout layout;
+        uint64_t ifd0_offset = 0U;
+        if (!parse_tiff_layout(input, &endian, &layout, &ifd0_offset, err)) {
+            return false;
+        }
+        if (ifd0_offset > static_cast<uint64_t>(input.size())
+            || layout.ifd_count_size
+                   > static_cast<uint64_t>(input.size()) - ifd0_offset) {
+            if (err) {
+                *err = "ifd0 offset out of range";
+            }
+            return false;
+        }
+        const size_t ifd0             = static_cast<size_t>(ifd0_offset);
+        const uint64_t count          = layout.bigtiff
+                                            ? read_u64_tiff(input, ifd0, endian)
+                                            : read_u16_tiff(input, ifd0, endian);
+        const uint64_t entries_offset = ifd0_offset + layout.ifd_count_size;
+        if (entries_offset > static_cast<uint64_t>(input.size())
+            || layout.ifd_next_offset_size
+                   > static_cast<uint64_t>(input.size()) - entries_offset) {
+            if (err) {
+                *err = "ifd0 entries truncated";
+            }
+            return false;
+        }
+        const uint64_t available = static_cast<uint64_t>(input.size())
+                                   - entries_offset
+                                   - layout.ifd_next_offset_size;
+        if (count > available / layout.ifd_entry_size) {
+            if (err) {
+                *err = "ifd0 entries truncated";
+            }
+            return false;
+        }
+        if (count > kMaxPrimaryIccScanItems) {
+            if (err) {
+                *err = "too many tiff ICC IFD0 entries";
+            }
+            return false;
+        }
+        for (uint64_t i = 0U; i < count; ++i) {
+            const uint64_t entry_offset = entries_offset
+                                          + i * layout.ifd_entry_size;
+            if (read_u16_tiff(input, static_cast<size_t>(entry_offset), endian)
+                == wanted) {
+                *found = true;
+                break;
+            }
+        }
+        return true;
+    }
+
+    static bool collect_tiff_tag_updates_for_input(
+        std::span<const std::byte> input, const PreparedTransferBundle& bundle,
+        bool strip_existing_xmp, std::vector<TiffTagUpdate>* updates,
+        std::string* err) noexcept
+    {
+        if (!updates) {
+            return false;
+        }
+        *updates = collect_tiff_tag_updates(bundle, strip_existing_xmp);
+        if (!bundle.remove_existing_icc) {
+            return true;
+        }
+        bool has_primary_icc = false;
+        if (!tiff_ifd0_contains_tag(input, 34675U, &has_primary_icc, err)) {
+            return false;
+        }
+        if (!has_primary_icc) {
+            for (size_t i = 0U; i < updates->size(); ++i) {
+                if ((*updates)[i].tag == 34675U && (*updates)[i].remove) {
+                    updates->erase(updates->begin()
+                                   + static_cast<std::ptrdiff_t>(i));
+                    break;
+                }
+            }
+        }
+        return true;
+    }
+
     static bool prepared_tiff_removals_are_valid(
         const PreparedTransferBundle& bundle) noexcept
     {
-        if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+        if (!prepared_carrier_removal_intents_are_valid(bundle)) {
             return false;
         }
         if (bundle.tiff_ifd0_removals.size() > kTiffIfd0RemovalTags.size()) {
@@ -11757,7 +11881,9 @@ namespace {
     {
         return !bundle.tiff_ifd0_removals.empty()
                || !bundle.tiff_exif_removals.empty()
-               || !bundle.tiff_gps_removals.empty();
+               || !bundle.tiff_gps_removals.empty()
+               || (bundle.remove_existing_icc
+                   && transfer_target_is_tiff_family(bundle.target_format));
     }
 
     static bool bundle_has_tiff_gps_destination_intent(
@@ -13651,6 +13777,19 @@ prepare_metadata_for_target_impl(const MetaStore& store,
         return r;
     }
 
+    if (request.remove_existing_icc
+        && request.target_format != TransferTargetFormat::Jpeg
+        && !transfer_target_is_tiff_family(request.target_format)) {
+        r.status = TransferStatus::Unsupported;
+        r.code   = PrepareTransferCode::RequestedMetadataNotSerializable;
+        r.errors = 1U;
+        r.message
+            = "primary ICC removal is supported only for JPEG and TIFF/DNG edits";
+        *out_bundle = std::move(bundle);
+        return r;
+    }
+    bundle.remove_existing_icc = request.remove_existing_icc;
+
     std::string target_spec_error;
     if (!validate_transfer_target_image_spec(request.target_image_spec,
                                              &target_spec_error)) {
@@ -13820,9 +13959,9 @@ prepare_metadata_for_target_impl(const MetaStore& store,
     const bool has_icc = has_kind(prepared_store, MetaKeyKind::IccHeaderField)
                          || has_kind(prepared_store, MetaKeyKind::IccTag)
                          || dirty_icc_input;
-    const bool include_icc_app2 = request.include_icc_app2
-                                  && !transfer_safety_mode_is_rendered(
-                                      effective_profile.safety);
+    const bool include_icc_app2
+        = request.include_icc_app2 && !bundle.remove_existing_icc
+          && !transfer_safety_mode_is_rendered(effective_profile.safety);
     const uint32_t raw_makernote_count = count_makernote_entries(
         prepared_store);
     const uint32_t decoded_only_makernote_count
@@ -13833,7 +13972,13 @@ prepare_metadata_for_target_impl(const MetaStore& store,
     const uint32_t c2pa_count  = count_c2pa_entries(prepared_store);
 
     if (has_icc) {
-        if (!request.include_icc_app2) {
+        if (bundle.remove_existing_icc) {
+            append_policy_decision(
+                &bundle, TransferPolicySubject::IccProfile,
+                TransferPolicyAction::Keep, TransferPolicyAction::Drop,
+                TransferPolicyReason::ExplicitDrop, 1U,
+                "primary ICC carrier removal suppresses source ICC output");
+        } else if (!request.include_icc_app2) {
             append_policy_decision(&bundle, TransferPolicySubject::IccProfile,
                                    TransferPolicyAction::Drop,
                                    TransferPolicyAction::Drop,
@@ -19206,20 +19351,22 @@ namespace {
         out_plan->contract_version = bundle.contract_version;
         out_plan->ops.clear();
 
-        if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+        if (!prepared_carrier_removal_intents_are_valid(bundle)) {
             r.status = TransferStatus::InvalidArgument;
             r.code   = EmitTransferCode::InvalidArgument;
             r.errors = 1U;
-            r.message
-                = "prepared IPTC removal target or payload conflict is invalid";
+            r.message = prepared_carrier_removal_conflict_message(bundle);
             return r;
         }
-        if (bundle.remove_existing_iptc && !allow_destination_edit) {
+        if ((bundle.remove_existing_iptc || bundle.remove_existing_icc)
+            && !allow_destination_edit) {
             r.status = TransferStatus::Unsupported;
             r.code   = EmitTransferCode::InvalidArgument;
             r.errors = 1U;
             r.message
-                = "fresh JPEG emit cannot represent native IPTC destination removal";
+                = bundle.remove_existing_icc
+                      ? "fresh JPEG emit cannot represent native ICC destination removal"
+                      : "fresh JPEG emit cannot represent native IPTC destination removal";
             return r;
         }
         if (bundle.target_format != TransferTargetFormat::Jpeg) {
@@ -19289,7 +19436,7 @@ emit_prepared_bundle_jpeg(const PreparedTransferBundle& bundle,
                           const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (bundle.target_format != TransferTargetFormat::Jpeg) {
@@ -19371,7 +19518,7 @@ emit_prepared_bundle_tiff(const PreparedTransferBundle& bundle,
                           const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (!transfer_target_is_tiff_family(bundle.target_format)) {
@@ -19467,7 +19614,7 @@ compile_prepared_bundle_tiff(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (!prepared_tiff_removals_are_valid(bundle)) {
@@ -19539,7 +19686,7 @@ emit_prepared_bundle_tiff_compiled(const PreparedTransferBundle& bundle,
                                    const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (!transfer_target_is_tiff_family(bundle.target_format)) {
@@ -19637,7 +19784,7 @@ emit_prepared_bundle_jxl(const PreparedTransferBundle& bundle,
                          const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (bundle.target_format != TransferTargetFormat::Jxl) {
@@ -19770,7 +19917,7 @@ compile_prepared_bundle_jxl(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     out_plan->contract_version = bundle.contract_version;
@@ -19856,7 +20003,7 @@ emit_prepared_bundle_jxl_compiled(const PreparedTransferBundle& bundle,
                                   const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (bundle.target_format != TransferTargetFormat::Jxl) {
@@ -19971,7 +20118,7 @@ build_prepared_jxl_encoder_handoff_view(
         return r;
     }
 
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
 
@@ -20117,7 +20264,7 @@ emit_prepared_bundle_webp(const PreparedTransferBundle& bundle,
                           const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (bundle.target_format != TransferTargetFormat::Webp) {
@@ -20197,7 +20344,7 @@ compile_prepared_bundle_webp(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     out_plan->contract_version = bundle.contract_version;
@@ -20250,7 +20397,7 @@ emit_prepared_bundle_webp_compiled(const PreparedTransferBundle& bundle,
                                    const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (bundle.target_format != TransferTargetFormat::Webp) {
@@ -20330,7 +20477,7 @@ emit_prepared_bundle_png(const PreparedTransferBundle& bundle,
                          const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (bundle.target_format != TransferTargetFormat::Png) {
@@ -20410,7 +20557,7 @@ compile_prepared_bundle_png(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     out_plan->contract_version = bundle.contract_version;
@@ -20463,7 +20610,7 @@ emit_prepared_bundle_png_compiled(const PreparedTransferBundle& bundle,
                                   const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (bundle.target_format != TransferTargetFormat::Png) {
@@ -20543,7 +20690,7 @@ emit_prepared_bundle_jp2(const PreparedTransferBundle& bundle,
                          const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (bundle.target_format != TransferTargetFormat::Jp2) {
@@ -20624,7 +20771,7 @@ compile_prepared_bundle_jp2(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     out_plan->contract_version = bundle.contract_version;
@@ -20677,7 +20824,7 @@ emit_prepared_bundle_jp2_compiled(const PreparedTransferBundle& bundle,
                                   const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (bundle.target_format != TransferTargetFormat::Jp2) {
@@ -20758,7 +20905,7 @@ emit_prepared_bundle_exr(const PreparedTransferBundle& bundle,
                          const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (bundle.target_format != TransferTargetFormat::Exr) {
@@ -20850,7 +20997,7 @@ compile_prepared_bundle_exr(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     out_plan->contract_version = bundle.contract_version;
@@ -20919,7 +21066,7 @@ emit_prepared_bundle_exr_compiled(const PreparedTransferBundle& bundle,
                                   const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (bundle.target_format != TransferTargetFormat::Exr) {
@@ -21013,7 +21160,7 @@ emit_prepared_bundle_bmff(const PreparedTransferBundle& bundle,
                           const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (!transfer_target_is_bmff(bundle.target_format)) {
@@ -21113,7 +21260,7 @@ compile_prepared_bundle_bmff(const PreparedTransferBundle& bundle,
         r.message = "out_plan is null";
         return r;
     }
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     out_plan->contract_version = bundle.contract_version;
@@ -21180,7 +21327,7 @@ emit_prepared_bundle_bmff_compiled(const PreparedTransferBundle& bundle,
                                    const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (!transfer_target_is_bmff(bundle.target_format)) {
@@ -21286,7 +21433,7 @@ emit_prepared_bundle_jpeg_compiled(const PreparedTransferBundle& bundle,
                                    const EmitTransferOptions& options) noexcept
 {
     EmitTransferResult r;
-    if (reject_iptc_removal_for_non_edit(bundle, &r)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &r)) {
         return r;
     }
     if (bundle.target_format != TransferTargetFormat::Jpeg) {
@@ -21468,10 +21615,9 @@ plan_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
     plan.requested_mode = options.mode;
     plan.input_size     = static_cast<uint64_t>(input_jpeg.size());
 
-    if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+    if (!prepared_carrier_removal_intents_are_valid(bundle)) {
         plan.status = TransferStatus::InvalidArgument;
-        plan.message
-            = "prepared IPTC removal target or payload conflict is invalid";
+        plan.message = prepared_carrier_removal_conflict_message(bundle);
         return plan;
     }
     if (bundle.target_format != TransferTargetFormat::Jpeg) {
@@ -21525,12 +21671,11 @@ apply_prepared_bundle_jpeg_edit(std::span<const std::byte> input_jpeg,
         out.message = "out_jpeg is null";
         return out;
     }
-    if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+    if (!prepared_carrier_removal_intents_are_valid(bundle)) {
         out.status = TransferStatus::InvalidArgument;
         out.code   = EmitTransferCode::InvalidArgument;
         out.errors = 1U;
-        out.message
-            = "prepared IPTC removal target or payload conflict is invalid";
+        out.message = prepared_carrier_removal_conflict_message(bundle);
         return out;
     }
     if (bundle.contract_version != kMetadataTransferContractVersion) {
@@ -21752,8 +21897,15 @@ plan_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         return plan;
     }
 
-    const std::vector<TiffTagUpdate> updates
-        = collect_tiff_tag_updates(bundle, options.strip_existing_xmp);
+    std::vector<TiffTagUpdate> updates;
+    std::string update_error;
+    if (!collect_tiff_tag_updates_for_input(input_tiff, bundle,
+                                            options.strip_existing_xmp,
+                                            &updates, &update_error)) {
+        plan.status  = tiff_edit_status_from_error(update_error);
+        plan.message = update_error;
+        return plan;
+    }
     const std::vector<std::byte> exif_app1_payload
         = first_tiff_exif_app1_payload(bundle);
     const uint32_t removal_count = static_cast<uint32_t>(
@@ -21830,8 +21982,17 @@ apply_prepared_bundle_tiff_edit(std::span<const std::byte> input_tiff,
         out.message = "bundle target format is not tiff/dng";
         return out;
     }
-    const std::vector<TiffTagUpdate> updates
-        = collect_tiff_tag_updates(bundle, plan.strip_existing_xmp);
+    std::vector<TiffTagUpdate> updates;
+    std::string update_error;
+    if (!collect_tiff_tag_updates_for_input(input_tiff, bundle,
+                                            plan.strip_existing_xmp, &updates,
+                                            &update_error)) {
+        out.status  = tiff_edit_status_from_error(update_error);
+        out.code    = EmitTransferCode::PlanMismatch;
+        out.errors  = 1U;
+        out.message = update_error;
+        return out;
+    }
     const std::vector<std::byte> exif_app1_payload
         = first_tiff_exif_app1_payload(bundle);
     const uint32_t removal_count = static_cast<uint32_t>(
@@ -21953,7 +22114,7 @@ build_prepared_transfer_emit_package(const PreparedTransferBundle& bundle,
         out.message = "out_plan is null";
         return out;
     }
-    if (reject_iptc_removal_for_non_edit(bundle, &out)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &out)) {
         return out;
     }
     if (!prepared_tiff_removals_are_valid(bundle)) {
@@ -22195,12 +22356,11 @@ build_prepared_bundle_jpeg_package(
         out.message = "out_plan is null";
         return out;
     }
-    if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+    if (!prepared_carrier_removal_intents_are_valid(bundle)) {
         out.status = TransferStatus::InvalidArgument;
         out.code   = EmitTransferCode::InvalidArgument;
         out.errors = 1U;
-        out.message
-            = "prepared IPTC removal target or payload conflict is invalid";
+        out.message = prepared_carrier_removal_conflict_message(bundle);
         return out;
     }
     PreparedTransferPackagePlan staged;
@@ -22471,8 +22631,17 @@ build_prepared_bundle_tiff_package(
         return out;
     }
 
-    const std::vector<TiffTagUpdate> updates
-        = collect_tiff_tag_updates(bundle, plan.strip_existing_xmp);
+    std::vector<TiffTagUpdate> updates;
+    std::string update_error;
+    if (!collect_tiff_tag_updates_for_input(input_tiff, bundle,
+                                            plan.strip_existing_xmp, &updates,
+                                            &update_error)) {
+        out.status  = tiff_edit_status_from_error(update_error);
+        out.code    = EmitTransferCode::PlanMismatch;
+        out.errors  = 1U;
+        out.message = update_error;
+        return out;
+    }
     const std::vector<std::byte> exif_app1_payload
         = first_tiff_exif_app1_payload(bundle);
     const uint32_t removal_count = static_cast<uint32_t>(
@@ -23701,6 +23870,109 @@ replay_prepared_transfer_package_batch(
     return result;
 }
 
+struct DcCollectionMergeScope final {
+    size_t begin = 0U;
+    size_t end   = 0U;
+};
+
+static bool
+record_dc_collection_scope(size_t begin, size_t end,
+                           std::array<DcCollectionMergeScope, 3U>* scopes,
+                           size_t* count) noexcept
+{
+    if (begin > end || !scopes || !count)
+        return false;
+    if (begin == end)
+        return true;
+    if (*count >= scopes->size())
+        return false;
+    (*scopes)[(*count)++] = { begin, end };
+    return true;
+}
+
+static uint8_t
+dc_collection_field(const MetaStore& store, const Entry& entry) noexcept
+{
+    if (entry.key.kind != MetaKeyKind::XmpProperty)
+        return 0U;
+    if (any(entry.flags, EntryFlags::Deleted)
+        && !any(entry.flags, EntryFlags::Dirty))
+        return 0U;
+    if (arena_string(store.arena(), entry.key.data.xmp_property.schema_ns)
+        != "http://purl.org/dc/elements/1.1/")
+        return 0U;
+    const std::string_view path
+        = arena_string(store.arena(),
+                       entry.key.data.xmp_property.property_path);
+    constexpr std::array<std::string_view, 2U> roots { "creator", "subject" };
+    for (size_t i = 0U; i < roots.size(); ++i) {
+        if (!path.starts_with(roots[i]))
+            continue;
+        const std::string_view suffix = path.substr(roots[i].size());
+        if (suffix.empty() || suffix == "[@xml:lang=x-default]")
+            return static_cast<uint8_t>(1U << i);
+        if (suffix.size() < 3U || suffix.front() != '[' || suffix.back() != ']')
+            return 0U;
+        uint32_t index = 0U;
+        for (size_t j = 1U; j + 1U < suffix.size(); ++j) {
+            const char c = suffix[j];
+            if (c < '0' || c > '9')
+                return 0U;
+            const uint32_t digit = static_cast<uint32_t>(c - '0');
+            if (index > (UINT32_MAX - digit) / 10U)
+                return 0U;
+            index = index * 10U + digit;
+        }
+        return index != 0U ? static_cast<uint8_t>(1U << i) : 0U;
+    }
+    return 0U;
+}
+
+static bool
+select_first_dc_collections(MetaStore* store,
+                            std::span<const DcCollectionMergeScope> scopes)
+{
+    if (!store || scopes.size() > 3U)
+        return false;
+    std::array<uint8_t, 3U> skip_fields {};
+    uint8_t owned_fields = 0U;
+    size_t operations    = 0U;
+    for (size_t i = 0U; i < scopes.size(); ++i) {
+        if (scopes[i].begin > scopes[i].end
+            || scopes[i].end > store->entries().size())
+            return false;
+        skip_fields[i]  = owned_fields;
+        uint8_t present = 0U;
+        for (size_t id = scopes[i].begin; id < scopes[i].end; ++id) {
+            const Entry& entry  = store->entry(static_cast<EntryId>(id));
+            const uint8_t field = dc_collection_field(*store, entry);
+            present             = static_cast<uint8_t>(present | field);
+            if ((field & skip_fields[i]) != 0U
+                && !any(entry.flags, EntryFlags::Deleted))
+                ++operations;
+        }
+        owned_fields = static_cast<uint8_t>(owned_fields | present);
+    }
+    if (operations == 0U)
+        return true;
+    MetaEdit edit;
+    edit.reserve_ops(operations);
+    for (size_t i = 0U; i < scopes.size(); ++i) {
+        for (size_t id = scopes[i].begin; id < scopes[i].end; ++id) {
+            const Entry& entry = store->entry(static_cast<EntryId>(id));
+            if (!any(entry.flags, EntryFlags::Deleted)
+                && (dc_collection_field(*store, entry) & skip_fields[i]) != 0U)
+                edit.tombstone(static_cast<EntryId>(id));
+        }
+    }
+    store->finalize();
+    MetaStore selected = commit(*store, std::span<const MetaEdit>(&edit, 1U));
+    if (selected.resource_limit_exceeded())
+        return false;
+    *store = std::move(selected);
+    return true;
+}
+
 static PrepareTransferFileResult
 prepare_metadata_for_target_file_impl(const char* path,
                                       const PrepareTransferFileOptions& options,
@@ -23763,6 +24035,9 @@ prepare_metadata_for_target_file_impl(const char* path,
     std::vector<uint32_t> payload_parts(16384U);
     std::vector<std::byte> existing_xmp_sidecar_bytes;
     MetaStore store;
+    std::array<DcCollectionMergeScope, 3U> collection_scopes {};
+    size_t collection_scope_count = 0U;
+    bool collection_scopes_valid  = true;
     const bool sidecar_source_precedence
         = options.xmp_existing_sidecar_precedence
           == XmpExistingSidecarPrecedence::SourceWins;
@@ -23800,6 +24075,7 @@ prepare_metadata_for_target_file_impl(const char* path,
             if (existing_xmp_sidecar_bytes.empty()) {
                 return;
             }
+            const size_t collection_begin = store.entries().size();
             decode_existing_xmp_sidecar_into_store(
                 std::span<const std::byte>(existing_xmp_sidecar_bytes.data(),
                                            existing_xmp_sidecar_bytes.size()),
@@ -23807,6 +24083,12 @@ prepare_metadata_for_target_file_impl(const char* path,
                 &out.xmp_existing_sidecar_loaded,
                 &out.xmp_existing_sidecar_status,
                 &out.xmp_existing_sidecar_message);
+            collection_scopes_valid
+                = record_dc_collection_scope(collection_begin,
+                                             store.entries().size(),
+                                             &collection_scopes,
+                                             &collection_scope_count)
+                  && collection_scopes_valid;
             if (!out.xmp_existing_sidecar_loaded) {
                 existing_xmp_sidecar_bytes.clear();
             }
@@ -23817,12 +24099,19 @@ prepare_metadata_for_target_file_impl(const char* path,
             if (!destination_embedded_merge_requested) {
                 return;
             }
+            const size_t collection_begin = store.entries().size();
             decode_existing_destination_embedded_xmp_into_store(
                 existing_destination_embedded->path, policy, decode_options.xmp,
                 preserve_store_on_failure, &store,
                 existing_destination_embedded->out_loaded,
                 existing_destination_embedded->out_status,
                 existing_destination_embedded->out_message);
+            collection_scopes_valid
+                = record_dc_collection_scope(collection_begin,
+                                             store.entries().size(),
+                                             &collection_scopes,
+                                             &collection_scope_count)
+                  && collection_scopes_valid;
         };
 
     auto apply_existing_xmp_merge_stage =
@@ -23859,7 +24148,10 @@ prepare_metadata_for_target_file_impl(const char* path,
 
     for (;;) {
         store = MetaStore();
-        apply_existing_xmp_merge_stage(false, false);
+        collection_scope_count  = 0U;
+        collection_scopes_valid = true;
+        apply_existing_xmp_merge_stage(false, true);
+        const size_t source_collection_begin = store.entries().size();
         out.read = simple_meta_read(
             mapped.bytes(), store,
             std::span<ContainerBlockRef>(blocks.data(), blocks.size()),
@@ -23867,6 +24159,12 @@ prepare_metadata_for_target_file_impl(const char* path,
             std::span<std::byte>(payload.data(), payload.size()),
             std::span<uint32_t>(payload_parts.data(), payload_parts.size()),
             decode_options);
+        collection_scopes_valid
+            = record_dc_collection_scope(source_collection_begin,
+                                         store.entries().size(),
+                                         &collection_scopes,
+                                         &collection_scope_count)
+              && collection_scopes_valid;
 
         bool retried = false;
         if (out.read.scan.status == ScanStatus::OutputTruncated
@@ -23912,6 +24210,18 @@ prepare_metadata_for_target_file_impl(const char* path,
         return out;
     }
 
+    if (!collection_scopes_valid
+        || !select_first_dc_collections(
+            &store,
+            std::span<const DcCollectionMergeScope>(collection_scopes.data(),
+                                                    collection_scope_count))) {
+        out.file_status     = TransferFileStatus::ReadFailed;
+        out.code            = PrepareTransferFileCode::DecodeFailed;
+        out.prepare.status  = TransferStatus::LimitExceeded;
+        out.prepare.errors  = 1U;
+        out.prepare.message = "XMP collection precedence preparation failed";
+        return out;
+    }
     store.finalize();
     out.entry_count = static_cast<uint32_t>(store.entries().size());
     out.file_status = TransferFileStatus::Ok;
@@ -24746,7 +25056,7 @@ build_prepared_c2pa_sign_request(
     if (!out_request) {
         return TransferStatus::InvalidArgument;
     }
-    if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+    if (!prepared_carrier_removal_intents_are_valid(bundle)) {
         return TransferStatus::InvalidArgument;
     }
 
@@ -24995,12 +25305,11 @@ build_prepared_c2pa_sign_request_binding(
         return out;
     }
 
-    if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+    if (!prepared_carrier_removal_intents_are_valid(bundle)) {
         out.status = TransferStatus::InvalidArgument;
         out.code   = EmitTransferCode::InvalidArgument;
         out.errors = 1U;
-        out.message
-            = "prepared IPTC removal target or payload conflict is invalid";
+        out.message = prepared_carrier_removal_conflict_message(bundle);
         return out;
     }
 
@@ -26135,12 +26444,11 @@ namespace {
         ValidatePreparedC2paSignResult out;
         out.logical_payload_bytes = static_cast<uint64_t>(
             input.signed_c2pa_logical_payload.size());
-        if (!prepared_iptc_removal_intent_is_valid(bundle)) {
+        if (!prepared_carrier_removal_intents_are_valid(bundle)) {
             out.status = TransferStatus::InvalidArgument;
             out.code   = EmitTransferCode::InvalidArgument;
             out.errors = 1U;
-            out.message
-                = "prepared IPTC removal target or payload conflict is invalid";
+            out.message = prepared_carrier_removal_conflict_message(bundle);
             return out;
         }
         if (out_staged_blocks) {
@@ -33095,11 +33403,435 @@ namespace {
             out_removed_meta_boxes);
     }
 
+    static void set_package_validation_error(EmitTransferResult* result,
+                                             TransferStatus status,
+                                             std::string_view message) noexcept
+    {
+        if (!result) {
+            return;
+        }
+        result->status = status;
+        result->code   = status == TransferStatus::LimitExceeded
+                             ? EmitTransferCode::InvalidPayload
+                             : EmitTransferCode::PlanMismatch;
+        result->errors = 1U;
+        result->message.assign(message.data(), message.size());
+    }
+
+    static bool package_plan_byte_at(std::span<const std::byte> input,
+                                     const PreparedTransferBundle& bundle,
+                                     const PreparedTransferPackagePlan& plan,
+                                     uint64_t output_offset,
+                                     std::byte* value) noexcept
+    {
+        if (!value || output_offset >= plan.output_size) {
+            return false;
+        }
+        size_t low  = 0U;
+        size_t high = plan.chunks.size();
+        while (low < high) {
+            const size_t mid                          = low + (high - low) / 2U;
+            const PreparedTransferPackageChunk& chunk = plan.chunks[mid];
+            if (output_offset < chunk.output_offset) {
+                high = mid;
+                continue;
+            }
+            if (chunk.size > UINT64_MAX - chunk.output_offset) {
+                return false;
+            }
+            const uint64_t chunk_end = chunk.output_offset + chunk.size;
+            if (output_offset >= chunk_end) {
+                low = mid + 1U;
+                continue;
+            }
+
+            const uint64_t relative = output_offset - chunk.output_offset;
+            switch (chunk.kind) {
+            case TransferPackageChunkKind::SourceRange: {
+                if (relative >= chunk.size
+                    || chunk.source_offset > static_cast<uint64_t>(input.size())
+                    || relative > static_cast<uint64_t>(input.size())
+                                      - chunk.source_offset) {
+                    return false;
+                }
+                *value
+                    = input[static_cast<size_t>(chunk.source_offset + relative)];
+                return true;
+            }
+            case TransferPackageChunkKind::InlineBytes:
+                if (relative >= chunk.inline_bytes.size()) {
+                    return false;
+                }
+                *value = chunk.inline_bytes[static_cast<size_t>(relative)];
+                return true;
+            case TransferPackageChunkKind::PreparedJpegSegment:
+            case TransferPackageChunkKind::PreparedTransferBlock: {
+                if (chunk.block_index >= bundle.blocks.size()) {
+                    return false;
+                }
+                const PreparedTransferBlock& block
+                    = bundle.blocks[chunk.block_index];
+                uint8_t marker = chunk.jpeg_marker_code;
+                if (chunk.kind
+                        == TransferPackageChunkKind::PreparedTransferBlock
+                    && (bundle.target_format != TransferTargetFormat::Jpeg
+                        || !marker_from_jpeg_route(block.route, &marker))) {
+                    return false;
+                }
+                if (block.payload.size() > UINT16_MAX - 2U
+                    || chunk.size != 4U + block.payload.size()) {
+                    return false;
+                }
+                if (relative == 0U) {
+                    *value = std::byte { 0xFFU };
+                } else if (relative == 1U) {
+                    *value = static_cast<std::byte>(marker);
+                } else if (relative == 2U || relative == 3U) {
+                    const uint16_t length = static_cast<uint16_t>(
+                        block.payload.size() + 2U);
+                    const uint8_t byte
+                        = relative == 2U ? static_cast<uint8_t>(length >> 8U)
+                                         : static_cast<uint8_t>(length);
+                    *value = static_cast<std::byte>(byte);
+                } else {
+                    const uint64_t payload_offset = relative - 4U;
+                    if (payload_offset >= block.payload.size()) {
+                        return false;
+                    }
+                    *value = block.payload[static_cast<size_t>(payload_offset)];
+                }
+                return true;
+            }
+            }
+            return false;
+        }
+        return false;
+    }
+
+    static bool package_plan_read_uint(std::span<const std::byte> input,
+                                       const PreparedTransferBundle& bundle,
+                                       const PreparedTransferPackagePlan& plan,
+                                       uint64_t offset, uint32_t width,
+                                       bool big_endian,
+                                       uint64_t* value) noexcept
+    {
+        if (!value || width == 0U || width > sizeof(uint64_t)
+            || offset > plan.output_size || width > plan.output_size - offset) {
+            return false;
+        }
+        uint64_t decoded = 0U;
+        for (uint32_t index = 0U; index < width; ++index) {
+            std::byte byte {};
+            if (!package_plan_byte_at(input, bundle, plan, offset + index,
+                                      &byte)) {
+                return false;
+            }
+            const uint32_t shift = big_endian ? (width - 1U - index) * 8U
+                                              : index * 8U;
+            decoded |= static_cast<uint64_t>(std::to_integer<uint8_t>(byte))
+                       << shift;
+        }
+        *value = decoded;
+        return true;
+    }
+
+    static bool package_plan_has_primary_jpeg_icc(
+        std::span<const std::byte> input, const PreparedTransferBundle& bundle,
+        const PreparedTransferPackagePlan& plan, bool* found,
+        EmitTransferResult* error) noexcept
+    {
+        if (!found || !error) {
+            return false;
+        }
+        *found = false;
+        if (plan.output_size < 2U) {
+            set_package_validation_error(
+                error, TransferStatus::Malformed,
+                "prepared JPEG package is too small for ICC validation");
+            return false;
+        }
+        std::byte first {}, second {};
+        if (!package_plan_byte_at(input, bundle, plan, 0U, &first)
+            || !package_plan_byte_at(input, bundle, plan, 1U, &second)
+            || first != std::byte { 0xFFU } || second != std::byte { 0xD8U }) {
+            set_package_validation_error(
+                error, TransferStatus::Malformed,
+                "prepared JPEG package does not start with SOI");
+            return false;
+        }
+
+        static constexpr std::array<std::byte, 12U> kIccSignature = {
+            std::byte { 'I' }, std::byte { 'C' }, std::byte { 'C' },
+            std::byte { '_' }, std::byte { 'P' }, std::byte { 'R' },
+            std::byte { 'O' }, std::byte { 'F' }, std::byte { 'I' },
+            std::byte { 'L' }, std::byte { 'E' }, std::byte { 0U },
+        };
+        uint64_t offset              = 2U;
+        uint32_t markers             = 0U;
+        uint32_t marker_prefix_bytes = 0U;
+        while (offset < plan.output_size) {
+            if (++markers > kMaxPrimaryIccScanItems) {
+                set_package_validation_error(
+                    error, TransferStatus::LimitExceeded,
+                    "prepared JPEG package exceeds ICC validation marker limit");
+                return false;
+            }
+            std::byte byte {};
+            if (!package_plan_byte_at(input, bundle, plan, offset, &byte)
+                || byte != std::byte { 0xFFU }) {
+                set_package_validation_error(
+                    error, TransferStatus::Malformed,
+                    "prepared JPEG package has an invalid leading marker");
+                return false;
+            }
+            do {
+                if (++marker_prefix_bytes > kMaxPrimaryIccScanItems) {
+                    set_package_validation_error(
+                        error, TransferStatus::LimitExceeded,
+                        "prepared JPEG package exceeds ICC validation header limit");
+                    return false;
+                }
+                ++offset;
+                if (offset >= plan.output_size
+                    || !package_plan_byte_at(input, bundle, plan, offset,
+                                             &byte)) {
+                    set_package_validation_error(
+                        error, TransferStatus::Malformed,
+                        "prepared JPEG package marker is truncated");
+                    return false;
+                }
+            } while (byte == std::byte { 0xFFU });
+
+            const uint8_t marker = std::to_integer<uint8_t>(byte);
+            ++offset;
+            if (marker == 0xDAU || marker == 0xD9U) {
+                return true;
+            }
+            if (marker == 0x00U) {
+                set_package_validation_error(
+                    error, TransferStatus::Malformed,
+                    "prepared JPEG package has a stuffed byte before scan data");
+                return false;
+            }
+            if (marker == 0x01U || (marker >= 0xD0U && marker <= 0xD8U)) {
+                continue;
+            }
+            uint64_t segment_length = 0U;
+            if (!package_plan_read_uint(input, bundle, plan, offset, 2U, true,
+                                        &segment_length)
+                || segment_length < 2U) {
+                set_package_validation_error(
+                    error, TransferStatus::Malformed,
+                    "prepared JPEG package marker length is invalid");
+                return false;
+            }
+            offset += 2U;
+            const uint64_t payload_size = segment_length - 2U;
+            if (payload_size > plan.output_size - offset) {
+                set_package_validation_error(
+                    error, TransferStatus::Malformed,
+                    "prepared JPEG package marker payload is truncated");
+                return false;
+            }
+            if (marker == 0xE2U && payload_size >= kIccSignature.size()) {
+                bool signature_matches = true;
+                for (size_t index = 0U; index < kIccSignature.size(); ++index) {
+                    if (!package_plan_byte_at(input, bundle, plan,
+                                              offset + index, &byte)
+                        || byte != kIccSignature[index]) {
+                        signature_matches = false;
+                        break;
+                    }
+                }
+                if (signature_matches) {
+                    *found = true;
+                    return true;
+                }
+            }
+            offset += payload_size;
+        }
+        return true;
+    }
+
+    static bool package_plan_has_primary_tiff_icc(
+        std::span<const std::byte> input, const PreparedTransferBundle& bundle,
+        const PreparedTransferPackagePlan& plan, bool* found,
+        EmitTransferResult* error) noexcept
+    {
+        if (!found || !error) {
+            return false;
+        }
+        *found = false;
+        std::byte first {}, second {};
+        if (plan.output_size < 8U
+            || !package_plan_byte_at(input, bundle, plan, 0U, &first)
+            || !package_plan_byte_at(input, bundle, plan, 1U, &second)) {
+            set_package_validation_error(
+                error, TransferStatus::Malformed,
+                "prepared TIFF package is too small for ICC validation");
+            return false;
+        }
+        const bool big_endian = first == std::byte { 'M' }
+                                && second == std::byte { 'M' };
+        if (!big_endian
+            && !(first == std::byte { 'I' } && second == std::byte { 'I' })) {
+            set_package_validation_error(
+                error, TransferStatus::Malformed,
+                "prepared TIFF package has an unsupported byte order");
+            return false;
+        }
+        uint64_t magic = 0U;
+        if (!package_plan_read_uint(input, bundle, plan, 2U, 2U, big_endian,
+                                    &magic)) {
+            set_package_validation_error(
+                error, TransferStatus::Malformed,
+                "prepared TIFF package header is truncated");
+            return false;
+        }
+        uint32_t count_width = 2U;
+        uint32_t entry_width = 12U;
+        uint32_t next_width  = 4U;
+        uint64_t ifd0_offset = 0U;
+        if (magic == 42U) {
+            if (!package_plan_read_uint(input, bundle, plan, 4U, 4U, big_endian,
+                                        &ifd0_offset)) {
+                set_package_validation_error(
+                    error, TransferStatus::Malformed,
+                    "prepared TIFF package IFD0 pointer is truncated");
+                return false;
+            }
+        } else if (magic == 43U) {
+            uint64_t offset_size = 0U;
+            uint64_t reserved    = 0U;
+            if (plan.output_size < 16U
+                || !package_plan_read_uint(input, bundle, plan, 4U, 2U,
+                                           big_endian, &offset_size)
+                || !package_plan_read_uint(input, bundle, plan, 6U, 2U,
+                                           big_endian, &reserved)
+                || offset_size != 8U || reserved != 0U
+                || !package_plan_read_uint(input, bundle, plan, 8U, 8U,
+                                           big_endian, &ifd0_offset)) {
+                set_package_validation_error(
+                    error, TransferStatus::Malformed,
+                    "prepared BigTIFF package header is invalid");
+                return false;
+            }
+            count_width = 8U;
+            entry_width = 20U;
+            next_width  = 8U;
+        } else {
+            set_package_validation_error(
+                error, TransferStatus::Unsupported,
+                "prepared TIFF package variant is unsupported for ICC validation");
+            return false;
+        }
+        if (ifd0_offset > plan.output_size
+            || count_width > plan.output_size - ifd0_offset) {
+            set_package_validation_error(
+                error, TransferStatus::Malformed,
+                "prepared TIFF package IFD0 offset is out of range");
+            return false;
+        }
+        uint64_t count = 0U;
+        if (!package_plan_read_uint(input, bundle, plan, ifd0_offset,
+                                    count_width, big_endian, &count)) {
+            set_package_validation_error(
+                error, TransferStatus::Malformed,
+                "prepared TIFF package IFD0 entry count is truncated");
+            return false;
+        }
+        if (count > kMaxPrimaryIccScanItems) {
+            set_package_validation_error(
+                error, TransferStatus::LimitExceeded,
+                "prepared TIFF package exceeds ICC validation IFD0 entry limit");
+            return false;
+        }
+        const uint64_t entries_offset = ifd0_offset + count_width;
+        if (entries_offset > plan.output_size
+            || next_width > plan.output_size - entries_offset) {
+            set_package_validation_error(
+                error, TransferStatus::Malformed,
+                "prepared TIFF package IFD0 table is truncated");
+            return false;
+        }
+        const uint64_t available = plan.output_size - entries_offset
+                                   - next_width;
+        if (count > available / entry_width) {
+            set_package_validation_error(
+                error, TransferStatus::Malformed,
+                "prepared TIFF package IFD0 entries are truncated");
+            return false;
+        }
+        for (uint64_t index = 0U; index < count; ++index) {
+            const uint64_t entry_offset = entries_offset + index * entry_width;
+            uint64_t tag                = 0U;
+            if (!package_plan_read_uint(input, bundle, plan, entry_offset, 2U,
+                                        big_endian, &tag)) {
+                set_package_validation_error(
+                    error, TransferStatus::Malformed,
+                    "prepared TIFF package IFD0 tag is truncated");
+                return false;
+            }
+            if (tag == 34675U) {
+                *found = true;
+                return true;
+            }
+        }
+        return true;
+    }
+
+    static EmitTransferResult validate_package_primary_icc_removal(
+        std::span<const std::byte> input, const PreparedTransferBundle& bundle,
+        const PreparedTransferPackagePlan& plan) noexcept
+    {
+        EmitTransferResult out;
+        if (!bundle.remove_existing_icc) {
+            out.status = TransferStatus::Ok;
+            return out;
+        }
+        bool found = false;
+        const bool valid
+            = bundle.target_format == TransferTargetFormat::Jpeg
+                  ? package_plan_has_primary_jpeg_icc(input, bundle, plan,
+                                                      &found, &out)
+              : transfer_target_is_tiff_family(bundle.target_format)
+                  ? package_plan_has_primary_tiff_icc(input, bundle, plan,
+                                                      &found, &out)
+                  : false;
+        if (!valid) {
+            if (out.status == TransferStatus::Ok) {
+                out.status = TransferStatus::Unsupported;
+                out.code   = EmitTransferCode::InvalidArgument;
+                out.errors = 1U;
+                out.message
+                    = "prepared package target is unsupported for primary ICC removal";
+            }
+            return out;
+        }
+        if (found) {
+            out.status  = TransferStatus::InvalidArgument;
+            out.code    = EmitTransferCode::PlanMismatch;
+            out.errors  = 1U;
+            out.message = "prepared package retains the primary ICC carrier";
+            return out;
+        }
+        out.status = TransferStatus::Ok;
+        out.code   = EmitTransferCode::None;
+        return out;
+    }
+
     static EmitTransferResult validate_prepared_transfer_package_plan(
         std::span<const std::byte> input, const PreparedTransferBundle& bundle,
         const PreparedTransferPackagePlan& plan) noexcept
     {
         EmitTransferResult out;
+        if (!prepared_carrier_removal_intents_are_valid(bundle)) {
+            out.status  = TransferStatus::InvalidArgument;
+            out.code    = EmitTransferCode::InvalidArgument;
+            out.errors  = 1U;
+            out.message = prepared_carrier_removal_conflict_message(bundle);
+            return out;
+        }
         if (!prepared_tiff_removals_are_valid(bundle)) {
             out.status = TransferStatus::InvalidArgument;
             out.code   = EmitTransferCode::InvalidArgument;
@@ -33413,6 +34145,11 @@ namespace {
             if (c2pa_preflight.status != TransferStatus::Ok) {
                 return c2pa_preflight;
             }
+        }
+        const EmitTransferResult icc_preflight
+            = validate_package_primary_icc_removal(input, bundle, plan);
+        if (icc_preflight.status != TransferStatus::Ok) {
+            return icc_preflight;
         }
         out.status = TransferStatus::Ok;
         out.code   = EmitTransferCode::None;
@@ -34135,6 +34872,7 @@ namespace {
         const bool has_tiff_edit_only_intent
             = bundle_has_tiff_destination_edit_intent(*bundle);
         const bool has_iptc_edit_only_intent = bundle->remove_existing_iptc;
+        const bool has_icc_edit_only_intent  = bundle->remove_existing_icc;
         if (!prepared_tiff_removals_are_valid(*bundle)) {
             out.compile.status = TransferStatus::InvalidArgument;
             out.compile.code   = EmitTransferCode::InvalidArgument;
@@ -34157,8 +34895,12 @@ namespace {
                && !transfer_target_is_tiff_family(bundle->target_format))
               || (has_iptc_edit_only_intent
                   && bundle->target_format != TransferTargetFormat::Jpeg
+                  && !transfer_target_is_tiff_family(bundle->target_format))
+              || (has_icc_edit_only_intent
+                  && bundle->target_format != TransferTargetFormat::Jpeg
                   && !transfer_target_is_tiff_family(bundle->target_format));
-        if ((has_tiff_edit_only_intent || has_iptc_edit_only_intent)
+        if ((has_tiff_edit_only_intent || has_iptc_edit_only_intent
+             || has_icc_edit_only_intent)
             && options.edit_requested
             && (invalid_edit_target || options.emit_output_writer
                 || compiled_plan)) {
@@ -36053,7 +36795,7 @@ compile_prepared_transfer_execution(
         out.message = "out_plan is null";
         return out;
     }
-    if (reject_iptc_removal_for_non_edit(bundle, &out)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &out)) {
         return out;
     }
     if (!prepared_tiff_removals_are_valid(bundle)) {
@@ -36143,7 +36885,7 @@ build_prepared_transfer_adapter_view(const PreparedTransferBundle& bundle,
         out.message = "out_view is null";
         return out;
     }
-    if (reject_iptc_removal_for_non_edit(bundle, &out)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &out)) {
         return out;
     }
     if (bundle_has_tiff_gps_destination_intent(bundle)) {
@@ -36391,7 +37133,7 @@ get_prepared_transfer_adapter_exr_attribute_view(
         out.message = "out_attribute is null";
         return out;
     }
-    if (reject_iptc_removal_for_non_edit(bundle, &out)) {
+    if (reject_carrier_removal_for_non_edit(bundle, &out)) {
         return out;
     }
     if (!prepared_tiff_removals_are_valid(bundle)) {
@@ -37572,6 +38314,9 @@ namespace {
 
         std::vector<std::byte> existing_xmp_sidecar_bytes;
         MetaStore store;
+        std::array<DcCollectionMergeScope, 3U> collection_scopes {};
+        size_t collection_scope_count = 0U;
+        bool collection_scopes_valid  = true;
         const bool merge_existing_sidecar
             = options.xmp_existing_sidecar_mode
               == XmpExistingSidecarMode::MergeIfPresent;
@@ -37634,6 +38379,7 @@ namespace {
                 if (existing_xmp_sidecar_bytes.empty()) {
                     return;
                 }
+                const size_t collection_begin = store.entries().size();
                 decode_existing_xmp_sidecar_into_store(
                     std::span<const std::byte>(
                         existing_xmp_sidecar_bytes.data(),
@@ -37642,6 +38388,12 @@ namespace {
                     &out.prepared.xmp_existing_sidecar_loaded,
                     &out.prepared.xmp_existing_sidecar_status,
                     &out.prepared.xmp_existing_sidecar_message);
+                collection_scopes_valid
+                    = record_dc_collection_scope(collection_begin,
+                                                 store.entries().size(),
+                                                 &collection_scopes,
+                                                 &collection_scope_count)
+                      && collection_scopes_valid;
                 if (!out.prepared.xmp_existing_sidecar_loaded) {
                     existing_xmp_sidecar_bytes.clear();
                 }
@@ -37653,21 +38405,35 @@ namespace {
                     return;
                 }
                 if (use_target_bytes_for_destination_embedded) {
+                    const size_t collection_begin = store.entries().size();
                     decode_existing_destination_embedded_xmp_bytes_into_store(
                         target_bytes, policy, decode_options.xmp,
                         preserve_store_on_failure, &store,
                         &out.xmp_existing_destination_embedded_loaded,
                         &out.xmp_existing_destination_embedded_status,
                         &out.xmp_existing_destination_embedded_message);
+                    collection_scopes_valid
+                        = record_dc_collection_scope(collection_begin,
+                                                     store.entries().size(),
+                                                     &collection_scopes,
+                                                     &collection_scope_count)
+                          && collection_scopes_valid;
                     return;
                 }
                 if (!destination_embedded_path.empty()) {
+                    const size_t collection_begin = store.entries().size();
                     decode_existing_destination_embedded_xmp_into_store(
                         destination_embedded_path.c_str(), policy,
                         decode_options.xmp, preserve_store_on_failure, &store,
                         &out.xmp_existing_destination_embedded_loaded,
                         &out.xmp_existing_destination_embedded_status,
                         &out.xmp_existing_destination_embedded_message);
+                    collection_scopes_valid
+                        = record_dc_collection_scope(collection_begin,
+                                                     store.entries().size(),
+                                                     &collection_scopes,
+                                                     &collection_scope_count)
+                          && collection_scopes_valid;
                     out.xmp_existing_destination_embedded_path
                         = destination_embedded_path;
                 }
@@ -37706,8 +38472,9 @@ namespace {
                 }
             };
 
-        apply_existing_xmp_merge_stage(false, false);
+        apply_existing_xmp_merge_stage(false, true);
 
+        const size_t source_collection_begin = store.entries().size();
         if (!append_entries_from_store(snapshot.store, &store, nullptr)) {
             out.prepared.file_status    = TransferFileStatus::ReadFailed;
             out.prepared.code           = PrepareTransferFileCode::DecodeFailed;
@@ -37716,6 +38483,12 @@ namespace {
             out.prepared.prepare.message
                 = "failed to copy source snapshot into transfer store";
         } else {
+            collection_scopes_valid
+                = record_dc_collection_scope(source_collection_begin,
+                                             store.entries().size(),
+                                             &collection_scopes,
+                                             &collection_scope_count)
+                  && collection_scopes_valid;
             apply_existing_xmp_merge_stage(true, true);
             if (merge_destination_embedded
                 && !use_target_bytes_for_destination_embedded
@@ -37724,6 +38497,19 @@ namespace {
                     = destination_embedded_path;
             }
 
+            if (!collection_scopes_valid
+                || !select_first_dc_collections(
+                    &store,
+                    std::span<const DcCollectionMergeScope>(
+                        collection_scopes.data(), collection_scope_count))) {
+                out.prepared.file_status = TransferFileStatus::ReadFailed;
+                out.prepared.code = PrepareTransferFileCode::DecodeFailed;
+                out.prepared.prepare.status = TransferStatus::LimitExceeded;
+                out.prepared.prepare.errors = 1U;
+                out.prepared.prepare.message
+                    = "XMP collection precedence preparation failed";
+                return out;
+            }
             store.finalize();
             out.prepared.entry_count = static_cast<uint32_t>(
                 store.entries().size());

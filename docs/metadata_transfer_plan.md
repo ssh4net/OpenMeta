@@ -1,5 +1,16 @@
 # Metadata Transfer Plan (Draft)
 
+## Primary ICC removal and DC collection merging (0.8.28)
+
+Explicit primary ICC removal closes the JPEG/TIFF/DNG carrier deletion gap
+without treating omission or last-tag deletion as removal. Complete DC creator
+and subject collections follow source/destination provider precedence while
+retaining edits and reconciliation that span provenance blocks. General MWG,
+arbitrary-schema merging and broader ICC carrier removal remain open. See
+[ICC removal](icc_removal.md) and [XMP policy](xmp_sync_policy.md). ABI 4 stays
+unfrozen; downstream work remains on hold and fuzzy search stays last.
+
+
 ## Shared descriptive lifecycle (0.8.27)
 
 Experimental C++ reconciliation contract 1 shares authority, deletion and bounds
@@ -232,6 +243,8 @@ suite and individual smoke registrations; aggregate gates are not CTest tests.
 In a non-Python test tree it runs:
 - `MetadataTransferApi.*`
 - `MetadataReconcile*.*`
+- `MetadataIccRemoval.*`
+- `XmpArrayPrecedence.*`
 - `XmpDump.*`
 - `ExrAdapter.*`
 - `DngSdkAdapter.*`

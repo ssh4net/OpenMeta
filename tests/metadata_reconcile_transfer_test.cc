@@ -1343,6 +1343,66 @@ TEST(MetadataReconcileTransfer,
                          "Safe source title"));
 }
 
+static bool
+make_collection_snapshot(std::string_view title,
+                         openmeta::TransferSourceSnapshot* output)
+{
+    const std::string creator_one      = std::string(title) + " creator one";
+    const std::string creator_two      = std::string(title) + " creator two";
+    const std::string repeated_keyword = std::string(title) + " keyword";
+    const std::array entries {
+        make_xmp_text_entry(kDcNamespace, "title[@xml:lang=x-default]", title),
+        make_xmp_text_entry(kDcNamespace, "creator[1]", creator_one),
+        make_xmp_text_entry(kDcNamespace, "creator[3]", creator_two),
+        make_xmp_text_entry(kDcNamespace, "subject[1]", repeated_keyword),
+        make_xmp_text_entry(kDcNamespace, "subject[3]", repeated_keyword)
+    };
+    openmeta::MetaStore store;
+    if (!openmeta::create_metadata_store(entries, &store).ok())
+        return false;
+    *output = openmeta::build_transfer_source_snapshot(store);
+    return output->store.is_finalized();
+}
+
+static void
+expect_selected_collection(const openmeta::MetaStore& store,
+                           std::string_view title)
+{
+    EXPECT_TRUE(has_text(store,
+                         openmeta::make_xmp_property_key_view(
+                             kDcNamespace, "title[@xml:lang=x-default]"),
+                         title));
+    const std::string creator_one = std::string(title) + " creator one";
+    const std::string creator_two = std::string(title) + " creator two";
+    const std::string keyword     = std::string(title) + " keyword";
+    EXPECT_TRUE(has_text(store,
+                         openmeta::make_xmp_property_key_view(kDcNamespace,
+                                                              "creator[1]"),
+                         creator_one));
+    EXPECT_TRUE(has_text(store,
+                         openmeta::make_xmp_property_key_view(kDcNamespace,
+                                                              "creator[2]"),
+                         creator_two));
+    EXPECT_TRUE(has_text(store,
+                         openmeta::make_xmp_property_key_view(kDcNamespace,
+                                                              "subject[1]"),
+                         keyword));
+    EXPECT_TRUE(has_text(store,
+                         openmeta::make_xmp_property_key_view(kDcNamespace,
+                                                              "subject[2]"),
+                         keyword));
+    EXPECT_TRUE(
+        store
+            .find_all(openmeta::make_xmp_property_key_view(kDcNamespace,
+                                                           "creator[3]"))
+            .empty());
+    EXPECT_TRUE(
+        store
+            .find_all(openmeta::make_xmp_property_key_view(kDcNamespace,
+                                                           "subject[3]"))
+            .empty());
+}
+
 TEST(MetadataReconcileTransfer,
      DestinationCarrierPrecedenceControlsXmpOnlyEmbeddedAndSidecarOutput)
 {
@@ -1352,131 +1412,206 @@ TEST(MetadataReconcileTransfer,
     openmeta::TransferSourceSnapshot source_snapshot;
     openmeta::TransferSourceSnapshot embedded_snapshot;
     openmeta::TransferSourceSnapshot sidecar_snapshot;
-    ASSERT_TRUE(make_title_snapshot("Transfer source title", &source_snapshot));
     ASSERT_TRUE(
-        make_title_snapshot("Destination embedded title", &embedded_snapshot));
+        make_collection_snapshot("Transfer source title", &source_snapshot));
+    ASSERT_TRUE(make_collection_snapshot("Destination embedded title",
+                                         &embedded_snapshot));
+    ASSERT_TRUE(make_collection_snapshot("Destination sidecar title",
+                                         &sidecar_snapshot));
+    Bytes source_packet;
     ASSERT_TRUE(
-        make_title_snapshot("Destination sidecar title", &sidecar_snapshot));
-
-    const CarrierCase jpeg_case { "jpeg", CarrierKind::Jpeg,
-                                  openmeta::TransferTargetFormat::Jpeg, false };
-    Bytes clean_jpeg;
-    ASSERT_TRUE(make_carrier_target(CarrierKind::Jpeg, &clean_jpeg));
-    openmeta::ExecutePreparedTransferSnapshotOptions seed_options;
-    seed_options.prepare                    = prepare_request_for(jpeg_case);
-    seed_options.prepare.include_exif_app1  = false;
-    seed_options.prepare.include_iptc_app13 = false;
-    seed_options.prepare.xmp_project_exif   = false;
-    seed_options.prepare.xmp_project_iptc   = false;
-    seed_options.execute.edit_apply         = true;
-    const openmeta::ExecutePreparedTransferFileResult embedded
-        = openmeta::execute_prepared_transfer_snapshot(
-            embedded_snapshot,
-            std::span<const std::byte>(clean_jpeg.data(), clean_jpeg.size()),
-            seed_options);
-    ASSERT_EQ(embedded.prepared.prepare.status, openmeta::TransferStatus::Ok);
-    ASSERT_EQ(embedded.execute.edit_plan_status, openmeta::TransferStatus::Ok);
-    ASSERT_EQ(embedded.execute.edit_apply.status, openmeta::TransferStatus::Ok);
-
-    Bytes destination_sidecar;
-    ASSERT_TRUE(build_portable_xmp_sidecar(sidecar_snapshot.store,
-                                           &destination_sidecar));
-    TemporaryDirectory directory;
-    ASSERT_TRUE(directory.valid);
-    const std::filesystem::path target_path  = directory.path / "target.jpg";
-    const std::filesystem::path sidecar_path = directory.path / "target.xmp";
-    ASSERT_TRUE(write_bytes_file(target_path, embedded.execute.edited_output));
-    ASSERT_TRUE(write_bytes_file(sidecar_path, destination_sidecar));
-
-    const std::array<openmeta::XmpExistingDestinationCarrierPrecedence, 2U>
-        precedences = {
-            openmeta::XmpExistingDestinationCarrierPrecedence::SidecarWins,
-            openmeta::XmpExistingDestinationCarrierPrecedence::EmbeddedWins,
-        };
-    for (openmeta::XmpExistingDestinationCarrierPrecedence precedence :
-         precedences) {
-        SCOPED_TRACE(static_cast<uint8_t>(precedence));
-        openmeta::ExecutePreparedTransferSnapshotOptions options;
-        options.prepare                    = prepare_request_for(jpeg_case);
-        options.prepare.include_exif_app1  = false;
-        options.prepare.include_iptc_app13 = false;
-        options.prepare.xmp_project_exif   = false;
-        options.prepare.xmp_project_iptc   = false;
-        options.prepare.xmp_conflict_policy
-            = openmeta::XmpConflictPolicy::ExistingWins;
-        options.xmp_existing_sidecar_base_path = target_path.string();
-        options.xmp_existing_sidecar_mode
-            = openmeta::XmpExistingSidecarMode::MergeIfPresent;
-        options.xmp_existing_destination_carrier_precedence = precedence;
-        options.xmp_existing_destination_embedded_mode
-            = openmeta::XmpExistingDestinationEmbeddedMode::MergeIfPresent;
-        options.xmp_existing_destination_embedded_precedence
-            = openmeta::XmpExistingDestinationEmbeddedPrecedence::DestinationWins;
-        options.edit_target_path      = target_path.string();
-        options.xmp_sidecar_base_path = target_path.string();
-        options.xmp_writeback_mode
-            = openmeta::XmpWritebackMode::EmbeddedAndSidecar;
-        options.execute.edit_apply = true;
-
-        // This is the destination's sibling sidecar. The source is an in-memory
-        // snapshot, so this case does not import a source-sidecar file.
-        const openmeta::ExecutePreparedTransferFileResult result
-            = openmeta::execute_prepared_transfer_snapshot(
-                source_snapshot,
-                std::span<const std::byte>(
-                    embedded.execute.edited_output.data(),
-                    embedded.execute.edited_output.size()),
-                options);
-        ASSERT_EQ(result.prepared.prepare.status, openmeta::TransferStatus::Ok);
-        ASSERT_EQ(result.execute.edit_plan_status,
+        build_portable_xmp_sidecar(source_snapshot.store, &source_packet));
+    Bytes source_file_bytes { std::byte { 0xff }, std::byte { 0xd8 } };
+    constexpr std::array<std::byte, 5U> padding_comment {
+        std::byte { 0xff }, std::byte { 0xfe }, std::byte { 0 },
+        std::byte { 3 }, std::byte { 'p' }
+    };
+    for (size_t i = 0U; i < 300U; ++i)
+        source_file_bytes.insert(source_file_bytes.end(),
+                                 padding_comment.begin(),
+                                 padding_comment.end());
+    constexpr char xmp_signature[] = "http://ns.adobe.com/xap/1.0/";
+    const size_t app_length = 2U + sizeof(xmp_signature) + source_packet.size();
+    ASSERT_LE(app_length, 65535U);
+    source_file_bytes.push_back(std::byte { 0xff });
+    source_file_bytes.push_back(std::byte { 0xe1 });
+    append_u16_be(&source_file_bytes, static_cast<uint16_t>(app_length));
+    const auto signature_bytes = std::as_bytes(std::span(xmp_signature));
+    source_file_bytes.insert(source_file_bytes.end(), signature_bytes.begin(),
+                             signature_bytes.end());
+    source_file_bytes.insert(source_file_bytes.end(), source_packet.begin(),
+                             source_packet.end());
+    const auto source_media = openmeta::container_test::make_jpeg_fixture();
+    source_file_bytes.insert(source_file_bytes.end(),
+                             source_media.bytes.begin()
+                                 + static_cast<std::ptrdiff_t>(
+                                     source_media.scan_offset),
+                             source_media.bytes.end());
+    const std::array<std::string_view, 3U> labels {
+        "Destination sidecar title", "Destination embedded title",
+        "Transfer source title"
+    };
+    for (const CarrierCase& carrier : kCarrierCases) {
+        SCOPED_TRACE(carrier.name);
+        Bytes target;
+        ASSERT_TRUE(make_carrier_target(carrier.kind, &target));
+        openmeta::ExecutePreparedTransferSnapshotOptions seed;
+        seed.prepare                    = prepare_request_for(carrier);
+        seed.prepare.include_exif_app1  = false;
+        seed.prepare.include_iptc_app13 = false;
+        seed.prepare.xmp_project_exif   = false;
+        seed.prepare.xmp_project_iptc   = false;
+        seed.execute.edit_apply         = true;
+        const auto embedded
+            = openmeta::execute_prepared_transfer_snapshot(embedded_snapshot,
+                                                           target, seed);
+        ASSERT_EQ(embedded.prepared.prepare.status,
                   openmeta::TransferStatus::Ok);
-        ASSERT_EQ(result.execute.edit_apply.status,
+        ASSERT_EQ(embedded.execute.edit_plan_status,
                   openmeta::TransferStatus::Ok);
-        ASSERT_TRUE(result.prepared.xmp_existing_sidecar_loaded);
-        ASSERT_TRUE(result.xmp_existing_destination_embedded_loaded);
-        ASSERT_TRUE(result.xmp_sidecar_requested);
-        ASSERT_EQ(result.xmp_sidecar_status, openmeta::TransferStatus::Ok);
-        ASSERT_FALSE(result.xmp_sidecar_output.empty());
-
-        const std::string_view expected
-            = precedence
-                      == openmeta::XmpExistingDestinationCarrierPrecedence::
-                          SidecarWins
-                  ? "Destination sidecar title"
-                  : "Destination embedded title";
-        openmeta::ReadTransferSourceSnapshotOptions read_options;
-        const openmeta::ReadTransferSourceSnapshotBytesResult edited_read
-            = openmeta::read_transfer_source_snapshot_bytes(
-                std::span<const std::byte>(result.execute.edited_output.data(),
-                                           result.execute.edited_output.size()),
-                read_options);
-        ASSERT_EQ(edited_read.status, openmeta::TransferStatus::Ok);
-        EXPECT_TRUE(has_text(edited_read.snapshot.store,
-                             openmeta::make_xmp_property_key_view(
-                                 kDcNamespace, "title[@xml:lang=x-default]"),
-                             expected));
-        EXPECT_FALSE(has_text(edited_read.snapshot.store,
-                              openmeta::make_xmp_property_key_view(
-                                  kDcNamespace, "title[@xml:lang=x-default]"),
-                              "Transfer source title"));
-
-        openmeta::MetaStore sidecar_read;
-        openmeta::XmpDecodeOptions decode_options;
-        const openmeta::XmpDecodeResult sidecar_decoded
-            = openmeta::decode_xmp_packet(result.xmp_sidecar_output,
-                                          sidecar_read,
-                                          openmeta::EntryFlags::None,
-                                          decode_options);
-        ASSERT_EQ(sidecar_decoded.status, openmeta::XmpDecodeStatus::Ok);
-        sidecar_read.finalize();
-        EXPECT_TRUE(has_text(sidecar_read,
-                             openmeta::make_xmp_property_key_view(
-                                 kDcNamespace, "title[@xml:lang=x-default]"),
-                             expected));
-        EXPECT_FALSE(has_text(sidecar_read,
-                              openmeta::make_xmp_property_key_view(
-                                  kDcNamespace, "title[@xml:lang=x-default]"),
-                              "Transfer source title"));
+        ASSERT_EQ(embedded.execute.edit_apply.status,
+                  openmeta::TransferStatus::Ok);
+        Bytes sidecar;
+        ASSERT_TRUE(
+            build_portable_xmp_sidecar(sidecar_snapshot.store, &sidecar));
+        TemporaryDirectory directory;
+        ASSERT_TRUE(directory.valid);
+        const auto target_path = directory.path / "target.image";
+        const std::filesystem::path sidecar_path = directory.path
+                                                   / "target.xmp";
+        ASSERT_TRUE(
+            write_bytes_file(target_path, embedded.execute.edited_output));
+        ASSERT_TRUE(write_bytes_file(sidecar_path, sidecar));
+        const std::filesystem::path source_path = directory.path / "source.jpg";
+        ASSERT_TRUE(write_bytes_file(source_path, source_file_bytes));
+        for (size_t selected = 0U; selected < labels.size(); ++selected) {
+            SCOPED_TRACE(selected);
+            openmeta::ExecutePreparedTransferSnapshotOptions options;
+            options.prepare = seed.prepare;
+            options.prepare.xmp_conflict_policy
+                = openmeta::XmpConflictPolicy::ExistingWins;
+            options.xmp_existing_sidecar_base_path = target_path.string();
+            options.xmp_existing_sidecar_mode
+                = openmeta::XmpExistingSidecarMode::MergeIfPresent;
+            options.xmp_existing_destination_carrier_precedence
+                = selected == 1U
+                      ? openmeta::XmpExistingDestinationCarrierPrecedence::
+                            EmbeddedWins
+                      : openmeta::XmpExistingDestinationCarrierPrecedence::
+                            SidecarWins;
+            options.xmp_existing_destination_embedded_mode
+                = openmeta::XmpExistingDestinationEmbeddedMode::MergeIfPresent;
+            options.xmp_existing_sidecar_precedence
+                = selected == 2U
+                      ? openmeta::XmpExistingSidecarPrecedence::SourceWins
+                      : openmeta::XmpExistingSidecarPrecedence::SidecarWins;
+            options.xmp_existing_destination_embedded_precedence
+                = selected == 2U
+                      ? openmeta::XmpExistingDestinationEmbeddedPrecedence::SourceWins
+                      : openmeta::XmpExistingDestinationEmbeddedPrecedence::
+                            DestinationWins;
+            options.edit_target_path      = target_path.string();
+            options.xmp_sidecar_base_path = target_path.string();
+            options.xmp_writeback_mode
+                = openmeta::XmpWritebackMode::EmbeddedAndSidecar;
+            options.execute.edit_apply = true;
+            const Bytes before         = embedded.execute.edited_output;
+            const auto result
+                = openmeta::execute_prepared_transfer_snapshot(source_snapshot,
+                                                               before, options);
+            ASSERT_EQ(result.prepared.prepare.status,
+                      openmeta::TransferStatus::Ok);
+            ASSERT_EQ(result.execute.edit_plan_status,
+                      openmeta::TransferStatus::Ok);
+            ASSERT_EQ(result.execute.edit_apply.status,
+                      openmeta::TransferStatus::Ok);
+            ASSERT_TRUE(result.prepared.xmp_existing_sidecar_loaded);
+            ASSERT_TRUE(result.xmp_existing_destination_embedded_loaded);
+            ASSERT_EQ(result.xmp_sidecar_status, openmeta::TransferStatus::Ok);
+            const openmeta::ReadTransferSourceSnapshotBytesResult read
+                = openmeta::read_transfer_source_snapshot_bytes(
+                    result.execute.edited_output);
+            ASSERT_EQ(read.status, openmeta::TransferStatus::Ok);
+            expect_selected_collection(read.snapshot.store, labels[selected]);
+            openmeta::MetaStore sidecar_store;
+            ASSERT_EQ(openmeta::decode_xmp_packet(result.xmp_sidecar_output,
+                                                  sidecar_store,
+                                                  openmeta::EntryFlags::None,
+                                                  {})
+                          .status,
+                      openmeta::XmpDecodeStatus::Ok);
+            sidecar_store.finalize();
+            expect_selected_collection(sidecar_store, labels[selected]);
+            for (std::string_view other : labels) {
+                if (other == labels[selected])
+                    continue;
+                const openmeta::MetaKeyView title_key
+                    = openmeta::make_xmp_property_key_view(
+                        kDcNamespace, "title[@xml:lang=x-default]");
+                EXPECT_FALSE(has_text(read.snapshot.store, title_key, other));
+                EXPECT_FALSE(has_text(sidecar_store, title_key, other));
+            }
+            openmeta::ExecutePreparedTransferFileOptions file_options;
+            file_options.prepare.prepare = options.prepare;
+            file_options.prepare.xmp_existing_sidecar_base_path
+                = target_path.string();
+            file_options.prepare.xmp_existing_sidecar_mode
+                = options.xmp_existing_sidecar_mode;
+            file_options.prepare.xmp_existing_sidecar_precedence
+                = options.xmp_existing_sidecar_precedence;
+            file_options.prepare.xmp_existing_destination_carrier_precedence
+                = options.xmp_existing_destination_carrier_precedence;
+            file_options.xmp_existing_destination_embedded_mode
+                = options.xmp_existing_destination_embedded_mode;
+            file_options.xmp_existing_destination_embedded_precedence
+                = options.xmp_existing_destination_embedded_precedence;
+            file_options.edit_target_path      = target_path.string();
+            file_options.xmp_sidecar_base_path = target_path.string();
+            file_options.xmp_writeback_mode    = options.xmp_writeback_mode;
+            file_options.execute.edit_apply    = true;
+            const auto from_file = openmeta::execute_prepared_transfer_file(
+                source_path.string().c_str(), file_options);
+            ASSERT_EQ(from_file.prepared.file_status,
+                      openmeta::TransferFileStatus::Ok);
+            ASSERT_EQ(from_file.prepared.prepare.status,
+                      openmeta::TransferStatus::Ok);
+            ASSERT_GT(from_file.prepared.read.scan.written, 256U);
+            ASSERT_EQ(from_file.execute.edit_apply.status,
+                      openmeta::TransferStatus::Ok);
+            const auto file_read = openmeta::read_transfer_source_snapshot_bytes(
+                from_file.execute.edited_output);
+            ASSERT_EQ(file_read.status, openmeta::TransferStatus::Ok);
+            expect_selected_collection(file_read.snapshot.store,
+                                       labels[selected]);
+            expect_media_and_unmanaged_bytes(carrier.kind, before,
+                                             from_file.execute.edited_output);
+            if (carrier.kind == CarrierKind::Jpeg && selected == 1U) {
+                constexpr std::array<std::byte, 4U> invalid_packet {
+                    std::byte { '<' }, std::byte { 'b' }, std::byte { 'a' },
+                    std::byte { 'd' }
+                };
+                ASSERT_TRUE(write_bytes_file(sidecar_path, invalid_packet));
+                const auto failover
+                    = openmeta::execute_prepared_transfer_snapshot(
+                        source_snapshot, before, options);
+                EXPECT_FALSE(failover.prepared.xmp_existing_sidecar_loaded);
+                EXPECT_NE(failover.prepared.xmp_existing_sidecar_status,
+                          openmeta::TransferStatus::Ok);
+                EXPECT_TRUE(failover.xmp_existing_destination_embedded_loaded);
+                ASSERT_EQ(failover.execute.edit_apply.status,
+                          openmeta::TransferStatus::Ok);
+                const auto failover_read
+                    = openmeta::read_transfer_source_snapshot_bytes(
+                        failover.execute.edited_output);
+                ASSERT_EQ(failover_read.status, openmeta::TransferStatus::Ok);
+                expect_selected_collection(failover_read.snapshot.store,
+                                           labels[1U]);
+                ASSERT_TRUE(write_bytes_file(sidecar_path, sidecar));
+            }
+            EXPECT_EQ(embedded.execute.edited_output, before);
+            expect_media_and_unmanaged_bytes(carrier.kind, before,
+                                             result.execute.edited_output);
+        }
     }
 }
 }  // namespace

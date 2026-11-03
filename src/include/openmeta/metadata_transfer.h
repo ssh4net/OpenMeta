@@ -765,6 +765,12 @@ struct PreparedTransferBundle final {
     bool remove_existing_iptc = false;
     std::vector<TimePatchSlot> time_patch_map;
     std::vector<std::byte> generated_xmp_sidecar;
+    /// Remove the primary ICC carrier (JPEG leading ICC_PROFILE APP2 chain or
+    /// TIFF/DNG primary IFD0 tag 34675) during an edit. This is explicit
+    /// whole-carrier intent; preparation does not infer it from omitted ICC
+    /// output or native ICC tombstones. Fresh emit and non-edit consumers
+    /// reject this intent.
+    bool remove_existing_icc = false;
 };
 
 /// One opt-in raw source carrier captured next to a decoded snapshot.
@@ -972,6 +978,9 @@ struct PrepareTransferRequest final {
     bool xmp_exiftool_gpsdatetime_alias   = false;
     /// Shared bounds for selected explicit custom-XMP structures.
     XmpStructureLimits xmp_structures;
+    /// Explicitly remove the primary ICC carrier on JPEG or TIFF/DNG targets.
+    /// This suppresses source ICC output even when include_icc_app2 is true.
+    bool remove_existing_icc = false;
 };
 
 /// Result details for preparation.
