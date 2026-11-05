@@ -4,6 +4,7 @@
 #include "openmeta/metadata_query.h"
 #include "../../src/openmeta/raf_decode_internal.h"
 #include "../../src/openmeta/mrw_decode_internal.h"
+#include "../../src/openmeta/exif_tiff_decode_internal.h"
 #include <cstring>
 
 #include <array>
@@ -41,6 +42,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     options.limits.max_entries_per_ifd = 512;
     options.limits.max_total_entries   = 4096;
     options.limits.max_value_bytes     = 1ULL * 1024ULL * 1024ULL;
+    options.limits.max_arena_bytes     = 8ULL * 1024ULL * 1024ULL;
 
     std::array<ExifIfdRef, 64> ifds {};
     (void)decode_exif_tiff(bytes, store, ifds, options);
@@ -51,6 +53,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     query.max_total_values = 4096U;
     (void)query_raw_processing_metadata(store, query);
     (void)query_color_metadata(store, query);
+    (void)query_crop_metadata(store, query);
 
     Input input { bytes };
     const auto source = make_callback_random_access_source(bytes.size(), &input, read_at);
@@ -68,6 +71,14 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     (void)decode_exif_tiff_random_access(range, callback, {}, scratch, options, reads);
     callback.finalize();
     (void)query_raw_processing_metadata(callback, query);
+    (void)query_crop_metadata(callback, query);
+    if (bytes.size() >= 8U
+        && (bytes[0] == std::byte { 'I' } || bytes[0] == std::byte { 'M' })) {
+        MetaStore canon;
+        exif_internal::CanonMakerNoteResiduals residuals;
+        (void)exif_internal::decode_canon_cr3_tiff(bytes, canon, {}, options,
+                                                 &residuals);
+    }
     if (raf_internal::looks_like_raf(bytes)) {
         MetaStore native;
         (void)raf_internal::decode_raf_native(bytes, native, options.limits);

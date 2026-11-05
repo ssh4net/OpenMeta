@@ -59,6 +59,52 @@ using namespace nb::literals;
 namespace openmeta {
 namespace {
 
+    struct PyMetadataDirectorySelector final {
+        BlockId block = kInvalidBlockId;
+        std::string ifd;
+    };
+
+    struct PyMetadataQueryScope final {
+        bool enabled = false;
+        bool inherit_across_directories = false;
+        std::vector<PyMetadataDirectorySelector> directories;
+    };
+
+    struct PyMetadataQueryOptions final {
+        PyMetadataQueryScope scope;
+        bool include_numeric_values = true;
+        uint32_t max_values_per_entry = 65536U;
+        uint32_t max_values_per_candidate = 262144U;
+        uint64_t max_total_values = 1048576U;
+        uint64_t max_semantic_work = 1048576U;
+    };
+
+    static void metadata_query_scope_add_directory(
+        PyMetadataQueryScope& scope, BlockId block, const std::string& ifd)
+    {
+        PyMetadataDirectorySelector selector;
+        selector.block = block;
+        selector.ifd = ifd;
+        scope.directories.push_back(std::move(selector));
+    }
+
+    static void metadata_query_scope_clear_directories(
+        PyMetadataQueryScope& scope)
+    {
+        scope.directories.clear();
+    }
+
+    static size_t metadata_query_scope_directory_count(
+        const PyMetadataQueryScope& scope) noexcept
+    {
+        return scope.directories.size();
+    }
+
+    static void metadata_scope_to_cpp(
+        const PyMetadataQueryScope& source,
+        std::vector<MetadataDirectorySelector>* directories,
+        MetadataQueryScope* scope);
+
     static nb::str sv_to_py(std::string_view s)
     {
         PyObject* decoded
@@ -748,9 +794,12 @@ namespace {
                                               bool include_reduction_matrices,
                                               uint32_t max_fields,
                                               uint32_t max_values_per_field,
-                                              CcmValidationMode validation_mode)
+                                              CcmValidationMode validation_mode,
+                                              const PyMetadataQueryScope& scope)
     {
         CcmQueryOptions options;
+        std::vector<MetadataDirectorySelector> directories;
+        metadata_scope_to_cpp(scope, &directories, &options.scope);
         options.require_dng_context         = require_dng_context;
         options.include_reduction_matrices  = include_reduction_matrices;
         options.validation_mode             = validation_mode;
@@ -1122,10 +1171,48 @@ namespace {
         return out;
     }
 
-    static nb::dict metadata_query_to_python(const MetaStore& store,
-                                             MetadataQueryKind kind)
+    static MetadataQueryOptions metadata_query_options_to_cpp(
+        const PyMetadataQueryOptions& source,
+        std::vector<MetadataDirectorySelector>* directories)
     {
-        const MetadataQueryResult result = query_metadata(store, kind);
+        MetadataQueryOptions options;
+        metadata_scope_to_cpp(source.scope, directories, &options.scope);
+        options.include_numeric_values = source.include_numeric_values;
+        options.max_values_per_entry = source.max_values_per_entry;
+        options.max_values_per_candidate = source.max_values_per_candidate;
+        options.max_total_values = source.max_total_values;
+        options.max_semantic_work = source.max_semantic_work;
+        return options;
+    }
+
+    static void metadata_scope_to_cpp(
+        const PyMetadataQueryScope& source,
+        std::vector<MetadataDirectorySelector>* directories,
+        MetadataQueryScope* scope)
+    {
+        directories->clear();
+        directories->reserve(source.directories.size());
+        for (size_t i = 0U; i < source.directories.size(); ++i) {
+            const PyMetadataDirectorySelector& selector
+                = source.directories[i];
+            directories->push_back(
+                MetadataDirectorySelector { selector.block, selector.ifd });
+        }
+        scope->enabled = source.enabled;
+        scope->directories = std::span<const MetadataDirectorySelector>(
+            directories->data(), directories->size());
+        scope->inherit_across_directories
+            = source.inherit_across_directories;
+    }
+
+    static nb::dict metadata_query_to_python(
+        const MetaStore& store, MetadataQueryKind kind,
+        const PyMetadataQueryOptions& source)
+    {
+        std::vector<MetadataDirectorySelector> directories;
+        const MetadataQueryOptions options
+            = metadata_query_options_to_cpp(source, &directories);
+        const MetadataQueryResult result = query_metadata(store, kind, options);
         return metadata_query_result_to_python(result);
     }
 
@@ -1240,18 +1327,27 @@ namespace {
         return out;
     }
 
-    static nb::dict metadata_interpretation_to_python(const MetaStore& store)
+    static nb::dict metadata_interpretation_to_python(
+        const MetaStore& store, const PyMetadataQueryOptions& source)
     {
-        const MetadataInterpretationResult result = interpret_metadata(store);
+        std::vector<MetadataDirectorySelector> directories;
+        const MetadataQueryOptions options
+            = metadata_query_options_to_cpp(source, &directories);
+        const MetadataInterpretationResult result
+            = interpret_metadata(store, options);
         return metadata_interpretation_result_to_python(result);
     }
 
     static nb::dict
     metadata_interpretation_query_to_python(const MetaStore& store,
-                                            MetadataQueryKind kind)
+                                            MetadataQueryKind kind,
+                                            const PyMetadataQueryOptions& source)
     {
+        std::vector<MetadataDirectorySelector> directories;
+        const MetadataQueryOptions options
+            = metadata_query_options_to_cpp(source, &directories);
         const MetadataInterpretationResult result
-            = interpret_metadata_query(store, kind);
+            = interpret_metadata_query(store, kind, options);
         return metadata_interpretation_result_to_python(result);
     }
 
@@ -1494,35 +1590,52 @@ namespace {
         return out;
     }
 
-    static nb::dict metadata_concepts_to_python(const MetaStore& store)
+    static nb::dict metadata_concepts_to_python(
+        const MetaStore& store, const PyMetadataQueryOptions& source)
     {
-        const MetadataConceptResult result = resolve_metadata_concepts(store);
+        std::vector<MetadataDirectorySelector> directories;
+        const MetadataQueryOptions options
+            = metadata_query_options_to_cpp(source, &directories);
+        const MetadataConceptResult result
+            = resolve_metadata_concepts(store, options);
         return metadata_concept_result_to_python(result);
     }
 
     static nb::dict
     metadata_concepts_to_python(const MetaStore& store,
-                                const MetadataRawDataDescriptor& raw_descriptor)
+                                const MetadataRawDataDescriptor& raw_descriptor,
+                                const PyMetadataQueryOptions& source)
     {
+        std::vector<MetadataDirectorySelector> directories;
+        const MetadataQueryOptions options
+            = metadata_query_options_to_cpp(source, &directories);
         const MetadataConceptResult result
-            = resolve_metadata_concepts(store, raw_descriptor);
+            = resolve_metadata_concepts(store, raw_descriptor, options);
         return metadata_concept_result_to_python(result);
     }
 
     static nb::dict metadata_concept_to_python(const MetaStore& store,
-                                               MetadataConceptKind kind)
+                                               MetadataConceptKind kind,
+                                               const PyMetadataQueryOptions& source)
     {
-        const MetadataConceptResolution result = resolve_metadata_concept(store,
-                                                                          kind);
+        std::vector<MetadataDirectorySelector> directories;
+        const MetadataQueryOptions options
+            = metadata_query_options_to_cpp(source, &directories);
+        const MetadataConceptResolution result
+            = resolve_metadata_concept(store, kind, options);
         return metadata_concept_resolution_to_python(result);
     }
 
     static nb::dict
     metadata_concept_to_python(const MetaStore& store, MetadataConceptKind kind,
-                               const MetadataRawDataDescriptor& raw_descriptor)
+                               const MetadataRawDataDescriptor& raw_descriptor,
+                               const PyMetadataQueryOptions& source)
     {
+        std::vector<MetadataDirectorySelector> directories;
+        const MetadataQueryOptions options
+            = metadata_query_options_to_cpp(source, &directories);
         const MetadataConceptResolution result
-            = resolve_metadata_concept(store, kind, raw_descriptor);
+            = resolve_metadata_concept(store, kind, raw_descriptor, options);
         return metadata_concept_resolution_to_python(result);
     }
 
@@ -8285,9 +8398,10 @@ snapshot_vendor_raw_processing(const TransferSourceSnapshot& snapshot,
 
 static nb::dict
 snapshot_metadata_query(const TransferSourceSnapshot& snapshot,
-                        MetadataQueryKind kind)
+                        MetadataQueryKind kind,
+                        const PyMetadataQueryOptions& options)
 {
-    return metadata_query_to_python(snapshot.store, kind);
+    return metadata_query_to_python(snapshot.store, kind, options);
 }
 
 static nb::dict
@@ -8299,93 +8413,116 @@ snapshot_fuzzy_search(const TransferSourceSnapshot& snapshot,
                                            max_results);
 }
 
-static nb::dict
-snapshot_query_crop_metadata(const TransferSourceSnapshot& snapshot)
+static nb::dict snapshot_query_crop_metadata(
+    const TransferSourceSnapshot& snapshot,
+    const PyMetadataQueryOptions& options)
 {
-    return metadata_query_to_python(snapshot.store, MetadataQueryKind::Crop);
+    return metadata_query_to_python(snapshot.store, MetadataQueryKind::Crop,
+                                    options);
 }
 
 static nb::dict
-snapshot_query_exposure_gain_metadata(const TransferSourceSnapshot& snapshot)
+snapshot_query_exposure_gain_metadata(
+    const TransferSourceSnapshot& snapshot,
+    const PyMetadataQueryOptions& options)
 {
     return metadata_query_to_python(snapshot.store,
-                                    MetadataQueryKind::ExposureGain);
+                                    MetadataQueryKind::ExposureGain, options);
 }
 
 static nb::dict
-snapshot_query_white_balance_metadata(const TransferSourceSnapshot& snapshot)
+snapshot_query_white_balance_metadata(
+    const TransferSourceSnapshot& snapshot,
+    const PyMetadataQueryOptions& options)
 {
     return metadata_query_to_python(snapshot.store,
-                                    MetadataQueryKind::WhiteBalance);
+                                    MetadataQueryKind::WhiteBalance, options);
 }
 
 static nb::dict
-snapshot_query_color_metadata(const TransferSourceSnapshot& snapshot)
+snapshot_query_color_metadata(const TransferSourceSnapshot& snapshot,
+                              const PyMetadataQueryOptions& options)
 {
-    return metadata_query_to_python(snapshot.store, MetadataQueryKind::Color);
+    return metadata_query_to_python(snapshot.store, MetadataQueryKind::Color,
+                                    options);
 }
 
 static nb::dict
-snapshot_query_lens_correction_metadata(const TransferSourceSnapshot& snapshot)
-{
-    return metadata_query_to_python(snapshot.store,
-                                    MetadataQueryKind::LensCorrection);
-}
-
-static nb::dict
-snapshot_query_orientation_metadata(const TransferSourceSnapshot& snapshot)
+snapshot_query_lens_correction_metadata(
+    const TransferSourceSnapshot& snapshot,
+    const PyMetadataQueryOptions& options)
 {
     return metadata_query_to_python(snapshot.store,
-                                    MetadataQueryKind::Orientation);
+                                    MetadataQueryKind::LensCorrection, options);
 }
 
 static nb::dict
-snapshot_query_raw_processing_metadata(const TransferSourceSnapshot& snapshot)
+snapshot_query_orientation_metadata(
+    const TransferSourceSnapshot& snapshot,
+    const PyMetadataQueryOptions& options)
 {
     return metadata_query_to_python(snapshot.store,
-                                    MetadataQueryKind::RawProcessing);
+                                    MetadataQueryKind::Orientation, options);
 }
 
 static nb::dict
-snapshot_interpret_metadata(const TransferSourceSnapshot& snapshot)
+snapshot_query_raw_processing_metadata(
+    const TransferSourceSnapshot& snapshot,
+    const PyMetadataQueryOptions& options)
 {
-    return metadata_interpretation_to_python(snapshot.store);
+    return metadata_query_to_python(snapshot.store,
+                                    MetadataQueryKind::RawProcessing, options);
+}
+
+static nb::dict
+snapshot_interpret_metadata(const TransferSourceSnapshot& snapshot,
+                            const PyMetadataQueryOptions& options)
+{
+    return metadata_interpretation_to_python(snapshot.store, options);
 }
 
 static nb::dict
 snapshot_interpret_metadata_query(const TransferSourceSnapshot& snapshot,
-                                  MetadataQueryKind kind)
+                                  MetadataQueryKind kind,
+                                  const PyMetadataQueryOptions& options)
 {
-    return metadata_interpretation_query_to_python(snapshot.store, kind);
+    return metadata_interpretation_query_to_python(snapshot.store, kind,
+                                                  options);
 }
 
 static nb::dict
-snapshot_resolve_metadata_concepts(const TransferSourceSnapshot& snapshot)
+snapshot_resolve_metadata_concepts(
+    const TransferSourceSnapshot& snapshot,
+    const PyMetadataQueryOptions& options)
 {
-    return metadata_concepts_to_python(snapshot.store);
+    return metadata_concepts_to_python(snapshot.store, options);
 }
 
 static nb::dict
 snapshot_resolve_metadata_concepts_with_raw_descriptor(
     const TransferSourceSnapshot& snapshot,
-    const MetadataRawDataDescriptor& raw_descriptor)
+    const MetadataRawDataDescriptor& raw_descriptor,
+    const PyMetadataQueryOptions& options)
 {
-    return metadata_concepts_to_python(snapshot.store, raw_descriptor);
+    return metadata_concepts_to_python(snapshot.store, raw_descriptor, options);
 }
 
 static nb::dict
 snapshot_resolve_metadata_concept(const TransferSourceSnapshot& snapshot,
-                                  MetadataConceptKind kind)
+                                  MetadataConceptKind kind,
+                                  const PyMetadataQueryOptions& options)
 {
-    return metadata_concept_to_python(snapshot.store, kind);
+    return metadata_concept_to_python(snapshot.store, kind, options);
 }
 
 static nb::dict
 snapshot_resolve_metadata_concept_with_raw_descriptor(
     const TransferSourceSnapshot& snapshot, MetadataConceptKind kind,
-    const MetadataRawDataDescriptor& raw_descriptor)
+    const MetadataRawDataDescriptor& raw_descriptor,
+    const PyMetadataQueryOptions& options)
 {
-    return metadata_concept_to_python(snapshot.store, kind, raw_descriptor);
+    return metadata_concept_to_python(snapshot.store, kind, raw_descriptor,
+                                      options);
 }
 
 static nb::dict
@@ -8411,24 +8548,49 @@ snapshot_makernote_layout_transfer_audit(const TransferSourceSnapshot& snapshot)
         makernote_layout_transfer_audit_from_store(snapshot.store));
 }
 
+static nb::dict transfer_concept_diagnostics_from_store_to_python(
+    const MetaStore& store, TransferSafetyMode safety,
+    const PyMetadataQueryOptions& source)
+{
+    std::vector<MetadataDirectorySelector> directories;
+    const MetadataQueryOptions options
+        = metadata_query_options_to_cpp(source, &directories);
+    const TransferConceptDiagnostics diagnostics
+        = transfer_concept_diagnostics_from_store(store, safety, options);
+    return transfer_concept_diagnostics_to_python(diagnostics);
+}
+
+static nb::dict transfer_concept_diagnostics_from_store_to_python(
+    const MetaStore& store, TransferSafetyMode safety,
+    const MetadataRawDataDescriptor& raw_descriptor,
+    const PyMetadataQueryOptions& source)
+{
+    std::vector<MetadataDirectorySelector> directories;
+    const MetadataQueryOptions options
+        = metadata_query_options_to_cpp(source, &directories);
+    const TransferConceptDiagnostics diagnostics
+        = transfer_concept_diagnostics_from_store(store, safety, raw_descriptor,
+                                                  options);
+    return transfer_concept_diagnostics_to_python(diagnostics);
+}
+
 static nb::dict
 snapshot_transfer_concept_diagnostics(const TransferSourceSnapshot& snapshot,
-                                      TransferSafetyMode safety)
+                                      TransferSafetyMode safety,
+                                      const PyMetadataQueryOptions& options)
 {
-    const TransferConceptDiagnostics diagnostics
-        = transfer_concept_diagnostics_from_store(snapshot.store, safety);
-    return transfer_concept_diagnostics_to_python(diagnostics);
+    return transfer_concept_diagnostics_from_store_to_python(snapshot.store,
+                                                              safety, options);
 }
 
 static nb::dict
 snapshot_transfer_concept_diagnostics_with_raw_descriptor(
     const TransferSourceSnapshot& snapshot, TransferSafetyMode safety,
-    const MetadataRawDataDescriptor& raw_descriptor)
+    const MetadataRawDataDescriptor& raw_descriptor,
+    const PyMetadataQueryOptions& options)
 {
-    const TransferConceptDiagnostics diagnostics
-        = transfer_concept_diagnostics_from_store(snapshot.store, safety,
-                                                  raw_descriptor);
-    return transfer_concept_diagnostics_to_python(diagnostics);
+    return transfer_concept_diagnostics_from_store_to_python(
+        snapshot.store, safety, raw_descriptor, options);
 }
 
 static nb::dict
@@ -8471,10 +8633,11 @@ document_vendor_raw_processing(std::shared_ptr<PyDocument> d,
     return vendor_raw_processing_to_python(d->store, family);
 }
 
-static nb::dict
-document_metadata_query(std::shared_ptr<PyDocument> d, MetadataQueryKind kind)
+static nb::dict document_metadata_query(
+    std::shared_ptr<PyDocument> d, MetadataQueryKind kind,
+    const PyMetadataQueryOptions& options)
 {
-    return metadata_query_to_python(d->store, kind);
+    return metadata_query_to_python(d->store, kind, options);
 }
 
 static nb::dict
@@ -8485,89 +8648,106 @@ document_fuzzy_search(std::shared_ptr<PyDocument> d, const std::string& query,
                                            max_results);
 }
 
-static nb::dict
-document_query_crop_metadata(std::shared_ptr<PyDocument> d)
+static nb::dict document_query_crop_metadata(
+    std::shared_ptr<PyDocument> d, const PyMetadataQueryOptions& options)
 {
-    return metadata_query_to_python(d->store, MetadataQueryKind::Crop);
+    return metadata_query_to_python(d->store, MetadataQueryKind::Crop,
+                                    options);
 }
 
 static nb::dict
-document_query_exposure_gain_metadata(std::shared_ptr<PyDocument> d)
+document_query_exposure_gain_metadata(
+    std::shared_ptr<PyDocument> d, const PyMetadataQueryOptions& options)
 {
-    return metadata_query_to_python(d->store, MetadataQueryKind::ExposureGain);
+    return metadata_query_to_python(d->store, MetadataQueryKind::ExposureGain,
+                                    options);
 }
 
 static nb::dict
-document_query_white_balance_metadata(std::shared_ptr<PyDocument> d)
+document_query_white_balance_metadata(
+    std::shared_ptr<PyDocument> d, const PyMetadataQueryOptions& options)
 {
-    return metadata_query_to_python(d->store, MetadataQueryKind::WhiteBalance);
+    return metadata_query_to_python(d->store, MetadataQueryKind::WhiteBalance,
+                                    options);
 }
 
 static nb::dict
-document_query_color_metadata(std::shared_ptr<PyDocument> d)
+document_query_color_metadata(std::shared_ptr<PyDocument> d,
+                              const PyMetadataQueryOptions& options)
 {
-    return metadata_query_to_python(d->store, MetadataQueryKind::Color);
+    return metadata_query_to_python(d->store, MetadataQueryKind::Color,
+                                    options);
 }
 
 static nb::dict
-document_query_lens_correction_metadata(std::shared_ptr<PyDocument> d)
+document_query_lens_correction_metadata(
+    std::shared_ptr<PyDocument> d, const PyMetadataQueryOptions& options)
 {
     return metadata_query_to_python(d->store,
-                                    MetadataQueryKind::LensCorrection);
+                                    MetadataQueryKind::LensCorrection, options);
 }
 
 static nb::dict
-document_query_orientation_metadata(std::shared_ptr<PyDocument> d)
+document_query_orientation_metadata(
+    std::shared_ptr<PyDocument> d, const PyMetadataQueryOptions& options)
 {
-    return metadata_query_to_python(d->store, MetadataQueryKind::Orientation);
+    return metadata_query_to_python(d->store, MetadataQueryKind::Orientation,
+                                    options);
 }
 
 static nb::dict
-document_query_raw_processing_metadata(std::shared_ptr<PyDocument> d)
+document_query_raw_processing_metadata(
+    std::shared_ptr<PyDocument> d, const PyMetadataQueryOptions& options)
 {
-    return metadata_query_to_python(d->store, MetadataQueryKind::RawProcessing);
+    return metadata_query_to_python(d->store, MetadataQueryKind::RawProcessing,
+                                    options);
 }
 
-static nb::dict
-document_interpret_metadata(std::shared_ptr<PyDocument> d)
+static nb::dict document_interpret_metadata(
+    std::shared_ptr<PyDocument> d, const PyMetadataQueryOptions& options)
 {
-    return metadata_interpretation_to_python(d->store);
+    return metadata_interpretation_to_python(d->store, options);
 }
 
 static nb::dict
 document_interpret_metadata_query(std::shared_ptr<PyDocument> d,
-                                  MetadataQueryKind kind)
+                                  MetadataQueryKind kind,
+                                  const PyMetadataQueryOptions& options)
 {
-    return metadata_interpretation_query_to_python(d->store, kind);
+    return metadata_interpretation_query_to_python(d->store, kind, options);
 }
 
-static nb::dict
-document_resolve_metadata_concepts(std::shared_ptr<PyDocument> d)
+static nb::dict document_resolve_metadata_concepts(
+    std::shared_ptr<PyDocument> d, const PyMetadataQueryOptions& options)
 {
-    return metadata_concepts_to_python(d->store);
+    return metadata_concepts_to_python(d->store, options);
 }
 
 static nb::dict
 document_resolve_metadata_concepts_with_raw_descriptor(
     std::shared_ptr<PyDocument> d,
-    const MetadataRawDataDescriptor& raw_descriptor)
+    const MetadataRawDataDescriptor& raw_descriptor,
+    const PyMetadataQueryOptions& options)
 {
-    return metadata_concepts_to_python(d->store, raw_descriptor);
+    return metadata_concepts_to_python(d->store, raw_descriptor, options);
 }
 
 static nb::dict
 document_resolve_metadata_concept(std::shared_ptr<PyDocument> d,
-                                  MetadataConceptKind kind)
+                                  MetadataConceptKind kind,
+                                  const PyMetadataQueryOptions& options)
 {
-    return metadata_concept_to_python(d->store, kind);
+    return metadata_concept_to_python(d->store, kind, options);
 }
 
 static nb::dict
 document_resolve_metadata_concept_with_raw_descriptor(
     std::shared_ptr<PyDocument> d, MetadataConceptKind kind,
-    const MetadataRawDataDescriptor& raw_descriptor)
+    const MetadataRawDataDescriptor& raw_descriptor,
+    const PyMetadataQueryOptions& options)
 {
-    return metadata_concept_to_python(d->store, kind, raw_descriptor);
+    return metadata_concept_to_python(d->store, kind, raw_descriptor,
+                                      options);
 }
 
 static nb::dict
@@ -8595,22 +8775,33 @@ document_makernote_layout_transfer_audit(std::shared_ptr<PyDocument> d)
 
 static nb::dict
 document_transfer_concept_diagnostics(std::shared_ptr<PyDocument> d,
-                                      TransferSafetyMode safety)
+                                      TransferSafetyMode safety,
+                                      const PyMetadataQueryOptions& options)
 {
-    const TransferConceptDiagnostics diagnostics
-        = transfer_concept_diagnostics_from_store(d->store, safety);
-    return transfer_concept_diagnostics_to_python(diagnostics);
+    return transfer_concept_diagnostics_from_store_to_python(
+        d->store, safety, options);
 }
 
 static nb::dict
 document_transfer_concept_diagnostics_with_raw_descriptor(
     std::shared_ptr<PyDocument> d, TransferSafetyMode safety,
-    const MetadataRawDataDescriptor& raw_descriptor)
+    const MetadataRawDataDescriptor& raw_descriptor,
+    const PyMetadataQueryOptions& options)
 {
-    const TransferConceptDiagnostics diagnostics
-        = transfer_concept_diagnostics_from_store(d->store, safety,
-                                                  raw_descriptor);
-    return transfer_concept_diagnostics_to_python(diagnostics);
+    return transfer_concept_diagnostics_from_store_to_python(
+        d->store, safety, raw_descriptor, options);
+}
+
+static nb::dict document_dng_ccm_fields(
+    std::shared_ptr<PyDocument> d, bool require_dng_context,
+    bool include_reduction_matrices, uint32_t max_fields,
+    uint32_t max_values_per_field, CcmValidationMode validation_mode,
+    const PyMetadataQueryScope& scope)
+{
+    return collect_dng_ccm_to_python(d->store, require_dng_context,
+                                     include_reduction_matrices, max_fields,
+                                     max_values_per_field, validation_mode,
+                                     scope);
 }
 
 struct PyEntry final {
@@ -9100,6 +9291,38 @@ NB_MODULE(_openmeta, m)
         .value("Exposure", MetadataConceptKind::Exposure)
         .value("ContainerGraph", MetadataConceptKind::ContainerGraph)
         .value("Descriptive", MetadataConceptKind::Descriptive);
+
+    nb::class_<PyMetadataDirectorySelector>(m, "MetadataDirectorySelector")
+        .def(nb::init<>())
+        .def(nb::init<BlockId, std::string>(), "block"_a, "ifd"_a = "")
+        .def_rw("block", &PyMetadataDirectorySelector::block)
+        .def_rw("ifd", &PyMetadataDirectorySelector::ifd);
+
+    nb::class_<PyMetadataQueryScope>(m, "MetadataQueryScope")
+        .def(nb::init<>())
+        .def_rw("enabled", &PyMetadataQueryScope::enabled)
+        .def_rw("inherit_across_directories",
+                &PyMetadataQueryScope::inherit_across_directories)
+        .def_rw("directories", &PyMetadataQueryScope::directories,
+                nb::rv_policy::copy)
+        .def("add_directory", &metadata_query_scope_add_directory,
+             "block"_a, "ifd"_a = "")
+        .def("clear_directories", &metadata_query_scope_clear_directories)
+        .def_prop_ro("directory_count",
+                     &metadata_query_scope_directory_count);
+
+    nb::class_<PyMetadataQueryOptions>(m, "MetadataQueryOptions")
+        .def(nb::init<>())
+        .def_rw("scope", &PyMetadataQueryOptions::scope)
+        .def_rw("include_numeric_values",
+                &PyMetadataQueryOptions::include_numeric_values)
+        .def_rw("max_values_per_entry",
+                &PyMetadataQueryOptions::max_values_per_entry)
+        .def_rw("max_values_per_candidate",
+                &PyMetadataQueryOptions::max_values_per_candidate)
+        .def_rw("max_total_values", &PyMetadataQueryOptions::max_total_values)
+        .def_rw("max_semantic_work",
+                &PyMetadataQueryOptions::max_semantic_work);
 
     nb::enum_<MetadataConceptSourceFamily>(m, "MetadataConceptSourceFamily")
         .value("Unknown", MetadataConceptSourceFamily::Unknown)
@@ -11432,32 +11655,44 @@ NB_MODULE(_openmeta, m)
         .def("phaseone_raw_processing", &snapshot_phaseone_raw_processing)
         .def("vendor_raw_processing", &snapshot_vendor_raw_processing)
         .def("metadata_query", &snapshot_metadata_query,
-             "kind"_a = MetadataQueryKind::Crop)
+             "kind"_a = MetadataQueryKind::Crop,
+             "options"_a = PyMetadataQueryOptions {})
         .def("fuzzy_search", &snapshot_fuzzy_search, "query"_a,
              "minimum_score"_a = 80U, "max_results"_a = 16U)
-        .def("query_crop_metadata", &snapshot_query_crop_metadata)
+        .def("query_crop_metadata", &snapshot_query_crop_metadata,
+             "options"_a = PyMetadataQueryOptions {})
         .def("query_exposure_gain_metadata",
-             &snapshot_query_exposure_gain_metadata)
+             &snapshot_query_exposure_gain_metadata,
+             "options"_a = PyMetadataQueryOptions {})
         .def("query_white_balance_metadata",
-             &snapshot_query_white_balance_metadata)
-        .def("query_color_metadata", &snapshot_query_color_metadata)
+             &snapshot_query_white_balance_metadata,
+             "options"_a = PyMetadataQueryOptions {})
+        .def("query_color_metadata", &snapshot_query_color_metadata,
+             "options"_a = PyMetadataQueryOptions {})
         .def("query_lens_correction_metadata",
-             &snapshot_query_lens_correction_metadata)
-        .def("query_orientation_metadata", &snapshot_query_orientation_metadata)
+             &snapshot_query_lens_correction_metadata,
+             "options"_a = PyMetadataQueryOptions {})
+        .def("query_orientation_metadata", &snapshot_query_orientation_metadata,
+             "options"_a = PyMetadataQueryOptions {})
         .def("query_raw_processing_metadata",
-             &snapshot_query_raw_processing_metadata)
-        .def("interpret_metadata", &snapshot_interpret_metadata)
+             &snapshot_query_raw_processing_metadata,
+             "options"_a = PyMetadataQueryOptions {})
+        .def("interpret_metadata", &snapshot_interpret_metadata,
+             "options"_a = PyMetadataQueryOptions {})
         .def("interpret_metadata_query", &snapshot_interpret_metadata_query,
-             "kind"_a = MetadataQueryKind::Crop)
-        .def("resolve_metadata_concepts", &snapshot_resolve_metadata_concepts)
+             "kind"_a = MetadataQueryKind::Crop,
+             "options"_a = PyMetadataQueryOptions {})
+        .def("resolve_metadata_concepts", &snapshot_resolve_metadata_concepts,
+             "options"_a = PyMetadataQueryOptions {})
         .def("resolve_metadata_concepts",
              &snapshot_resolve_metadata_concepts_with_raw_descriptor,
-             "raw_descriptor"_a)
+             "raw_descriptor"_a, "options"_a = PyMetadataQueryOptions {})
         .def("resolve_metadata_concept", &snapshot_resolve_metadata_concept,
-             "kind"_a = MetadataConceptKind::Orientation)
+             "kind"_a = MetadataConceptKind::Orientation,
+             "options"_a = PyMetadataQueryOptions {})
         .def("resolve_metadata_concept",
              &snapshot_resolve_metadata_concept_with_raw_descriptor, "kind"_a,
-             "raw_descriptor"_a)
+             "raw_descriptor"_a, "options"_a = PyMetadataQueryOptions {})
         .def("transfer_safety_audit", &snapshot_transfer_safety_audit,
              "safety"_a = TransferSafetyMode::RenderedImage)
         .def("makernote_transfer_audit", &snapshot_makernote_transfer_audit)
@@ -11465,10 +11700,12 @@ NB_MODULE(_openmeta, m)
              &snapshot_makernote_layout_transfer_audit)
         .def("transfer_concept_diagnostics",
              &snapshot_transfer_concept_diagnostics,
-             "safety"_a = TransferSafetyMode::RenderedImage)
+             "safety"_a = TransferSafetyMode::RenderedImage,
+             "options"_a = PyMetadataQueryOptions {})
         .def("transfer_concept_diagnostics",
              &snapshot_transfer_concept_diagnostics_with_raw_descriptor,
-             "safety"_a, "raw_descriptor"_a)
+             "safety"_a, "raw_descriptor"_a,
+             "options"_a = PyMetadataQueryOptions {})
         .def("raw_carrier_passthrough_audit",
              &snapshot_raw_carrier_passthrough_audit,
              "target_format"_a    = TransferTargetFormat::Jpeg,
@@ -12184,32 +12421,44 @@ NB_MODULE(_openmeta, m)
         .def("phaseone_raw_processing", &document_phaseone_raw_processing)
         .def("vendor_raw_processing", &document_vendor_raw_processing)
         .def("metadata_query", &document_metadata_query,
-             "kind"_a = MetadataQueryKind::Crop)
+             "kind"_a = MetadataQueryKind::Crop,
+             "options"_a = PyMetadataQueryOptions {})
         .def("fuzzy_search", &document_fuzzy_search, "query"_a,
              "minimum_score"_a = 80U, "max_results"_a = 16U)
-        .def("query_crop_metadata", &document_query_crop_metadata)
+        .def("query_crop_metadata", &document_query_crop_metadata,
+             "options"_a = PyMetadataQueryOptions {})
         .def("query_exposure_gain_metadata",
-             &document_query_exposure_gain_metadata)
+             &document_query_exposure_gain_metadata,
+             "options"_a = PyMetadataQueryOptions {})
         .def("query_white_balance_metadata",
-             &document_query_white_balance_metadata)
-        .def("query_color_metadata", &document_query_color_metadata)
+             &document_query_white_balance_metadata,
+             "options"_a = PyMetadataQueryOptions {})
+        .def("query_color_metadata", &document_query_color_metadata,
+             "options"_a = PyMetadataQueryOptions {})
         .def("query_lens_correction_metadata",
-             &document_query_lens_correction_metadata)
-        .def("query_orientation_metadata", &document_query_orientation_metadata)
+             &document_query_lens_correction_metadata,
+             "options"_a = PyMetadataQueryOptions {})
+        .def("query_orientation_metadata", &document_query_orientation_metadata,
+             "options"_a = PyMetadataQueryOptions {})
         .def("query_raw_processing_metadata",
-             &document_query_raw_processing_metadata)
-        .def("interpret_metadata", &document_interpret_metadata)
+             &document_query_raw_processing_metadata,
+             "options"_a = PyMetadataQueryOptions {})
+        .def("interpret_metadata", &document_interpret_metadata,
+             "options"_a = PyMetadataQueryOptions {})
         .def("interpret_metadata_query", &document_interpret_metadata_query,
-             "kind"_a = MetadataQueryKind::Crop)
-        .def("resolve_metadata_concepts", &document_resolve_metadata_concepts)
+             "kind"_a = MetadataQueryKind::Crop,
+             "options"_a = PyMetadataQueryOptions {})
+        .def("resolve_metadata_concepts", &document_resolve_metadata_concepts,
+             "options"_a = PyMetadataQueryOptions {})
         .def("resolve_metadata_concepts",
              &document_resolve_metadata_concepts_with_raw_descriptor,
-             "raw_descriptor"_a)
+             "raw_descriptor"_a, "options"_a = PyMetadataQueryOptions {})
         .def("resolve_metadata_concept", &document_resolve_metadata_concept,
-             "kind"_a = MetadataConceptKind::Orientation)
+             "kind"_a = MetadataConceptKind::Orientation,
+             "options"_a = PyMetadataQueryOptions {})
         .def("resolve_metadata_concept",
              &document_resolve_metadata_concept_with_raw_descriptor, "kind"_a,
-             "raw_descriptor"_a)
+             "raw_descriptor"_a, "options"_a = PyMetadataQueryOptions {})
         .def("transfer_safety_audit", &document_transfer_safety_audit,
              "safety"_a = TransferSafetyMode::RenderedImage)
         .def("makernote_transfer_audit", &document_makernote_transfer_audit)
@@ -12217,26 +12466,18 @@ NB_MODULE(_openmeta, m)
              &document_makernote_layout_transfer_audit)
         .def("transfer_concept_diagnostics",
              &document_transfer_concept_diagnostics,
-             "safety"_a = TransferSafetyMode::RenderedImage)
+             "safety"_a = TransferSafetyMode::RenderedImage,
+             "options"_a = PyMetadataQueryOptions {})
         .def("transfer_concept_diagnostics",
              &document_transfer_concept_diagnostics_with_raw_descriptor,
-             "safety"_a, "raw_descriptor"_a)
-        .def(
-            "dng_ccm_fields",
-            [](std::shared_ptr<PyDocument> d, bool require_dng_context,
-               bool include_reduction_matrices, uint32_t max_fields,
-               uint32_t max_values_per_field,
-               CcmValidationMode validation_mode) {
-                return collect_dng_ccm_to_python(d->store, require_dng_context,
-                                                 include_reduction_matrices,
-                                                 max_fields,
-                                                 max_values_per_field,
-                                                 validation_mode);
-            },
+             "safety"_a, "raw_descriptor"_a,
+             "options"_a = PyMetadataQueryOptions {})
+        .def("dng_ccm_fields", &document_dng_ccm_fields,
             "require_dng_context"_a        = true,
             "include_reduction_matrices"_a = true, "max_fields"_a = 128U,
             "max_values_per_field"_a = 256U,
-            "validation_mode"_a      = CcmValidationMode::DngSpecWarnings)
+            "validation_mode"_a      = CcmValidationMode::DngSpecWarnings,
+            "scope"_a                = PyMetadataQueryScope {})
         .def(
             "ocio_metadata_tree",
             [](std::shared_ptr<PyDocument> d, ExportNameStyle style,

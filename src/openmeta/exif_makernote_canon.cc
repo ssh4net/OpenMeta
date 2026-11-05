@@ -4295,11 +4295,91 @@ decode_canon_makernote_value(const TiffConfig& cfg,
                              std::span<const std::byte> value,
                              std::string_view ifd_name, MetaStore& store,
                              const ExifDecodeOptions& options,
-                             ExifDecodeResult* status_out) noexcept
+                             ExifDecodeResult* status_out,
+                             const SourceIfdValueContext& context) noexcept
 {
-    return expand_canon_makernote_value(cfg, entry, have_value, value,
-                                         ifd_name, store, options, status_out,
-                                         nullptr);
+    const SourceIfdValueExpansionStatus expansion
+        = expand_canon_makernote_value(cfg, entry, have_value, value,
+                                      ifd_name, store, options, status_out,
+                                      nullptr);
+    const bool filter_info = entry.tag == 0x4024U && entry.type == 4U;
+    const bool custom_functions = entry.tag == 0x0099U;
+    if (expansion != SourceIfdValueExpansionStatus::Incomplete
+        || !have_value || (!filter_info && !custom_functions)
+        || (filter_info && entry.count32 > options.limits.max_entries_per_ifd)
+        || value.size() < 8U || value.size() > options.limits.max_value_bytes
+        || !context.source) {
+        return expansion;
+    }
+
+    // The expansion has consumed the borrowed value. Further reads may replace
+    // its scratch/window storage; retain only the declared size from here on.
+    const uint64_t value_bytes = value.size();
+    uint64_t probed_offsets[4] {};
+    size_t probed_count = 0U;
+    for (int64_t base : context.alternate_value_bases) {
+        uint64_t offset = 0U;
+        if (base == INT64_MIN
+            || !canon_add_special_base_and_off32(base, entry.value_or_off32,
+                                                 &offset)
+            || offset == context.value_offset
+            || !source_tiff_contains(*context.source, offset, value_bytes)) {
+            continue;
+        }
+        bool already_probed = false;
+        for (size_t i = 0U; i < probed_count; ++i) {
+            already_probed |= probed_offsets[i] == offset;
+        }
+        if (already_probed) {
+            continue;
+        }
+        if (probed_count == 4U) {
+            break;
+        }
+        probed_offsets[probed_count++] = offset;
+
+        std::span<const std::byte> header;
+        if (!source_tiff_value(context.source, offset,
+                               custom_functions ? 8U : 4U, &header)) {
+            return expansion;
+        }
+        const TiffConfig payload_cfg { true, false };
+        uint32_t declared_bytes = 0U;
+        if (custom_functions) {
+            uint16_t short_length = 0U;
+            uint32_t group_count = 0U;
+            if (!read_tiff_u16(payload_cfg, header, 0U, &short_length)
+                || !read_tiff_u32(payload_cfg, header, 4U, &group_count)
+                || group_count > 0x10000U) {
+                continue;
+            }
+            declared_bytes = short_length;
+        } else if (!read_tiff_u32(payload_cfg, header, 0U, &declared_bytes)) {
+            continue;
+        }
+        if (declared_bytes != value_bytes) {
+            continue;
+        }
+        std::span<const std::byte> directory;
+        if (!source_tiff_value(context.source, offset, value_bytes,
+                               &directory)) {
+            return expansion;
+        }
+        char token[96];
+        const std::string_view ifd = make_mk_subtable_ifd_token(
+            custom_functions ? "mk_canoncustom" : "mk_canon",
+            custom_functions ? "functions2" : "filterinfo", 0U,
+            std::span<char>(token));
+        const bool decoded = custom_functions
+            ? decode_canon_custom_functions2(cfg, directory, 0U, value_bytes,
+                                             ifd, store, options, status_out)
+            : decode_canon_u32_bin_dir(cfg, directory, 0U, value_bytes, ifd,
+                                       store, options, status_out);
+        return decoded
+                   ? SourceIfdValueExpansionStatus::Expanded
+                   : SourceIfdValueExpansionStatus::Incomplete;
+    }
+    return expansion;
 }
 
 
@@ -4309,7 +4389,8 @@ decode_canon_makernote(const TiffConfig& cfg,
                        uint64_t maker_note_off, uint64_t maker_note_bytes,
                        std::string_view mk_ifd0, MetaStore& store,
                        const ExifDecodeOptions& options,
-                       ExifDecodeResult* status_out) noexcept
+                       ExifDecodeResult* status_out,
+                       CanonMakerNoteResiduals* residuals) noexcept
 {
     if (mk_ifd0.empty()) {
         return false;
@@ -4492,12 +4573,75 @@ decode_canon_makernote(const TiffConfig& cfg,
             tiff_bytes, abs_value_off, maker_note_off, maker_note_span_bytes,
             ifd_entry.value_or_off32, auto_value_base, schema_value_base
         };
-        (void)expand_canon_makernote_value(
+        const SourceIfdValueExpansionStatus expansion
+            = expand_canon_makernote_value(
             mk_cfg, ifd_entry, true, value_raw, mk_ifd0, store, options,
             status_out, &value_context);
+        if (expansion == SourceIfdValueExpansionStatus::Incomplete && residuals) {
+            if (residuals->paths_skipped != UINT32_MAX) {
+                ++residuals->paths_skipped;
+            } else if (status_out) {
+                update_status(status_out, ExifDecodeStatus::LimitExceeded);
+            }
+            if (!residuals->location_known) {
+                residuals->first_offset = abs_value_off;
+                residuals->first_tag = ifd_entry.tag;
+                residuals->location_known = true;
+            }
+        }
     }
 
     return true;
+}
+
+ExifDecodeResult decode_canon_cr3_tiff(
+    std::span<const std::byte> bytes, MetaStore& store,
+    std::span<ExifIfdRef> out_ifds,
+    const ExifDecodeOptions& options,
+    CanonMakerNoteResiduals* residuals) noexcept
+{
+    store.constrain_resources(options.limits.max_total_entries,
+                              options.limits.max_arena_bytes);
+    if (options.limits.max_ifds == 0U) {
+        ExifDecodeResult result;
+        result.status = ExifDecodeStatus::LimitExceeded;
+        result.limit_reason = ExifLimitReason::MaxIfds;
+        return result;
+    }
+    ExifDecodeOptions canon = options;
+    canon.decode_printim = false;
+    canon.decode_makernote = false;
+    canon.tokens.ifd_prefix = "mk_canon";
+    canon.tokens.subifd_prefix = "mk_canon_subifd";
+    canon.tokens.exif_ifd_token = "mk_canon_exififd";
+    canon.tokens.gps_ifd_token = "mk_canon_gpsifd";
+    canon.tokens.interop_ifd_token = "mk_canon_interopifd";
+    TiffConfig cfg;
+    uint16_t magic = 0U;
+    uint32_t offset = 0U;
+    if (bytes.size() >= 8U
+        && ((bytes[0] == std::byte { 'I' } && bytes[1] == std::byte { 'I' })
+            || (bytes[0] == std::byte { 'M' } && bytes[1] == std::byte { 'M' }))) {
+        cfg.le = bytes[0] == std::byte { 'I' };
+        cfg.bigtiff = false;
+        if (read_tiff_u16(cfg, bytes, 2U, &magic) && magic == 42U
+            && read_tiff_u32(cfg, bytes, 4U, &offset) && offset < bytes.size()) {
+            ExifDecodeResult result;
+            if (decode_canon_makernote(cfg, bytes, offset, bytes.size() - offset,
+                                       "mk_canon0", store, canon, &result,
+                                       residuals)) {
+                if (store.resource_limit_exceeded()) {
+                    update_status(&result, ExifDecodeStatus::LimitExceeded);
+                    result.limit_reason = store.arena().limit_exceeded()
+                        ? ExifLimitReason::MaxArenaBytes
+                        : ExifLimitReason::MaxTotalEntries;
+                    result.limit_ifd_offset = offset;
+                }
+                return result;
+            }
+        }
+    }
+    return decode_exif_tiff(bytes, store, out_ifds, canon);
 }
 
 void

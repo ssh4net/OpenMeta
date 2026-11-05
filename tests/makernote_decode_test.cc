@@ -139,9 +139,9 @@ namespace {
         const uint64_t request_end = offset
                                      + static_cast<uint64_t>(destination.size());
         if (state->forbidden_begin != UINT64_MAX
-            && offset < state->forbidden_begin
-            && request_end > state->forbidden_begin) {
+            && !destination.empty() && request_end > state->forbidden_begin) {
             state->touched_forbidden = true;
+            return RandomAccessIoResult { RandomAccessIoCode::IoError, 0U };
         }
         if (!destination.empty()) {
             std::memcpy(destination.data(),
@@ -8282,12 +8282,11 @@ TEST(MakerNoteDecode,
 }
 
 TEST(MakerNoteDecode,
-     RandomAccessCanonFilterInfoReportsUnfetchedAlternateDirectory)
+     RandomAccessCanonFilterInfoFetchesPaddedAlternateDirectory)
 {
     std::vector<std::byte> mn = make_canon_filterinfo_makernote();
     // Padding moves the valid relative directory away from the exact IFD-end
-    // tie-break. The memory decoder can validate the alternate signature;
-    // the callback reports that it has fetched only the competing value span.
+    // tie-break. Both decoders must validate and follow the alternate signature.
     mn.insert(mn.begin()+18U,6U,std::byte{0});
     write_u32le_at(&mn,10U,24U);
     std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
@@ -8303,20 +8302,107 @@ TEST(MakerNoteDecode,
     const ExifRandomAccessDecodeResult callback_result
         = decode_makernote_callback(tiff, callback_store);
     EXPECT_TRUE(callback_result.input.ok());
-    EXPECT_FALSE(callback_result.complete());
-    EXPECT_EQ(callback_result.maker_note_paths_skipped, 1U);
-    EXPECT_TRUE(callback_result.maker_note_path_location_known);
-    EXPECT_EQ(callback_result.maker_note_path_offset, 24U);
-    EXPECT_EQ(callback_result.maker_note_path_tag, 0x4024U);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.maker_note_paths_skipped, 0U);
+    EXPECT_FALSE(callback_result.maker_note_path_location_known);
 
     memory_store.finalize();
     callback_store.finalize();
     EXPECT_EQ(memory_store.find_all(exif_key("mk_canon_filterinfo_0", 0x0402U))
                   .size(),
               1U);
-    EXPECT_TRUE(callback_store
-                    .find_all(exif_key("mk_canon_filterinfo_0", 0x0402U))
-                    .empty());
+    const Entry* orientation
+        = find_entry(callback_store, "mk_canon_filterinfo_0", 0x0402U);
+    ASSERT_NE(orientation, nullptr);
+    EXPECT_EQ(orientation->value.data.u64, 2U);
+    const Entry* position
+        = find_entry(callback_store, "mk_canon_filterinfo_0", 0x0403U);
+    ASSERT_NE(position, nullptr);
+    EXPECT_EQ(position->value.count, 2U);
+    const std::span<const std::byte> position_bytes
+        = callback_store.arena().span(position->value.data.span);
+    ASSERT_EQ(position_bytes.size(), 8U);
+    uint32_t values[2] {};
+    std::memcpy(values, position_bytes.data(), position_bytes.size());
+    EXPECT_EQ(values[0], 300U);
+    EXPECT_EQ(values[1], 700U);
+}
+
+TEST(MakerNoteDecode,
+     RandomAccessCanonAlternateDirectoryKeepsScratchAndIoBounds)
+{
+    std::vector<std::byte> mn = make_canon_filterinfo_makernote();
+    mn.insert(mn.begin() + 18U, 6U, std::byte { 0 });
+    write_u32le_at(&mn, 10U, 24U);
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
+    ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
+    const uint64_t pixel_start = tiff.size();
+    tiff.resize(tiff.size() + 128U, std::byte { 0xff });
+    bool touched_pixels = false;
+    MetaStore store;
+    const ExifRandomAccessDecodeResult baseline = decode_makernote_callback(
+        tiff, store, {}, 0U, 64U, 0U, pixel_start, &touched_pixels);
+    EXPECT_TRUE(baseline.complete());
+    EXPECT_FALSE(touched_pixels);
+    EXPECT_EQ(baseline.value_scratch_needed, 0U);
+    store.finalize();
+    ASSERT_NE(find_entry(store, "mk_canon_filterinfo_0", 0x0402U), nullptr);
+
+    MetaStore limited_store;
+    const ExifRandomAccessDecodeResult limited = decode_makernote_callback(
+        tiff, limited_store, {}, 0U, 24U, 0U);
+    EXPECT_FALSE(limited.complete());
+    EXPECT_EQ(limited.value_scratch_needed, 48U);
+    EXPECT_EQ(limited.maker_note_paths_skipped, 1U);
+
+    ASSERT_GT(baseline.input.requests_issued, 1U);
+    RandomAccessReadLimits limits;
+    limits.max_requests = baseline.input.requests_issued - 1U;
+    MetaStore request_store;
+    const ExifRandomAccessDecodeResult requests = decode_makernote_callback(
+        tiff, request_store, limits, 0U, 64U, 0U);
+    EXPECT_EQ(requests.input.code, RandomAccessReadCode::RequestLimitExceeded);
+    EXPECT_LE(requests.input.requests_issued, limits.max_requests);
+
+    limits = {};
+    limits.max_total_bytes = baseline.input.bytes_requested - 1U;
+    MetaStore byte_store;
+    const ExifRandomAccessDecodeResult bytes = decode_makernote_callback(
+        tiff, byte_store, limits, 0U, 64U, 0U);
+    EXPECT_EQ(bytes.input.code, RandomAccessReadCode::ByteLimitExceeded);
+    EXPECT_LE(bytes.input.bytes_requested, limits.max_total_bytes);
+
+    MetaStore denied_store;
+    bool touched_denied = false;
+    const ExifRandomAccessDecodeResult denied = decode_makernote_callback(
+        tiff, denied_store, {}, 0U, 64U, 0U, pixel_start - 48U,
+        &touched_denied);
+    EXPECT_TRUE(touched_denied);
+    EXPECT_EQ(denied.input.code, RandomAccessReadCode::IoError);
+    EXPECT_FALSE(denied.complete());
+    EXPECT_EQ(denied.maker_note_paths_skipped, 1U);
+}
+
+TEST(MakerNoteDecode,
+     RandomAccessCanonInvalidAlternateSignatureRemainsExplicit)
+{
+    std::vector<std::byte> mn = make_canon_filterinfo_makernote();
+    mn.insert(mn.begin() + 18U, 6U, std::byte { 0 });
+    write_u32le_at(&mn, 10U, 24U);
+    write_u32le_at(&mn, 24U, 44U);
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
+    ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, store, {}, 0U, 64U, 0U);
+    EXPECT_TRUE(result.input.ok());
+    EXPECT_FALSE(result.complete());
+    EXPECT_EQ(result.maker_note_paths_skipped, 1U);
+    EXPECT_TRUE(result.maker_note_path_location_known);
+    EXPECT_EQ(result.maker_note_path_offset, 24U);
+    EXPECT_EQ(result.maker_note_path_tag, 0x4024U);
+    store.finalize();
+    EXPECT_EQ(find_entry(store, "mk_canon_filterinfo_0", 0x0402U), nullptr);
 }
 
 
@@ -8342,6 +8428,43 @@ TEST(MakerNoteDecode, DecodesCanonCustomFunctions2IntoDerivedIfd)
     EXPECT_EQ(e.value.elem_type, MetaElementType::U32);
     EXPECT_EQ(e.value.data.u64, 0U);
     EXPECT_TRUE(any(e.flags, EntryFlags::Derived));
+}
+
+TEST(MakerNoteDecode,
+     RandomAccessCanonCustomFunctionsFetchesAlternateAndChecksSignature)
+{
+    for (uint32_t variant = 0U; variant < 3U; ++variant) {
+        SCOPED_TRACE(variant);
+        std::vector<std::byte> mn = make_canon_custom_functions2_makernote();
+        mn.insert(mn.begin() + 18U, 6U, std::byte { 0 });
+        write_u32le_at(&mn, 10U, 24U);
+        if (variant == 1U) {
+            write_u16le_at(&mn, 24U, 30U);
+        } else if (variant == 2U) {
+            write_u32le_at(&mn, 28U, 0x10001U);
+        }
+        std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
+        ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
+        const uint64_t pixel_start = tiff.size();
+        tiff.resize(tiff.size() + 128U, std::byte { 0xff });
+        bool touched_pixels = false;
+        MetaStore store;
+        const ExifRandomAccessDecodeResult result = decode_makernote_callback(
+            tiff, store, {}, 0U, 64U, 0U, pixel_start, &touched_pixels);
+        EXPECT_TRUE(result.input.ok());
+        EXPECT_FALSE(touched_pixels);
+        EXPECT_EQ(result.complete(), variant == 0U);
+        EXPECT_EQ(result.maker_note_paths_skipped, variant == 0U ? 0U : 1U);
+        store.finalize();
+        const Entry* entry
+            = find_entry(store, "mk_canoncustom_functions2_0", 0x0101U);
+        if (variant == 0U) {
+            ASSERT_NE(entry, nullptr);
+            EXPECT_EQ(entry->value.data.u64, 0U);
+        } else {
+            EXPECT_EQ(entry, nullptr);
+        }
+    }
 }
 
 TEST(MakerNoteDecode,

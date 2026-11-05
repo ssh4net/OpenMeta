@@ -303,6 +303,44 @@ TEST(MetadataQuery, BuildsDngDefaultCropCandidate)
     EXPECT_EQ(candidate->components[1].value_offset, 2U);
 }
 
+TEST(MetadataQuery, RejectsNonExactDngCropArityAndPreservesSourceValues)
+{
+    const uint32_t counts[][2] = {
+        { 1U, 2U }, { 2U, 1U }, { 3U, 2U }, { 2U, 3U },
+        { 5U, 2U }, { 2U, 5U }, { 17U, 17U },
+    };
+    std::array<uint32_t, 17> origins {};
+    std::array<uint32_t, 17> sizes {};
+    origins.fill(12U);
+    sizes.fill(4000U);
+    for (const uint32_t (&pair)[2] : counts) {
+        SCOPED_TRACE(::testing::Message() << pair[0] << ',' << pair[1]);
+        MetaStore store;
+        const EntryId origin_id = add_exif_u32_array(
+            &store, "ifd0", 0xC61FU,
+            std::span<const uint32_t>(origins.data(), pair[0]));
+        const EntryId size_id = add_exif_u32_array(
+            &store, "ifd0", 0xC620U,
+            std::span<const uint32_t>(sizes.data(), pair[1]));
+        store.finalize();
+        const MetadataQueryResult result = query_crop_metadata(store);
+        const MetadataQueryCandidate* candidate
+            = find_candidate(result, MetadataQuerySemanticKind::Crop);
+        ASSERT_NE(candidate, nullptr);
+        EXPECT_FALSE(candidate->has_rect);
+        EXPECT_FALSE(candidate->has_origin);
+        EXPECT_FALSE(candidate->has_size);
+        EXPECT_EQ(candidate->numeric_status,
+                  MetadataQueryNumericStatus::Complete);
+        EXPECT_EQ(candidate->values.size(), pair[0] + pair[1]);
+        ASSERT_EQ(candidate->components.size(), 2U);
+        EXPECT_EQ(candidate->components[0].total_value_count, pair[0]);
+        EXPECT_EQ(candidate->components[1].total_value_count, pair[1]);
+        EXPECT_EQ(store.entry(origin_id).value.count, pair[0]);
+        EXPECT_EQ(store.entry(size_id).value.count, pair[1]);
+    }
+}
+
 TEST(MetadataQuery, ReconcilesDescriptiveExifIptcXmpEntries)
 {
     MetaStore store;
@@ -783,6 +821,45 @@ TEST(MetadataQuery, NormalizesActiveAreaCandidate)
               MetadataQueryComponentRole::ActiveArea);
     EXPECT_EQ(candidate->components[0].rows, 1U);
     EXPECT_EQ(candidate->components[0].columns, 4U);
+}
+
+TEST(MetadataQuery, RejectsNonExactActiveAreaArityAndKeepsMaskedRectangles)
+{
+    const uint32_t counts[] = { 3U, 5U, 8U, 17U };
+    const std::array<uint32_t, 17> active = {
+        10U, 20U, 3010U, 4020U,
+    };
+    const std::array<uint32_t, 8> masked = {
+        0U, 0U, 10U, 4000U, 3010U, 0U, 3020U, 4000U,
+    };
+    for (uint32_t count : counts) {
+        SCOPED_TRACE(count);
+        MetaStore store;
+        const EntryId active_id = add_exif_u32_array(
+            &store, "ifd0", 0xC68DU,
+            std::span<const uint32_t>(active.data(), count));
+        const EntryId masked_id = add_exif_u32_array(
+            &store, "ifd0", 0xC68EU, masked);
+        store.finalize();
+        const MetadataQueryResult result = query_crop_metadata(store);
+        const MetadataQueryCandidate* candidate
+            = find_candidate(result, MetadataQuerySemanticKind::ActiveArea);
+        ASSERT_NE(candidate, nullptr);
+        EXPECT_FALSE(candidate->has_rect);
+        EXPECT_FALSE(candidate->has_origin);
+        EXPECT_FALSE(candidate->has_size);
+        EXPECT_EQ(candidate->numeric_status,
+                  MetadataQueryNumericStatus::Complete);
+        EXPECT_EQ(candidate->values.size(), count);
+        EXPECT_EQ(store.entry(active_id).value.count, count);
+        const MetadataQueryCandidate* masked_candidate
+            = find_candidate_for_entry(result, masked_id);
+        ASSERT_NE(masked_candidate, nullptr);
+        ASSERT_EQ(masked_candidate->components.size(), 1U);
+        EXPECT_EQ(masked_candidate->components[0].rows, 2U);
+        EXPECT_EQ(masked_candidate->components[0].columns, 4U);
+        EXPECT_EQ(masked_candidate->values.size(), masked.size());
+    }
 }
 
 TEST(MetadataQuery, NormalizesDngMaskedAreasCandidate)

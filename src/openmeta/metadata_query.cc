@@ -4166,11 +4166,13 @@ namespace {
             double size_values[4] {};
             uint32_t origin_count = 0U;
             uint32_t size_count = 0U;
-            if (value_to_double_array(store, store.entry(origin_id).value,
+            if (store.entry(origin_id).value.count == 2U
+                && store.entry(size_id).value.count == 2U
+                && value_to_double_array(store, store.entry(origin_id).value,
                                       origin_values, 4U, &origin_count)
                 && value_to_double_array(store, store.entry(size_id).value,
                                          size_values, 4U, &size_count)
-                && origin_count >= 2U && size_count >= 2U) {
+                && origin_count == 2U && size_count == 2U) {
                 if (origin_values[0] >= 0.0 && origin_values[1] >= 0.0
                     && size_values[0] > 0.0 && size_values[1] > 0.0) {
                     candidate.has_origin = true;
@@ -4222,8 +4224,9 @@ namespace {
 
             double values[4] {};
             uint32_t count = 0U;
-            if (value_to_double_array(store, entry.value, values, 4U, &count)
-                && count >= 4U) {
+            if (entry.value.count == 4U
+                && value_to_double_array(store, entry.value, values, 4U, &count)
+                && count == 4U) {
                 const double top = values[0];
                 const double left = values[1];
                 const double bottom = values[2];

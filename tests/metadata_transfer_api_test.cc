@@ -4284,6 +4284,7 @@ struct SnapshotCallbackState final {
     uint64_t forbidden_end            = UINT64_MAX;
     bool touched_forbidden            = false;
     uint32_t calls                    = 0U;
+    bool reject_forbidden             = false;
 };
 
 static openmeta::RandomAccessIoResult
@@ -4298,6 +4299,9 @@ snapshot_read_at(void* context, uint64_t offset,
               : UINT64_MAX;
     if (offset < state->forbidden_end && request_end > state->forbidden_begin) {
         state->touched_forbidden = true;
+        if (state->reject_forbidden) {
+            return { openmeta::RandomAccessIoCode::IoError, 0U };
+        }
     }
     uint64_t count = 0U;
     if (offset <= state->bytes.size()) {
@@ -16353,6 +16357,141 @@ TEST(MetadataTransferApi, ReadTransferSourceSnapshotRandomAccessUsesNativeTiff)
     EXPECT_LT(result.input.bytes_requested, static_cast<uint64_t>(tiff.size()));
 }
 
+
+TEST(MetadataTransferApi,
+     ReadTransferSourceSnapshotRandomAccessDecodesCanonCmt3WithinPayload)
+{
+    std::vector<std::byte> tiff = {
+        std::byte { 'I' },
+        std::byte { 'I' },
+        std::byte { 42 },
+        std::byte { 0 },
+    };
+    append_u32le(&tiff, 8U);
+    append_u16le(&tiff, 1U);
+    append_u16le(&tiff, 0x4024U);
+    append_u16le(&tiff, 4U);
+    append_u32le(&tiff, 8U);
+    append_u32le(&tiff, 26U);
+    append_u32le(&tiff, 0U);
+    const uint32_t filter[] = { 32U, 0U, 4U, 20U, 1U, 0x0402U, 1U, 2U };
+    for (uint32_t value : filter) {
+        append_u32le(&tiff, value);
+    }
+    const std::array<std::byte, 16> canon_uuid = {
+        std::byte { 0x85 }, std::byte { 0xc0 }, std::byte { 0xb6 },
+        std::byte { 0x87 }, std::byte { 0x82 }, std::byte { 0x0f },
+        std::byte { 0x11 }, std::byte { 0xe0 }, std::byte { 0x81 },
+        std::byte { 0x11 }, std::byte { 0xf4 }, std::byte { 0xce },
+        std::byte { 0x46 }, std::byte { 0x2b }, std::byte { 0x6a },
+        std::byte { 0x48 },
+    };
+    std::vector<std::byte> uuid(canon_uuid.begin(), canon_uuid.end());
+    append_bmff_box(&uuid, openmeta::fourcc('C', 'M', 'T', '3'), tiff);
+    append_bmff_box(&uuid, openmeta::fourcc('C', 'M', 'T', '3'), tiff);
+    std::vector<std::byte> moov;
+    append_bmff_box(&moov, openmeta::fourcc('u', 'u', 'i', 'd'), uuid);
+    std::vector<std::byte> input;
+    const std::array<std::byte, 12> ftyp = {
+        std::byte { 'c' }, std::byte { 'r' }, std::byte { 'x' },
+        std::byte { ' ' }, std::byte { 0 },   std::byte { 0 },
+        std::byte { 0 },   std::byte { 0 },   std::byte { 'C' },
+        std::byte { 'R' }, std::byte { '3' }, std::byte { ' ' },
+    };
+    append_bmff_box(&input, openmeta::fourcc('f', 't', 'y', 'p'), ftyp);
+    append_bmff_box(&input, openmeta::fourcc('m', 'o', 'o', 'v'), moov);
+    const uint64_t pixel_start = input.size() + 8U;
+    const std::array<std::byte, 128> pixels {};
+    append_bmff_box(&input, openmeta::fourcc('m', 'd', 'a', 't'), pixels);
+    openmeta::ReadTransferSourceSnapshotOptions memory_options;
+    memory_options.decode_makernote = true;
+    const openmeta::ReadTransferSourceSnapshotBytesResult memory
+        = openmeta::read_transfer_source_snapshot_bytes(input, memory_options);
+    ASSERT_EQ(memory.status, openmeta::TransferStatus::Ok);
+    ASSERT_EQ(memory.snapshot.store
+                  .find_all(exif_key_view("mk_canon_filterinfo_0", 0x0402U))
+                  .size(),
+              2U);
+
+    for (uint32_t mode = 0U; mode < 8U; ++mode) {
+        SCOPED_TRACE(mode);
+        constexpr uint64_t prefix = 37U;
+        std::vector<std::byte> framed(prefix, std::byte { 0 });
+        framed.insert(framed.end(), input.begin(), input.end());
+        constexpr uint64_t first_tiff = 60U;
+        if (mode == 6U || mode == 7U) {
+            const uint64_t field = prefix + first_tiff + 26U
+                                   + (mode == 7U ? 12U : 0U);
+            for (uint32_t i = 0U; i < 4U; ++i) {
+                framed[field + i] = mode == 7U ? std::byte { 0xff }
+                                               : std::byte { 0 };
+            }
+        }
+        SnapshotCallbackState callback { framed };
+        callback.forbidden_begin  = prefix + pixel_start;
+        callback.forbidden_end    = framed.size();
+        callback.reject_forbidden = true;
+        const openmeta::RandomAccessSource source
+            = mode == 0U ? openmeta::make_memory_random_access_source(framed)
+                         : openmeta::make_callback_random_access_source(
+                               framed.size(), &callback, snapshot_read_at);
+        std::array<openmeta::ContainerBlockRef, 16> blocks {};
+        std::array<openmeta::ExifIfdRef, 16> ifds {};
+        std::array<uint32_t, 16> indices {};
+        std::array<std::byte, 32> window {};
+        std::array<std::byte, 128> payload {};
+        openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+        scratch.blocks          = blocks;
+        scratch.ifds            = ifds;
+        scratch.payload_indices = indices;
+        scratch.read_window     = window;
+        scratch.payload         = mode == 3U ? std::span(payload).first(8U)
+                                             : std::span(payload);
+        scratch.window_options.minimum_read_bytes = 0U;
+        openmeta::ReadTransferSourceSnapshotRandomAccessOptions options;
+        options.decode_makernote = mode != 2U;
+        if (mode == 4U || mode == 5U) {
+            options.policy.exif_limits.max_total_entries = mode == 4U ? 1U
+                                                                      : 10U;
+        }
+        const openmeta::ReadTransferSourceSnapshotRandomAccessResult result
+            = openmeta::read_transfer_source_snapshot_random_access(
+                openmeta::make_random_access_source_range(source, prefix,
+                                                          input.size()),
+                openmeta::ContainerFormat::Cr3, scratch, options);
+        EXPECT_FALSE(callback.touched_forbidden);
+        if (mode == 3U) {
+            EXPECT_EQ(result.code,
+                      openmeta::ReadTransferSourceSnapshotRandomAccessCode::
+                          ScratchTooSmall);
+            EXPECT_EQ(result.payload_scratch_needed, tiff.size());
+        } else if (mode == 4U || mode == 5U) {
+            EXPECT_EQ(result.status, openmeta::TransferStatus::LimitExceeded);
+            EXPECT_LE(result.snapshot.store.entries().size(),
+                      options.policy.exif_limits.max_total_entries);
+        } else if (mode == 6U) {
+            EXPECT_EQ(result.status, openmeta::TransferStatus::Ok);
+            EXPECT_EQ(result.residual_reasons.maker_note_paths, 1U);
+            EXPECT_TRUE(result.maker_note_residual_location_known);
+            EXPECT_EQ(result.maker_note_residual_offset,
+                      prefix + first_tiff + 26U);
+            EXPECT_EQ(result.maker_note_residual_tag, 0x4024U);
+        } else if (mode == 7U) {
+            EXPECT_EQ(result.status, openmeta::TransferStatus::Malformed);
+            EXPECT_EQ(result.code,
+                      openmeta::ReadTransferSourceSnapshotRandomAccessCode::
+                          DecodeFailed);
+        } else {
+            EXPECT_EQ(result.status, openmeta::TransferStatus::Ok);
+            EXPECT_EQ(result.residual_reasons.maker_note_paths, 0U);
+            EXPECT_EQ(result.snapshot.store
+                          .find_all(
+                              exif_key_view("mk_canon_filterinfo_0", 0x0402U))
+                          .size(),
+                      mode != 2U ? 2U : 0U);
+        }
+    }
+}
 
 TEST(MetadataTransferApi,
      ReadTransferSourceSnapshotRandomAccessReportsNativeRawResidual)

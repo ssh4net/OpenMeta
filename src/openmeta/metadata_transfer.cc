@@ -27,6 +27,7 @@
 #include "openmeta/xmp_dump.h"
 
 #include "crw_ciff_decode_internal.h"
+#include "exif_tiff_decode_internal.h"
 #include "icc_serialize_internal.h"
 #include "interop_safety_internal.h"
 #include "interop_value_format_internal.h"
@@ -17802,7 +17803,8 @@ namespace {
         std::span<const std::byte> outer_prefix, MetaStore* store,
         std::span<ExifIfdRef> ifds, uint32_t* io_ifd_write_pos,
         const SimpleMetaDecodeOptions& options, SimpleMetaResult* read,
-        ReadTransferSourceSnapshotRandomAccessResult* result) noexcept
+        ReadTransferSourceSnapshotRandomAccessResult* result,
+        const RandomAccessSourceRange* source = nullptr) noexcept
     {
         if (!store || !io_ifd_write_pos || !read || !result) {
             return false;
@@ -17810,9 +17812,38 @@ namespace {
         if (block.kind == ContainerBlockKind::Exif) {
             if (block.format == ContainerFormat::Cr3
                 && block.id == fourcc('C', 'M', 'T', '3')) {
-                if (options.exif.decode_makernote) {
-                    add_snapshot_residual(result,
-                                          SnapshotResidualReason::MakerNote);
+                if (!options.exif.decode_makernote) {
+                    return true;
+                }
+                const std::span<ExifIfdRef> remaining
+                    = *io_ifd_write_pos < ifds.size()
+                          ? ifds.subspan(*io_ifd_write_pos)
+                          : std::span<ExifIfdRef> {};
+                exif_internal::CanonMakerNoteResiduals residuals;
+                const ExifDecodeResult one
+                    = exif_internal::decode_canon_cr3_tiff(
+                        payload, *store, remaining, options.exif, &residuals);
+                merge_exif_decode_result(&read->exif, one);
+                *io_ifd_write_pos += one.ifds_written;
+                add_snapshot_residual(result, SnapshotResidualReason::MakerNote,
+                                      residuals.paths_skipped);
+                if (residuals.location_known && source
+                    && !result->maker_note_residual_location_known
+                    && block.data_offset <= UINT64_MAX - source->source_offset
+                    && residuals.first_offset <= UINT64_MAX
+                           - (source->source_offset + block.data_offset)) {
+                    result->maker_note_residual_offset = source->source_offset
+                        + block.data_offset + residuals.first_offset;
+                    result->maker_note_residual_tag = residuals.first_tag;
+                    result->maker_note_residual_location_known = true;
+                }
+                if (one.status == ExifDecodeStatus::LimitExceeded
+                    || one.status == ExifDecodeStatus::OutputTruncated) {
+                    result->status = TransferStatus::LimitExceeded;
+                    return false;
+                }
+                if (one.status == ExifDecodeStatus::Malformed) {
+                    return false;
                 }
                 return true;
             }
@@ -18231,8 +18262,10 @@ namespace {
                                                &out->snapshot.store,
                                                scratch.ifds, &ifd_write_pos,
                                                block_options, &out->read,
-                                               out)) {
-                out->status = TransferStatus::Malformed;
+                                               out, &source)) {
+                if (out->status != TransferStatus::LimitExceeded) {
+                    out->status = TransferStatus::Malformed;
+                }
                 if (block_options.xmp.preserve_custom_structures) {
                     if (out->read.xmp.status == XmpDecodeStatus::LimitExceeded
                         || out->read.xmp.status == XmpDecodeStatus::OutputTruncated)

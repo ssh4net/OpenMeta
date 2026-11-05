@@ -5795,7 +5795,8 @@ namespace exif_internal {
         bool allow_missing_next_ifd_pointer, uint16_t forced_entry_count,
         const TiffConfig* out_of_line_value_cfg, bool mark_contextual_names,
         bool allow_zero_count_unknown_type,
-        SourceIfdValueExpansionHook value_hook) noexcept
+        SourceIfdValueExpansionHook value_hook,
+        std::span<const int64_t> alternate_value_bases) noexcept
     {
         if (!source || !source->range || !source->result || cfg.bigtiff
             || ifd_name.empty()) {
@@ -5939,9 +5940,12 @@ namespace exif_internal {
                 status_out->entries_decoded += 1U;
             }
             if (value_hook) {
+                const SourceIfdValueContext context {
+                    source, ref.value_off, alternate_value_bases
+                };
                 const SourceIfdValueExpansionStatus expansion = value_hook(
                     cfg, ifd_entry, have_value, value_raw, ifd_name, store,
-                    options, status_out);
+                    options, status_out, context);
                 if (expansion == SourceIfdValueExpansionStatus::Incomplete) {
                     record_maker_note_residual(source->result, source,
                                                ref.value_off, ifd_entry.tag);
@@ -6014,6 +6018,9 @@ namespace {
     struct SourceCanonLayout final {
         TiffConfig cfg;
         exif_internal::OffsetPolicy offsets;
+        std::array<int64_t, 4> alternate_value_bases {
+            INT64_MIN, INT64_MIN, INT64_MIN, INT64_MIN
+        };
         bool plausible             = false;
         bool values_within_payload = false;
     };
@@ -6150,7 +6157,9 @@ namespace {
                                                                  &value_bytes)) {
                 continue;
             }
-            if (value_bytes > 4U && entry.value_or_off32 >= needed
+            if (value_bytes > 4U
+                && value_bytes <= options.limits.max_value_bytes
+                && entry.value_or_off32 >= needed
                 && entry.value_or_off32 < min_offset) {
                 min_offset = entry.value_or_off32;
             }
@@ -6219,6 +6228,12 @@ namespace {
 
         choice.offsets.out_of_line_base_is_signed = true;
         choice.offsets.out_of_line_base_i64       = candidates[best_index];
+        choice.alternate_value_bases = {
+            enabled[2] ? candidates[2] : INT64_MIN,
+            enabled[3] ? candidates[3] : INT64_MIN,
+            enabled[1] ? candidates[1] : INT64_MIN,
+            0
+        };
         choice.values_within_payload              = best_in;
         choice.plausible                          = true;
         return choice;
@@ -6377,10 +6392,21 @@ namespace {
             const SourceCanonLayout layout
                 = select_source_canon_layout(source, cfg, maker_note_off,
                                              maker_note_bytes, store, options);
+            exif_internal::CanonMakerNoteResiduals residuals;
             if (layout.plausible && layout.values_within_payload
                 && exif_internal::decode_canon_makernote(
                     layout.cfg, maker_note, 0U, maker_note.size(), maker_ifd,
-                    store, mn_options, &result->decode)) {
+                    store, mn_options, &result->decode, &residuals)) {
+                uint64_t residual_offset = maker_note_off;
+                if (!checked_add_u64(maker_note_off, residuals.first_offset,
+                                     &residual_offset)) {
+                    update_status(&result->decode, ExifDecodeStatus::Malformed);
+                    residual_offset = maker_note_off;
+                }
+                for (uint32_t i = 0U; i < residuals.paths_skipped; ++i) {
+                    record_maker_note_residual(result, source, residual_offset,
+                                               residuals.first_tag);
+                }
                 return;
             }
             if (layout.plausible
@@ -6388,7 +6414,8 @@ namespace {
                     source, layout.cfg, maker_note_off, layout.offsets,
                     maker_ifd, store, mn_options, &result->decode,
                     EntryFlags::None, false, 0U, nullptr, true, false,
-                    exif_internal::decode_canon_makernote_value)) {
+                    exif_internal::decode_canon_makernote_value,
+                    layout.alternate_value_bases)) {
                 return;
             }
         }

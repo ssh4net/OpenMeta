@@ -189,3 +189,29 @@ output budget as query-backed candidates.
 The two transfer_concept_diagnostics_from_store overloads take final query
 options and return semantic-work/numeric incompleteness flags. Their layouts
 and signatures also require matching rebuilt0.8.30 headers and libraries.
+
+
+Scoped Python services and Canon alternate reads in 0.8.31
+--------------------------------------------------------
+
+Python semantic services accept image scope and resource budgets through
+explicit options. Existing calls without options retain their defaults. See
+semantic_queries.md for the owned Python selector/options contract and examples.
+The C++ ABI label remains the unfrozen ABI 4; rebuild against matching headers
+and libraries when updating integrations.
+
+Positional Canon FilterInfo and CustomFunctions2 expansion can follow checked alternate metadata
+offsets without reading intervening bytes. Scratch, entry and I/O limits still
+apply, and incomplete paths retain diagnostics. This does not add arbitrary
+MakerNote scanning or sensor-pixel decoding.
+
+CR3 positional snapshots now expand Canon CMT3 root-TIFF metadata instead of
+unconditionally reporting a skipped MakerNote. The existing payload scratch
+and extraction limits apply; memory and positional inputs share the decoder.
+
+DNG DefaultCropOrigin and DefaultCropSize now require exactly two source values;
+ActiveArea requires exactly four. Other lengths retain their numeric source
+values and completeness but do not produce normalized origin/size/rectangle
+fields. MaskedAreas still accepts multiple four-value rectangles. A Complete
+numeric result describes the returned numbers; callers must also check has_rect
+before consuming normalized geometry.

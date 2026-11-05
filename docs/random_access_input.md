@@ -61,13 +61,35 @@ behavior.
 
 Version 0.8.30 shares Canon's existing derived-table dispatch between memory
 and callback inputs, including values outside the declared MakerNote span.
-Each value is fetched separately and consumed synchronously. Alternate binary
-directory locations outside the fetched value remain explicit residuals rather
-than triggering spanning reads. Standalone MRW now reads PRD/WBG/RIF metadata
+Each value is fetched separately and consumed synchronously. Version 0.8.31
+also follows alternate Canon FilterInfo and CustomFunctions2 locations using the same checked
+auto-adjusted, schema-adjusted, MakerNote-relative and TIFF-relative bases as
+the memory decoder. At most four distinct alternate offsets are probed using
+exact four-byte FilterInfo or eight-byte CustomFunctions2 signature reads;
+a matching directory is fetched at its declared
+length. These reads share the caller's scratch and request/byte limits. No
+gap or pixel payload is fetched to bridge metadata locations. Unsupported or
+unreadable alternate paths remain explicit residuals. AFInfo2's memory-only
+search across a declared MakerNote span is not replaced by a file-wide search;
+unresolved layouts still report a residual. Standalone MRW reads PRD/WBG/RIF metadata
 chunks through callbacks and skips unrelated/pixel payloads. Sony SR2-private
 metadata uses bounded decryption scratch; native RAF follows declared private
 TIFF F000 directories without following pixel strip offsets. This is targeted
 metadata support, not universal private-layout parity.
+
+For CR3, positional snapshots also decode the direct Canon root directory in
+`CMT3` TIFF metadata with the same Canon expansion helper as memory input.
+The scanner-declared CMT3 payload must fit the caller's payload scratch and
+payload/I/O budgets. All derived offsets remain within that metadata payload;
+the decoder does not extend it into `mdat`. Disabling MakerNote decoding skips
+this expansion without generating a false incomplete-MakerNote diagnostic.
+
+Offset candidates are bounded by the supplied source range, which may contain
+image data. A malformed metadata pointer can still address image bytes; the
+decoder does not infer a universal metadata-only extent from a TIFF source.
+A host that requires strict exclusion of particular ranges must reject those
+reads in its callback or provide a metadata-only source range with the correct
+offset basis. Callback errors stop traversal and retain incomplete-path state.
 
 Snapshot `residual_reasons` distinguishes MakerNote paths, raw-carrier
 preservation, embedded-container enrichment, source enrichment and unclassified

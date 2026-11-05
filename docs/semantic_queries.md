@@ -1,7 +1,8 @@
 # Scoped semantic metadata queries
 
 Version 0.8.30 adds image membership and explicit numeric completeness to the
-experimental C++ query, interpretation, concept and DNG CCM services. The caller
+experimental C++ and Python query, interpretation, concept and DNG CCM
+services. The caller
 selects metadata directories that describe an image. OpenMeta does not choose a
 RAW sensor plane or apply metadata to pixels.
 
@@ -45,6 +46,45 @@ candidate, without one global `preferred_entry`.
 the same options. `CcmQueryOptions::scope` uses the same membership rules for
 DNG markers, field extraction and companion validation. CCM fields and issues
 carry their source block, and fields also carry their original entry ID.
+
+### Python
+
+Python exposes `MetadataQueryScope`, `MetadataDirectorySelector` and
+`MetadataQueryOptions`. `Document` and `TransferSourceSnapshot` query,
+interpretation, concept and transfer-diagnostic methods accept an optional
+`options=` argument. Existing calls without options keep the whole-store
+defaults. `Document.dng_ccm_fields` accepts `scope=` and keeps its existing
+field-limit arguments.
+
+Selectors own their `ifd` strings. Add selectors with `add_directory` or
+assign a list of selector objects to `directories`:
+
+```python
+scope = openmeta.MetadataQueryScope()
+scope.enabled = True
+scope.add_directory(block, "ifd0")
+scope.inherit_across_directories = True  # Only for one caller-defined image.
+# Equivalent list assignment; the bound vector is copied into the scope.
+# scope.directories = [openmeta.MetadataDirectorySelector(block, "ifd0")]
+
+options = openmeta.MetadataQueryOptions()
+options.scope = scope
+options.max_total_values = 4096
+query = document.metadata_query(
+    openmeta.MetadataQueryKind.RawProcessing, options=options
+)
+concepts = document.resolve_metadata_concepts(options=options)
+snapshot = document.build_transfer_source_snapshot()
+interpretation = snapshot.interpret_metadata(options=options)
+ccm = document.dng_ccm_fields(scope=scope)
+```
+
+Reading `directories` returns a Python list copy, and assigning a list copies
+its elements. Changing or deleting the source list or scope does not invalidate
+another scope or options object. An enabled scope with an empty `directories`
+list selects nothing. A disabled scope selects the whole store. Numeric limits
+set to zero are unlimited; `max_semantic_work = 0` selects the finite default of
+1048576 operations.
 
 ## Numeric completeness and limits
 

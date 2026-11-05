@@ -86,11 +86,18 @@ namespace exif_internal {
         Incomplete,
     };
 
+    struct SourceIfdValueContext final {
+        SourceTiffReader* source = nullptr;
+        uint64_t value_offset = 0U;
+        std::span<const int64_t> alternate_value_bases;
+    };
+
     using SourceIfdValueExpansionHook = SourceIfdValueExpansionStatus (*)(
         const TiffConfig& cfg, const ClassicIfdEntry& entry, bool have_value,
         std::span<const std::byte> value, std::string_view ifd_name,
         MetaStore& store, const ExifDecodeOptions& options,
-        ExifDecodeResult* status_out) noexcept;
+        ExifDecodeResult* status_out,
+        const SourceIfdValueContext& context) noexcept;
 
     struct ExifContext final {
         explicit ExifContext(const MetaStore& store) noexcept;
@@ -162,7 +169,8 @@ namespace exif_internal {
         const TiffConfig* out_of_line_value_cfg = nullptr,
         bool mark_contextual_names              = true,
         bool allow_zero_count_unknown_type      = false,
-        SourceIfdValueExpansionHook value_hook  = nullptr) noexcept;
+        SourceIfdValueExpansionHook value_hook  = nullptr,
+        std::span<const int64_t> alternate_value_bases = {}) noexcept;
 
     // Low-level helpers (implemented in exif_tiff_decode.cc).
     bool match_bytes(std::span<const std::byte> bytes, uint64_t offset,
@@ -296,7 +304,15 @@ namespace exif_internal {
         const TiffConfig& cfg, const ClassicIfdEntry& entry, bool have_value,
         std::span<const std::byte> value, std::string_view ifd_name,
         MetaStore& store, const ExifDecodeOptions& options,
-        ExifDecodeResult* status_out) noexcept;
+        ExifDecodeResult* status_out,
+        const SourceIfdValueContext& context) noexcept;
+
+    struct CanonMakerNoteResiduals final {
+        uint32_t paths_skipped = 0U;
+        uint64_t first_offset = 0U;
+        uint16_t first_tag = 0U;
+        bool location_known = false;
+    };
 
     bool decode_canon_makernote(const TiffConfig& parent_cfg,
                                 std::span<const std::byte> tiff_bytes,
@@ -304,7 +320,14 @@ namespace exif_internal {
                                 uint64_t maker_note_bytes,
                                 std::string_view mk_ifd0, MetaStore& store,
                                 const ExifDecodeOptions& options,
-                                ExifDecodeResult* status_out) noexcept;
+                                ExifDecodeResult* status_out,
+                                CanonMakerNoteResiduals* residuals = nullptr) noexcept;
+
+    ExifDecodeResult decode_canon_cr3_tiff(
+        std::span<const std::byte> bytes, MetaStore& store,
+        std::span<ExifIfdRef> out_ifds,
+        const ExifDecodeOptions& options,
+        CanonMakerNoteResiduals* residuals = nullptr) noexcept;
 
     bool decode_fuji_makernote(std::span<const std::byte> tiff_bytes,
                                uint64_t maker_note_off,
