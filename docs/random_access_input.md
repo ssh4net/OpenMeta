@@ -59,14 +59,22 @@ Theta expansion. Nintendo CameraInfo, Casio QVC/DCI directories, Minolta binary
 tables, and FLIR outer-TIFF-relative values also retain their contiguous decode
 behavior.
 
-Callback decoding does not yet claim complete MakerNote parity. Canon retains
-its complete existing derived-table decoder when required values are inside the
-declared MakerNote payload. If Canon values extend outside that payload, the
-main IFD is decoded from the source but the unconverted derived-table work is
-counted by `ExifRandomAccessDecodeResult::nested_payloads_skipped`. Unknown or
-unsupported vendor layouts use the same residual instead of decoding against an
-incorrect subspan. A contiguous source keeps the full existing decoder behavior
-and reports no random-access residual.
+Version 0.8.30 shares Canon's existing derived-table dispatch between memory
+and callback inputs, including values outside the declared MakerNote span.
+Each value is fetched separately and consumed synchronously. Alternate binary
+directory locations outside the fetched value remain explicit residuals rather
+than triggering spanning reads. Standalone MRW now reads PRD/WBG/RIF metadata
+chunks through callbacks and skips unrelated/pixel payloads. Sony SR2-private
+metadata uses bounded decryption scratch; native RAF follows declared private
+TIFF F000 directories without following pixel strip offsets. This is targeted
+metadata support, not universal private-layout parity.
+
+Snapshot `residual_reasons` distinguishes MakerNote paths, raw-carrier
+preservation, embedded-container enrichment, source enrichment and unclassified
+paths. Diagnostic projection uses these producer reasons; requesting MakerNote
+decoding alone does not imply an incomplete MakerNote. The first known skipped
+MakerNote offset/tag is retained. Aggregate-only manually constructed results
+produce a generic residual diagnostic.
 
 `scan_jpeg_random_access(...)` locates leading EXIF, XMP, ICC, MPF, vendor APP,
 JUMBF, Photoshop IRB, FLIR, and comment segments through the same positional
@@ -267,14 +275,9 @@ Project machine-readable diagnostics without allocation:
 
 ```cpp
 std::array<openmeta::ReadTransferSourceDiagnostic, 8> diagnostics;
-openmeta::ReadTransferSourceDiagnosticOptions diagnostic_options;
-diagnostic_options.decode_makernote_requested = options.decode_makernote;
-diagnostic_options.decode_embedded_containers_requested =
-    options.decode_embedded_containers;
-
 openmeta::ReadTransferSourceDiagnosticsResult diagnostic_result =
     openmeta::collect_read_transfer_source_diagnostics(
-        result, diagnostics, diagnostic_options);
+        result, diagnostics);
 ```
 
 Each record has severity, stable code, domain, format, source offset, required

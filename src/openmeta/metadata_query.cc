@@ -8,6 +8,7 @@
 #include "openmeta/phaseone_geometry.h"
 #include "openmeta/vendor_raw_processing.h"
 
+#include "metadata_scope_internal.h"
 #include "xmp_structure_internal.h"
 
 #include <cmath>
@@ -642,6 +643,74 @@ namespace {
         return false;
     }
 
+    static MetadataQueryNumericStatus inspect_numeric_value(
+        const MetaStore& store, const MetaValue& value,
+        uint64_t* out_count) noexcept
+    {
+        if (!out_count) {
+            return MetadataQueryNumericStatus::Invalid;
+        }
+        *out_count = 0U;
+        if (value.kind == MetaValueKind::Scalar) {
+            *out_count = value.count;
+            if (value.count != 1U) {
+                return MetadataQueryNumericStatus::Invalid;
+            }
+            double scalar = 0.0;
+            if (!scalar_to_double(value, &scalar) || !std::isfinite(scalar)) {
+                return MetadataQueryNumericStatus::Invalid;
+            }
+            *out_count = 1U;
+            return MetadataQueryNumericStatus::Complete;
+        }
+        if (value.kind != MetaValueKind::Array) {
+            return MetadataQueryNumericStatus::NotNumeric;
+        }
+
+        const uint32_t element_size = numeric_element_size(value.elem_type);
+        if (element_size == 0U) {
+            *out_count = value.count;
+            return MetadataQueryNumericStatus::Invalid;
+        }
+        const std::span<const std::byte> bytes
+            = store.arena().span(value.data.span);
+        if (bytes.size() % element_size != 0U
+            || bytes.size() / element_size != value.count) {
+            *out_count = value.count;
+            return MetadataQueryNumericStatus::Invalid;
+        }
+        for (uint32_t i = 0U; i < value.count; ++i) {
+            double element = 0.0;
+            if (!array_element_to_double(
+                    bytes, value.elem_type,
+                    static_cast<size_t>(i) * element_size, &element)
+                || !std::isfinite(element)) {
+                *out_count = value.count;
+                return MetadataQueryNumericStatus::Invalid;
+            }
+        }
+        *out_count = value.count;
+        return MetadataQueryNumericStatus::Complete;
+    }
+
+    static bool numeric_source_meets_min(const MetaStore& store,
+                                         EntryId entry_id,
+                                         uint32_t min_count) noexcept
+    {
+        if (entry_id == kInvalidEntryId) {
+            return false;
+        }
+        uint64_t count = 0U;
+        const MetadataQueryNumericStatus status = inspect_numeric_value(
+            store, store.entry(entry_id).value, &count);
+        return min_count == 0U
+                   ? status == MetadataQueryNumericStatus::Complete
+                         || status == MetadataQueryNumericStatus::Invalid
+                         || status == MetadataQueryNumericStatus::NotNumeric
+                   : status == MetadataQueryNumericStatus::Complete
+                         && count >= min_count;
+    }
+
     static bool value_to_double_array(const MetaStore& store,
                                       const MetaValue& value,
                                       double* out_values, uint32_t max_values,
@@ -651,31 +720,26 @@ namespace {
             return false;
         }
         *out_count = 0U;
+        uint64_t total_count = 0U;
+        if (inspect_numeric_value(store, value, &total_count)
+            != MetadataQueryNumericStatus::Complete) {
+            return false;
+        }
+        const uint32_t count = static_cast<uint32_t>(
+            total_count < max_values ? total_count : max_values);
         if (value.kind == MetaValueKind::Scalar) {
-            if (!scalar_to_double(value, &out_values[0])) {
+            if (count > 0U && !scalar_to_double(value, &out_values[0])) {
                 return false;
             }
-            *out_count = 1U;
+            *out_count = count;
             return true;
         }
         if (value.kind != MetaValueKind::Array) {
             return false;
         }
         const uint32_t element_size = numeric_element_size(value.elem_type);
-        if (element_size == 0U) {
-            return false;
-        }
-        const std::span<const std::byte> bytes = store.arena().span(
-            value.data.span);
-        const uint32_t available = static_cast<uint32_t>(bytes.size()
-                                                         / element_size);
-        uint32_t count           = value.count;
-        if (count > available) {
-            count = available;
-        }
-        if (count > max_values) {
-            count = max_values;
-        }
+        const std::span<const std::byte> bytes
+            = store.arena().span(value.data.span);
         for (uint32_t i = 0U; i < count; ++i) {
             if (!array_element_to_double(bytes, value.elem_type,
                                          static_cast<size_t>(i) * element_size,
@@ -684,7 +748,7 @@ namespace {
             }
         }
         *out_count = count;
-        return count > 0U;
+        return true;
     }
 
     static bool parse_decimal_number(std::string_view text,
@@ -744,12 +808,15 @@ namespace {
 
     static bool parse_number_list(std::string_view text, double* out_values,
                                   uint32_t max_values,
-                                  uint32_t* out_count) noexcept
+                                  uint32_t* out_count,
+                                  uint64_t* out_total_count) noexcept
     {
-        if (!out_values || !out_count || max_values == 0U) {
+        if ((!out_values && max_values > 0U) || !out_count
+            || !out_total_count) {
             return false;
         }
         *out_count = 0U;
+        *out_total_count = 0U;
 
         size_t token_start = 0U;
         bool in_token      = false;
@@ -766,19 +833,23 @@ namespace {
             if (!in_token) {
                 continue;
             }
-            if (*out_count >= max_values) {
-                return true;
-            }
             double value = 0.0;
             if (!parse_decimal_number(text.substr(token_start, i - token_start),
-                                      &value)) {
+                                      &value)
+                || !std::isfinite(value)) {
                 return false;
             }
-            out_values[*out_count] = value;
-            *out_count += 1U;
+            if (*out_count < max_values) {
+                out_values[*out_count] = value;
+                *out_count += 1U;
+            }
+            if (*out_total_count == UINT64_MAX) {
+                return false;
+            }
+            *out_total_count += 1U;
             in_token = false;
         }
-        return *out_count > 0U;
+        return *out_total_count > 0U;
     }
 
     static bool text_value(const MetaStore& store, const MetaValue& value,
@@ -2736,95 +2807,808 @@ namespace {
         return arena_string(store.arena(), entry.key.data.exif_tag.ifd) == ifd;
     }
 
-    static EntryId find_first_exif_entry(const MetaStore& store,
-                                         std::string_view ifd,
-                                         uint16_t tag) noexcept
+    static EntryId find_first_exif_entry_in_scope(
+        const MetaStore& store, const Entry& base,
+        const MetadataQueryScope& scope, uint16_t tag) noexcept
     {
         const std::span<const Entry> entries = store.entries();
+        if (!metadata_scope_contains(store, scope, base)) {
+            return kInvalidEntryId;
+        }
         for (size_t i = 0U; i < entries.size(); ++i) {
-            if (entry_is_deleted(entries[i])) {
+            const Entry& entry = entries[i];
+            if (entry_is_deleted(entry)
+                || !exif_entry_is(store, entry,
+                                  metadata_scope_entry_ifd(store, base), tag)
+                || !metadata_scope_same_directory(store, base, entry)) {
                 continue;
             }
-            if (exif_entry_is(store, entries[i], ifd, tag)) {
-                return static_cast<EntryId>(i);
+            return static_cast<EntryId>(i);
+        }
+        if (!scope.enabled || !scope.inherit_across_directories) {
+            return kInvalidEntryId;
+        }
+        for (size_t i = 0U; i < entries.size(); ++i) {
+            const Entry& entry = entries[i];
+            if (entry_is_deleted(entry)
+                || !exif_entry_in_tag_series(entry, &tag, 1U)
+                || !metadata_scope_can_inherit(store, scope, base, entry)) {
+                continue;
             }
+            return static_cast<EntryId>(i);
         }
         return kInvalidEntryId;
     }
 
-    static EntryId find_first_exif_tag_any_ifd(const MetaStore& store,
-                                               uint16_t tag) noexcept
-    {
-        const std::span<const Entry> entries = store.entries();
-        for (size_t i = 0U; i < entries.size(); ++i) {
-            if (entry_is_deleted(entries[i])
-                || entries[i].key.kind != MetaKeyKind::ExifTag) {
-                continue;
-            }
-            if (entries[i].key.data.exif_tag.tag == tag) {
-                return static_cast<EntryId>(i);
-            }
-        }
-        return kInvalidEntryId;
-    }
-
-    static bool has_previous_exif_tag_series_ifd(const MetaStore& store,
-                                                 size_t entry_index,
-                                                 std::string_view ifd,
-                                                 const uint16_t* tags,
-                                                 size_t tag_count) noexcept
+    static bool has_previous_exif_tag_series_group(
+        const MetaStore& store, size_t entry_index, const uint16_t* tags,
+        size_t tag_count) noexcept
     {
         const std::span<const Entry> entries = store.entries();
         if (entry_index > entries.size()) {
             return false;
         }
+        const Entry& base = entries[entry_index];
         for (size_t i = 0U; i < entry_index; ++i) {
             if (entry_is_deleted(entries[i])
-                || !exif_entry_in_tag_series(entries[i], tags, tag_count)) {
+                || !exif_entry_in_tag_series(entries[i], tags, tag_count)
+                || !metadata_scope_same_directory(store, base, entries[i])) {
                 continue;
             }
-            const std::string_view current_ifd
-                = arena_string(store.arena(), entries[i].key.data.exif_tag.ifd);
-            if (current_ifd == ifd) {
-                return true;
-            }
+            return true;
         }
         return false;
     }
 
-    static bool append_candidate_numeric_values_min(const MetaStore& store,
-                                                    EntryId entry_id,
-                                                    MetadataQueryCandidate* out,
-                                                    uint32_t min_count)
+    static uint64_t add_saturated_u64(uint64_t a, uint64_t b) noexcept
     {
-        if (!out || entry_id == kInvalidEntryId) {
+        const uint64_t max_value = UINT64_MAX;
+        return b > max_value - a ? max_value : a + b;
+    }
+
+    static MetadataQueryNumericStatus merge_numeric_status(
+        MetadataQueryNumericStatus a,
+        MetadataQueryNumericStatus b) noexcept
+    {
+        if (a == MetadataQueryNumericStatus::Invalid
+            || b == MetadataQueryNumericStatus::Invalid) {
+            return MetadataQueryNumericStatus::Invalid;
+        }
+        if (a == MetadataQueryNumericStatus::Partial
+            || b == MetadataQueryNumericStatus::Partial) {
+            return MetadataQueryNumericStatus::Partial;
+        }
+        if (a == MetadataQueryNumericStatus::Complete
+            || b == MetadataQueryNumericStatus::Complete) {
+            return MetadataQueryNumericStatus::Complete;
+        }
+        return MetadataQueryNumericStatus::NotNumeric;
+    }
+
+    static MetadataQueryComponentRole component_role_for_tag(
+        MetaKeyKind key_kind, uint16_t tag) noexcept
+    {
+        if (key_kind != MetaKeyKind::ExifTag) {
+            return MetadataQueryComponentRole::NumericValue;
+        }
+        switch (tag) {
+        case kDngColorMatrix1Tag:
+        case kDngColorMatrix2Tag:
+        case kDngColorMatrix3Tag:
+            return MetadataQueryComponentRole::ColorMatrix;
+        case kDngCameraCalibration1Tag:
+        case kDngCameraCalibration2Tag:
+        case kDngCameraCalibration3Tag:
+            return MetadataQueryComponentRole::CameraCalibration;
+        case kDngReductionMatrix1Tag:
+        case kDngReductionMatrix2Tag:
+        case kDngReductionMatrix3Tag:
+            return MetadataQueryComponentRole::ReductionMatrix;
+        case kDngForwardMatrix1Tag:
+        case kDngForwardMatrix2Tag:
+        case kDngForwardMatrix3Tag:
+            return MetadataQueryComponentRole::ForwardMatrix;
+        case kDngCalibrationIlluminant1Tag:
+        case kDngCalibrationIlluminant2Tag:
+        case kDngCalibrationIlluminant3Tag:
+            return MetadataQueryComponentRole::CalibrationIlluminant;
+        case kDngAnalogBalanceTag:
+            return MetadataQueryComponentRole::AnalogBalance;
+        case kDngAsShotNeutralTag:
+            return MetadataQueryComponentRole::AsShotNeutral;
+        case kDngAsShotWhiteXyTag:
+            return MetadataQueryComponentRole::AsShotWhiteXy;
+        case kDngBlackLevelRepeatDimTag:
+            return MetadataQueryComponentRole::BlackLevelRepeatDimensions;
+        case kDngBlackLevelTag:
+            return MetadataQueryComponentRole::BlackLevel;
+        case kDngBlackLevelDeltaHTag:
+            return MetadataQueryComponentRole::BlackLevelDeltaH;
+        case kDngBlackLevelDeltaVTag:
+            return MetadataQueryComponentRole::BlackLevelDeltaV;
+        case kDngWhiteLevelTag:
+            return MetadataQueryComponentRole::WhiteLevel;
+        case kDngLinearizationTableTag:
+            return MetadataQueryComponentRole::LinearizationTable;
+        case kExifCfaRepeatPatternDimTag:
+            return MetadataQueryComponentRole::CfaRepeatDimensions;
+        case kExifCfaPatternTag:
+        case kExifCfaPattern2Tag:
+            return MetadataQueryComponentRole::CfaPattern;
+        case kDngCfaPlaneColorTag:
+            return MetadataQueryComponentRole::CfaPlaneColors;
+        case kDngCfaLayoutTag:
+            return MetadataQueryComponentRole::CfaLayout;
+        case kDngActiveAreaTag:
+            return MetadataQueryComponentRole::ActiveArea;
+        case kDngMaskedAreasTag:
+            return MetadataQueryComponentRole::MaskedAreas;
+        case kDngDefaultCropOriginTag:
+            return MetadataQueryComponentRole::DefaultCropOrigin;
+        case kDngDefaultCropSizeTag:
+            return MetadataQueryComponentRole::DefaultCropSize;
+        default: return MetadataQueryComponentRole::NumericValue;
+        }
+    }
+
+    static MetadataQueryComponentRole component_role_for_entry(
+        const MetaStore& store, const Entry& entry) noexcept
+    {
+        const uint16_t tag
+            = entry.key.kind == MetaKeyKind::ExifTag
+                  ? entry.key.data.exif_tag.tag
+                  : 0U;
+        const MetadataQueryComponentRole tag_role
+            = component_role_for_tag(entry.key.kind, tag);
+        if (tag_role != MetadataQueryComponentRole::NumericValue
+            || entry.key.kind != MetaKeyKind::ExifTag) {
+            return tag_role;
+        }
+
+        const std::string_view name
+            = exif_entry_name(store, entry, ExifTagNamePolicy::Canonical);
+        if (contains_ascii_case_insensitive(name, "BlackLevelRepeat")
+            || contains_ascii_case_insensitive(name,
+                                               "Black Level Repeat")) {
+            return MetadataQueryComponentRole::BlackLevelRepeatDimensions;
+        }
+        if (contains_ascii_case_insensitive(name, "BlackLevelDeltaH")
+            || contains_ascii_case_insensitive(name, "Black Level Delta H")) {
+            return MetadataQueryComponentRole::BlackLevelDeltaH;
+        }
+        if (contains_ascii_case_insensitive(name, "BlackLevelDeltaV")
+            || contains_ascii_case_insensitive(name, "Black Level Delta V")) {
+            return MetadataQueryComponentRole::BlackLevelDeltaV;
+        }
+        if (contains_ascii_case_insensitive(name, "BlackLevel")
+            || contains_ascii_case_insensitive(name, "Black Level")) {
+            return MetadataQueryComponentRole::BlackLevel;
+        }
+        if (contains_ascii_case_insensitive(name, "WhiteLevel")
+            || contains_ascii_case_insensitive(name, "White Level")) {
+            return MetadataQueryComponentRole::WhiteLevel;
+        }
+        if (contains_ascii_case_insensitive(name, "WhiteBalance")
+            || contains_ascii_case_insensitive(name, "White Balance")) {
+            return MetadataQueryComponentRole::WhiteBalance;
+        }
+        if (contains_ascii_case_insensitive(name, "CfaRepeat")
+            || contains_ascii_case_insensitive(name, "CFA Repeat")) {
+            return MetadataQueryComponentRole::CfaRepeatDimensions;
+        }
+        if (contains_ascii_case_insensitive(name, "CfaPlaneColor")
+            || contains_ascii_case_insensitive(name, "CFA Plane Color")) {
+            return MetadataQueryComponentRole::CfaPlaneColors;
+        }
+        if (contains_ascii_case_insensitive(name, "CfaPattern")
+            || contains_ascii_case_insensitive(name, "CFA Pattern")) {
+            return MetadataQueryComponentRole::CfaPattern;
+        }
+        if (contains_ascii_case_insensitive(name, "CfaLayout")
+            || contains_ascii_case_insensitive(name, "CFA Layout")) {
+            return MetadataQueryComponentRole::CfaLayout;
+        }
+        if (contains_ascii_case_insensitive(name, "Linearization")) {
+            return MetadataQueryComponentRole::LinearizationTable;
+        }
+        if (contains_ascii_case_insensitive(name, "ActiveArea")
+            || contains_ascii_case_insensitive(name, "Active Area")) {
+            return MetadataQueryComponentRole::ActiveArea;
+        }
+        if (contains_ascii_case_insensitive(name, "MaskedAreas")
+            || contains_ascii_case_insensitive(name, "Masked Areas")) {
+            return MetadataQueryComponentRole::MaskedAreas;
+        }
+        if (contains_ascii_case_insensitive(name, "DefaultCropOrigin")
+            || contains_ascii_case_insensitive(name, "Default Crop Origin")) {
+            return MetadataQueryComponentRole::DefaultCropOrigin;
+        }
+        if (contains_ascii_case_insensitive(name, "DefaultCropSize")
+            || contains_ascii_case_insensitive(name, "Default Crop Size")) {
+            return MetadataQueryComponentRole::DefaultCropSize;
+        }
+        return MetadataQueryComponentRole::NumericValue;
+    }
+
+    static MetadataQueryMatrixSubtype matrix_subtype_for_role(
+        MetadataQueryComponentRole role) noexcept
+    {
+        switch (role) {
+        case MetadataQueryComponentRole::ColorMatrix:
+            return MetadataQueryMatrixSubtype::ColorMatrix;
+        case MetadataQueryComponentRole::CameraCalibration:
+            return MetadataQueryMatrixSubtype::CameraCalibration;
+        case MetadataQueryComponentRole::ReductionMatrix:
+            return MetadataQueryMatrixSubtype::ReductionMatrix;
+        case MetadataQueryComponentRole::ForwardMatrix:
+            return MetadataQueryMatrixSubtype::ForwardMatrix;
+        default: return MetadataQueryMatrixSubtype::Unknown;
+        }
+    }
+
+    static uint8_t calibration_index_for_tag(uint16_t tag) noexcept
+    {
+        switch (tag) {
+        case kDngColorMatrix1Tag:
+        case kDngCameraCalibration1Tag:
+        case kDngReductionMatrix1Tag:
+        case kDngForwardMatrix1Tag:
+        case kDngCalibrationIlluminant1Tag: return 1U;
+        case kDngColorMatrix2Tag:
+        case kDngCameraCalibration2Tag:
+        case kDngReductionMatrix2Tag:
+        case kDngForwardMatrix2Tag:
+        case kDngCalibrationIlluminant2Tag: return 2U;
+        case kDngColorMatrix3Tag:
+        case kDngCameraCalibration3Tag:
+        case kDngReductionMatrix3Tag:
+        case kDngForwardMatrix3Tag:
+        case kDngCalibrationIlluminant3Tag: return 3U;
+        default: return 0U;
+        }
+    }
+
+    static uint16_t illuminant_tag_for_index(uint8_t index) noexcept
+    {
+        switch (index) {
+        case 1U: return kDngCalibrationIlluminant1Tag;
+        case 2U: return kDngCalibrationIlluminant2Tag;
+        case 3U: return kDngCalibrationIlluminant3Tag;
+        default: return 0U;
+        }
+    }
+
+    static uint16_t associated_tag_for_component(
+        MetadataQueryComponentRole role, uint8_t calibration_index,
+        uint16_t source_tag) noexcept
+    {
+        if (role == MetadataQueryComponentRole::ColorMatrix
+            || role == MetadataQueryComponentRole::CameraCalibration
+            || role == MetadataQueryComponentRole::ReductionMatrix
+            || role == MetadataQueryComponentRole::ForwardMatrix) {
+            return illuminant_tag_for_index(calibration_index);
+        }
+        if (role == MetadataQueryComponentRole::BlackLevel
+            && source_tag == kDngBlackLevelTag) {
+            return kDngBlackLevelRepeatDimTag;
+        }
+        if (role == MetadataQueryComponentRole::CfaPattern
+            && (source_tag == kExifCfaPatternTag
+                || source_tag == kExifCfaPattern2Tag)) {
+            return kExifCfaRepeatPatternDimTag;
+        }
+        return 0U;
+    }
+
+    static bool read_positive_repeat_dimensions(const MetaStore& store,
+                                                const MetaValue& value,
+                                                uint32_t* out_rows,
+                                                uint32_t* out_columns) noexcept
+    {
+        if (!out_rows || !out_columns) {
             return false;
         }
-        double values[64] {};
-        uint32_t count = 0U;
-        if (!value_to_double_array(store, store.entry(entry_id).value, values,
-                                   64U, &count)) {
-            return min_count == 0U;
-        }
-        if (count < min_count) {
+        uint64_t total_count = 0U;
+        if (inspect_numeric_value(store, value, &total_count)
+            != MetadataQueryNumericStatus::Complete
+            || total_count != 2U) {
             return false;
         }
-        if (count == 0U) {
-            return true;
+        double dimensions[2] {};
+        uint32_t returned_count = 0U;
+        if (!value_to_double_array(store, value, dimensions, 2U,
+                                   &returned_count)
+            || returned_count != 2U || dimensions[0] <= 0.0
+            || dimensions[1] <= 0.0
+            || dimensions[0] > static_cast<double>(UINT32_MAX)
+            || dimensions[1] > static_cast<double>(UINT32_MAX)
+            || std::floor(dimensions[0]) != dimensions[0]
+            || std::floor(dimensions[1]) != dimensions[1]) {
+            return false;
         }
-        out->has_values = true;
-        out->values.reserve(out->values.size() + static_cast<size_t>(count));
-        for (uint32_t i = 0U; i < count; ++i) {
-            out->values.push_back(values[i]);
-        }
+        *out_rows = static_cast<uint32_t>(dimensions[0]);
+        *out_columns = static_cast<uint32_t>(dimensions[1]);
         return true;
+    }
+
+    static uint32_t exact_square_matrix_side(uint64_t value_count) noexcept
+    {
+        if (value_count == 0U) {
+            return 0U;
+        }
+        uint64_t low = 1U;
+        uint64_t high = UINT32_MAX;
+        while (low <= high) {
+            const uint64_t middle = low + (high - low) / 2U;
+            const uint64_t square = middle * middle;
+            if (square == value_count) {
+                return static_cast<uint32_t>(middle);
+            }
+            if (square < value_count) {
+                low = middle + 1U;
+            } else {
+                high = middle - 1U;
+            }
+        }
+        return 0U;
+    }
+
+    static MetadataQueryNumericStatus append_candidate_numeric_values_min(
+        const MetaStore& store, MetadataQueryResult* result,
+        MetadataQueryCandidate* out, EntryId entry_id,
+        const MetadataQueryOptions& options, uint32_t min_count,
+        const MetadataQueryScope& scope)
+    {
+        if (!result || !out || entry_id == kInvalidEntryId) {
+            return MetadataQueryNumericStatus::Invalid;
+        }
+        const Entry& entry = store.entry(entry_id);
+        uint64_t total_count = 0U;
+        const MetadataQueryNumericStatus source_status
+            = inspect_numeric_value(store, entry.value, &total_count);
+        if (source_status != MetadataQueryNumericStatus::Complete
+            && min_count > 0U) {
+            return source_status;
+        }
+        if (source_status == MetadataQueryNumericStatus::Complete
+            && total_count < min_count) {
+            return MetadataQueryNumericStatus::Invalid;
+        }
+
+        MetadataQueryComponent component;
+        component.source_entry = entry_id;
+        component.key_kind = entry.key.kind;
+        if (entry.key.kind == MetaKeyKind::ExifTag) {
+            component.tag = entry.key.data.exif_tag.tag;
+        }
+        component.role = component_role_for_entry(store, entry);
+        component.matrix_subtype = matrix_subtype_for_role(component.role);
+        component.calibration_index
+            = calibration_index_for_tag(component.tag);
+        component.associated_tag = associated_tag_for_component(
+            component.role, component.calibration_index, component.tag);
+        if (component.associated_tag != 0U) {
+            component.associated_entry = find_first_exif_entry_in_scope(
+                store, entry, scope, component.associated_tag);
+        }
+        component.value_offset = static_cast<uint64_t>(out->values.size());
+        component.total_value_count = total_count;
+        component.numeric_status = source_status;
+
+        if (source_status == MetadataQueryNumericStatus::Complete) {
+            if (component.matrix_subtype == MetadataQueryMatrixSubtype::ColorMatrix
+                && total_count > 0U && total_count % 3U == 0U
+                && total_count / 3U <= UINT32_MAX) {
+                component.rows = static_cast<uint32_t>(total_count / 3U);
+                component.columns = 3U;
+                component.channels = component.rows;
+            } else if (component.matrix_subtype
+                           == MetadataQueryMatrixSubtype::CameraCalibration) {
+                const uint32_t side = exact_square_matrix_side(total_count);
+                if (side > 0U) {
+                    component.rows = side;
+                    component.columns = side;
+                    component.channels = side;
+                }
+            } else if ((component.matrix_subtype
+                            == MetadataQueryMatrixSubtype::ReductionMatrix
+                        || component.matrix_subtype
+                               == MetadataQueryMatrixSubtype::ForwardMatrix)
+                       && total_count > 0U && total_count % 3U == 0U
+                       && total_count / 3U <= UINT32_MAX) {
+                const uint64_t channels = total_count / 3U;
+                if (component.matrix_subtype
+                        == MetadataQueryMatrixSubtype::ForwardMatrix
+                    || channels > 3U) {
+                    component.rows = 3U;
+                    component.columns = static_cast<uint32_t>(channels);
+                    component.channels = static_cast<uint32_t>(channels);
+                }
+            }
+            if (component.role == MetadataQueryComponentRole::CfaPlaneColors
+                && total_count <= UINT32_MAX) {
+                component.channels = static_cast<uint32_t>(total_count);
+            }
+            if ((component.role == MetadataQueryComponentRole::AnalogBalance
+                 || component.role == MetadataQueryComponentRole::AsShotNeutral
+                 || component.role == MetadataQueryComponentRole::WhiteLevel)
+                && total_count <= UINT32_MAX) {
+                component.channels = static_cast<uint32_t>(total_count);
+            }
+            if (component.role == MetadataQueryComponentRole::AsShotWhiteXy
+                && total_count == 2U) {
+                component.rows = 1U;
+                component.columns = 2U;
+            }
+            if ((component.role == MetadataQueryComponentRole::DefaultCropOrigin
+                 || component.role == MetadataQueryComponentRole::DefaultCropSize)
+                && total_count == 2U) {
+                component.rows = 1U;
+                component.columns = 2U;
+            }
+            if (component.role == MetadataQueryComponentRole::ActiveArea
+                && total_count == 4U) {
+                component.rows = 1U;
+                component.columns = 4U;
+            }
+            if (component.role == MetadataQueryComponentRole::LinearizationTable
+                && total_count <= UINT32_MAX) {
+                component.rows = 1U;
+                component.columns = static_cast<uint32_t>(total_count);
+            }
+            if (component.role == MetadataQueryComponentRole::BlackLevelDeltaH
+                && total_count > 0U && total_count <= UINT32_MAX) {
+                component.rows = 1U;
+                component.columns = static_cast<uint32_t>(total_count);
+            }
+            if (component.role == MetadataQueryComponentRole::BlackLevelDeltaV
+                && total_count > 0U && total_count <= UINT32_MAX) {
+                component.rows = static_cast<uint32_t>(total_count);
+                component.columns = 1U;
+            }
+            if (component.role
+                    == MetadataQueryComponentRole::BlackLevelRepeatDimensions
+                || component.role
+                       == MetadataQueryComponentRole::CfaRepeatDimensions) {
+                uint32_t rows = 0U;
+                uint32_t columns = 0U;
+                if (read_positive_repeat_dimensions(store, entry.value, &rows,
+                                                    &columns)) {
+                    component.rows = rows;
+                    component.columns = columns;
+                }
+            }
+            if (component.associated_entry != kInvalidEntryId
+                && (component.role == MetadataQueryComponentRole::BlackLevel
+                    || component.role == MetadataQueryComponentRole::CfaPattern)) {
+                uint32_t rows = 0U;
+                uint32_t columns = 0U;
+                const Entry& associated
+                    = store.entry(component.associated_entry);
+                if (read_positive_repeat_dimensions(store, associated.value, &rows,
+                                                    &columns)) {
+                    if (component.role == MetadataQueryComponentRole::BlackLevel) {
+                        component.rows = rows;
+                        component.columns = columns;
+                        const uint64_t repeat_count
+                            = static_cast<uint64_t>(rows) * columns;
+                        if (repeat_count > 0U && total_count > 0U
+                            && total_count % repeat_count == 0U
+                            && total_count / repeat_count <= UINT32_MAX) {
+                            component.channels = static_cast<uint32_t>(
+                                total_count / repeat_count);
+                        }
+                    } else {
+                        const uint64_t pattern_count
+                            = static_cast<uint64_t>(rows) * columns;
+                        if (pattern_count == total_count) {
+                            component.rows = rows;
+                            component.columns = columns;
+                        }
+                    }
+                }
+            }
+            if (component.role == MetadataQueryComponentRole::CfaPattern
+                && (component.tag == kExifCfaPatternTag
+                    || component.tag == kExifCfaPattern2Tag)) {
+                const EntryId plane_color_id = find_first_exif_entry_in_scope(
+                    store, entry, scope, kDngCfaPlaneColorTag);
+                if (plane_color_id != kInvalidEntryId) {
+                    uint64_t plane_color_count = 0U;
+                    if (inspect_numeric_value(
+                            store, store.entry(plane_color_id).value,
+                            &plane_color_count)
+                            == MetadataQueryNumericStatus::Complete
+                        && plane_color_count > 0U
+                        && plane_color_count <= UINT32_MAX) {
+                        component.channels
+                            = static_cast<uint32_t>(plane_color_count);
+                    }
+                }
+            }
+            if (component.role == MetadataQueryComponentRole::MaskedAreas
+                && total_count % 4U == 0U && total_count / 4U <= UINT32_MAX) {
+                component.rows = static_cast<uint32_t>(total_count / 4U);
+                component.columns = 4U;
+            }
+        }
+
+        if (source_status == MetadataQueryNumericStatus::Invalid) {
+            out->total_numeric_values = add_saturated_u64(
+                out->total_numeric_values, total_count);
+            result->total_numeric_values = add_saturated_u64(
+                result->total_numeric_values, total_count);
+            out->numeric_status = merge_numeric_status(
+                out->numeric_status, MetadataQueryNumericStatus::Invalid);
+            result->numeric_status = merge_numeric_status(
+                result->numeric_status, MetadataQueryNumericStatus::Invalid);
+            result->has_invalid_numeric_values = true;
+            out->components.push_back(component);
+            return source_status;
+        }
+
+        out->total_numeric_values
+            = add_saturated_u64(out->total_numeric_values, total_count);
+        result->total_numeric_values = add_saturated_u64(
+            result->total_numeric_values, total_count);
+        if (source_status == MetadataQueryNumericStatus::NotNumeric) {
+            out->components.push_back(component);
+            return source_status;
+        }
+
+        uint64_t allowed_count = total_count;
+        if (!options.include_numeric_values) {
+            allowed_count = 0U;
+        }
+        if (options.max_values_per_entry != 0U
+            && allowed_count > options.max_values_per_entry) {
+            allowed_count = options.max_values_per_entry;
+        }
+        if (options.max_values_per_candidate != 0U) {
+            const uint64_t used = static_cast<uint64_t>(out->values.size());
+            const uint64_t limit = options.max_values_per_candidate;
+            const uint64_t remaining = used >= limit ? 0U : limit - used;
+            if (allowed_count > remaining) {
+                allowed_count = remaining;
+            }
+        }
+        if (options.max_total_values != 0U) {
+            const uint64_t limit = options.max_total_values;
+            const uint64_t remaining
+                = result->returned_numeric_values >= limit
+                      ? 0U
+                      : limit - result->returned_numeric_values;
+            if (allowed_count > remaining) {
+                allowed_count = remaining;
+            }
+        }
+
+        const uint64_t value_offset = static_cast<uint64_t>(out->values.size());
+        component.value_offset = value_offset;
+        component.returned_value_count = allowed_count;
+        component.numeric_status
+            = allowed_count < total_count
+                  ? MetadataQueryNumericStatus::Partial
+                  : MetadataQueryNumericStatus::Complete;
+        if (allowed_count < total_count) {
+            result->numeric_values_limited = true;
+        }
+        out->numeric_status = merge_numeric_status(out->numeric_status,
+                                                    component.numeric_status);
+        result->numeric_status = merge_numeric_status(
+            result->numeric_status, component.numeric_status);
+
+        if (allowed_count > 0U) {
+            const size_t append_count = static_cast<size_t>(allowed_count);
+            out->values.reserve(out->values.size() + append_count);
+            if (entry.value.kind == MetaValueKind::Scalar) {
+                double value = 0.0;
+                if (!scalar_to_double(entry.value, &value)) {
+                    component.numeric_status
+                        = MetadataQueryNumericStatus::Invalid;
+                    out->numeric_status = MetadataQueryNumericStatus::Invalid;
+                    result->numeric_status = MetadataQueryNumericStatus::Invalid;
+                    result->has_invalid_numeric_values = true;
+                    out->components.push_back(component);
+                    return MetadataQueryNumericStatus::Invalid;
+                }
+                out->values.push_back(value);
+            } else {
+                const uint32_t element_size
+                    = numeric_element_size(entry.value.elem_type);
+                const std::span<const std::byte> bytes
+                    = store.arena().span(entry.value.data.span);
+                for (uint32_t i = 0U; i < append_count; ++i) {
+                    double value = 0.0;
+                    if (!array_element_to_double(
+                            bytes, entry.value.elem_type,
+                            static_cast<size_t>(i) * element_size, &value)) {
+                        component.numeric_status
+                            = MetadataQueryNumericStatus::Invalid;
+                        out->numeric_status
+                            = MetadataQueryNumericStatus::Invalid;
+                        result->numeric_status
+                            = MetadataQueryNumericStatus::Invalid;
+                        result->has_invalid_numeric_values = true;
+                        out->components.push_back(component);
+                        return MetadataQueryNumericStatus::Invalid;
+                    }
+                    out->values.push_back(value);
+                }
+            }
+            result->returned_numeric_values = add_saturated_u64(
+                result->returned_numeric_values, allowed_count);
+            out->has_values = !out->values.empty();
+        }
+        out->components.push_back(component);
+        return component.numeric_status;
+    }
+
+    static MetadataQueryNumericStatus append_derived_numeric_component(
+        const MetaStore& store, MetadataQueryResult* result,
+        MetadataQueryCandidate* out, EntryId source_id, EntryId associated_id,
+        double value, MetadataQueryComponentRole role,
+        const MetadataQueryOptions& options)
+    {
+        if (!result || !out || source_id == kInvalidEntryId) {
+            return MetadataQueryNumericStatus::Invalid;
+        }
+        const Entry& source = store.entry(source_id);
+        uint64_t source_count = 0U;
+        const MetadataQueryNumericStatus source_status
+            = inspect_numeric_value(store, source.value, &source_count);
+        MetadataQueryComponent component;
+        component.source_entry = source_id;
+        component.key_kind = source.key.kind;
+        component.tag = source.key.kind == MetaKeyKind::ExifTag
+                            ? source.key.data.exif_tag.tag
+                            : 0U;
+        component.role = role;
+        component.value_offset = static_cast<uint64_t>(out->values.size());
+        component.total_value_count = 1U;
+        component.associated_entry = associated_id;
+        if (associated_id != kInvalidEntryId
+            && store.entry(associated_id).key.kind == MetaKeyKind::ExifTag) {
+            component.associated_tag
+                = store.entry(associated_id).key.data.exif_tag.tag;
+        }
+        if (source_status != MetadataQueryNumericStatus::Complete
+            || source_count == 0U) {
+            out->total_numeric_values
+                = add_saturated_u64(out->total_numeric_values, 1U);
+            result->total_numeric_values = add_saturated_u64(
+                result->total_numeric_values, 1U);
+            component.numeric_status = MetadataQueryNumericStatus::Invalid;
+            out->numeric_status = merge_numeric_status(
+                out->numeric_status, MetadataQueryNumericStatus::Invalid);
+            result->numeric_status = merge_numeric_status(
+                result->numeric_status, MetadataQueryNumericStatus::Invalid);
+            result->has_invalid_numeric_values = true;
+            out->components.push_back(component);
+            return component.numeric_status;
+        }
+
+        out->total_numeric_values
+            = add_saturated_u64(out->total_numeric_values, 1U);
+        result->total_numeric_values = add_saturated_u64(
+            result->total_numeric_values, 1U);
+        uint64_t allowed_count = options.include_numeric_values ? 1U : 0U;
+        if (options.max_values_per_entry != 0U
+            && allowed_count > options.max_values_per_entry) {
+            allowed_count = options.max_values_per_entry;
+        }
+        if (options.max_values_per_candidate != 0U
+            && out->values.size() >= options.max_values_per_candidate) {
+            allowed_count = 0U;
+        }
+        if (options.max_total_values != 0U
+            && result->returned_numeric_values >= options.max_total_values) {
+            allowed_count = 0U;
+        }
+        component.returned_value_count = allowed_count;
+        component.numeric_status
+            = allowed_count == 0U ? MetadataQueryNumericStatus::Partial
+                                  : MetadataQueryNumericStatus::Complete;
+        out->numeric_status = merge_numeric_status(out->numeric_status,
+                                                    component.numeric_status);
+        result->numeric_status = merge_numeric_status(
+            result->numeric_status, component.numeric_status);
+        if (allowed_count == 0U) {
+            result->numeric_values_limited = true;
+        } else {
+            out->values.reserve(out->values.size() + 1U);
+            out->values.push_back(value);
+            out->has_values = true;
+            result->returned_numeric_values = add_saturated_u64(
+                result->returned_numeric_values, 1U);
+        }
+        out->components.push_back(component);
+        return component.numeric_status;
+    }
+
+    static MetadataQueryNumericStatus append_parsed_text_component(
+        const MetaStore& store, MetadataQueryResult* result,
+        MetadataQueryCandidate* out, EntryId source_id,
+        const double* parsed_values,
+        uint32_t parsed_count, uint64_t total_count,
+        const MetadataQueryOptions& options)
+    {
+        if (!result || !out || source_id == kInvalidEntryId
+            || (parsed_count > 0U && !parsed_values)) {
+            return MetadataQueryNumericStatus::Invalid;
+        }
+        const Entry& source = store.entry(source_id);
+        MetadataQueryComponent component;
+        component.source_entry = source_id;
+        component.key_kind = source.key.kind;
+        component.tag = source.key.kind == MetaKeyKind::ExifTag
+                            ? source.key.data.exif_tag.tag
+                            : 0U;
+        component.value_offset = static_cast<uint64_t>(out->values.size());
+        component.total_value_count = total_count;
+        component.role = MetadataQueryComponentRole::NumericValue;
+        component.numeric_status = MetadataQueryNumericStatus::Complete;
+
+        out->total_numeric_values
+            = add_saturated_u64(out->total_numeric_values, total_count);
+        result->total_numeric_values = add_saturated_u64(
+            result->total_numeric_values, total_count);
+        uint64_t allowed_count = options.include_numeric_values
+                                     ? (total_count < parsed_count
+                                            ? total_count
+                                            : parsed_count)
+                                     : 0U;
+        if (options.max_values_per_entry != 0U
+            && allowed_count > options.max_values_per_entry) {
+            allowed_count = options.max_values_per_entry;
+        }
+        if (options.max_values_per_candidate != 0U) {
+            const uint64_t used = static_cast<uint64_t>(out->values.size());
+            const uint64_t limit = options.max_values_per_candidate;
+            const uint64_t remaining = used >= limit ? 0U : limit - used;
+            if (allowed_count > remaining) {
+                allowed_count = remaining;
+            }
+        }
+        if (options.max_total_values != 0U) {
+            const uint64_t limit = options.max_total_values;
+            const uint64_t remaining
+                = result->returned_numeric_values >= limit
+                      ? 0U
+                      : limit - result->returned_numeric_values;
+            if (allowed_count > remaining) {
+                allowed_count = remaining;
+            }
+        }
+        component.returned_value_count = allowed_count;
+        if (allowed_count < total_count) {
+            component.numeric_status = MetadataQueryNumericStatus::Partial;
+            result->numeric_values_limited = true;
+        }
+        out->numeric_status = merge_numeric_status(out->numeric_status,
+                                                    component.numeric_status);
+        result->numeric_status = merge_numeric_status(
+            result->numeric_status, component.numeric_status);
+        const size_t append_count = static_cast<size_t>(allowed_count);
+        out->values.reserve(out->values.size() + append_count);
+        for (size_t i = 0U; i < append_count; ++i) {
+            out->values.push_back(parsed_values[i]);
+        }
+        if (append_count > 0U) {
+            out->has_values = true;
+            result->returned_numeric_values = add_saturated_u64(
+                result->returned_numeric_values, allowed_count);
+        }
+        out->components.push_back(component);
+        return component.numeric_status;
     }
 
     static void append_exif_tag_series_candidates(
         const MetaStore& store, MetadataQueryResult* result,
         const uint16_t* tags, size_t tag_count,
         MetadataQuerySemanticKind semantic, MetadataQueryValueShape shape,
-        uint8_t confidence, uint32_t min_values_per_entry = 0U)
+        uint8_t confidence, const MetadataQueryOptions& options,
+        uint32_t min_values_per_entry = 0U)
     {
         if (!result || !tags || tag_count == 0U) {
             return;
@@ -2834,39 +3618,55 @@ namespace {
         for (size_t i = 0U; i < entries.size(); ++i) {
             const Entry& entry = entries[i];
             if (entry_is_deleted(entry)
-                || !exif_entry_in_tag_series(entry, tags, tag_count)) {
+                || !exif_entry_in_tag_series(entry, tags, tag_count)
+                || !metadata_scope_contains(store, options.scope, entry)) {
                 continue;
             }
 
-            const std::string_view ifd
-                = arena_string(store.arena(), entry.key.data.exif_tag.ifd);
-            if (has_previous_exif_tag_series_ifd(store, i, ifd, tags,
-                                                 tag_count)) {
+            if (has_previous_exif_tag_series_group(store, i, tags, tag_count)) {
                 continue;
             }
 
             MetadataQueryCandidate candidate;
-            candidate.semantic         = semantic;
-            candidate.normalized_shape = shape;
-            candidate.confidence       = confidence;
-            candidate.source_entries.reserve(tag_count);
-
+            std::vector<EntryId> component_ids;
+            component_ids.reserve(tag_count);
             for (size_t tag_index = 0U; tag_index < tag_count; ++tag_index) {
-                const EntryId entry_id = find_first_exif_entry(store, ifd,
-                                                               tags[tag_index]);
+                const EntryId entry_id = find_first_exif_entry_in_scope(
+                    store, entry, options.scope, tags[tag_index]);
                 if (entry_id == kInvalidEntryId) {
                     continue;
                 }
-                if (!append_candidate_numeric_values_min(
-                        store, entry_id, &candidate, min_values_per_entry)) {
+                uint64_t total_count = 0U;
+                const MetadataQueryNumericStatus source_status
+                    = inspect_numeric_value(store,
+                                            store.entry(entry_id).value,
+                                            &total_count);
+                if (min_values_per_entry > 0U
+                    && (source_status
+                            != MetadataQueryNumericStatus::Complete
+                        || total_count < min_values_per_entry)) {
                     continue;
                 }
+                component_ids.push_back(entry_id);
+            }
+            if (component_ids.size() < 2U) {
+                continue;
+            }
+
+            candidate.semantic = semantic;
+            candidate.normalized_shape = shape;
+            candidate.confidence = confidence;
+            candidate.source_entries.reserve(component_ids.size());
+            for (size_t component_index = 0U;
+                 component_index < component_ids.size(); ++component_index) {
+                const EntryId entry_id = component_ids[component_index];
+                (void)append_candidate_numeric_values_min(
+                    store, result, &candidate, entry_id, options,
+                    min_values_per_entry, options.scope);
                 append_unique_entry(&candidate.source_entries, entry_id);
             }
 
-            if (candidate.source_entries.size() >= 2U) {
-                result->candidates.push_back(candidate);
-            }
+            result->candidates.push_back(candidate);
         }
     }
 
@@ -2992,14 +3792,22 @@ namespace {
 
     static bool
     has_previous_lens_correction_group(const MetadataQueryResult& result,
+                                       const MetaStore& store,
                                        size_t match_index,
-                                       std::string_view group_key) noexcept
+                                       std::string_view group_key,
+                                       const MetadataQueryScope& scope) noexcept
     {
         if (match_index > result.matches.size()) {
             return false;
         }
+        const Entry& base = store.entry(result.matches[match_index].entry_id);
         for (size_t i = 0U; i < match_index; ++i) {
             if (!lens_correction_match_can_group(result.matches[i])) {
+                continue;
+            }
+            const Entry& current
+                = store.entry(result.matches[i].entry_id);
+            if (!metadata_scope_can_inherit(store, scope, base, current)) {
                 continue;
             }
             const std::string_view current_key = lens_correction_group_key(
@@ -3013,7 +3821,8 @@ namespace {
 
     static void
     append_lens_correction_table_candidates(const MetaStore& store,
-                                            MetadataQueryResult* result)
+                                            MetadataQueryResult* result,
+                                            const MetadataQueryOptions& options)
     {
         if (!result) {
             return;
@@ -3027,7 +3836,27 @@ namespace {
 
             const std::string_view group_key = lens_correction_group_key(
                 match.group);
-            if (has_previous_lens_correction_group(*result, i, group_key)) {
+            if (has_previous_lens_correction_group(*result, store, i,
+                                                   group_key, options.scope)) {
+                continue;
+            }
+
+            const Entry& base_entry = store.entry(match.entry_id);
+            size_t eligible_sources = 0U;
+            for (size_t j = i; j < result->matches.size(); ++j) {
+                const MetadataQueryMatch& current = result->matches[j];
+                if (!lens_correction_match_can_group(current)
+                    || lens_correction_group_key(current.group) != group_key) {
+                    continue;
+                }
+                const Entry& current_entry = store.entry(current.entry_id);
+                if (metadata_scope_can_inherit(store, options.scope,
+                                               base_entry, current_entry)
+                    && numeric_source_meets_min(store, current.entry_id, 1U)) {
+                    eligible_sources += 1U;
+                }
+            }
+            if (eligible_sources < 2U) {
                 continue;
             }
 
@@ -3040,14 +3869,22 @@ namespace {
                 if (!lens_correction_match_can_group(current)) {
                     continue;
                 }
+                const Entry& current_entry = store.entry(current.entry_id);
+                if (!metadata_scope_can_inherit(store, options.scope,
+                                                base_entry, current_entry)) {
+                    continue;
+                }
                 const std::string_view current_key = lens_correction_group_key(
                     current.group);
                 if (current_key != group_key) {
                     continue;
                 }
-                if (!append_candidate_numeric_values_min(store,
-                                                         current.entry_id,
-                                                         &candidate, 1U)) {
+                const MetadataQueryNumericStatus component_status
+                    = append_candidate_numeric_values_min(
+                        store, result, &candidate, current.entry_id, options,
+                        1U, options.scope);
+                if (component_status != MetadataQueryNumericStatus::Complete
+                    && component_status != MetadataQueryNumericStatus::Partial) {
                     continue;
                 }
                 append_unique_entry(&candidate.source_entries,
@@ -3150,17 +3987,25 @@ namespace {
     }
 
     static bool has_previous_vendor_semantic_group(
-        const MetadataQueryResult& result, size_t match_index,
+        const MetaStore& store, const MetadataQueryResult& result,
+        size_t match_index,
         MetadataQueryKind kind, std::string_view group_key,
-        MetadataQuerySemanticKind semantic) noexcept
+        MetadataQuerySemanticKind semantic,
+        const MetadataQueryScope& scope) noexcept
     {
         if (match_index > result.matches.size()) {
             return false;
         }
+        const Entry& base = store.entry(result.matches[match_index].entry_id);
         for (size_t i = 0U; i < match_index; ++i) {
             const MetadataQueryMatch& current = result.matches[i];
             if (!vendor_match_can_group(current, kind)
                 || current.semantic != semantic) {
+                continue;
+            }
+            const Entry& current_entry = store.entry(current.entry_id);
+            if (!metadata_scope_can_inherit(store, scope, base,
+                                            current_entry)) {
                 continue;
             }
             const std::string_view current_key
@@ -3175,7 +4020,8 @@ namespace {
     static void
     append_vendor_grouped_query_candidates(const MetaStore& store,
                                            MetadataQueryResult* result,
-                                           MetadataQueryKind kind)
+                                           MetadataQueryKind kind,
+                                           const MetadataQueryOptions& options)
     {
         if (!result) {
             return;
@@ -3187,17 +4033,41 @@ namespace {
             }
             const std::string_view group_key
                 = vendor_raw_processing_family_group_key(match.group);
-            if (has_previous_vendor_semantic_group(*result, i, kind, group_key,
-                                                   match.semantic)) {
+            if (has_previous_vendor_semantic_group(
+                    store, *result, i, kind, group_key, match.semantic,
+                    options.scope)) {
+                continue;
+            }
+
+            const MetadataQueryValueShape shape
+                = vendor_group_candidate_shape(kind, match.semantic);
+            const uint32_t min_values = grouped_candidate_min_numeric_values(
+                shape);
+            const Entry& base_entry = store.entry(match.entry_id);
+            size_t eligible_sources = 0U;
+            for (size_t j = i; j < result->matches.size(); ++j) {
+                const MetadataQueryMatch& current = result->matches[j];
+                if (!vendor_match_can_group(current, kind)
+                    || current.semantic != match.semantic
+                    || vendor_raw_processing_family_group_key(current.group)
+                           != group_key) {
+                    continue;
+                }
+                const Entry& current_entry = store.entry(current.entry_id);
+                if (metadata_scope_can_inherit(store, options.scope,
+                                               base_entry, current_entry)
+                    && numeric_source_meets_min(store, current.entry_id,
+                                                min_values)) {
+                    eligible_sources += 1U;
+                }
+            }
+            if (eligible_sources < 2U) {
                 continue;
             }
 
             MetadataQueryCandidate candidate;
             candidate.semantic = match.semantic;
-            candidate.normalized_shape
-                = vendor_group_candidate_shape(kind, match.semantic);
-            const uint32_t min_values = grouped_candidate_min_numeric_values(
-                candidate.normalized_shape);
+            candidate.normalized_shape = shape;
 
             for (size_t j = i; j < result->matches.size(); ++j) {
                 const MetadataQueryMatch& current = result->matches[j];
@@ -3205,15 +4075,19 @@ namespace {
                     || current.semantic != match.semantic) {
                     continue;
                 }
+                const Entry& current_entry = store.entry(current.entry_id);
+                if (!metadata_scope_can_inherit(store, options.scope,
+                                                base_entry, current_entry)) {
+                    continue;
+                }
                 const std::string_view current_key
                     = vendor_raw_processing_family_group_key(current.group);
                 if (current_key != group_key) {
                     continue;
                 }
-                if (!append_candidate_numeric_values_min(
-                        store, current.entry_id, &candidate, min_values)) {
-                    continue;
-                }
+                (void)append_candidate_numeric_values_min(
+                    store, result, &candidate, current.entry_id, options,
+                    min_values, options.scope);
                 append_unique_entry(&candidate.source_entries,
                                     current.entry_id);
                 if (candidate.confidence < current.confidence) {
@@ -3221,14 +4095,32 @@ namespace {
                 }
             }
 
-            if (candidate.source_entries.size() >= 2U) {
-                result->candidates.push_back(candidate);
-            }
+            result->candidates.push_back(candidate);
         }
     }
 
-    static void append_default_crop_candidate(const MetaStore& store,
-                                              MetadataQueryResult* result)
+    static bool has_previous_exif_tag_in_directory(
+        const MetaStore& store, size_t entry_index, uint16_t tag) noexcept
+    {
+        const std::span<const Entry> entries = store.entries();
+        if (entry_index >= entries.size()) {
+            return false;
+        }
+        const Entry& base = entries[entry_index];
+        for (size_t i = 0U; i < entry_index; ++i) {
+            const Entry& current = entries[i];
+            if (!entry_is_deleted(current)
+                && exif_entry_in_tag_series(current, &tag, 1U)
+                && metadata_scope_same_directory(store, base, current)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static void append_default_crop_candidate(
+        const MetaStore& store, MetadataQueryResult* result,
+        const MetadataQueryOptions& options)
     {
         if (!result) {
             return;
@@ -3240,28 +4132,18 @@ namespace {
             if (entry_is_deleted(origin_entry)
                 || origin_entry.key.kind != MetaKeyKind::ExifTag
                 || origin_entry.key.data.exif_tag.tag
-                       != kDngDefaultCropOriginTag) {
+                       != kDngDefaultCropOriginTag
+                || !metadata_scope_contains(store, options.scope,
+                                            origin_entry)
+                || has_previous_exif_tag_in_directory(
+                    store, i, kDngDefaultCropOriginTag)) {
                 continue;
             }
-            const std::string_view ifd
-                = arena_string(store.arena(),
-                               origin_entry.key.data.exif_tag.ifd);
             const EntryId origin_id = static_cast<EntryId>(i);
             const EntryId size_id
-                = find_first_exif_entry(store, ifd, kDngDefaultCropSizeTag);
+                = find_first_exif_entry_in_scope(
+                    store, origin_entry, options.scope, kDngDefaultCropSizeTag);
             if (size_id == kInvalidEntryId) {
-                continue;
-            }
-
-            double origin_values[4] {};
-            double size_values[4] {};
-            uint32_t origin_count = 0U;
-            uint32_t size_count   = 0U;
-            if (!value_to_double_array(store, store.entry(origin_id).value,
-                                       origin_values, 4U, &origin_count)
-                || !value_to_double_array(store, store.entry(size_id).value,
-                                          size_values, 4U, &size_count)
-                || origin_count < 2U || size_count < 2U) {
                 continue;
             }
 
@@ -3271,122 +4153,238 @@ namespace {
             candidate.confidence       = 95U;
             append_unique_entry(&candidate.source_entries, origin_id);
             append_unique_entry(&candidate.source_entries, size_id);
-            candidate.has_origin = true;
-            candidate.origin[0]  = origin_values[0];
-            candidate.origin[1]  = origin_values[1];
-            candidate.has_size   = true;
-            candidate.size[0]    = size_values[0];
-            candidate.size[1]    = size_values[1];
-            candidate.has_rect   = true;
-            candidate.rect[0]    = origin_values[0];
-            candidate.rect[1]    = origin_values[1];
-            candidate.rect[2]    = size_values[0];
-            candidate.rect[3]    = size_values[1];
+            candidate.coordinate_basis
+                = MetadataQueryCoordinateBasis::ActiveAreaRelativeRaw;
+            (void)append_candidate_numeric_values_min(
+                store, result, &candidate, origin_id, options, 0U,
+                options.scope);
+            (void)append_candidate_numeric_values_min(
+                store, result, &candidate, size_id, options, 0U,
+                options.scope);
+
+            double origin_values[4] {};
+            double size_values[4] {};
+            uint32_t origin_count = 0U;
+            uint32_t size_count = 0U;
+            if (value_to_double_array(store, store.entry(origin_id).value,
+                                      origin_values, 4U, &origin_count)
+                && value_to_double_array(store, store.entry(size_id).value,
+                                         size_values, 4U, &size_count)
+                && origin_count >= 2U && size_count >= 2U) {
+                if (origin_values[0] >= 0.0 && origin_values[1] >= 0.0
+                    && size_values[0] > 0.0 && size_values[1] > 0.0) {
+                    candidate.has_origin = true;
+                    candidate.origin[0] = origin_values[0];
+                    candidate.origin[1] = origin_values[1];
+                    candidate.has_size = true;
+                    candidate.size[0] = size_values[0];
+                    candidate.size[1] = size_values[1];
+                    candidate.has_rect = true;
+                    candidate.rect[0] = origin_values[0];
+                    candidate.rect[1] = origin_values[1];
+                    candidate.rect[2] = size_values[0];
+                    candidate.rect[3] = size_values[1];
+                }
+            }
             result->candidates.push_back(candidate);
         }
     }
 
-    static void append_active_area_candidate(const MetaStore& store,
-                                             MetadataQueryResult* result)
+    static void append_active_area_candidate(
+        const MetaStore& store, MetadataQueryResult* result,
+        const MetadataQueryOptions& options)
     {
         if (!result) {
             return;
         }
-        const EntryId active_id
-            = find_first_exif_tag_any_ifd(store, kDngActiveAreaTag);
-        if (active_id == kInvalidEntryId) {
-            return;
-        }
-        double values[8] {};
-        uint32_t count = 0U;
-        if (!value_to_double_array(store, store.entry(active_id).value, values,
-                                   8U, &count)
-            || count < 4U) {
-            return;
-        }
-        const double top    = values[0];
-        const double left   = values[1];
-        const double bottom = values[2];
-        const double right  = values[3];
-        if (right < left || bottom < top) {
-            return;
-        }
+        const std::span<const Entry> entries = store.entries();
+        for (size_t i = 0U; i < entries.size(); ++i) {
+            const Entry& entry = entries[i];
+            if (entry_is_deleted(entry)
+                || entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != kDngActiveAreaTag
+                || !metadata_scope_contains(store, options.scope, entry)
+                || has_previous_exif_tag_in_directory(
+                    store, i, kDngActiveAreaTag)) {
+                continue;
+            }
+            MetadataQueryCandidate candidate;
+            candidate.semantic = MetadataQuerySemanticKind::ActiveArea;
+            candidate.normalized_shape = MetadataQueryValueShape::Rect;
+            candidate.confidence = 92U;
+            candidate.coordinate_basis
+                = MetadataQueryCoordinateBasis::StoredImageRelativeRaw;
+            const EntryId active_id = static_cast<EntryId>(i);
+            append_unique_entry(&candidate.source_entries, active_id);
+            (void)append_candidate_numeric_values_min(
+                store, result, &candidate, active_id, options, 0U,
+                options.scope);
 
-        MetadataQueryCandidate candidate;
-        candidate.semantic         = MetadataQuerySemanticKind::ActiveArea;
-        candidate.normalized_shape = MetadataQueryValueShape::Rect;
-        candidate.confidence       = 92U;
-        append_unique_entry(&candidate.source_entries, active_id);
-        candidate.has_origin = true;
-        candidate.origin[0]  = left;
-        candidate.origin[1]  = top;
-        candidate.has_size   = true;
-        candidate.size[0]    = right - left;
-        candidate.size[1]    = bottom - top;
-        candidate.has_rect   = true;
-        candidate.rect[0]    = left;
-        candidate.rect[1]    = top;
-        candidate.rect[2]    = right - left;
-        candidate.rect[3]    = bottom - top;
-        result->candidates.push_back(candidate);
+            double values[4] {};
+            uint32_t count = 0U;
+            if (value_to_double_array(store, entry.value, values, 4U, &count)
+                && count >= 4U) {
+                const double top = values[0];
+                const double left = values[1];
+                const double bottom = values[2];
+                const double right = values[3];
+                if (right >= left && bottom >= top) {
+                    candidate.has_origin = true;
+                    candidate.origin[0] = left;
+                    candidate.origin[1] = top;
+                    candidate.has_size = true;
+                    candidate.size[0] = right - left;
+                    candidate.size[1] = bottom - top;
+                    candidate.has_rect = true;
+                    candidate.rect[0] = left;
+                    candidate.rect[1] = top;
+                    candidate.rect[2] = right - left;
+                    candidate.rect[3] = bottom - top;
+                }
+            }
+            result->candidates.push_back(candidate);
+        }
     }
 
-    static void append_phaseone_crop_candidate(const MetaStore& store,
-                                               MetadataQueryResult* result)
+    static void append_phaseone_crop_candidate(
+        const MetaStore& store, MetadataQueryResult* result,
+        const MetadataQueryOptions& options)
     {
         if (!result) {
             return;
         }
-        const PhaseOneRawGeometryResult geometry
-            = phaseone_raw_geometry_from_store(store);
-        if (geometry.status != PhaseOneRawGeometryStatus::Ok) {
-            return;
+        const std::span<const Entry> entries = store.entries();
+        for (size_t i = 0U; i < entries.size(); ++i) {
+            const Entry& base = entries[i];
+            if (entry_is_deleted(base)
+                || !exif_entry_is(store, base, kPhaseOneMainIfd,
+                                  kPhaseOneSensorWidthTag)
+                || !metadata_scope_contains(store, options.scope, base)
+                || has_previous_exif_tag_in_directory(
+                    store, i, kPhaseOneSensorWidthTag)) {
+                continue;
+            }
+            const EntryId sensor_width_id = static_cast<EntryId>(i);
+            const EntryId sensor_height_id = find_first_exif_entry_in_scope(
+                store, base, options.scope, kPhaseOneSensorHeightTag);
+            const EntryId left_margin_id = find_first_exif_entry_in_scope(
+                store, base, options.scope, kPhaseOneSensorLeftMarginTag);
+            const EntryId top_margin_id = find_first_exif_entry_in_scope(
+                store, base, options.scope, kPhaseOneSensorTopMarginTag);
+            const EntryId image_width_id = find_first_exif_entry_in_scope(
+                store, base, options.scope, kPhaseOneImageWidthTag);
+            const EntryId image_height_id = find_first_exif_entry_in_scope(
+                store, base, options.scope, kPhaseOneImageHeightTag);
+            if (sensor_height_id == kInvalidEntryId
+                || left_margin_id == kInvalidEntryId
+                || top_margin_id == kInvalidEntryId
+                || image_width_id == kInvalidEntryId
+                || image_height_id == kInvalidEntryId) {
+                continue;
+            }
+
+            uint32_t values[6] {};
+            const EntryId ids[6] = {
+                sensor_width_id, sensor_height_id, left_margin_id,
+                top_margin_id, image_width_id, image_height_id,
+            };
+            bool values_valid = true;
+            for (size_t value_index = 0U; value_index < 6U; ++value_index) {
+                double scalar_values[1] {};
+                uint32_t scalar_count = 0U;
+                if (!value_to_double_array(
+                        store, store.entry(ids[value_index]).value,
+                        scalar_values, 1U, &scalar_count)
+                    || scalar_count != 1U
+                    || !std::isfinite(scalar_values[0])
+                    || scalar_values[0] < 0.0
+                    || scalar_values[0] > static_cast<double>(UINT32_MAX)
+                    || std::floor(scalar_values[0]) != scalar_values[0]) {
+                    values_valid = false;
+                    break;
+                }
+                values[value_index]
+                    = static_cast<uint32_t>(scalar_values[0]);
+            }
+            if (!values_valid) {
+                MetadataQueryCandidate invalid_candidate;
+                invalid_candidate.semantic
+                    = MetadataQuerySemanticKind::ActiveArea;
+                invalid_candidate.normalized_shape
+                    = MetadataQueryValueShape::Rect;
+                invalid_candidate.confidence = 96U;
+                bool has_invalid_source = false;
+                for (size_t source_index = 0U; source_index < 6U;
+                     ++source_index) {
+                    append_unique_entry(&invalid_candidate.source_entries,
+                                        ids[source_index]);
+                    uint64_t ignored_count = 0U;
+                    if (inspect_numeric_value(
+                            store, store.entry(ids[source_index]).value,
+                            &ignored_count)
+                        == MetadataQueryNumericStatus::Invalid) {
+                        has_invalid_source = true;
+                        (void)append_candidate_numeric_values_min(
+                            store, result, &invalid_candidate,
+                            ids[source_index], options, 0U, options.scope);
+                    }
+                }
+                if (has_invalid_source) {
+                    result->candidates.push_back(invalid_candidate);
+                }
+                continue;
+            }
+            const PhaseOneRawGeometryResult geometry
+                = phaseone_raw_geometry_from_values(
+                    values[0], values[1], values[2], values[3], values[4],
+                    values[5]);
+            if (geometry.status != PhaseOneRawGeometryStatus::Ok) {
+                continue;
+            }
+
+            MetadataQueryCandidate candidate;
+            candidate.semantic = MetadataQuerySemanticKind::ActiveArea;
+            candidate.normalized_shape = MetadataQueryValueShape::Rect;
+            candidate.confidence = 96U;
+            for (size_t source_index = 0U; source_index < 6U;
+                 ++source_index) {
+                append_unique_entry(&candidate.source_entries,
+                                    ids[source_index]);
+            }
+            candidate.has_origin = true;
+            candidate.origin[0] = geometry.geometry.active_x;
+            candidate.origin[1] = geometry.geometry.active_y;
+            candidate.has_size = true;
+            candidate.size[0] = geometry.geometry.active_width;
+            candidate.size[1] = geometry.geometry.active_height;
+            candidate.has_rect = true;
+            candidate.rect[0] = geometry.geometry.active_x;
+            candidate.rect[1] = geometry.geometry.active_y;
+            candidate.rect[2] = geometry.geometry.active_width;
+            candidate.rect[3] = geometry.geometry.active_height;
+            candidate.has_margins = true;
+            candidate.margins[0] = geometry.geometry.sensor_left_margin;
+            candidate.margins[1] = geometry.geometry.sensor_top_margin;
+            candidate.margins[2] = geometry.geometry.right_margin;
+            candidate.margins[3] = geometry.geometry.bottom_margin;
+            (void)append_derived_numeric_component(
+                store, result, &candidate, left_margin_id, kInvalidEntryId,
+                geometry.geometry.sensor_left_margin,
+                MetadataQueryComponentRole::DerivedGeometry, options);
+            (void)append_derived_numeric_component(
+                store, result, &candidate, top_margin_id, kInvalidEntryId,
+                geometry.geometry.sensor_top_margin,
+                MetadataQueryComponentRole::DerivedGeometry, options);
+            (void)append_derived_numeric_component(
+                store, result, &candidate, sensor_width_id, image_width_id,
+                geometry.geometry.right_margin,
+                MetadataQueryComponentRole::DerivedGeometry, options);
+            (void)append_derived_numeric_component(
+                store, result, &candidate, sensor_height_id, image_height_id,
+                geometry.geometry.bottom_margin,
+                MetadataQueryComponentRole::DerivedGeometry, options);
+            result->candidates.push_back(candidate);
         }
-        MetadataQueryCandidate candidate;
-        candidate.semantic         = MetadataQuerySemanticKind::ActiveArea;
-        candidate.normalized_shape = MetadataQueryValueShape::Rect;
-        candidate.confidence       = 96U;
-        append_unique_entry(&candidate.source_entries,
-                            find_first_exif_entry(store, kPhaseOneMainIfd,
-                                                  kPhaseOneSensorWidthTag));
-        append_unique_entry(&candidate.source_entries,
-                            find_first_exif_entry(store, kPhaseOneMainIfd,
-                                                  kPhaseOneSensorHeightTag));
-        append_unique_entry(&candidate.source_entries,
-                            find_first_exif_entry(store, kPhaseOneMainIfd,
-                                                  kPhaseOneSensorLeftMarginTag));
-        append_unique_entry(&candidate.source_entries,
-                            find_first_exif_entry(store, kPhaseOneMainIfd,
-                                                  kPhaseOneSensorTopMarginTag));
-        append_unique_entry(&candidate.source_entries,
-                            find_first_exif_entry(store, kPhaseOneMainIfd,
-                                                  kPhaseOneImageWidthTag));
-        append_unique_entry(&candidate.source_entries,
-                            find_first_exif_entry(store, kPhaseOneMainIfd,
-                                                  kPhaseOneImageHeightTag));
-        candidate.has_origin = true;
-        candidate.origin[0]  = geometry.geometry.active_x;
-        candidate.origin[1]  = geometry.geometry.active_y;
-        candidate.has_size   = true;
-        candidate.size[0]    = geometry.geometry.active_width;
-        candidate.size[1]    = geometry.geometry.active_height;
-        candidate.has_rect   = true;
-        candidate.rect[0]    = geometry.geometry.active_x;
-        candidate.rect[1]    = geometry.geometry.active_y;
-        candidate.rect[2]    = geometry.geometry.active_width;
-        candidate.rect[3]    = geometry.geometry.active_height;
-        candidate.has_values = true;
-        candidate.values.reserve(4U);
-        candidate.values.push_back(geometry.geometry.sensor_left_margin);
-        candidate.values.push_back(geometry.geometry.sensor_top_margin);
-        candidate.values.push_back(geometry.geometry.right_margin);
-        candidate.values.push_back(geometry.geometry.bottom_margin);
-        candidate.has_margins = true;
-        candidate.margins[0]  = geometry.geometry.sensor_left_margin;
-        candidate.margins[1]  = geometry.geometry.sensor_top_margin;
-        candidate.margins[2]  = geometry.geometry.right_margin;
-        candidate.margins[3]  = geometry.geometry.bottom_margin;
-        result->candidates.push_back(candidate);
     }
 
     static bool is_fujifilm_raf_data_ifd(std::string_view ifd) noexcept
@@ -3421,29 +4419,63 @@ namespace {
     static void append_origin_size_rect_candidate(
         const MetaStore& store, MetadataQueryResult* result, EntryId origin_id,
         EntryId size_id, EntryId full_size_id,
-        MetadataQuerySemanticKind semantic, uint8_t confidence)
+        MetadataQuerySemanticKind semantic, uint8_t confidence,
+        const MetadataQueryOptions& options)
     {
         if (!result || origin_id == kInvalidEntryId
             || size_id == kInvalidEntryId) {
             return;
         }
 
+        MetadataQueryCandidate candidate;
+        candidate.semantic         = semantic;
+        candidate.normalized_shape = MetadataQueryValueShape::Rect;
+        candidate.confidence       = confidence;
+        append_unique_entry(&candidate.source_entries, origin_id);
+        append_unique_entry(&candidate.source_entries, size_id);
+        if (full_size_id != kInvalidEntryId) {
+            append_unique_entry(&candidate.source_entries, full_size_id);
+        }
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, origin_id, options, 0U,
+            options.scope);
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, size_id, options, 0U,
+            options.scope);
+        if (full_size_id != kInvalidEntryId) {
+            (void)append_candidate_numeric_values_min(
+                store, result, &candidate, full_size_id, options, 0U,
+                options.scope);
+        }
+
         double origin_values[4] {};
         double size_values[4] {};
         double full_size_values[4] {};
-        uint32_t origin_count    = 0U;
-        uint32_t size_count      = 0U;
+        uint32_t origin_count = 0U;
+        uint32_t size_count = 0U;
         uint32_t full_size_count = 0U;
-        if (!value_to_double_array(store, store.entry(origin_id).value,
-                                   origin_values, 4U, &origin_count)
-            || !value_to_double_array(store, store.entry(size_id).value,
-                                      size_values, 4U, &size_count)
-            || origin_count < 2U || size_count < 2U) {
-            return;
-        }
-        if (origin_values[0] < 0.0 || origin_values[1] < 0.0
-            || size_values[0] <= 0.0 || size_values[1] <= 0.0) {
-            return;
+        const bool has_origin
+            = value_to_double_array(store, store.entry(origin_id).value,
+                                    origin_values, 4U, &origin_count)
+              && origin_count >= 2U && origin_values[0] >= 0.0
+              && origin_values[1] >= 0.0;
+        const bool has_size
+            = value_to_double_array(store, store.entry(size_id).value,
+                                    size_values, 4U, &size_count)
+              && size_count >= 2U && size_values[0] > 0.0
+              && size_values[1] > 0.0;
+        if (has_origin && has_size) {
+            candidate.has_origin = true;
+            candidate.origin[0] = origin_values[0];
+            candidate.origin[1] = origin_values[1];
+            candidate.has_size = true;
+            candidate.size[0] = size_values[0];
+            candidate.size[1] = size_values[1];
+            candidate.has_rect = true;
+            candidate.rect[0] = origin_values[0];
+            candidate.rect[1] = origin_values[1];
+            candidate.rect[2] = size_values[0];
+            candidate.rect[3] = size_values[1];
         }
 
         bool has_full_size = false;
@@ -3454,36 +4486,7 @@ namespace {
                   && full_size_count >= 2U && full_size_values[0] > 0.0
                   && full_size_values[1] > 0.0;
         }
-
-        MetadataQueryCandidate candidate;
-        candidate.semantic         = semantic;
-        candidate.normalized_shape = MetadataQueryValueShape::Rect;
-        candidate.confidence       = confidence;
-        append_unique_entry(&candidate.source_entries, origin_id);
-        append_unique_entry(&candidate.source_entries, size_id);
-        if (has_full_size) {
-            append_unique_entry(&candidate.source_entries, full_size_id);
-        }
-        candidate.has_origin = true;
-        candidate.origin[0]  = origin_values[0];
-        candidate.origin[1]  = origin_values[1];
-        candidate.has_size   = true;
-        candidate.size[0]    = size_values[0];
-        candidate.size[1]    = size_values[1];
-        candidate.has_rect   = true;
-        candidate.rect[0]    = origin_values[0];
-        candidate.rect[1]    = origin_values[1];
-        candidate.rect[2]    = size_values[0];
-        candidate.rect[3]    = size_values[1];
-        candidate.has_values = true;
-        candidate.values.reserve(has_full_size ? 6U : 4U);
-        candidate.values.push_back(origin_values[0]);
-        candidate.values.push_back(origin_values[1]);
-        candidate.values.push_back(size_values[0]);
-        candidate.values.push_back(size_values[1]);
-        if (has_full_size) {
-            candidate.values.push_back(full_size_values[0]);
-            candidate.values.push_back(full_size_values[1]);
+        if (has_full_size && has_origin && has_size) {
 
             const double right_margin = full_size_values[0] - origin_values[0]
                                         - size_values[0];
@@ -3500,8 +4503,9 @@ namespace {
         result->candidates.push_back(candidate);
     }
 
-    static void append_fujifilm_raf_crop_candidate(const MetaStore& store,
-                                                   MetadataQueryResult* result)
+    static void append_fujifilm_raf_crop_candidate(
+        const MetaStore& store, MetadataQueryResult* result,
+        const MetadataQueryOptions& options)
     {
         if (!result) {
             return;
@@ -3519,6 +4523,11 @@ namespace {
                 && tag != kFujiRafRawZoomTopLeftTag) {
                 continue;
             }
+            if (!metadata_scope_contains(store, options.scope, entry)
+                || has_previous_exif_tag_in_directory(
+                    store, i, tag)) {
+                continue;
+            }
 
             const std::string_view ifd
                 = arena_string(store.arena(), entry.key.data.exif_tag.ifd);
@@ -3528,21 +4537,24 @@ namespace {
 
             const EntryId origin_id = static_cast<EntryId>(i);
             const EntryId full_size_id
-                = find_first_exif_entry(store, ifd,
-                                        kFujiRafRawImageFullSizeTag);
+                = find_first_exif_entry_in_scope(
+                    store, entry, options.scope,
+                    kFujiRafRawImageFullSizeTag);
             if (tag == kFujiRafRawImageCropTopLeftTag) {
                 const EntryId size_id
-                    = find_first_exif_entry(store, ifd,
-                                            kFujiRafRawImageCroppedSizeTag);
+                    = find_first_exif_entry_in_scope(
+                        store, entry, options.scope,
+                        kFujiRafRawImageCroppedSizeTag);
                 append_origin_size_rect_candidate(
                     store, result, origin_id, size_id, full_size_id,
-                    MetadataQuerySemanticKind::ActiveArea, 94U);
+                    MetadataQuerySemanticKind::ActiveArea, 94U, options);
             } else {
                 const EntryId size_id
-                    = find_first_exif_entry(store, ifd, kFujiRafRawZoomSizeTag);
+                    = find_first_exif_entry_in_scope(
+                        store, entry, options.scope, kFujiRafRawZoomSizeTag);
                 append_origin_size_rect_candidate(
                     store, result, origin_id, size_id, full_size_id,
-                    MetadataQuerySemanticKind::Crop, 88U);
+                    MetadataQuerySemanticKind::Crop, 88U, options);
             }
         }
     }
@@ -3550,22 +4562,11 @@ namespace {
     static void append_scalar_origin_size_rect_candidate(
         const MetaStore& store, MetadataQueryResult* result, EntryId left_id,
         EntryId top_id, EntryId width_id, EntryId height_id,
-        MetadataQuerySemanticKind semantic, uint8_t confidence)
+        MetadataQuerySemanticKind semantic, uint8_t confidence,
+        const MetadataQueryOptions& options)
     {
         if (!result || left_id == kInvalidEntryId || top_id == kInvalidEntryId
             || width_id == kInvalidEntryId || height_id == kInvalidEntryId) {
-            return;
-        }
-
-        double left   = 0.0;
-        double top    = 0.0;
-        double width  = 0.0;
-        double height = 0.0;
-        if (!first_entry_value_to_double(store, left_id, &left)
-            || !first_entry_value_to_double(store, top_id, &top)
-            || !first_entry_value_to_double(store, width_id, &width)
-            || !first_entry_value_to_double(store, height_id, &height)
-            || left < 0.0 || top < 0.0 || width <= 0.0 || height <= 0.0) {
             return;
         }
 
@@ -3577,23 +4578,36 @@ namespace {
         append_unique_entry(&candidate.source_entries, top_id);
         append_unique_entry(&candidate.source_entries, width_id);
         append_unique_entry(&candidate.source_entries, height_id);
-        candidate.has_origin = true;
-        candidate.origin[0]  = left;
-        candidate.origin[1]  = top;
-        candidate.has_size   = true;
-        candidate.size[0]    = width;
-        candidate.size[1]    = height;
-        candidate.has_rect   = true;
-        candidate.rect[0]    = left;
-        candidate.rect[1]    = top;
-        candidate.rect[2]    = width;
-        candidate.rect[3]    = height;
-        candidate.has_values = true;
-        candidate.values.reserve(4U);
-        candidate.values.push_back(left);
-        candidate.values.push_back(top);
-        candidate.values.push_back(width);
-        candidate.values.push_back(height);
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, left_id, options, 0U, options.scope);
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, top_id, options, 0U, options.scope);
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, width_id, options, 0U, options.scope);
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, height_id, options, 0U, options.scope);
+
+        double left   = 0.0;
+        double top    = 0.0;
+        double width  = 0.0;
+        double height = 0.0;
+        if (first_entry_value_to_double(store, left_id, &left)
+            && first_entry_value_to_double(store, top_id, &top)
+            && first_entry_value_to_double(store, width_id, &width)
+            && first_entry_value_to_double(store, height_id, &height)
+            && left >= 0.0 && top >= 0.0 && width > 0.0 && height > 0.0) {
+            candidate.has_origin = true;
+            candidate.origin[0]  = left;
+            candidate.origin[1]  = top;
+            candidate.has_size   = true;
+            candidate.size[0]    = width;
+            candidate.size[1]    = height;
+            candidate.has_rect   = true;
+            candidate.rect[0]    = left;
+            candidate.rect[1]    = top;
+            candidate.rect[2]    = width;
+            candidate.rect[3]    = height;
+        }
         result->candidates.push_back(candidate);
     }
 
@@ -3601,31 +4615,12 @@ namespace {
         const MetaStore& store, MetadataQueryResult* result, EntryId left_id,
         EntryId top_id, EntryId right_id, EntryId bottom_id,
         MetadataQuerySemanticKind semantic, uint8_t confidence,
-        double coordinate_scale = 1.0)
+        const MetadataQueryOptions& options, double coordinate_scale = 1.0)
     {
         if (!result || left_id == kInvalidEntryId || top_id == kInvalidEntryId
             || right_id == kInvalidEntryId || bottom_id == kInvalidEntryId) {
             return;
         }
-
-        double left   = 0.0;
-        double top    = 0.0;
-        double right  = 0.0;
-        double bottom = 0.0;
-        if (!first_entry_value_to_double(store, left_id, &left)
-            || !first_entry_value_to_double(store, top_id, &top)
-            || !first_entry_value_to_double(store, right_id, &right)
-            || !first_entry_value_to_double(store, bottom_id, &bottom)
-            || !std::isfinite(left) || !std::isfinite(top)
-            || !std::isfinite(right) || !std::isfinite(bottom) || left < 0.0
-            || top < 0.0 || right <= left || bottom <= top) {
-            return;
-        }
-
-        left *= coordinate_scale;
-        top *= coordinate_scale;
-        right *= coordinate_scale;
-        bottom *= coordinate_scale;
 
         MetadataQueryCandidate candidate;
         candidate.semantic         = semantic;
@@ -3635,227 +4630,31 @@ namespace {
         append_unique_entry(&candidate.source_entries, top_id);
         append_unique_entry(&candidate.source_entries, right_id);
         append_unique_entry(&candidate.source_entries, bottom_id);
-        candidate.has_origin = true;
-        candidate.origin[0]  = left;
-        candidate.origin[1]  = top;
-        candidate.has_size   = true;
-        candidate.size[0]    = right - left;
-        candidate.size[1]    = bottom - top;
-        candidate.has_rect   = true;
-        candidate.rect[0]    = left;
-        candidate.rect[1]    = top;
-        candidate.rect[2]    = right - left;
-        candidate.rect[3]    = bottom - top;
-        candidate.has_values = true;
-        candidate.values.reserve(4U);
-        candidate.values.push_back(left);
-        candidate.values.push_back(top);
-        candidate.values.push_back(right);
-        candidate.values.push_back(bottom);
-        result->candidates.push_back(candidate);
-    }
-
-    static void append_scalar_margin_candidate(
-        const MetaStore& store, MetadataQueryResult* result, EntryId left_id,
-        EntryId top_id, EntryId right_id, EntryId bottom_id,
-        MetadataQuerySemanticKind semantic, uint8_t confidence)
-    {
-        if (!result || left_id == kInvalidEntryId || top_id == kInvalidEntryId
-            || right_id == kInvalidEntryId || bottom_id == kInvalidEntryId) {
-            return;
-        }
+        const size_t value_start = candidate.values.size();
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, left_id, options, 0U, options.scope);
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, top_id, options, 0U, options.scope);
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, right_id, options, 0U, options.scope);
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, bottom_id, options, 0U, options.scope);
 
         double left   = 0.0;
         double top    = 0.0;
         double right  = 0.0;
         double bottom = 0.0;
-        if (!first_entry_value_to_double(store, left_id, &left)
-            || !first_entry_value_to_double(store, top_id, &top)
-            || !first_entry_value_to_double(store, right_id, &right)
-            || !first_entry_value_to_double(store, bottom_id, &bottom)
-            || left < 0.0 || top < 0.0 || right < 0.0 || bottom < 0.0) {
-            return;
-        }
-
-        MetadataQueryCandidate candidate;
-        candidate.semantic         = semantic;
-        candidate.normalized_shape = MetadataQueryValueShape::Vec4;
-        candidate.confidence       = confidence;
-        append_unique_entry(&candidate.source_entries, left_id);
-        append_unique_entry(&candidate.source_entries, top_id);
-        append_unique_entry(&candidate.source_entries, right_id);
-        append_unique_entry(&candidate.source_entries, bottom_id);
-        candidate.has_margins = true;
-        candidate.margins[0]  = left;
-        candidate.margins[1]  = top;
-        candidate.margins[2]  = right;
-        candidate.margins[3]  = bottom;
-        candidate.has_values  = true;
-        candidate.values.reserve(4U);
-        candidate.values.push_back(left);
-        candidate.values.push_back(top);
-        candidate.values.push_back(right);
-        candidate.values.push_back(bottom);
-        result->candidates.push_back(candidate);
-    }
-
-    static void append_canon_aspect_crop_candidate(const MetaStore& store,
-                                                   MetadataQueryResult* result)
-    {
-        if (!result) {
-            return;
-        }
-        const std::span<const Entry> entries = store.entries();
-        for (size_t i = 0U; i < entries.size(); ++i) {
-            const Entry& entry = entries[i];
-            if (entry_is_deleted(entry)
-                || entry.key.kind != MetaKeyKind::ExifTag
-                || entry.key.data.exif_tag.tag
-                       != kCanonAspectCroppedImageLeftTag) {
-                continue;
-            }
-            const std::string_view ifd
-                = arena_string(store.arena(), entry.key.data.exif_tag.ifd);
-            if (!starts_with_ascii_case_insensitive(ifd,
-                                                    "mk_canon_aspectinfo")) {
-                continue;
-            }
-            append_scalar_origin_size_rect_candidate(
-                store, result, static_cast<EntryId>(i),
-                find_first_exif_entry(store, ifd,
-                                      kCanonAspectCroppedImageTopTag),
-                find_first_exif_entry(store, ifd,
-                                      kCanonAspectCroppedImageWidthTag),
-                find_first_exif_entry(store, ifd,
-                                      kCanonAspectCroppedImageHeightTag),
-                MetadataQuerySemanticKind::Crop, 91U);
-        }
-    }
-
-    static void append_canon_crop_margin_candidate(const MetaStore& store,
-                                                   MetadataQueryResult* result)
-    {
-        if (!result) {
-            return;
-        }
-        const std::span<const Entry> entries = store.entries();
-        for (size_t i = 0U; i < entries.size(); ++i) {
-            const Entry& entry = entries[i];
-            if (entry_is_deleted(entry)
-                || entry.key.kind != MetaKeyKind::ExifTag
-                || entry.key.data.exif_tag.tag != kCanonCropLeftMarginTag) {
-                continue;
-            }
-            const std::string_view ifd
-                = arena_string(store.arena(), entry.key.data.exif_tag.ifd);
-            if (!starts_with_ascii_case_insensitive(ifd, "mk_canon_cropinfo")) {
-                continue;
-            }
-            append_scalar_margin_candidate(
-                store, result, static_cast<EntryId>(i),
-                find_first_exif_entry(store, ifd, kCanonCropTopMarginTag),
-                find_first_exif_entry(store, ifd, kCanonCropRightMarginTag),
-                find_first_exif_entry(store, ifd, kCanonCropBottomMarginTag),
-                MetadataQuerySemanticKind::Border, 90U);
-        }
-    }
-
-    static void append_nikon_capture_crop_candidate(const MetaStore& store,
-                                                    MetadataQueryResult* result)
-    {
-        if (!result) {
-            return;
-        }
-        const std::span<const Entry> entries = store.entries();
-        for (size_t i = 0U; i < entries.size(); ++i) {
-            const Entry& entry = entries[i];
-            if (entry_is_deleted(entry)
-                || entry.key.kind != MetaKeyKind::ExifTag
-                || entry.key.data.exif_tag.tag != kNikonCaptureCropLeftTag) {
-                continue;
-            }
-            const std::string_view ifd
-                = arena_string(store.arena(), entry.key.data.exif_tag.ifd);
-            const bool native_capture = ifd == "mk_nikon_capture_374233e0";
-            if (!native_capture
-                && !starts_with_ascii_case_insensitive(
-                    ifd, "mk_nikoncapture_cropdata")) {
-                continue;
-            }
-            append_scalar_bounds_rect_candidate(
-                store, result, static_cast<EntryId>(i),
-                find_first_exif_entry(store, ifd, kNikonCaptureCropTopTag),
-                find_first_exif_entry(store, ifd, kNikonCaptureCropRightTag),
-                find_first_exif_entry(store, ifd, kNikonCaptureCropBottomTag),
-                MetadataQuerySemanticKind::Crop, 88U,
-                native_capture ? 0.5 : 1.0);
-        }
-    }
-
-    static void append_sony_panorama_crop_candidate(const MetaStore& store,
-                                                    MetadataQueryResult* result)
-    {
-        if (!result) {
-            return;
-        }
-        const std::span<const Entry> entries = store.entries();
-        for (size_t i = 0U; i < entries.size(); ++i) {
-            const Entry& entry = entries[i];
-            if (entry_is_deleted(entry)
-                || entry.key.kind != MetaKeyKind::ExifTag
-                || entry.key.data.exif_tag.tag != kSonyPanoramaCropLeftTag) {
-                continue;
-            }
-            const std::string_view ifd
-                = arena_string(store.arena(), entry.key.data.exif_tag.ifd);
-            if (!starts_with_ascii_case_insensitive(ifd, "mk_sony_panorama")) {
-                continue;
-            }
-            append_scalar_margin_candidate(
-                store, result, static_cast<EntryId>(i),
-                find_first_exif_entry(store, ifd, kSonyPanoramaCropTopTag),
-                find_first_exif_entry(store, ifd, kSonyPanoramaCropRightTag),
-                find_first_exif_entry(store, ifd, kSonyPanoramaCropBottomTag),
-                MetadataQuerySemanticKind::Border, 87U);
-        }
-    }
-
-    static void append_masked_areas_candidate(const MetaStore& store,
-                                              MetadataQueryResult* result)
-    {
-        if (!result) {
-            return;
-        }
-        const EntryId masked_id
-            = find_first_exif_tag_any_ifd(store, kDngMaskedAreasTag);
-        if (masked_id == kInvalidEntryId) {
-            return;
-        }
-
-        double values[64] {};
-        uint32_t count = 0U;
-        if (!value_to_double_array(store, store.entry(masked_id).value, values,
-                                   64U, &count)
-            || count < 4U) {
-            return;
-        }
-
-        MetadataQueryCandidate candidate;
-        candidate.semantic         = MetadataQuerySemanticKind::Border;
-        candidate.normalized_shape = MetadataQueryValueShape::Table;
-        candidate.confidence       = 90U;
-        append_unique_entry(&candidate.source_entries, masked_id);
-        candidate.has_values = true;
-        candidate.values.reserve(count);
-        for (uint32_t i = 0U; i < count; ++i) {
-            candidate.values.push_back(values[i]);
-        }
-
-        const double top    = values[0];
-        const double left   = values[1];
-        const double bottom = values[2];
-        const double right  = values[3];
-        if (right >= left && bottom >= top) {
+        if (first_entry_value_to_double(store, left_id, &left)
+            && first_entry_value_to_double(store, top_id, &top)
+            && first_entry_value_to_double(store, right_id, &right)
+            && first_entry_value_to_double(store, bottom_id, &bottom)
+            && std::isfinite(left) && std::isfinite(top)
+            && std::isfinite(right) && std::isfinite(bottom) && left >= 0.0
+            && top >= 0.0 && right > left && bottom > top) {
+            left *= coordinate_scale;
+            top *= coordinate_scale;
+            right *= coordinate_scale;
+            bottom *= coordinate_scale;
             candidate.has_origin = true;
             candidate.origin[0]  = left;
             candidate.origin[1]  = top;
@@ -3868,12 +4667,267 @@ namespace {
             candidate.rect[2]    = right - left;
             candidate.rect[3]    = bottom - top;
         }
+        for (size_t value_index = value_start;
+             value_index < candidate.values.size(); ++value_index) {
+            candidate.values[value_index] *= coordinate_scale;
+        }
         result->candidates.push_back(candidate);
+    }
+
+    static void append_scalar_margin_candidate(
+        const MetaStore& store, MetadataQueryResult* result, EntryId left_id,
+        EntryId top_id, EntryId right_id, EntryId bottom_id,
+        MetadataQuerySemanticKind semantic, uint8_t confidence,
+        const MetadataQueryOptions& options)
+    {
+        if (!result || left_id == kInvalidEntryId || top_id == kInvalidEntryId
+            || right_id == kInvalidEntryId || bottom_id == kInvalidEntryId) {
+            return;
+        }
+
+        MetadataQueryCandidate candidate;
+        candidate.semantic         = semantic;
+        candidate.normalized_shape = MetadataQueryValueShape::Vec4;
+        candidate.confidence       = confidence;
+        append_unique_entry(&candidate.source_entries, left_id);
+        append_unique_entry(&candidate.source_entries, top_id);
+        append_unique_entry(&candidate.source_entries, right_id);
+        append_unique_entry(&candidate.source_entries, bottom_id);
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, left_id, options, 0U, options.scope);
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, top_id, options, 0U, options.scope);
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, right_id, options, 0U, options.scope);
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, bottom_id, options, 0U, options.scope);
+
+        double left   = 0.0;
+        double top    = 0.0;
+        double right  = 0.0;
+        double bottom = 0.0;
+        if (first_entry_value_to_double(store, left_id, &left)
+            && first_entry_value_to_double(store, top_id, &top)
+            && first_entry_value_to_double(store, right_id, &right)
+            && first_entry_value_to_double(store, bottom_id, &bottom)
+            && left >= 0.0 && top >= 0.0 && right >= 0.0 && bottom >= 0.0) {
+            candidate.has_margins = true;
+            candidate.margins[0]  = left;
+            candidate.margins[1]  = top;
+            candidate.margins[2]  = right;
+            candidate.margins[3]  = bottom;
+        }
+        result->candidates.push_back(candidate);
+    }
+
+    static void append_canon_aspect_crop_candidate(
+        const MetaStore& store, MetadataQueryResult* result,
+        const MetadataQueryOptions& options)
+    {
+        if (!result) {
+            return;
+        }
+        const std::span<const Entry> entries = store.entries();
+        for (size_t i = 0U; i < entries.size(); ++i) {
+            const Entry& entry = entries[i];
+            if (entry_is_deleted(entry)
+                || entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag
+                       != kCanonAspectCroppedImageLeftTag
+                || !metadata_scope_contains(store, options.scope, entry)
+                || has_previous_exif_tag_in_directory(
+                    store, i, kCanonAspectCroppedImageLeftTag)) {
+                continue;
+            }
+            const std::string_view ifd
+                = arena_string(store.arena(), entry.key.data.exif_tag.ifd);
+            if (!starts_with_ascii_case_insensitive(ifd,
+                                                    "mk_canon_aspectinfo")) {
+                continue;
+            }
+            append_scalar_origin_size_rect_candidate(
+                store, result, static_cast<EntryId>(i),
+                find_first_exif_entry_in_scope(
+                    store, entry, options.scope,
+                    kCanonAspectCroppedImageTopTag),
+                find_first_exif_entry_in_scope(
+                    store, entry, options.scope,
+                    kCanonAspectCroppedImageWidthTag),
+                find_first_exif_entry_in_scope(
+                    store, entry, options.scope,
+                    kCanonAspectCroppedImageHeightTag),
+                MetadataQuerySemanticKind::Crop, 91U, options);
+        }
+    }
+
+    static void append_canon_crop_margin_candidate(
+        const MetaStore& store, MetadataQueryResult* result,
+        const MetadataQueryOptions& options)
+    {
+        if (!result) {
+            return;
+        }
+        const std::span<const Entry> entries = store.entries();
+        for (size_t i = 0U; i < entries.size(); ++i) {
+            const Entry& entry = entries[i];
+            if (entry_is_deleted(entry)
+                || entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != kCanonCropLeftMarginTag
+                || !metadata_scope_contains(store, options.scope, entry)
+                || has_previous_exif_tag_in_directory(
+                    store, i, kCanonCropLeftMarginTag)) {
+                continue;
+            }
+            const std::string_view ifd
+                = arena_string(store.arena(), entry.key.data.exif_tag.ifd);
+            if (!starts_with_ascii_case_insensitive(ifd, "mk_canon_cropinfo")) {
+                continue;
+            }
+            append_scalar_margin_candidate(
+                store, result, static_cast<EntryId>(i),
+                find_first_exif_entry_in_scope(
+                    store, entry, options.scope, kCanonCropTopMarginTag),
+                find_first_exif_entry_in_scope(
+                    store, entry, options.scope, kCanonCropRightMarginTag),
+                find_first_exif_entry_in_scope(
+                    store, entry, options.scope, kCanonCropBottomMarginTag),
+                MetadataQuerySemanticKind::Border, 90U, options);
+        }
+    }
+
+    static void append_nikon_capture_crop_candidate(
+        const MetaStore& store, MetadataQueryResult* result,
+        const MetadataQueryOptions& options)
+    {
+        if (!result) {
+            return;
+        }
+        const std::span<const Entry> entries = store.entries();
+        for (size_t i = 0U; i < entries.size(); ++i) {
+            const Entry& entry = entries[i];
+            if (entry_is_deleted(entry)
+                || entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != kNikonCaptureCropLeftTag
+                || !metadata_scope_contains(store, options.scope, entry)
+                || has_previous_exif_tag_in_directory(
+                    store, i, kNikonCaptureCropLeftTag)) {
+                continue;
+            }
+            const std::string_view ifd
+                = arena_string(store.arena(), entry.key.data.exif_tag.ifd);
+            const bool native_capture = ifd == "mk_nikon_capture_374233e0";
+            if (!native_capture
+                && !starts_with_ascii_case_insensitive(
+                    ifd, "mk_nikoncapture_cropdata")) {
+                continue;
+            }
+            append_scalar_bounds_rect_candidate(
+                store, result, static_cast<EntryId>(i),
+                find_first_exif_entry_in_scope(
+                    store, entry, options.scope, kNikonCaptureCropTopTag),
+                find_first_exif_entry_in_scope(
+                    store, entry, options.scope, kNikonCaptureCropRightTag),
+                find_first_exif_entry_in_scope(
+                    store, entry, options.scope, kNikonCaptureCropBottomTag),
+                MetadataQuerySemanticKind::Crop, 88U,
+                options, native_capture ? 0.5 : 1.0);
+        }
+    }
+
+    static void append_sony_panorama_crop_candidate(
+        const MetaStore& store, MetadataQueryResult* result,
+        const MetadataQueryOptions& options)
+    {
+        if (!result) {
+            return;
+        }
+        const std::span<const Entry> entries = store.entries();
+        for (size_t i = 0U; i < entries.size(); ++i) {
+            const Entry& entry = entries[i];
+            if (entry_is_deleted(entry)
+                || entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != kSonyPanoramaCropLeftTag
+                || !metadata_scope_contains(store, options.scope, entry)
+                || has_previous_exif_tag_in_directory(
+                    store, i, kSonyPanoramaCropLeftTag)) {
+                continue;
+            }
+            const std::string_view ifd
+                = arena_string(store.arena(), entry.key.data.exif_tag.ifd);
+            if (!starts_with_ascii_case_insensitive(ifd, "mk_sony_panorama")) {
+                continue;
+            }
+            append_scalar_margin_candidate(
+                store, result, static_cast<EntryId>(i),
+                find_first_exif_entry_in_scope(
+                    store, entry, options.scope, kSonyPanoramaCropTopTag),
+                find_first_exif_entry_in_scope(
+                    store, entry, options.scope, kSonyPanoramaCropRightTag),
+                find_first_exif_entry_in_scope(
+                    store, entry, options.scope, kSonyPanoramaCropBottomTag),
+                MetadataQuerySemanticKind::Border, 87U, options);
+        }
+    }
+
+    static void append_masked_areas_candidate(
+        const MetaStore& store, MetadataQueryResult* result,
+        const MetadataQueryOptions& options)
+    {
+        if (!result) {
+            return;
+        }
+        const std::span<const Entry> entries = store.entries();
+        for (size_t i = 0U; i < entries.size(); ++i) {
+            const Entry& entry = entries[i];
+            if (entry_is_deleted(entry)
+                || entry.key.kind != MetaKeyKind::ExifTag
+                || entry.key.data.exif_tag.tag != kDngMaskedAreasTag
+                || !metadata_scope_contains(store, options.scope, entry)
+                || has_previous_exif_tag_in_directory(
+                    store, i, kDngMaskedAreasTag)) {
+                continue;
+            }
+
+            MetadataQueryCandidate candidate;
+            candidate.semantic = MetadataQuerySemanticKind::Border;
+            candidate.normalized_shape = MetadataQueryValueShape::Table;
+            candidate.confidence = 90U;
+            const EntryId masked_id = static_cast<EntryId>(i);
+            append_unique_entry(&candidate.source_entries, masked_id);
+            (void)append_candidate_numeric_values_min(
+                store, result, &candidate, masked_id, options, 0U,
+                options.scope);
+
+            double values[4] {};
+            uint32_t count = 0U;
+            if (value_to_double_array(store, entry.value, values, 4U, &count)
+                && count >= 4U) {
+                const double top = values[0];
+                const double left = values[1];
+                const double bottom = values[2];
+                const double right = values[3];
+                if (right >= left && bottom >= top) {
+                    candidate.has_origin = true;
+                    candidate.origin[0] = left;
+                    candidate.origin[1] = top;
+                    candidate.has_size = true;
+                    candidate.size[0] = right - left;
+                    candidate.size[1] = bottom - top;
+                    candidate.has_rect = true;
+                    candidate.rect[0] = left;
+                    candidate.rect[1] = top;
+                    candidate.rect[2] = right - left;
+                    candidate.rect[3] = bottom - top;
+                }
+            }
+            result->candidates.push_back(candidate);
+        }
     }
 
     static void append_border_text_candidate(const MetaStore& store,
                                              MetadataQueryResult* result,
-                                             const MetadataQueryMatch& match)
+                                             const MetadataQueryMatch& match,
+                                             const MetadataQueryOptions& options)
     {
         if (!result || match.entry_id == kInvalidEntryId
             || match.semantic != MetadataQuerySemanticKind::Border) {
@@ -3885,9 +4939,12 @@ namespace {
             return;
         }
 
-        double values[8] {};
-        uint32_t count = 0U;
-        if (!parse_number_list(text, values, 8U, &count) || count < 4U) {
+        double values[4] {};
+        uint32_t returned_count = 0U;
+        uint64_t total_count = 0U;
+        if (!parse_number_list(text, values, 4U, &returned_count,
+                               &total_count)
+            || returned_count < 4U) {
             return;
         }
 
@@ -3901,28 +4958,28 @@ namespace {
         candidate.margins[1]  = values[1];
         candidate.margins[2]  = values[2];
         candidate.margins[3]  = values[3];
-        candidate.has_values  = true;
-        candidate.values.reserve(4U);
-        for (uint32_t i = 0U; i < 4U; ++i) {
-            candidate.values.push_back(values[i]);
-        }
+        (void)append_parsed_text_component(
+            store, result, &candidate, match.entry_id, values, returned_count,
+            total_count, options);
         result->candidates.push_back(candidate);
     }
 
-    static void append_crop_match_candidates(const MetaStore& store,
-                                             MetadataQueryResult* result)
+    static void append_crop_match_candidates(
+        const MetaStore& store, MetadataQueryResult* result,
+        const MetadataQueryOptions& options)
     {
         if (!result) {
             return;
         }
         for (size_t i = 0U; i < result->matches.size(); ++i) {
-            append_border_text_candidate(store, result, result->matches[i]);
+            append_border_text_candidate(store, result, result->matches[i],
+                                         options);
         }
     }
 
-    static void append_query_value_candidate(const MetaStore& store,
-                                             MetadataQueryResult* result,
-                                             const MetadataQueryMatch& match)
+    static void append_query_value_candidate(
+        const MetaStore& store, MetadataQueryResult* result,
+        const MetadataQueryMatch& match, const MetadataQueryOptions& options)
     {
         if (!result || match.entry_id == kInvalidEntryId
             || match.semantic == MetadataQuerySemanticKind::Unknown) {
@@ -3936,33 +4993,30 @@ namespace {
         candidate.source_entries.reserve(1U);
         candidate.source_entries.push_back(match.entry_id);
 
-        double values[16] {};
-        uint32_t count = 0U;
-        if (value_to_double_array(store, entry.value, values, 16U, &count)) {
-            candidate.has_values = true;
-            candidate.values.reserve(count);
-            for (uint32_t i = 0U; i < count; ++i) {
-                candidate.values.push_back(values[i]);
-            }
-        }
+        (void)append_candidate_numeric_values_min(
+            store, result, &candidate, match.entry_id, options, 0U,
+            options.scope);
         result->candidates.push_back(candidate);
     }
 
     static void append_query_value_candidates(const MetaStore& store,
-                                              MetadataQueryResult* result)
+                                              MetadataQueryResult* result,
+                                              const MetadataQueryOptions& options)
     {
         if (!result) {
             return;
         }
         result->candidates.reserve(result->matches.size());
         for (size_t i = 0U; i < result->matches.size(); ++i) {
-            append_query_value_candidate(store, result, result->matches[i]);
+            append_query_value_candidate(store, result, result->matches[i],
+                                         options);
         }
     }
 
     static void append_grouped_query_candidates(const MetaStore& store,
                                                 MetadataQueryResult* result,
-                                                MetadataQueryKind kind)
+                                                MetadataQueryKind kind,
+                                                const MetadataQueryOptions& options)
     {
         if (!result) {
             return;
@@ -3974,33 +5028,34 @@ namespace {
                 store, result, kDngExposureGainTags,
                 sizeof(kDngExposureGainTags) / sizeof(kDngExposureGainTags[0]),
                 MetadataQuerySemanticKind::ExposureGain,
-                MetadataQueryValueShape::Table, 90U);
+                MetadataQueryValueShape::Table, 90U, options);
             break;
         case MetadataQueryKind::Color:
             append_exif_tag_series_candidates(
                 store, result, kDngColorMatrixTags,
                 sizeof(kDngColorMatrixTags) / sizeof(kDngColorMatrixTags[0]),
                 MetadataQuerySemanticKind::ColorMatrix,
-                MetadataQueryValueShape::MatrixSet, 96U, 9U);
+                MetadataQueryValueShape::MatrixSet, 96U, options, 9U);
             append_exif_tag_series_candidates(
                 store, result, kDngCameraCalibrationTags,
                 sizeof(kDngCameraCalibrationTags)
                     / sizeof(kDngCameraCalibrationTags[0]),
                 MetadataQuerySemanticKind::ColorMatrix,
-                MetadataQueryValueShape::MatrixSet, 92U, 9U);
+                MetadataQueryValueShape::MatrixSet, 92U, options, 9U);
             append_exif_tag_series_candidates(
                 store, result, kDngReductionMatrixTags,
                 sizeof(kDngReductionMatrixTags)
                     / sizeof(kDngReductionMatrixTags[0]),
                 MetadataQuerySemanticKind::ColorMatrix,
-                MetadataQueryValueShape::MatrixSet, 92U, 9U);
+                MetadataQueryValueShape::MatrixSet, 92U, options, 9U);
             append_exif_tag_series_candidates(
                 store, result, kDngForwardMatrixTags,
                 sizeof(kDngForwardMatrixTags)
                     / sizeof(kDngForwardMatrixTags[0]),
                 MetadataQuerySemanticKind::ColorMatrix,
-                MetadataQueryValueShape::MatrixSet, 92U, 9U);
-            append_vendor_grouped_query_candidates(store, result, kind);
+                MetadataQueryValueShape::MatrixSet, 92U, options, 9U);
+            append_vendor_grouped_query_candidates(store, result, kind,
+                                                   options);
             break;
         case MetadataQueryKind::WhiteBalance:
             append_exif_tag_series_candidates(
@@ -4008,35 +5063,37 @@ namespace {
                 sizeof(kDngWhiteBalanceVectorTags)
                     / sizeof(kDngWhiteBalanceVectorTags[0]),
                 MetadataQuerySemanticKind::WhiteBalance,
-                MetadataQueryValueShape::VectorSet, 92U, 2U);
-            append_vendor_grouped_query_candidates(store, result, kind);
+                MetadataQueryValueShape::VectorSet, 92U, options, 2U);
+            append_vendor_grouped_query_candidates(store, result, kind,
+                                                   options);
             break;
         case MetadataQueryKind::LensCorrection:
-            append_lens_correction_table_candidates(store, result);
+            append_lens_correction_table_candidates(store, result, options);
             break;
         case MetadataQueryKind::RawProcessing:
             append_exif_tag_series_candidates(
                 store, result, kDngBlackLevelTags,
                 sizeof(kDngBlackLevelTags) / sizeof(kDngBlackLevelTags[0]),
                 MetadataQuerySemanticKind::BlackLevel,
-                MetadataQueryValueShape::Table, 94U);
+                MetadataQueryValueShape::Table, 94U, options);
             append_exif_tag_series_candidates(
                 store, result, kDngCfaLayoutTags,
                 sizeof(kDngCfaLayoutTags) / sizeof(kDngCfaLayoutTags[0]),
                 MetadataQuerySemanticKind::CfaLayout,
-                MetadataQueryValueShape::Table, 94U);
+                MetadataQueryValueShape::Table, 94U, options);
             append_exif_tag_series_candidates(
                 store, result, kDngSensorGeometryTags,
                 sizeof(kDngSensorGeometryTags)
                     / sizeof(kDngSensorGeometryTags[0]),
                 MetadataQuerySemanticKind::SensorGeometry,
-                MetadataQueryValueShape::Table, 90U);
+                MetadataQueryValueShape::Table, 90U, options);
             append_exif_tag_series_candidates(
                 store, result, kDngRawStorageTags,
                 sizeof(kDngRawStorageTags) / sizeof(kDngRawStorageTags[0]),
                 MetadataQuerySemanticKind::RawStorage,
-                MetadataQueryValueShape::Table, 88U);
-            append_vendor_grouped_query_candidates(store, result, kind);
+                MetadataQueryValueShape::Table, 88U, options);
+            append_vendor_grouped_query_candidates(store, result, kind,
+                                                   options);
             break;
         case MetadataQueryKind::Crop:
         case MetadataQueryKind::Orientation:
@@ -4044,8 +5101,9 @@ namespace {
         }
     }
 
-    static MetadataQueryResult query_semantic_metadata(const MetaStore& store,
-                                                       MetadataQueryKind kind)
+    static MetadataQueryResult query_semantic_metadata(
+        const MetaStore& store, MetadataQueryKind kind,
+        const MetadataQueryOptions& options)
     {
         MetadataQueryResult result;
         result.kind = kind;
@@ -4054,7 +5112,8 @@ namespace {
         result.matches.reserve(entries.size());
         for (size_t i = 0U; i < entries.size(); ++i) {
             const Entry& entry = entries[i];
-            if (entry_is_deleted(entry)) {
+            if (entry_is_deleted(entry)
+                || !metadata_scope_contains(store, options.scope, entry)) {
                 continue;
             }
             if (entry.key.kind == MetaKeyKind::ExifTag) {
@@ -4078,31 +5137,32 @@ namespace {
                                                   entry, kind);
             }
         }
-        append_query_value_candidates(store, &result);
-        append_grouped_query_candidates(store, &result, kind);
+        append_query_value_candidates(store, &result, options);
+        append_grouped_query_candidates(store, &result, kind, options);
         return result;
     }
 
 }  // namespace
 
 MetadataQueryResult
-query_metadata(const MetaStore& store, MetadataQueryKind kind)
+query_metadata(const MetaStore& store, MetadataQueryKind kind,
+               const MetadataQueryOptions& options)
 {
     switch (kind) {
-    case MetadataQueryKind::Crop: return query_crop_metadata(store);
+    case MetadataQueryKind::Crop: return query_crop_metadata(store, options);
     case MetadataQueryKind::ExposureGain:
-        return query_exposure_gain_metadata(store);
+        return query_exposure_gain_metadata(store, options);
     case MetadataQueryKind::WhiteBalance:
-        return query_white_balance_metadata(store);
-    case MetadataQueryKind::Color: return query_color_metadata(store);
+        return query_white_balance_metadata(store, options);
+    case MetadataQueryKind::Color: return query_color_metadata(store, options);
     case MetadataQueryKind::LensCorrection:
-        return query_lens_correction_metadata(store);
+        return query_lens_correction_metadata(store, options);
     case MetadataQueryKind::Orientation:
-        return query_orientation_metadata(store);
+        return query_orientation_metadata(store, options);
     case MetadataQueryKind::RawProcessing:
-        return query_raw_processing_metadata(store);
+        return query_raw_processing_metadata(store, options);
     case MetadataQueryKind::Descriptive:
-        return query_descriptive_metadata(store);
+        return query_descriptive_metadata(store, options);
     }
     MetadataQueryResult result;
     result.kind = kind;
@@ -4110,7 +5170,8 @@ query_metadata(const MetaStore& store, MetadataQueryKind kind)
 }
 
 MetadataQueryResult
-query_crop_metadata(const MetaStore& store)
+query_crop_metadata(const MetaStore& store,
+                    const MetadataQueryOptions& options)
 {
     MetadataQueryResult result;
     result.kind = MetadataQueryKind::Crop;
@@ -4119,7 +5180,8 @@ query_crop_metadata(const MetaStore& store)
     result.matches.reserve(entries.size());
     for (size_t i = 0U; i < entries.size(); ++i) {
         const Entry& entry = entries[i];
-        if (entry_is_deleted(entry)) {
+        if (entry_is_deleted(entry)
+            || !metadata_scope_contains(store, options.scope, entry)) {
             continue;
         }
         if (entry.key.kind == MetaKeyKind::ExifTag) {
@@ -4133,59 +5195,72 @@ query_crop_metadata(const MetaStore& store)
         }
     }
 
-    append_default_crop_candidate(store, &result);
-    append_active_area_candidate(store, &result);
-    append_phaseone_crop_candidate(store, &result);
-    append_fujifilm_raf_crop_candidate(store, &result);
-    append_canon_aspect_crop_candidate(store, &result);
-    append_canon_crop_margin_candidate(store, &result);
-    append_nikon_capture_crop_candidate(store, &result);
-    append_sony_panorama_crop_candidate(store, &result);
-    append_masked_areas_candidate(store, &result);
-    append_crop_match_candidates(store, &result);
+    append_default_crop_candidate(store, &result, options);
+    append_active_area_candidate(store, &result, options);
+    append_phaseone_crop_candidate(store, &result, options);
+    append_fujifilm_raf_crop_candidate(store, &result, options);
+    append_canon_aspect_crop_candidate(store, &result, options);
+    append_canon_crop_margin_candidate(store, &result, options);
+    append_nikon_capture_crop_candidate(store, &result, options);
+    append_sony_panorama_crop_candidate(store, &result, options);
+    append_masked_areas_candidate(store, &result, options);
+    append_crop_match_candidates(store, &result, options);
     return result;
 }
 
 MetadataQueryResult
-query_exposure_gain_metadata(const MetaStore& store)
+query_exposure_gain_metadata(const MetaStore& store,
+                             const MetadataQueryOptions& options)
 {
-    return query_semantic_metadata(store, MetadataQueryKind::ExposureGain);
+    return query_semantic_metadata(store, MetadataQueryKind::ExposureGain,
+                                   options);
 }
 
 MetadataQueryResult
-query_white_balance_metadata(const MetaStore& store)
+query_white_balance_metadata(const MetaStore& store,
+                             const MetadataQueryOptions& options)
 {
-    return query_semantic_metadata(store, MetadataQueryKind::WhiteBalance);
+    return query_semantic_metadata(store, MetadataQueryKind::WhiteBalance,
+                                   options);
 }
 
 MetadataQueryResult
-query_color_metadata(const MetaStore& store)
+query_color_metadata(const MetaStore& store,
+                     const MetadataQueryOptions& options)
 {
-    return query_semantic_metadata(store, MetadataQueryKind::Color);
+    return query_semantic_metadata(store, MetadataQueryKind::Color, options);
 }
 
 MetadataQueryResult
-query_lens_correction_metadata(const MetaStore& store)
+query_lens_correction_metadata(const MetaStore& store,
+                               const MetadataQueryOptions& options)
 {
-    return query_semantic_metadata(store, MetadataQueryKind::LensCorrection);
+    return query_semantic_metadata(store, MetadataQueryKind::LensCorrection,
+                                   options);
 }
 
 MetadataQueryResult
-query_orientation_metadata(const MetaStore& store)
+query_orientation_metadata(const MetaStore& store,
+                           const MetadataQueryOptions& options)
 {
-    return query_semantic_metadata(store, MetadataQueryKind::Orientation);
+    return query_semantic_metadata(store, MetadataQueryKind::Orientation,
+                                   options);
 }
 
 MetadataQueryResult
-query_raw_processing_metadata(const MetaStore& store)
+query_raw_processing_metadata(const MetaStore& store,
+                              const MetadataQueryOptions& options)
 {
-    return query_semantic_metadata(store, MetadataQueryKind::RawProcessing);
+    return query_semantic_metadata(store, MetadataQueryKind::RawProcessing,
+                                   options);
 }
 
 MetadataQueryResult
-query_descriptive_metadata(const MetaStore& store)
+query_descriptive_metadata(const MetaStore& store,
+                           const MetadataQueryOptions& options)
 {
-    return query_semantic_metadata(store, MetadataQueryKind::Descriptive);
+    return query_semantic_metadata(store, MetadataQueryKind::Descriptive,
+                                   options);
 }
 
 bool
@@ -4304,6 +5379,89 @@ metadata_query_value_shape_name(MetadataQueryValueShape shape) noexcept
     case MetadataQueryValueShape::Array: return "array";
     case MetadataQueryValueShape::Blob: return "blob";
     case MetadataQueryValueShape::Text: return "text";
+    }
+    return "unknown";
+}
+
+const char*
+metadata_query_numeric_status_name(MetadataQueryNumericStatus status) noexcept
+{
+    switch (status) {
+    case MetadataQueryNumericStatus::NotNumeric: return "not_numeric";
+    case MetadataQueryNumericStatus::Complete: return "complete";
+    case MetadataQueryNumericStatus::Partial: return "partial";
+    case MetadataQueryNumericStatus::Invalid: return "invalid";
+    }
+    return "unknown";
+}
+
+const char*
+metadata_query_component_role_name(MetadataQueryComponentRole role) noexcept
+{
+    switch (role) {
+    case MetadataQueryComponentRole::Unknown: return "unknown";
+    case MetadataQueryComponentRole::NumericValue: return "numeric_value";
+    case MetadataQueryComponentRole::WhiteBalance: return "white_balance";
+    case MetadataQueryComponentRole::ColorMatrix: return "color_matrix";
+    case MetadataQueryComponentRole::CameraCalibration:
+        return "camera_calibration";
+    case MetadataQueryComponentRole::ReductionMatrix: return "reduction_matrix";
+    case MetadataQueryComponentRole::ForwardMatrix: return "forward_matrix";
+    case MetadataQueryComponentRole::CalibrationIlluminant:
+        return "calibration_illuminant";
+    case MetadataQueryComponentRole::AnalogBalance: return "analog_balance";
+    case MetadataQueryComponentRole::AsShotNeutral: return "as_shot_neutral";
+    case MetadataQueryComponentRole::AsShotWhiteXy: return "as_shot_white_xy";
+    case MetadataQueryComponentRole::BlackLevelRepeatDimensions:
+        return "black_level_repeat_dimensions";
+    case MetadataQueryComponentRole::BlackLevel: return "black_level";
+    case MetadataQueryComponentRole::BlackLevelDeltaH:
+        return "black_level_delta_h";
+    case MetadataQueryComponentRole::BlackLevelDeltaV:
+        return "black_level_delta_v";
+    case MetadataQueryComponentRole::WhiteLevel: return "white_level";
+    case MetadataQueryComponentRole::LinearizationTable:
+        return "linearization_table";
+    case MetadataQueryComponentRole::CfaRepeatDimensions:
+        return "cfa_repeat_dimensions";
+    case MetadataQueryComponentRole::CfaPattern: return "cfa_pattern";
+    case MetadataQueryComponentRole::CfaPlaneColors: return "cfa_plane_colors";
+    case MetadataQueryComponentRole::CfaLayout: return "cfa_layout";
+    case MetadataQueryComponentRole::ActiveArea: return "active_area";
+    case MetadataQueryComponentRole::MaskedAreas: return "masked_areas";
+    case MetadataQueryComponentRole::DefaultCropOrigin:
+        return "default_crop_origin";
+    case MetadataQueryComponentRole::DefaultCropSize:
+        return "default_crop_size";
+    case MetadataQueryComponentRole::DerivedGeometry:
+        return "derived_geometry";
+    }
+    return "unknown";
+}
+
+const char*
+metadata_query_matrix_subtype_name(MetadataQueryMatrixSubtype subtype) noexcept
+{
+    switch (subtype) {
+    case MetadataQueryMatrixSubtype::Unknown: return "unknown";
+    case MetadataQueryMatrixSubtype::ColorMatrix: return "color_matrix";
+    case MetadataQueryMatrixSubtype::CameraCalibration:
+        return "camera_calibration";
+    case MetadataQueryMatrixSubtype::ReductionMatrix: return "reduction_matrix";
+    case MetadataQueryMatrixSubtype::ForwardMatrix: return "forward_matrix";
+    }
+    return "unknown";
+}
+
+const char* metadata_query_coordinate_basis_name(
+    MetadataQueryCoordinateBasis basis) noexcept
+{
+    switch (basis) {
+    case MetadataQueryCoordinateBasis::Unknown: return "unknown";
+    case MetadataQueryCoordinateBasis::ActiveAreaRelativeRaw:
+        return "active_area_relative_raw";
+    case MetadataQueryCoordinateBasis::StoredImageRelativeRaw:
+        return "stored_image_relative_raw";
     }
     return "unknown";
 }

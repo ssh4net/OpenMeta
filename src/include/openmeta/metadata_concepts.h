@@ -406,6 +406,8 @@ struct MetadataConceptCandidate final {
     /// Host policy signal; independent from technical transfer safety.
     MetadataConceptSensitivity sensitivity = MetadataConceptSensitivity::None;
     EntryId entry_id                       = kInvalidEntryId;
+    BlockId source_block                   = kInvalidBlockId;
+    std::string source_ifd;
     std::vector<EntryId> source_entries;
     uint8_t priority = 0U;
     bool preferred   = false;
@@ -429,6 +431,10 @@ struct MetadataConceptCandidate final {
 
     bool has_values = false;
     std::vector<double> values;
+    uint64_t total_numeric_values = 0U;
+    MetadataQueryNumericStatus numeric_status = MetadataQueryNumericStatus::NotNumeric;
+    std::vector<MetadataQueryComponent> components;
+    MetadataQueryCoordinateBasis coordinate_basis = MetadataQueryCoordinateBasis::Unknown;
 
     bool has_origin = false;
     double origin[2] {};
@@ -484,25 +490,43 @@ struct MetadataConceptResolution final {
     EntryId preferred_entry  = kInvalidEntryId;
     std::vector<EntryId> source_entries;
     std::vector<MetadataConceptCandidate> candidates;
+    uint64_t total_numeric_values = 0U;
+    uint64_t returned_numeric_values = 0U;
+    bool numeric_values_limited = false;
+    bool has_invalid_numeric_values = false;
+    MetadataQueryNumericStatus numeric_status = MetadataQueryNumericStatus::NotNumeric;
+    uint64_t semantic_work_used = 0U;
+    bool semantic_work_limited = false;
 };
 
 struct MetadataConceptResult final {
     std::vector<MetadataConceptResolution> concepts;
+    uint64_t total_numeric_values = 0U;
+    uint64_t returned_numeric_values = 0U;
+    bool numeric_values_limited = false;
+    bool has_invalid_numeric_values = false;
+    MetadataQueryNumericStatus numeric_status = MetadataQueryNumericStatus::NotNumeric;
+    uint64_t semantic_work_used = 0U;
+    bool semantic_work_limited = false;
 };
 
 MetadataConceptResolution
-resolve_metadata_concept(const MetaStore& store, MetadataConceptKind kind);
+resolve_metadata_concept(const MetaStore& store, MetadataConceptKind kind,
+                         const MetadataQueryOptions& options = {});
 
 MetadataConceptResolution
 resolve_metadata_concept(const MetaStore& store, MetadataConceptKind kind,
-                         const MetadataRawDataDescriptor& raw_descriptor);
-
-MetadataConceptResult
-resolve_metadata_concepts(const MetaStore& store);
+                         const MetadataRawDataDescriptor& raw_descriptor,
+                         const MetadataQueryOptions& options = {});
 
 MetadataConceptResult
 resolve_metadata_concepts(const MetaStore& store,
-                          const MetadataRawDataDescriptor& raw_descriptor);
+                          const MetadataQueryOptions& options = {});
+
+MetadataConceptResult
+resolve_metadata_concepts(const MetaStore& store,
+                          const MetadataRawDataDescriptor& raw_descriptor,
+                          const MetadataQueryOptions& options = {});
 
 MetadataRawApplicabilityState
 metadata_raw_applicability_for_descriptor(

@@ -340,6 +340,40 @@ namespace {
         return &store.entry(ids[0]);
     }
 
+    struct MrwCallbackState final {
+        std::span<const std::byte> bytes;
+        uint64_t forbidden_begin = UINT64_MAX;
+        uint64_t bytes_read      = 0U;
+        bool touched_forbidden   = false;
+    };
+
+    static RandomAccessIoResult mrw_read_at(
+        void* context, uint64_t offset,
+        std::span<std::byte> destination) noexcept
+    {
+        MrwCallbackState* state = static_cast<MrwCallbackState*>(context);
+        if (!state || offset > state->bytes.size()
+            || destination.size() > state->bytes.size() - offset) {
+            return RandomAccessIoResult { RandomAccessIoCode::Ok, 0U };
+        }
+        const uint64_t end = offset + destination.size();
+        if (offset < state->bytes.size()
+            && state->forbidden_begin < state->bytes.size()
+            && end > state->forbidden_begin) {
+            state->touched_forbidden = true;
+            return RandomAccessIoResult { RandomAccessIoCode::Ok, 0U };
+        }
+        if (!destination.empty()) {
+            std::memcpy(destination.data(),
+                        state->bytes.data() + static_cast<size_t>(offset),
+                        destination.size());
+        }
+        state->bytes_read += destination.size();
+        return RandomAccessIoResult {
+            RandomAccessIoCode::Ok, static_cast<uint64_t>(destination.size())
+        };
+    }
+
     static void expect_u16_array(const MetaStore& store, const Entry& entry,
                                  std::span<const uint16_t> expected)
     {
@@ -462,6 +496,155 @@ TEST(MrwDecode, DecodesGroupedPrdWbgRifFieldsAndStopsAtMetadataEnd)
         store.find_all(make_exif_tag_key_view("mk_minoltaraw_rif_1", 0x0001U))
             .size(),
         0U);
+}
+
+TEST(MrwDecode, RandomAccessMatchesMemoryAndReadsOnlyMetadataChunks)
+{
+    const std::vector<std::byte> file = make_mrw_fixture();
+    const uint32_t metadata_size
+        = (static_cast<uint32_t>(static_cast<uint8_t>(file[4U])) << 24U)
+          | (static_cast<uint32_t>(static_cast<uint8_t>(file[5U])) << 16U)
+          | (static_cast<uint32_t>(static_cast<uint8_t>(file[6U])) << 8U)
+          | static_cast<uint32_t>(static_cast<uint8_t>(file[7U]));
+    const uint64_t metadata_end = 8U + metadata_size;
+
+    constexpr size_t kSourcePrefix = 13U;
+    std::vector<std::byte> backing(kSourcePrefix, std::byte { 0xee });
+    backing.insert(backing.end(), file.begin(), file.end());
+    MrwCallbackState callback_state;
+    callback_state.bytes = backing;
+    callback_state.forbidden_begin = kSourcePrefix + metadata_end;
+    const RandomAccessSource source = make_callback_random_access_source(
+        backing.size(), &callback_state, mrw_read_at);
+    const RandomAccessSourceRange range = make_random_access_source_range(
+        source, kSourcePrefix, file.size());
+
+    std::array<std::byte, 64U> read_window {};
+    std::array<std::byte, 128U> value_scratch {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window = read_window;
+    scratch.value = value_scratch;
+    scratch.window_options.minimum_read_bytes = read_window.size();
+
+    MetaStore memory_store;
+    const ExifDecodeResult memory_result = mrw_internal::decode_mrw_native(
+        file, memory_store, ExifDecodeLimits {});
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = mrw_internal::decode_mrw_native_random_access(
+            range, callback_store, scratch, ExifDecodeLimits {},
+            RandomAccessReadLimits {});
+
+    EXPECT_TRUE(callback_result.input.ok());
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_FALSE(callback_state.touched_forbidden);
+    EXPECT_LT(callback_result.input.bytes_requested, backing.size());
+    EXPECT_EQ(callback_result.decode.status, memory_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              memory_result.entries_decoded);
+    memory_store.finalize();
+    callback_store.finalize();
+
+    const Entry* memory_gains
+        = find_entry(memory_store, "mk_minoltaraw_wbg_0", 0x0004U);
+    const Entry* callback_gains
+        = find_entry(callback_store, "mk_minoltaraw_wbg_0", 0x0004U);
+    ASSERT_NE(memory_gains, nullptr);
+    ASSERT_NE(callback_gains, nullptr);
+    EXPECT_EQ(callback_gains->value.kind, memory_gains->value.kind);
+    EXPECT_EQ(callback_gains->value.elem_type, memory_gains->value.elem_type);
+    EXPECT_EQ(callback_gains->value.count, memory_gains->value.count);
+    const std::array<uint16_t, 4U> expected_gains = {
+        0x0102U, 0x0304U, 0x0506U, 0x0708U
+    };
+    expect_u16_array(memory_store, *memory_gains, expected_gains);
+    expect_u16_array(callback_store, *callback_gains, expected_gains);
+
+    const Entry* memory_hue
+        = find_entry(memory_store, "mk_minoltaraw_rif_0", 0x003bU);
+    const Entry* callback_hue
+        = find_entry(callback_store, "mk_minoltaraw_rif_0", 0x003bU);
+    ASSERT_NE(memory_hue, nullptr);
+    ASSERT_NE(callback_hue, nullptr);
+    EXPECT_EQ(callback_hue->value.elem_type, memory_hue->value.elem_type);
+    EXPECT_EQ(callback_hue->value.data.i64, memory_hue->value.data.i64);
+    EXPECT_EQ(callback_hue->value.data.i64, -128);
+}
+
+TEST(MrwDecode, RandomAccessReportsScratchAndValueLimitGaps)
+{
+    const std::vector<std::byte> file = make_mrw_fixture();
+    MrwCallbackState scratch_state;
+    scratch_state.bytes = file;
+    const RandomAccessSource scratch_source = make_callback_random_access_source(
+        file.size(), &scratch_state, mrw_read_at);
+    const RandomAccessSourceRange scratch_range
+        = make_random_access_source_range(scratch_source);
+    std::array<std::byte, 32U> read_window {};
+    std::array<std::byte, 8U> small_value_scratch {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window = read_window;
+    scratch.value = small_value_scratch;
+    scratch.window_options.minimum_read_bytes = read_window.size();
+
+    MetaStore scratch_store;
+    const ExifRandomAccessDecodeResult scratch_result
+        = mrw_internal::decode_mrw_native_random_access(
+            scratch_range, scratch_store, scratch, ExifDecodeLimits {},
+            RandomAccessReadLimits {});
+    EXPECT_TRUE(scratch_result.input.ok());
+    EXPECT_EQ(scratch_result.decode.status, ExifDecodeStatus::OutputTruncated);
+    EXPECT_EQ(scratch_result.value_scratch_needed, 84U);
+
+    MrwCallbackState limit_state;
+    limit_state.bytes = file;
+    const RandomAccessSource limit_source = make_callback_random_access_source(
+        file.size(), &limit_state, mrw_read_at);
+    const RandomAccessSourceRange limit_range
+        = make_random_access_source_range(limit_source);
+    std::array<std::byte, 128U> value_scratch {};
+    scratch.value = value_scratch;
+    ExifDecodeLimits limits;
+    limits.max_value_bytes = 64U;
+    MetaStore limit_store;
+    const ExifRandomAccessDecodeResult limit_result
+        = mrw_internal::decode_mrw_native_random_access(
+            limit_range, limit_store, scratch, limits,
+            RandomAccessReadLimits {});
+    EXPECT_TRUE(limit_result.input.ok());
+    EXPECT_EQ(limit_result.decode.status, ExifDecodeStatus::LimitExceeded);
+    EXPECT_EQ(limit_result.value_scratch_needed, 0U);
+}
+
+TEST(MrwDecode, RandomAccessReportsTruncatedMetadataRead)
+{
+    const std::vector<std::byte> file = make_mrw_fixture();
+    const uint32_t metadata_size
+        = (static_cast<uint32_t>(static_cast<uint8_t>(file[4U])) << 24U)
+          | (static_cast<uint32_t>(static_cast<uint8_t>(file[5U])) << 16U)
+          | (static_cast<uint32_t>(static_cast<uint8_t>(file[6U])) << 8U)
+          | static_cast<uint32_t>(static_cast<uint8_t>(file[7U]));
+    const uint64_t metadata_end = 8U + metadata_size;
+
+    MrwCallbackState state;
+    state.bytes = std::span<const std::byte>(file).first(
+        static_cast<size_t>(metadata_end - 16U));
+    const RandomAccessSource source = make_callback_random_access_source(
+        file.size(), &state, mrw_read_at);
+    const RandomAccessSourceRange range = make_random_access_source_range(source);
+    std::array<std::byte, 32U> read_window {};
+    std::array<std::byte, 128U> value_scratch {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window = read_window;
+    scratch.value = value_scratch;
+    scratch.window_options.minimum_read_bytes = read_window.size();
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = mrw_internal::decode_mrw_native_random_access(
+            range, store, scratch, ExifDecodeLimits {},
+            RandomAccessReadLimits {});
+    EXPECT_EQ(result.input.code, RandomAccessReadCode::ShortRead);
 }
 
 TEST(MrwDecode, StandaloneMrmPreservesBigEndianA100RawNumbers)

@@ -33,6 +33,10 @@ struct MetadataInterpretationRecord final {
     MetadataQueryValueShape shape      = MetadataQueryValueShape::Unknown;
     uint8_t confidence                 = 0U;
     std::vector<EntryId> source_entries;
+    uint64_t total_numeric_values = 0U;
+    MetadataQueryNumericStatus numeric_status = MetadataQueryNumericStatus::NotNumeric;
+    std::vector<MetadataQueryComponent> components;
+    MetadataQueryCoordinateBasis coordinate_basis = MetadataQueryCoordinateBasis::Unknown;
 
     bool has_origin = false;
     double origin[2] {};
@@ -52,13 +56,20 @@ struct MetadataInterpretationRecord final {
 
 struct MetadataInterpretationResult final {
     std::vector<MetadataInterpretationRecord> records;
+    uint64_t total_numeric_values = 0U;
+    uint64_t returned_numeric_values = 0U;
+    bool numeric_values_limited = false;
+    bool has_invalid_numeric_values = false;
+    MetadataQueryNumericStatus numeric_status = MetadataQueryNumericStatus::NotNumeric;
 };
 
 MetadataInterpretationResult
-interpret_metadata_query(const MetaStore& store, MetadataQueryKind kind);
+interpret_metadata_query(const MetaStore& store, MetadataQueryKind kind,
+                         const MetadataQueryOptions& options = {});
 
 MetadataInterpretationResult
-interpret_metadata(const MetaStore& store);
+interpret_metadata(const MetaStore& store,
+                   const MetadataQueryOptions& options = {});
 
 }  // namespace openmeta
 OPENMETA_PUBLIC_END

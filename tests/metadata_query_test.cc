@@ -21,7 +21,8 @@ namespace {
     static EntryId add_exif_u32_array(MetaStore* store, std::string_view ifd,
                                       uint16_t tag,
                                       std::span<const uint32_t> values,
-                                      EntryFlags flags = EntryFlags::None)
+                                      EntryFlags flags = EntryFlags::None,
+                                      BlockId block = kInvalidBlockId)
     {
         if (!store) {
             return kInvalidEntryId;
@@ -29,15 +30,33 @@ namespace {
         Entry entry;
         entry.key        = make_exif_tag_key(store->arena(), ifd, tag);
         entry.value      = make_u32_array(store->arena(), values);
+        entry.origin.block = block;
         entry.flags      = flags;
         const EntryId id = store->add_entry(entry);
         EXPECT_NE(id, kInvalidEntryId);
         return id;
     }
 
+    static EntryId add_exif_value(MetaStore* store, std::string_view ifd,
+                                  uint16_t tag, const MetaValue& value,
+                                  BlockId block = kInvalidBlockId)
+    {
+        if (!store) {
+            return kInvalidEntryId;
+        }
+        Entry entry;
+        entry.key          = make_exif_tag_key(store->arena(), ifd, tag);
+        entry.value        = value;
+        entry.origin.block = block;
+        const EntryId id   = store->add_entry(entry);
+        EXPECT_NE(id, kInvalidEntryId);
+        return id;
+    }
+
     static EntryId add_exif_u32(MetaStore* store, std::string_view ifd,
                                 uint16_t tag, uint32_t value,
-                                EntryFlags flags = EntryFlags::None)
+                                EntryFlags flags = EntryFlags::None,
+                                BlockId block = kInvalidBlockId)
     {
         if (!store) {
             return kInvalidEntryId;
@@ -46,6 +65,7 @@ namespace {
         entry.key        = make_exif_tag_key(store->arena(), ifd, tag);
         entry.value      = make_u32(value);
         entry.flags      = flags;
+        entry.origin.block = block;
         const EntryId id = store->add_entry(entry);
         EXPECT_NE(id, kInvalidEntryId);
         return id;
@@ -211,6 +231,18 @@ namespace {
         return nullptr;
     }
 
+    static const MetadataQueryComponent*
+    find_component_for_entry(const MetadataQueryCandidate& candidate,
+                             EntryId entry_id)
+    {
+        for (size_t i = 0U; i < candidate.components.size(); ++i) {
+            if (candidate.components[i].source_entry == entry_id) {
+                return &candidate.components[i];
+            }
+        }
+        return nullptr;
+    }
+
 }  // namespace
 
 TEST(MetadataQuery, BuildsDngDefaultCropCandidate)
@@ -256,6 +288,19 @@ TEST(MetadataQuery, BuildsDngDefaultCropCandidate)
     EXPECT_DOUBLE_EQ(candidate->rect[3], 3000.0);
     EXPECT_TRUE(contains_entry(candidate->source_entries, origin_id));
     EXPECT_TRUE(contains_entry(candidate->source_entries, size_id));
+    EXPECT_EQ(candidate->coordinate_basis,
+              MetadataQueryCoordinateBasis::ActiveAreaRelativeRaw);
+    ASSERT_EQ(candidate->components.size(), 2U);
+    EXPECT_EQ(candidate->components[0].source_entry, origin_id);
+    EXPECT_EQ(candidate->components[0].role,
+              MetadataQueryComponentRole::DefaultCropOrigin);
+    EXPECT_EQ(candidate->components[0].value_offset, 0U);
+    EXPECT_EQ(candidate->components[0].returned_value_count, 2U);
+    EXPECT_EQ(candidate->components[0].total_value_count, 2U);
+    EXPECT_EQ(candidate->components[1].source_entry, size_id);
+    EXPECT_EQ(candidate->components[1].role,
+              MetadataQueryComponentRole::DefaultCropSize);
+    EXPECT_EQ(candidate->components[1].value_offset, 2U);
 }
 
 TEST(MetadataQuery, ReconcilesDescriptiveExifIptcXmpEntries)
@@ -623,6 +668,79 @@ TEST(MetadataQuery, DoesNotPairDngCropAcrossIfds)
     EXPECT_EQ(find_candidate(result, MetadataQuerySemanticKind::Crop), nullptr);
 }
 
+TEST(MetadataQuery, ScopedCropInheritanceUsesLocalCompanionFirst)
+{
+    MetaStore store;
+    const BlockId block = store.add_block(BlockInfo {});
+    const std::array<uint32_t, 2> origin_a = { 1U, 2U };
+    const std::array<uint32_t, 2> size_a = { 100U, 200U };
+    const std::array<uint32_t, 2> origin_b = { 3U, 4U };
+    const std::array<uint32_t, 2> size_b = { 300U, 400U };
+    const std::array<uint32_t, 2> origin_preview = { 5U, 6U };
+    const EntryId origin_a_id = add_exif_u32_array(
+        &store, "rawifd", 0xC61FU, origin_a, EntryFlags::None, block);
+    const EntryId size_a_id = add_exif_u32_array(
+        &store, "rawifd", 0xC620U, size_a, EntryFlags::None, block);
+    const EntryId origin_b_id = add_exif_u32_array(
+        &store, "subifd0", 0xC61FU, origin_b, EntryFlags::None, block);
+    const EntryId size_b_id = add_exif_u32_array(
+        &store, "subifd0", 0xC620U, size_b, EntryFlags::None, block);
+    const EntryId origin_preview_id = add_exif_u32_array(
+        &store, "previewifd", 0xC61FU, origin_preview, EntryFlags::None,
+        block);
+    store.finalize();
+
+    const std::array<MetadataDirectorySelector, 3> directories = {{
+        { block, "rawifd" },
+        { block, "subifd0" },
+        { block, "previewifd" },
+    }};
+    MetadataQueryOptions options;
+    options.scope.enabled = true;
+    options.scope.directories = directories;
+
+    const MetadataQueryResult without_inheritance
+        = query_crop_metadata(store, options);
+    size_t local_candidates = 0U;
+    for (size_t i = 0U; i < without_inheritance.candidates.size(); ++i) {
+        if (without_inheritance.candidates[i].semantic
+            == MetadataQuerySemanticKind::Crop) {
+            ++local_candidates;
+        }
+    }
+    EXPECT_EQ(local_candidates, 2U);
+    EXPECT_EQ(find_candidate_for_entry(without_inheritance, origin_preview_id),
+              nullptr);
+
+    options.scope.inherit_across_directories = true;
+    const MetadataQueryResult with_inheritance
+        = query_crop_metadata(store, options);
+    size_t inherited_candidates = 0U;
+    for (size_t i = 0U; i < with_inheritance.candidates.size(); ++i) {
+        if (with_inheritance.candidates[i].semantic
+            == MetadataQuerySemanticKind::Crop) {
+            ++inherited_candidates;
+        }
+    }
+    EXPECT_EQ(inherited_candidates, 3U);
+
+    const MetadataQueryCandidate* local_a
+        = find_candidate_for_entry(with_inheritance, origin_a_id);
+    const MetadataQueryCandidate* local_b
+        = find_candidate_for_entry(with_inheritance, origin_b_id);
+    const MetadataQueryCandidate* inherited_preview
+        = find_candidate_for_entry(with_inheritance, origin_preview_id);
+    ASSERT_NE(local_a, nullptr);
+    ASSERT_NE(local_b, nullptr);
+    ASSERT_NE(inherited_preview, nullptr);
+    EXPECT_TRUE(contains_entry(local_a->source_entries, size_a_id));
+    EXPECT_FALSE(contains_entry(local_a->source_entries, size_b_id));
+    EXPECT_TRUE(contains_entry(local_b->source_entries, size_b_id));
+    EXPECT_TRUE(contains_entry(inherited_preview->source_entries, size_a_id));
+    EXPECT_EQ(local_a->coordinate_basis,
+              MetadataQueryCoordinateBasis::ActiveAreaRelativeRaw);
+}
+
 TEST(MetadataQuery, NormalizesActiveAreaCandidate)
 {
     MetaStore store;
@@ -645,6 +763,8 @@ TEST(MetadataQuery, NormalizesActiveAreaCandidate)
     ASSERT_NE(candidate, nullptr);
     EXPECT_EQ(candidate->normalized_shape, MetadataQueryValueShape::Rect);
     EXPECT_GE(candidate->confidence, 90U);
+    EXPECT_EQ(candidate->coordinate_basis,
+              MetadataQueryCoordinateBasis::StoredImageRelativeRaw);
     ASSERT_TRUE(candidate->has_origin);
     EXPECT_DOUBLE_EQ(candidate->origin[0], 20.0);
     EXPECT_DOUBLE_EQ(candidate->origin[1], 10.0);
@@ -657,6 +777,12 @@ TEST(MetadataQuery, NormalizesActiveAreaCandidate)
     EXPECT_DOUBLE_EQ(candidate->rect[2], 4000.0);
     EXPECT_DOUBLE_EQ(candidate->rect[3], 3000.0);
     EXPECT_TRUE(contains_entry(candidate->source_entries, active_id));
+    ASSERT_EQ(candidate->components.size(), 1U);
+    EXPECT_EQ(candidate->components[0].source_entry, active_id);
+    EXPECT_EQ(candidate->components[0].role,
+              MetadataQueryComponentRole::ActiveArea);
+    EXPECT_EQ(candidate->components[0].rows, 1U);
+    EXPECT_EQ(candidate->components[0].columns, 4U);
 }
 
 TEST(MetadataQuery, NormalizesDngMaskedAreasCandidate)
@@ -953,7 +1079,11 @@ TEST(MetadataQuery, NativeNikonCaptureCropUsesHalfUnitsAndRejectsNonfiniteBounds
                                                MetadataQuerySemanticKind::Crop);
         EXPECT_EQ(store.entry(id).value.data.f64_bits, right_bits);
         if (right_bits != 0x40bf540000000000ULL) {
-            EXPECT_EQ(candidate, nullptr);
+            EXPECT_TRUE(result.has_invalid_numeric_values);
+            for (const MetadataQueryCandidate& invalid_crop : result.candidates) {
+                if (invalid_crop.semantic == MetadataQuerySemanticKind::Crop)
+                    EXPECT_FALSE(invalid_crop.has_rect);
+            }
             continue;
         }
         ASSERT_NE(candidate, nullptr);
@@ -1424,6 +1554,316 @@ TEST(MetadataQuery, GroupsDngColorMatrixSet)
                  "matrix_set");
 }
 
+TEST(MetadataQuery, DescribesDngFourPlaneMatrixShapes)
+{
+    MetaStore store;
+    const std::vector<uint32_t> color_matrix(12U, 1U);
+    const std::vector<uint32_t> camera_calibration(16U, 2U);
+    const std::vector<uint32_t> reduction_matrix(12U, 3U);
+    const std::vector<uint32_t> forward_matrix(12U, 4U);
+    const EntryId color_id
+        = add_exif_u32_array(&store, "ifd0", 0xC621U, color_matrix);
+    const EntryId calibration_id
+        = add_exif_u32_array(&store, "ifd0", 0xC623U, camera_calibration);
+    const EntryId reduction_id
+        = add_exif_u32_array(&store, "ifd0", 0xC625U, reduction_matrix);
+    const EntryId forward_id
+        = add_exif_u32_array(&store, "ifd0", 0xC714U, forward_matrix);
+    const EntryId illuminant_id = add_exif_u32(&store, "ifd0", 0xC65AU, 21U);
+    store.finalize();
+
+    const MetadataQueryResult result = query_color_metadata(store);
+    const MetadataQueryCandidate* color_candidate
+        = find_candidate_for_entry(result, color_id);
+    const MetadataQueryCandidate* calibration_candidate
+        = find_candidate_for_entry(result, calibration_id);
+    const MetadataQueryCandidate* reduction_candidate
+        = find_candidate_for_entry(result, reduction_id);
+    const MetadataQueryCandidate* forward_candidate
+        = find_candidate_for_entry(result, forward_id);
+    ASSERT_NE(color_candidate, nullptr);
+    ASSERT_NE(calibration_candidate, nullptr);
+    ASSERT_NE(reduction_candidate, nullptr);
+    ASSERT_NE(forward_candidate, nullptr);
+
+    const MetadataQueryComponent* color
+        = find_component_for_entry(*color_candidate, color_id);
+    const MetadataQueryComponent* calibration
+        = find_component_for_entry(*calibration_candidate, calibration_id);
+    const MetadataQueryComponent* reduction
+        = find_component_for_entry(*reduction_candidate, reduction_id);
+    const MetadataQueryComponent* forward
+        = find_component_for_entry(*forward_candidate, forward_id);
+    ASSERT_NE(color, nullptr);
+    ASSERT_NE(calibration, nullptr);
+    ASSERT_NE(reduction, nullptr);
+    ASSERT_NE(forward, nullptr);
+
+    EXPECT_EQ(color->matrix_subtype,
+              MetadataQueryMatrixSubtype::ColorMatrix);
+    EXPECT_EQ(color->rows, 4U);
+    EXPECT_EQ(color->columns, 3U);
+    EXPECT_EQ(color->channels, 4U);
+    EXPECT_EQ(calibration->matrix_subtype,
+              MetadataQueryMatrixSubtype::CameraCalibration);
+    EXPECT_EQ(calibration->rows, 4U);
+    EXPECT_EQ(calibration->columns, 4U);
+    EXPECT_EQ(calibration->channels, 4U);
+    EXPECT_EQ(reduction->matrix_subtype,
+              MetadataQueryMatrixSubtype::ReductionMatrix);
+    EXPECT_EQ(reduction->rows, 3U);
+    EXPECT_EQ(reduction->columns, 4U);
+    EXPECT_EQ(reduction->channels, 4U);
+    EXPECT_EQ(forward->matrix_subtype,
+              MetadataQueryMatrixSubtype::ForwardMatrix);
+    EXPECT_EQ(forward->rows, 3U);
+    EXPECT_EQ(forward->columns, 4U);
+    EXPECT_EQ(forward->channels, 4U);
+    EXPECT_EQ(color->associated_entry, illuminant_id);
+    EXPECT_EQ(calibration->associated_entry, illuminant_id);
+    EXPECT_EQ(reduction->associated_entry, illuminant_id);
+    EXPECT_EQ(forward->associated_entry, illuminant_id);
+    EXPECT_EQ(reduction->associated_tag, 0xC65AU);
+}
+
+TEST(MetadataQuery, LeavesInvalidDngMatrixShapesUnknown)
+{
+    MetaStore store;
+    const std::vector<uint32_t> color_matrix(11U, 1U);
+    const std::vector<uint32_t> camera_calibration(15U, 2U);
+    const std::vector<uint32_t> reduction_matrix(11U, 3U);
+    const std::vector<uint32_t> forward_matrix(10U, 4U);
+    const EntryId color_id
+        = add_exif_u32_array(&store, "ifd0", 0xC621U, color_matrix);
+    const EntryId calibration_id
+        = add_exif_u32_array(&store, "ifd0", 0xC623U, camera_calibration);
+    const EntryId reduction_id
+        = add_exif_u32_array(&store, "ifd0", 0xC625U, reduction_matrix);
+    const EntryId forward_id
+        = add_exif_u32_array(&store, "ifd0", 0xC714U, forward_matrix);
+    store.finalize();
+
+    const MetadataQueryResult result = query_color_metadata(store);
+    const EntryId ids[4] = { color_id, calibration_id, reduction_id,
+                             forward_id };
+    for (size_t i = 0U; i < 4U; ++i) {
+        const MetadataQueryCandidate* candidate
+            = find_candidate_for_entry(result, ids[i]);
+        ASSERT_NE(candidate, nullptr);
+        const MetadataQueryComponent* component
+            = find_component_for_entry(*candidate, ids[i]);
+        ASSERT_NE(component, nullptr);
+        EXPECT_EQ(component->rows, 0U);
+        EXPECT_EQ(component->columns, 0U);
+        EXPECT_EQ(component->channels, 0U);
+    }
+}
+
+TEST(MetadataQuery, KeepsDngMatrixGroupsIndependentByBlockAndIfd)
+{
+    MetaStore store;
+    const BlockId block_a = store.add_block(BlockInfo {});
+    const BlockId block_b = store.add_block(BlockInfo {});
+    const std::array<uint32_t, 9> matrix_a = {
+        1U, 0U, 0U, 0U, 1U, 0U, 0U, 0U, 1U,
+    };
+    const std::array<uint32_t, 9> matrix_b = {
+        2U, 0U, 0U, 0U, 2U, 0U, 0U, 0U, 2U,
+    };
+    const EntryId matrix_a1 = add_exif_u32_array(
+        &store, "ifd0", 0xC621U, matrix_a, EntryFlags::None, block_a);
+    const EntryId matrix_a2 = add_exif_u32_array(
+        &store, "ifd0", 0xC622U, matrix_a, EntryFlags::None, block_a);
+    const EntryId matrix_b1 = add_exif_u32_array(
+        &store, "ifd0", 0xC621U, matrix_b, EntryFlags::None, block_b);
+    const EntryId matrix_b2 = add_exif_u32_array(
+        &store, "ifd0", 0xC622U, matrix_b, EntryFlags::None, block_b);
+    ASSERT_NE(matrix_a1, kInvalidEntryId);
+    ASSERT_NE(matrix_a2, kInvalidEntryId);
+    ASSERT_NE(matrix_b1, kInvalidEntryId);
+    ASSERT_NE(matrix_b2, kInvalidEntryId);
+    store.finalize();
+
+    const MetadataQueryResult result = query_color_metadata(store);
+
+    size_t groups = 0U;
+    bool saw_block_a = false;
+    bool saw_block_b = false;
+    for (size_t i = 0U; i < result.candidates.size(); ++i) {
+        const MetadataQueryCandidate& candidate = result.candidates[i];
+        if (candidate.semantic != MetadataQuerySemanticKind::ColorMatrix
+            || candidate.normalized_shape
+                   != MetadataQueryValueShape::MatrixSet) {
+            continue;
+        }
+        ++groups;
+        bool has_block_a = false;
+        bool has_block_b = false;
+        for (size_t j = 0U; j < candidate.source_entries.size(); ++j) {
+            const BlockId block
+                = store.entry(candidate.source_entries[j]).origin.block;
+            has_block_a = has_block_a || block == block_a;
+            has_block_b = has_block_b || block == block_b;
+        }
+        EXPECT_FALSE(has_block_a && has_block_b);
+        saw_block_a = saw_block_a || has_block_a;
+        saw_block_b = saw_block_b || has_block_b;
+    }
+    EXPECT_EQ(groups, 2U);
+    EXPECT_TRUE(saw_block_a);
+    EXPECT_TRUE(saw_block_b);
+}
+
+TEST(MetadataQuery, PreservesGroupedMatrixComponentsWhenValueBudgetIsExhausted)
+{
+    MetaStore store;
+    const std::array<uint32_t, 9> matrix = {
+        1U, 0U, 0U, 0U, 1U, 0U, 0U, 0U, 1U,
+    };
+    const EntryId matrix_1
+        = add_exif_u32_array(&store, "ifd0", 0xC621U, matrix);
+    const EntryId matrix_2
+        = add_exif_u32_array(&store, "ifd0", 0xC622U, matrix);
+    store.finalize();
+
+    MetadataQueryOptions metadata_only;
+    metadata_only.include_numeric_values = false;
+    const MetadataQueryResult no_values
+        = query_color_metadata(store, metadata_only);
+    const MetadataQueryCandidate* no_value_group
+        = find_candidate_with_shape(no_values,
+                                    MetadataQuerySemanticKind::ColorMatrix,
+                                    MetadataQueryValueShape::MatrixSet, 2U);
+    ASSERT_NE(no_value_group, nullptr);
+    EXPECT_TRUE(no_value_group->values.empty());
+    EXPECT_EQ(no_value_group->source_entries.size(), 2U);
+    EXPECT_EQ(no_value_group->components.size(), 2U);
+    EXPECT_EQ(no_value_group->numeric_status,
+              MetadataQueryNumericStatus::Partial);
+    EXPECT_EQ(no_value_group->components[0].total_value_count, 9U);
+    EXPECT_EQ(no_value_group->components[1].total_value_count, 9U);
+    EXPECT_EQ(no_values.returned_numeric_values, 0U);
+
+    MetadataQueryOptions exhausted;
+    exhausted.max_total_values = 1U;
+    const MetadataQueryResult one_value
+        = query_color_metadata(store, exhausted);
+    const MetadataQueryCandidate* partial_group
+        = find_candidate_with_shape(one_value,
+                                    MetadataQuerySemanticKind::ColorMatrix,
+                                    MetadataQueryValueShape::MatrixSet, 2U);
+    ASSERT_NE(partial_group, nullptr);
+    EXPECT_EQ(partial_group->source_entries.size(), 2U);
+    EXPECT_TRUE(partial_group->values.empty());
+    EXPECT_EQ(partial_group->numeric_status,
+              MetadataQueryNumericStatus::Partial);
+    EXPECT_EQ(one_value.returned_numeric_values, 1U);
+    EXPECT_EQ(one_value.numeric_status, MetadataQueryNumericStatus::Partial);
+    EXPECT_TRUE(contains_entry(partial_group->source_entries, matrix_1));
+    EXPECT_TRUE(contains_entry(partial_group->source_entries, matrix_2));
+}
+
+TEST(MetadataQuery, KeepsRawAndPreviewMatrixGroupsIndependentAndScoped)
+{
+    MetaStore store;
+    const BlockId block = store.add_block(BlockInfo {});
+    const std::array<uint32_t, 9> matrix = {
+        1U, 0U, 0U, 0U, 1U, 0U, 0U, 0U, 1U,
+    };
+    const EntryId raw_matrix_1 = add_exif_u32_array(
+        &store, "rawifd", 0xC621U, matrix, EntryFlags::None, block);
+    const EntryId raw_matrix_2 = add_exif_u32_array(
+        &store, "rawifd", 0xC622U, matrix, EntryFlags::None, block);
+    const EntryId preview_matrix_1 = add_exif_u32_array(
+        &store, "previewifd", 0xC621U, matrix, EntryFlags::None, block);
+    const EntryId preview_matrix_2 = add_exif_u32_array(
+        &store, "previewifd", 0xC622U, matrix, EntryFlags::None, block);
+    store.finalize();
+
+    const MetadataQueryResult all = query_color_metadata(store);
+    size_t group_count = 0U;
+    for (size_t i = 0U; i < all.candidates.size(); ++i) {
+        const MetadataQueryCandidate& candidate = all.candidates[i];
+        if (candidate.semantic == MetadataQuerySemanticKind::ColorMatrix
+            && candidate.normalized_shape
+                   == MetadataQueryValueShape::MatrixSet) {
+            ++group_count;
+            EXPECT_EQ(candidate.source_entries.size(), 2U);
+        }
+    }
+    EXPECT_EQ(group_count, 2U);
+
+    const std::array<MetadataDirectorySelector, 1> selected = {{
+        { block, "rawifd" },
+    }};
+    MetadataQueryOptions options;
+    options.scope.enabled = true;
+    options.scope.directories = selected;
+    const MetadataQueryResult raw_only = query_color_metadata(store, options);
+    group_count = 0U;
+    for (size_t i = 0U; i < raw_only.candidates.size(); ++i) {
+        const MetadataQueryCandidate& candidate = raw_only.candidates[i];
+        if (candidate.semantic != MetadataQuerySemanticKind::ColorMatrix
+            || candidate.normalized_shape
+                   != MetadataQueryValueShape::MatrixSet) {
+            continue;
+        }
+        ++group_count;
+        EXPECT_TRUE(contains_entry(candidate.source_entries, raw_matrix_1));
+        EXPECT_TRUE(contains_entry(candidate.source_entries, raw_matrix_2));
+        EXPECT_FALSE(contains_entry(candidate.source_entries,
+                                    preview_matrix_1));
+        EXPECT_FALSE(contains_entry(candidate.source_entries,
+                                    preview_matrix_2));
+    }
+    EXPECT_EQ(group_count, 1U);
+}
+
+TEST(MetadataQuery, ScopeEmptyAndInvalidBlockSelectorsAreExact)
+{
+    MetaStore store;
+    const BlockId block = store.add_block(BlockInfo {});
+    const std::array<uint32_t, 9> matrix = {
+        1U, 0U, 0U, 0U, 1U, 0U, 0U, 0U, 1U,
+    };
+    const EntryId unknown_1
+        = add_exif_u32_array(&store, "ifd0", 0xC621U, matrix);
+    const EntryId unknown_2
+        = add_exif_u32_array(&store, "ifd0", 0xC622U, matrix);
+    const EntryId known_1 = add_exif_u32_array(
+        &store, "ifd0", 0xC621U, matrix, EntryFlags::None, block);
+    const EntryId known_2 = add_exif_u32_array(
+        &store, "ifd0", 0xC622U, matrix, EntryFlags::None, block);
+    store.finalize();
+
+    MetadataQueryOptions options;
+    options.scope.enabled = true;
+    const MetadataQueryResult empty_scope
+        = query_color_metadata(store, options);
+    EXPECT_TRUE(empty_scope.matches.empty());
+    EXPECT_TRUE(empty_scope.candidates.empty());
+
+    const MetadataQueryResult all_entries = query_color_metadata(store);
+    EXPECT_EQ(all_entries.matches.size(), 4U);
+
+    const std::array<MetadataDirectorySelector, 1> unknown_directory = {{
+        { kInvalidBlockId, "ifd0" },
+    }};
+    options.scope.directories = unknown_directory;
+    const MetadataQueryResult unknown_only = query_color_metadata(store,
+                                                                   options);
+    EXPECT_EQ(unknown_only.matches.size(), 2U);
+    const MetadataQueryCandidate* unknown_group
+        = find_candidate_with_shape(unknown_only,
+                                    MetadataQuerySemanticKind::ColorMatrix,
+                                    MetadataQueryValueShape::MatrixSet, 2U);
+    ASSERT_NE(unknown_group, nullptr);
+    EXPECT_TRUE(contains_entry(unknown_group->source_entries, unknown_1));
+    EXPECT_TRUE(contains_entry(unknown_group->source_entries, unknown_2));
+    EXPECT_FALSE(contains_entry(unknown_group->source_entries, known_1));
+    EXPECT_FALSE(contains_entry(unknown_group->source_entries, known_2));
+}
+
 TEST(MetadataQuery, SkipsMalformedDngColorMatrixSet)
 {
     MetaStore store;
@@ -1548,13 +1988,36 @@ TEST(MetadataQuery, ReusesVendorLensCorrectionClassification)
 TEST(MetadataQuery, GroupsVendorLensCorrectionTable)
 {
     MetaStore store;
-    const EntryId distort_id  = add_exif_u32(&store, "mk_nikon_distortinfo",
-                                             0x0001U, 7U);
-    const EntryId vignette_id = add_exif_u32(&store, "mk_nikon_vignette",
-                                             0x0001U, 3U);
+    const BlockId block = store.add_block(BlockInfo {});
+    const EntryId distort_id = add_exif_u32(
+        &store, "mk_nikon_distortinfo", 0x0001U, 7U, EntryFlags::None,
+        block);
+    const EntryId vignette_id = add_exif_u32(
+        &store, "mk_nikon_vignette", 0x0001U, 3U, EntryFlags::None, block);
     store.finalize();
 
-    const MetadataQueryResult result = query_lens_correction_metadata(store);
+    const MetadataQueryResult all = query_lens_correction_metadata(store);
+    EXPECT_EQ(find_candidate_with_shape(
+                  all, MetadataQuerySemanticKind::LensCorrection,
+                  MetadataQueryValueShape::Table, 2U), nullptr);
+
+    const std::array<MetadataDirectorySelector, 2> selected = {{
+        { block, "mk_nikon_distortinfo" },
+        { block, "mk_nikon_vignette" },
+    }};
+    MetadataQueryOptions options;
+    options.scope.enabled = true;
+    options.scope.directories = selected;
+    const MetadataQueryResult selected_without_inheritance
+        = query_lens_correction_metadata(store, options);
+    EXPECT_EQ(find_candidate_with_shape(
+                  selected_without_inheritance,
+                  MetadataQuerySemanticKind::LensCorrection,
+                  MetadataQueryValueShape::Table, 2U), nullptr);
+
+    options.scope.inherit_across_directories = true;
+    const MetadataQueryResult result
+        = query_lens_correction_metadata(store, options);
 
     const MetadataQueryCandidate* candidate
         = find_candidate_with_shape(result,
@@ -1829,19 +2292,40 @@ TEST(MetadataQuery, MatchesCanonAfMicroAndAmbienceAliases)
 TEST(MetadataQuery, GroupsVendorWhiteBalanceVectorSetByFamily)
 {
     MetaStore store;
+    const BlockId block = store.add_block(BlockInfo {});
     const std::array<uint32_t, 4> daylight = { 110U, 256U, 256U, 144U };
     const std::array<uint32_t, 4> cloudy   = { 120U, 256U, 256U, 136U };
     const EntryId daylight_id
         = add_exif_u32_array(&store, "mk_nikon_colorbalancec_0", 0x0114U,
-                             std::span<const uint32_t>(daylight.data(),
-                                                       daylight.size()));
+                             daylight, EntryFlags::None, block);
     const EntryId cloudy_id
-        = add_exif_u32_array(&store, "mk_nikon_colorbalancec_0", 0x0115U,
-                             std::span<const uint32_t>(cloudy.data(),
-                                                       cloudy.size()));
+        = add_exif_u32_array(&store, "mk_nikon_colorbalancec_1", 0x0115U,
+                             cloudy, EntryFlags::None, block);
     store.finalize();
 
-    const MetadataQueryResult result = query_white_balance_metadata(store);
+    const MetadataQueryResult all = query_white_balance_metadata(store);
+    EXPECT_EQ(find_candidate_with_shape(all,
+                                        MetadataQuerySemanticKind::WhiteBalance,
+                                        MetadataQueryValueShape::VectorSet, 2U),
+              nullptr);
+
+    const std::array<MetadataDirectorySelector, 2> selected = {{
+        { block, "mk_nikon_colorbalancec_0" },
+        { block, "mk_nikon_colorbalancec_1" },
+    }};
+    MetadataQueryOptions options;
+    options.scope.enabled = true;
+    options.scope.directories = selected;
+    const MetadataQueryResult selected_without_inheritance
+        = query_white_balance_metadata(store, options);
+    EXPECT_EQ(find_candidate_with_shape(
+                  selected_without_inheritance,
+                  MetadataQuerySemanticKind::WhiteBalance,
+                  MetadataQueryValueShape::VectorSet, 2U), nullptr);
+
+    options.scope.inherit_across_directories = true;
+    const MetadataQueryResult result
+        = query_white_balance_metadata(store, options);
 
     const MetadataQueryCandidate* candidate
         = find_candidate_with_shape(result,
@@ -1953,13 +2437,46 @@ TEST(MetadataQuery, SkipsMalformedVendorColorMatrixSet)
 TEST(MetadataQuery, GroupsSamsungLensCorrectionTableByAlias)
 {
     MetaStore store;
-    const EntryId vignette_id   = add_exif_u32(&store, "mk_samsung_type2_0",
-                                               0xA052U, 7U);
-    const EntryId correction_id = add_exif_u32(&store, "mk_samsung_type2_0",
-                                               0xA053U, 3U);
+    const BlockId block = store.add_block(BlockInfo {});
+    Entry vignette;
+    vignette.key = make_exif_tag_key(store.arena(), "mk_samsung_type2_0",
+                                     0x7032U);
+    vignette.value = make_u32(7U);
+    vignette.origin.block = block;
+    const EntryId vignette_id = store.add_entry(vignette);
+    Entry correction;
+    correction.key = make_exif_tag_key(store.arena(), "mk_samsung_type2_1",
+                                       0x7035U);
+    correction.value = make_u32(3U);
+    correction.origin.block = block;
+    const EntryId correction_id = store.add_entry(correction);
+    ASSERT_NE(vignette_id, kInvalidEntryId);
+    ASSERT_NE(correction_id, kInvalidEntryId);
     store.finalize();
 
-    const MetadataQueryResult result = query_lens_correction_metadata(store);
+    const MetadataQueryResult all = query_lens_correction_metadata(store);
+    EXPECT_EQ(find_candidate_with_shape(all,
+                                        MetadataQuerySemanticKind::LensCorrection,
+                                        MetadataQueryValueShape::Table, 2U),
+              nullptr);
+
+    const std::array<MetadataDirectorySelector, 2> selected = {{
+        { block, "mk_samsung_type2_0" },
+        { block, "mk_samsung_type2_1" },
+    }};
+    MetadataQueryOptions options;
+    options.scope.enabled = true;
+    options.scope.directories = selected;
+    const MetadataQueryResult selected_without_inheritance
+        = query_lens_correction_metadata(store, options);
+    EXPECT_EQ(find_candidate_with_shape(
+                  selected_without_inheritance,
+                  MetadataQuerySemanticKind::LensCorrection,
+                  MetadataQueryValueShape::Table, 2U), nullptr);
+
+    options.scope.inherit_across_directories = true;
+    const MetadataQueryResult result
+        = query_lens_correction_metadata(store, options);
 
     const MetadataQueryCandidate* candidate
         = find_candidate_with_shape(result,
@@ -1972,6 +2489,26 @@ TEST(MetadataQuery, GroupsSamsungLensCorrectionTableByAlias)
     ASSERT_EQ(candidate->values.size(), 2U);
     EXPECT_DOUBLE_EQ(candidate->values[0], 7.0);
     EXPECT_DOUBLE_EQ(candidate->values[1], 3.0);
+}
+
+TEST(MetadataQuery, KeepsLensCorrectionGroupingWithinDirectoryByDefault)
+{
+    MetaStore store;
+    const EntryId vignette_id
+        = add_exif_u32(&store, "mk_samsung_type2_0", 0x7032U, 7U);
+    const EntryId correction_id
+        = add_exif_u32(&store, "mk_samsung_type2_0", 0x7035U, 3U);
+    store.finalize();
+
+    const MetadataQueryResult result = query_lens_correction_metadata(store);
+    const MetadataQueryCandidate* candidate
+        = find_candidate_with_shape(result,
+                                    MetadataQuerySemanticKind::LensCorrection,
+                                    MetadataQueryValueShape::Table, 2U);
+    ASSERT_NE(candidate, nullptr);
+    EXPECT_TRUE(contains_entry(candidate->source_entries, vignette_id));
+    EXPECT_TRUE(contains_entry(candidate->source_entries, correction_id));
+    ASSERT_EQ(candidate->values.size(), 2U);
 }
 
 TEST(MetadataQuery, GroupsVendorSourceColorTransformTableByFamily)
@@ -2000,12 +2537,36 @@ TEST(MetadataQuery, GroupsVendorSourceColorTransformTableByFamily)
 TEST(MetadataQuery, GroupsSonyStyleComputationalProcessingByAlias)
 {
     MetaStore store;
-    const EntryId style_a = add_exif_u32(&store, "mk_sony0", 0xB020U, 1U);
-    const EntryId style_b = add_exif_u32(&store, "mk_sony_camerasettings_0",
-                                         0x001AU, 2U);
+    const BlockId block = store.add_block(BlockInfo {});
+    const EntryId style_a = add_exif_u32(
+        &store, "mk_sony0", 0xB020U, 1U, EntryFlags::None, block);
+    const EntryId style_b = add_exif_u32(
+        &store, "mk_sony_camerasettings_0", 0x001AU, 2U,
+        EntryFlags::None, block);
     store.finalize();
 
-    const MetadataQueryResult result = query_raw_processing_metadata(store);
+    const MetadataQueryResult all = query_raw_processing_metadata(store);
+    EXPECT_EQ(find_candidate_with_shape(
+                  all, MetadataQuerySemanticKind::ComputationalProcessing,
+                  MetadataQueryValueShape::Table, 2U), nullptr);
+
+    const std::array<MetadataDirectorySelector, 2> selected = {{
+        { block, "mk_sony0" },
+        { block, "mk_sony_camerasettings_0" },
+    }};
+    MetadataQueryOptions options;
+    options.scope.enabled = true;
+    options.scope.directories = selected;
+    const MetadataQueryResult selected_without_inheritance
+        = query_raw_processing_metadata(store, options);
+    EXPECT_EQ(find_candidate_with_shape(
+                  selected_without_inheritance,
+                  MetadataQuerySemanticKind::ComputationalProcessing,
+                  MetadataQueryValueShape::Table, 2U), nullptr);
+
+    options.scope.inherit_across_directories = true;
+    const MetadataQueryResult result
+        = query_raw_processing_metadata(store, options);
 
     const MetadataQueryCandidate* candidate = find_candidate_with_shape(
         result, MetadataQuerySemanticKind::ComputationalProcessing,
@@ -2269,6 +2830,463 @@ TEST(MetadataQuery, ClassifiesLegacyIptcTechnicalSemantics)
     EXPECT_STREQ(metadata_query_semantic_kind_name(
                      MetadataQuerySemanticKind::Preview),
                  "preview");
+}
+
+TEST(MetadataQuery, RetainsLargeNumericArraysAndReportsBudgets)
+{
+    MetaStore store;
+    const std::vector<uint32_t> values_17(17U, 17U);
+    const std::vector<uint32_t> values_4096(4096U, 41U);
+    const std::vector<uint32_t> values_65536(65536U, 65U);
+    const std::vector<uint32_t> values_65537(65537U, 66U);
+    const EntryId id_17 = add_exif_u32_array(
+        &store, "ifd0", 0xC618U, values_17);
+    const EntryId id_4096 = add_exif_u32_array(
+        &store, "ifd0", 0xC618U, values_4096);
+    const EntryId id_65536 = add_exif_u32_array(
+        &store, "ifd0", 0xC618U, values_65536);
+    const EntryId id_65537 = add_exif_u32_array(
+        &store, "ifd0", 0xC618U, values_65537);
+    store.finalize();
+
+    const MetadataQueryResult defaults = query_raw_processing_metadata(store);
+    const MetadataQueryCandidate* candidate_17
+        = find_candidate_for_entry(defaults, id_17);
+    const MetadataQueryCandidate* candidate_4096
+        = find_candidate_for_entry(defaults, id_4096);
+    const MetadataQueryCandidate* candidate_65536
+        = find_candidate_for_entry(defaults, id_65536);
+    const MetadataQueryCandidate* candidate_65537
+        = find_candidate_for_entry(defaults, id_65537);
+    ASSERT_NE(candidate_17, nullptr);
+    ASSERT_NE(candidate_4096, nullptr);
+    ASSERT_NE(candidate_65536, nullptr);
+    ASSERT_NE(candidate_65537, nullptr);
+    EXPECT_EQ(candidate_17->values.size(), 17U);
+    EXPECT_EQ(candidate_4096->values.size(), 4096U);
+    EXPECT_EQ(candidate_65536->values.size(), 65536U);
+    EXPECT_EQ(candidate_65537->values.size(), 65536U);
+    EXPECT_EQ(candidate_65536->numeric_status,
+              MetadataQueryNumericStatus::Complete);
+    EXPECT_EQ(candidate_65537->total_numeric_values, 65537U);
+    EXPECT_EQ(candidate_65537->numeric_status,
+              MetadataQueryNumericStatus::Partial);
+    EXPECT_EQ(defaults.total_numeric_values, 135186U);
+    EXPECT_EQ(defaults.returned_numeric_values, 135185U);
+    EXPECT_TRUE(defaults.numeric_values_limited);
+
+    MetadataQueryOptions candidate_limit;
+    candidate_limit.max_values_per_candidate = 8U;
+    const MetadataQueryResult limited_candidate
+        = query_raw_processing_metadata(store, candidate_limit);
+    const MetadataQueryCandidate* limited
+        = find_candidate_for_entry(limited_candidate, id_17);
+    ASSERT_NE(limited, nullptr);
+    EXPECT_EQ(limited->values.size(), 8U);
+    EXPECT_EQ(limited->numeric_status, MetadataQueryNumericStatus::Partial);
+
+    MetadataQueryOptions total_limit;
+    total_limit.max_total_values = 3U;
+    const MetadataQueryResult limited_total
+        = query_raw_processing_metadata(store, total_limit);
+    EXPECT_EQ(limited_total.returned_numeric_values, 3U);
+    EXPECT_EQ(limited_total.total_numeric_values, 135186U);
+    EXPECT_TRUE(limited_total.numeric_values_limited);
+    EXPECT_EQ(limited_total.numeric_status, MetadataQueryNumericStatus::Partial);
+
+    MetadataQueryOptions metadata_only;
+    metadata_only.include_numeric_values = false;
+    const MetadataQueryResult without_vectors
+        = query_raw_processing_metadata(store, metadata_only);
+    const MetadataQueryCandidate* counted_only
+        = find_candidate_for_entry(without_vectors, id_17);
+    ASSERT_NE(counted_only, nullptr);
+    EXPECT_TRUE(counted_only->values.empty());
+    ASSERT_EQ(counted_only->components.size(), 1U);
+    EXPECT_EQ(counted_only->components[0].total_value_count, 17U);
+    EXPECT_EQ(counted_only->components[0].returned_value_count, 0U);
+    EXPECT_EQ(counted_only->components[0].numeric_status,
+              MetadataQueryNumericStatus::Partial);
+    EXPECT_EQ(without_vectors.returned_numeric_values, 0U);
+    EXPECT_EQ(without_vectors.total_numeric_values, 135186U);
+    EXPECT_EQ(without_vectors.numeric_status,
+              MetadataQueryNumericStatus::Partial);
+
+    EXPECT_STREQ(metadata_query_numeric_status_name(
+                     MetadataQueryNumericStatus::NotNumeric),
+                 "not_numeric");
+    EXPECT_STREQ(metadata_query_numeric_status_name(
+                     MetadataQueryNumericStatus::Partial),
+                 "partial");
+}
+
+TEST(MetadataQuery, DistinguishesMalformedNumericPayloadsAndEmptyArrays)
+{
+    MetaStore store;
+    const std::array<uint32_t, 2> payload = { 1U, 2U };
+    MetaValue malformed = make_u32_array(store.arena(), payload);
+    malformed.count = 3U;
+    const EntryId malformed_id
+        = add_exif_value(&store, "ifd0", 0xC618U, malformed);
+    const std::array<uint32_t, 0> no_values = {};
+    const EntryId empty_id
+        = add_exif_u32_array(&store, "ifd0", 0xC618U, no_values);
+    store.finalize();
+
+    const MetadataQueryResult result = query_raw_processing_metadata(store);
+    const MetadataQueryCandidate* malformed_candidate
+        = find_candidate_for_entry(result, malformed_id);
+    const MetadataQueryCandidate* empty_candidate
+        = find_candidate_for_entry(result, empty_id);
+    ASSERT_NE(malformed_candidate, nullptr);
+    ASSERT_NE(empty_candidate, nullptr);
+    EXPECT_EQ(malformed_candidate->numeric_status,
+              MetadataQueryNumericStatus::Invalid);
+    ASSERT_EQ(malformed_candidate->components.size(), 1U);
+    EXPECT_EQ(malformed_candidate->components[0].total_value_count, 3U);
+    EXPECT_EQ(malformed_candidate->components[0].returned_value_count, 0U);
+    EXPECT_EQ(empty_candidate->numeric_status,
+              MetadataQueryNumericStatus::Complete);
+    ASSERT_EQ(empty_candidate->components.size(), 1U);
+    EXPECT_EQ(empty_candidate->components[0].total_value_count, 0U);
+    EXPECT_EQ(result.numeric_status, MetadataQueryNumericStatus::Invalid);
+    EXPECT_TRUE(result.has_invalid_numeric_values);
+    EXPECT_EQ(result.total_numeric_values, 3U);
+
+    MetaStore rational_store;
+    const EntryId invalid_rational
+        = add_exif_value(&rational_store, "ifd0", 0x829AU,
+                         make_urational(1U, 0U));
+    rational_store.finalize();
+    const MetadataQueryResult exposure
+        = query_exposure_gain_metadata(rational_store);
+    const MetadataQueryCandidate* rational_candidate
+        = find_candidate_for_entry(exposure, invalid_rational);
+    ASSERT_NE(rational_candidate, nullptr);
+    EXPECT_EQ(rational_candidate->numeric_status,
+              MetadataQueryNumericStatus::Invalid);
+    ASSERT_EQ(rational_candidate->components.size(), 1U);
+    EXPECT_EQ(rational_candidate->components[0].total_value_count, 1U);
+    EXPECT_EQ(exposure.numeric_status, MetadataQueryNumericStatus::Invalid);
+    EXPECT_EQ(exposure.total_numeric_values, 1U);
+}
+
+TEST(MetadataQuery, ExposesComponentRolesShapesAndAssociations)
+{
+    MetaStore store;
+    const std::array<uint32_t, 9> matrix = {
+        1U, 0U, 0U, 0U, 1U, 0U, 0U, 0U, 1U,
+    };
+    const std::array<uint32_t, 2> repeat_dimensions = { 2U, 2U };
+    const std::array<uint32_t, 4> black_level = { 16U, 17U, 18U, 19U };
+    const std::array<uint32_t, 8> black_level_two_channels = {
+        16U, 17U, 18U, 19U, 20U, 21U, 22U, 23U,
+    };
+    const std::array<uint32_t, 5> black_level_mismatch = {
+        16U, 17U, 18U, 19U, 20U,
+    };
+    const std::array<uint32_t, 4> cfa_pattern = { 0U, 1U, 1U, 2U };
+    const std::array<uint32_t, 3> plane_colors = { 0U, 1U, 2U };
+    const std::array<uint32_t, 4> white_balance = { 128U, 256U, 256U, 144U };
+    const EntryId matrix_id
+        = add_exif_u32_array(&store, "ifd0", 0xC621U, matrix);
+    const EntryId illuminant_id = add_exif_u32(&store, "ifd0", 0xC65AU, 21U);
+    const EntryId black_dimensions_id
+        = add_exif_u32_array(&store, "ifd0", 0xC619U, repeat_dimensions);
+    const EntryId black_level_id
+        = add_exif_u32_array(&store, "ifd0", 0xC61AU, black_level);
+    const EntryId delta_h_id
+        = add_exif_u32_array(&store, "ifd0", 0xC61BU, black_level);
+    const EntryId delta_v_id
+        = add_exif_u32_array(&store, "ifd0", 0xC61CU, black_level);
+    const EntryId cfa_dimensions_id
+        = add_exif_u32_array(&store, "ifd0", 0x828DU, repeat_dimensions);
+    const EntryId cfa_pattern_id
+        = add_exif_u32_array(&store, "ifd0", 0x828EU, cfa_pattern);
+    const EntryId plane_colors_id
+        = add_exif_u32_array(&store, "ifd0", 0xC616U, plane_colors);
+    const EntryId white_balance_id
+        = add_exif_u32_array(&store, "ifd0", 0xA403U, white_balance);
+    const EntryId black_dimensions_two_channels_id
+        = add_exif_u32_array(&store, "second_ifd", 0xC619U,
+                             repeat_dimensions);
+    const EntryId black_level_two_channels_id
+        = add_exif_u32_array(&store, "second_ifd", 0xC61AU,
+                             black_level_two_channels);
+    const EntryId black_dimensions_mismatch_id
+        = add_exif_u32_array(&store, "mismatch_ifd", 0xC619U,
+                             repeat_dimensions);
+    const EntryId black_level_mismatch_id
+        = add_exif_u32_array(&store, "mismatch_ifd", 0xC61AU,
+                             black_level_mismatch);
+    store.finalize();
+
+    const MetadataQueryResult color = query_color_metadata(store);
+    const MetadataQueryCandidate* matrix_candidate
+        = find_candidate_for_entry(color, matrix_id);
+    ASSERT_NE(matrix_candidate, nullptr);
+    const MetadataQueryComponent* matrix_component
+        = find_component_for_entry(*matrix_candidate, matrix_id);
+    ASSERT_NE(matrix_component, nullptr);
+    EXPECT_EQ(matrix_component->role, MetadataQueryComponentRole::ColorMatrix);
+    EXPECT_EQ(matrix_component->matrix_subtype,
+              MetadataQueryMatrixSubtype::ColorMatrix);
+    EXPECT_EQ(matrix_component->calibration_index, 1U);
+    EXPECT_EQ(matrix_component->rows, 3U);
+    EXPECT_EQ(matrix_component->columns, 3U);
+    EXPECT_EQ(matrix_component->channels, 3U);
+    EXPECT_EQ(matrix_component->associated_entry, illuminant_id);
+    EXPECT_EQ(matrix_component->associated_tag, 0xC65AU);
+
+    const MetadataQueryResult raw = query_raw_processing_metadata(store);
+    const MetadataQueryCandidate* black_candidate
+        = find_candidate_for_entry(raw, black_level_id);
+    ASSERT_NE(black_candidate, nullptr);
+    const MetadataQueryComponent* black_component
+        = find_component_for_entry(*black_candidate, black_level_id);
+    ASSERT_NE(black_component, nullptr);
+    EXPECT_EQ(black_component->role, MetadataQueryComponentRole::BlackLevel);
+    EXPECT_EQ(black_component->associated_entry, black_dimensions_id);
+    EXPECT_EQ(black_component->rows, 2U);
+    EXPECT_EQ(black_component->columns, 2U);
+    EXPECT_EQ(black_component->channels, 1U);
+
+    const MetadataQueryCandidate* black_two_channels_candidate
+        = find_candidate_for_entry(raw, black_level_two_channels_id);
+    ASSERT_NE(black_two_channels_candidate, nullptr);
+    const MetadataQueryComponent* black_two_channels_component
+        = find_component_for_entry(*black_two_channels_candidate,
+                                   black_level_two_channels_id);
+    ASSERT_NE(black_two_channels_component, nullptr);
+    EXPECT_EQ(black_two_channels_component->associated_entry,
+              black_dimensions_two_channels_id);
+    EXPECT_EQ(black_two_channels_component->rows, 2U);
+    EXPECT_EQ(black_two_channels_component->columns, 2U);
+    EXPECT_EQ(black_two_channels_component->channels, 2U);
+
+    const MetadataQueryCandidate* black_mismatch_candidate
+        = find_candidate_for_entry(raw, black_level_mismatch_id);
+    ASSERT_NE(black_mismatch_candidate, nullptr);
+    const MetadataQueryComponent* black_mismatch_component
+        = find_component_for_entry(*black_mismatch_candidate,
+                                   black_level_mismatch_id);
+    ASSERT_NE(black_mismatch_component, nullptr);
+    EXPECT_EQ(black_mismatch_component->associated_entry,
+              black_dimensions_mismatch_id);
+    EXPECT_EQ(black_mismatch_component->rows, 2U);
+    EXPECT_EQ(black_mismatch_component->columns, 2U);
+    EXPECT_EQ(black_mismatch_component->channels, 0U);
+
+    const MetadataQueryCandidate* cfa_candidate
+        = find_candidate_for_entry(raw, cfa_pattern_id);
+    ASSERT_NE(cfa_candidate, nullptr);
+    const MetadataQueryComponent* cfa_component
+        = find_component_for_entry(*cfa_candidate, cfa_pattern_id);
+    ASSERT_NE(cfa_component, nullptr);
+    EXPECT_EQ(cfa_component->role, MetadataQueryComponentRole::CfaPattern);
+    EXPECT_EQ(cfa_component->associated_entry, cfa_dimensions_id);
+    EXPECT_EQ(cfa_component->rows, 2U);
+    EXPECT_EQ(cfa_component->columns, 2U);
+    EXPECT_EQ(cfa_component->channels, 3U);
+
+    const MetadataQueryCandidate* delta_h_candidate
+        = find_candidate_for_entry(raw, delta_h_id);
+    const MetadataQueryCandidate* delta_v_candidate
+        = find_candidate_for_entry(raw, delta_v_id);
+    ASSERT_NE(delta_h_candidate, nullptr);
+    ASSERT_NE(delta_v_candidate, nullptr);
+    const MetadataQueryComponent* delta_h_component
+        = find_component_for_entry(*delta_h_candidate, delta_h_id);
+    const MetadataQueryComponent* delta_v_component
+        = find_component_for_entry(*delta_v_candidate, delta_v_id);
+    ASSERT_NE(delta_h_component, nullptr);
+    ASSERT_NE(delta_v_component, nullptr);
+    EXPECT_EQ(delta_h_component->role,
+              MetadataQueryComponentRole::BlackLevelDeltaH);
+    EXPECT_EQ(delta_v_component->role,
+              MetadataQueryComponentRole::BlackLevelDeltaV);
+    EXPECT_EQ(delta_h_component->rows, 1U);
+    EXPECT_EQ(delta_h_component->columns, 4U);
+    EXPECT_EQ(delta_v_component->rows, 4U);
+    EXPECT_EQ(delta_v_component->columns, 1U);
+
+    const MetadataQueryCandidate* plane_colors_candidate
+        = find_candidate_for_entry(raw, plane_colors_id);
+    ASSERT_NE(plane_colors_candidate, nullptr);
+    const MetadataQueryComponent* plane_colors_component
+        = find_component_for_entry(*plane_colors_candidate, plane_colors_id);
+    ASSERT_NE(plane_colors_component, nullptr);
+    EXPECT_EQ(plane_colors_component->role,
+              MetadataQueryComponentRole::CfaPlaneColors);
+    EXPECT_EQ(plane_colors_component->channels, 3U);
+    const MetadataQueryResult wb = query_white_balance_metadata(store);
+    const MetadataQueryCandidate* wb_candidate
+        = find_candidate_for_entry(wb, white_balance_id);
+    ASSERT_NE(wb_candidate, nullptr);
+    const MetadataQueryComponent* wb_component
+        = find_component_for_entry(*wb_candidate, white_balance_id);
+    ASSERT_NE(wb_component, nullptr);
+    EXPECT_EQ(wb_component->role, MetadataQueryComponentRole::WhiteBalance);
+    EXPECT_STREQ(metadata_query_component_role_name(
+                     MetadataQueryComponentRole::BlackLevelDeltaH),
+                 "black_level_delta_h");
+    EXPECT_STREQ(metadata_query_component_role_name(
+                     MetadataQueryComponentRole::WhiteBalance),
+                 "white_balance");
+    EXPECT_STREQ(metadata_query_matrix_subtype_name(
+                     MetadataQueryMatrixSubtype::ForwardMatrix),
+                 "forward_matrix");
+}
+
+TEST(MetadataQuery, EmitsActiveAndMaskedAreasForEachScopedDirectory)
+{
+    MetaStore store;
+    const BlockId block = store.add_block(BlockInfo {});
+    const std::array<uint32_t, 4> active_raw = { 0U, 0U, 100U, 200U };
+    const std::array<uint32_t, 4> active_preview = { 2U, 3U, 90U, 180U };
+    const std::array<uint32_t, 8> masked_raw = {
+        0U, 0U, 4U, 100U, 10U, 20U, 30U, 40U,
+    };
+    const std::array<uint32_t, 8> masked_preview = {
+        1U, 2U, 3U, 90U, 10U, 20U, 30U, 40U,
+    };
+    const EntryId active_raw_id = add_exif_u32_array(
+        &store, "rawifd", 0xC68DU, active_raw, EntryFlags::None, block);
+    const EntryId active_preview_id = add_exif_u32_array(
+        &store, "previewifd", 0xC68DU, active_preview, EntryFlags::None,
+        block);
+    const EntryId masked_raw_id = add_exif_u32_array(
+        &store, "rawifd", 0xC68EU, masked_raw, EntryFlags::None, block);
+    const EntryId masked_preview_id = add_exif_u32_array(
+        &store, "previewifd", 0xC68EU, masked_preview, EntryFlags::None,
+        block);
+    store.finalize();
+
+    const std::array<MetadataDirectorySelector, 1> selected = {{
+        { block, {} },
+    }};
+    MetadataQueryOptions options;
+    options.scope.enabled = true;
+    options.scope.directories = selected;
+    const MetadataQueryResult result = query_crop_metadata(store, options);
+
+    size_t active_count = 0U;
+    size_t masked_count = 0U;
+    for (size_t i = 0U; i < result.candidates.size(); ++i) {
+        const MetadataQueryCandidate& candidate = result.candidates[i];
+        if (candidate.semantic == MetadataQuerySemanticKind::ActiveArea) {
+            ++active_count;
+        } else if (candidate.semantic == MetadataQuerySemanticKind::Border
+                   && candidate.normalized_shape
+                          == MetadataQueryValueShape::Table) {
+            ++masked_count;
+            ASSERT_EQ(candidate.components.size(), 1U);
+            EXPECT_EQ(candidate.components[0].role,
+                      MetadataQueryComponentRole::MaskedAreas);
+            EXPECT_EQ(candidate.components[0].rows, 2U);
+            EXPECT_EQ(candidate.components[0].columns, 4U);
+        }
+    }
+    EXPECT_EQ(active_count, 2U);
+    EXPECT_EQ(masked_count, 2U);
+    EXPECT_NE(find_candidate_for_entry(result, active_raw_id), nullptr);
+    EXPECT_NE(find_candidate_for_entry(result, active_preview_id), nullptr);
+    EXPECT_NE(find_candidate_for_entry(result, masked_raw_id), nullptr);
+    EXPECT_NE(find_candidate_for_entry(result, masked_preview_id), nullptr);
+    EXPECT_STREQ(metadata_query_coordinate_basis_name(
+                     MetadataQueryCoordinateBasis::StoredImageRelativeRaw),
+                 "stored_image_relative_raw");
+}
+
+TEST(MetadataQuery, CfaPatternChannelsRequireExplicitSelectedInheritance)
+{
+    MetaStore store;
+    const BlockId block = store.add_block(BlockInfo {});
+    const std::array<uint32_t, 2> dimensions = { 2U, 2U };
+    const std::array<uint32_t, 4> pattern = { 0U, 1U, 1U, 2U };
+    const std::array<uint32_t, 3> plane_colors = { 0U, 1U, 2U };
+    const EntryId dimensions_id = add_exif_u32_array(
+        &store, "rawifd", 0x828DU, dimensions, EntryFlags::None, block);
+    const EntryId pattern_id = add_exif_u32_array(
+        &store, "rawifd", 0x828EU, pattern, EntryFlags::None, block);
+    const EntryId plane_colors_id = add_exif_u32_array(
+        &store, "colorifd", 0xC616U, plane_colors, EntryFlags::None, block);
+    store.finalize();
+
+    const std::array<MetadataDirectorySelector, 1> raw_only = {{
+        { block, "rawifd" },
+    }};
+    MetadataQueryOptions options;
+    options.scope.enabled = true;
+    options.scope.directories = raw_only;
+    const MetadataQueryResult local_only
+        = query_raw_processing_metadata(store, options);
+    const MetadataQueryCandidate* local_candidate
+        = find_candidate_for_entry(local_only, pattern_id);
+    ASSERT_NE(local_candidate, nullptr);
+    const MetadataQueryComponent* local_pattern
+        = find_component_for_entry(*local_candidate, pattern_id);
+    ASSERT_NE(local_pattern, nullptr);
+    EXPECT_EQ(local_pattern->associated_entry, dimensions_id);
+    EXPECT_EQ(local_pattern->rows, 2U);
+    EXPECT_EQ(local_pattern->columns, 2U);
+    EXPECT_EQ(local_pattern->channels, 0U);
+
+    const std::array<MetadataDirectorySelector, 2> selected = {{
+        { block, "rawifd" },
+        { block, "colorifd" },
+    }};
+    options.scope.directories = selected;
+    const MetadataQueryResult selected_without_inheritance
+        = query_raw_processing_metadata(store, options);
+    const MetadataQueryCandidate* no_inherit_candidate
+        = find_candidate_for_entry(selected_without_inheritance, pattern_id);
+    ASSERT_NE(no_inherit_candidate, nullptr);
+    const MetadataQueryComponent* no_inherit_pattern
+        = find_component_for_entry(*no_inherit_candidate, pattern_id);
+    ASSERT_NE(no_inherit_pattern, nullptr);
+    EXPECT_EQ(no_inherit_pattern->channels, 0U);
+
+    options.scope.inherit_across_directories = true;
+    const MetadataQueryResult inherited
+        = query_raw_processing_metadata(store, options);
+    const MetadataQueryCandidate* inherited_candidate
+        = find_candidate_for_entry(inherited, pattern_id);
+    ASSERT_NE(inherited_candidate, nullptr);
+    const MetadataQueryComponent* inherited_pattern
+        = find_component_for_entry(*inherited_candidate, pattern_id);
+    ASSERT_NE(inherited_pattern, nullptr);
+    EXPECT_EQ(inherited_pattern->channels, 3U);
+    EXPECT_FALSE(contains_entry(inherited_candidate->source_entries,
+                                plane_colors_id));
+}
+
+TEST(MetadataQuery, GroupsVendorQueryWithMoreThanSixtyFourEntries)
+{
+    MetaStore store;
+    const std::array<uint32_t, 4> balance = { 110U, 256U, 256U, 144U };
+    std::vector<EntryId> entry_ids;
+    entry_ids.reserve(70U);
+    for (size_t i = 0U; i < 70U; ++i) {
+        const uint16_t tag = i % 2U == 0U ? 0x0114U : 0x0115U;
+        entry_ids.push_back(add_exif_u32_array(
+            &store, "mk_nikon_colorbalancec_0", tag, balance));
+    }
+    store.finalize();
+
+    const MetadataQueryResult result = query_white_balance_metadata(store);
+    const MetadataQueryCandidate* candidate
+        = find_candidate_with_shape(result,
+                                    MetadataQuerySemanticKind::WhiteBalance,
+                                    MetadataQueryValueShape::VectorSet, 70U);
+    ASSERT_NE(candidate, nullptr);
+    EXPECT_EQ(candidate->source_entries.size(), 70U);
+    EXPECT_EQ(candidate->values.size(), 280U);
+    EXPECT_EQ(candidate->components.size(), 70U);
+    EXPECT_EQ(candidate->numeric_status, MetadataQueryNumericStatus::Complete);
+    for (size_t i = 0U; i < entry_ids.size(); ++i) {
+        EXPECT_TRUE(contains_entry(candidate->source_entries, entry_ids[i]));
+    }
 }
 
 }  // namespace openmeta

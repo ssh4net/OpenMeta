@@ -193,6 +193,9 @@ enum class ReadTransferSourceDiagnosticCode : uint16_t {
     ResourceLimit,
     ScratchTooSmall,
     IncompleteMakerNote,
+    IncompleteRawCarrierPreservation,
+    IncompleteEmbeddedContainerEnrichment,
+    IncompleteSourceEnrichment,
     ResidualMetadataPath,
     RawCarrierTruncated,
 };
@@ -638,6 +641,11 @@ struct TransferConceptDiagnostics final {
     uint32_t rendered_unsafe_count            = 0U;
     uint32_t source_bound_count               = 0U;
     uint32_t conflict_count                   = 0U;
+    /// Incomplete numeric or semantic resolution remains visible to preflight callers.
+    uint64_t semantic_work_used = 0U;
+    bool semantic_work_limited = false;
+    bool numeric_values_limited = false;
+    bool has_invalid_numeric_values = false;
     std::vector<TransferConceptDiagnostic> diagnostics;
 };
 
@@ -1627,6 +1635,23 @@ struct ReadTransferSourceSnapshotRandomAccessOptions final {
     bool preserve_custom_xmp_structures = false;
 };
 
+/// Producer-known reasons that explain positional snapshot residual paths.
+/// The counters in this record sum to `residual_metadata_paths` for results
+/// produced by the library. Callers that construct a result with only the
+/// aggregate retain a generic residual diagnostic.
+struct ReadTransferSourceResidualCounts final {
+    /// MakerNote payloads or subtables that were not fully decoded.
+    uint32_t maker_note_paths = 0U;
+    /// Raw source carriers that the bounded path could not retain.
+    uint32_t raw_carrier_preservation = 0U;
+    /// Embedded-container or container-specific paths that were not followed.
+    uint32_t embedded_container_enrichment = 0U;
+    /// Source-wide metadata enrichment not represented by discovered blocks.
+    uint32_t source_enrichment = 0U;
+    /// Residuals without a producer-specific classification.
+    uint32_t unclassified = 0U;
+};
+
 /// Stable v1 result of bounded positional source snapshot assembly.
 struct ReadTransferSourceSnapshotRandomAccessResult final {
     TransferStatus status = TransferStatus::Ok;
@@ -1641,6 +1666,11 @@ struct ReadTransferSourceSnapshotRandomAccessResult final {
     /// Source-wide enrichment or container-specific decode paths that were
     /// intentionally not run by this bounded payload-backed assembly path.
     uint32_t residual_metadata_paths   = 0U;
+    ReadTransferSourceResidualCounts residual_reasons;
+    /// First known location of a residual MakerNote path, when available.
+    uint64_t maker_note_residual_offset = 0U;
+    uint16_t maker_note_residual_tag = 0U;
+    bool maker_note_residual_location_known = false;
     uint64_t payload_scratch_needed    = 0U;
     uint64_t compressed_scratch_needed = 0U;
     uint64_t value_scratch_needed      = 0U;
@@ -1656,12 +1686,6 @@ struct ReadTransferSourceSnapshotRandomAccessResult final {
                && payload_scratch_needed == 0U
                && compressed_scratch_needed == 0U && value_scratch_needed == 0U;
     }
-};
-
-/// Stable v1 optional lanes used to classify positional read residuals.
-struct ReadTransferSourceDiagnosticOptions final {
-    bool decode_makernote_requested           = false;
-    bool decode_embedded_containers_requested = false;
 };
 
 /// One stable v1 allocation-free positional read diagnostic.
@@ -2449,12 +2473,14 @@ makernote_layout_transfer_audit_from_store(const MetaStore& store) noexcept;
 
 TransferConceptDiagnostics
 transfer_concept_diagnostics_from_store(const MetaStore& store,
-                                        TransferSafetyMode safety);
+                                        TransferSafetyMode safety,
+                                        const MetadataQueryOptions& options = {});
 
 TransferConceptDiagnostics
 transfer_concept_diagnostics_from_store(
     const MetaStore& store, TransferSafetyMode safety,
-    const MetadataRawDataDescriptor& raw_descriptor);
+    const MetadataRawDataDescriptor& raw_descriptor,
+    const MetadataQueryOptions& options = {});
 
 const char*
 transfer_concept_diagnostic_action_name(
@@ -2906,9 +2932,10 @@ read_transfer_source_snapshot_bytes(
  * The returned snapshot owns its finalized decoded store and any explicitly
  * requested bounded raw carriers.
  *
- * `residual_metadata_paths` reports requested or format-specific enrichment
- * paths that are not represented by discovered payload blocks. A nonzero value
- * keeps the usable result but makes `complete()` false.
+ * `residual_metadata_paths` reports paths that are not represented by
+ * discovered payload blocks. `residual_reasons` preserves the producer-known
+ * reason for each path. A nonzero value keeps the usable result but makes
+ * `complete()` false.
  *
  * \par API Stability
  * Stable host-facing v1 API in Host Adoption Profile v1. Format coverage may
@@ -2927,9 +2954,9 @@ read_transfer_source_snapshot_random_access(
  * \brief Project structured diagnostics from a positional snapshot result.
  *
  * The function does not allocate. It reports the total required count in
- * `needed` and writes the prefix that fits in \p out. Pass the same optional
- * lane requests used for the read so residual paths can be classified as an
- * incomplete requested MakerNote or embedded-container lane where applicable.
+ * `needed` and writes the prefix that fits in \p out. Producer-known residual
+ * reasons determine the diagnostic domain and code. Any aggregate count that
+ * has no matching reason counter receives only the generic residual code.
  *
  * \par API Stability
  * Stable host-facing v1 API in Host Adoption Profile v1.
@@ -2937,9 +2964,7 @@ read_transfer_source_snapshot_random_access(
 ReadTransferSourceDiagnosticsResult
 collect_read_transfer_source_diagnostics(
     const ReadTransferSourceSnapshotRandomAccessResult& result,
-    std::span<ReadTransferSourceDiagnostic> out,
-    const ReadTransferSourceDiagnosticOptions& options
-    = ReadTransferSourceDiagnosticOptions {}) noexcept;
+    std::span<ReadTransferSourceDiagnostic> out) noexcept;
 
 /// Stable v1 name for one positional diagnostic severity.
 const char*

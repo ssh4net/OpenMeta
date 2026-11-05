@@ -16386,6 +16386,298 @@ TEST(MetadataTransferApi,
 }
 
 
+TEST(MetadataTransferApi,
+     ReadTransferSourceSnapshotRandomAccessDoesNotMislabelCarrierResidual)
+{
+    const std::vector<std::byte> app1 = make_app1_exif_payload();
+    ASSERT_GT(app1.size(), 6U);
+    const std::vector<std::byte> tiff(app1.begin() + 6, app1.end());
+    SnapshotCallbackState callback { tiff };
+    const openmeta::RandomAccessSource source
+        = openmeta::make_callback_random_access_source(tiff.size(), &callback,
+                                                       snapshot_read_at, true);
+    std::array<openmeta::ExifIfdRef, 16> ifds {};
+    std::array<std::byte, 64> window {};
+    std::array<std::byte, 256> value {};
+    openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+    scratch.ifds        = ifds;
+    scratch.read_window = window;
+    scratch.value       = value;
+
+    for (const bool preserve_carriers : { false, true }) {
+        openmeta::ReadTransferSourceSnapshotRandomAccessOptions options;
+        options.decode_makernote    = true;
+        options.preserve_raw_carriers = preserve_carriers;
+        const openmeta::ReadTransferSourceSnapshotRandomAccessResult result
+            = openmeta::read_transfer_source_snapshot_random_access(
+                openmeta::make_random_access_source_range(source),
+                openmeta::ContainerFormat::Tiff, scratch, options);
+        EXPECT_EQ(result.status, openmeta::TransferStatus::Ok);
+        EXPECT_EQ(result.residual_metadata_paths, preserve_carriers ? 1U : 0U);
+        EXPECT_EQ(result.residual_reasons.maker_note_paths, 0U);
+        EXPECT_EQ(result.residual_reasons.raw_carrier_preservation,
+                  preserve_carriers ? 1U : 0U);
+
+        std::array<openmeta::ReadTransferSourceDiagnostic, 4> diagnostics {};
+        const openmeta::ReadTransferSourceDiagnosticsResult projected
+            = openmeta::collect_read_transfer_source_diagnostics(
+                result, diagnostics);
+        ASSERT_TRUE(projected.complete());
+        bool saw_incomplete_makernote = false;
+        bool saw_incomplete_carrier   = false;
+        for (uint32_t i = 0U; i < projected.written; ++i) {
+            saw_incomplete_makernote
+                |= diagnostics[i].code
+                   == openmeta::ReadTransferSourceDiagnosticCode::
+                       IncompleteMakerNote;
+            if (diagnostics[i].code
+                == openmeta::ReadTransferSourceDiagnosticCode::
+                    IncompleteRawCarrierPreservation) {
+                saw_incomplete_carrier = true;
+                EXPECT_EQ(diagnostics[i].domain,
+                          openmeta::ReadTransferSourceDiagnosticDomain::Payload);
+                EXPECT_EQ(diagnostics[i].count, 1U);
+            }
+        }
+        EXPECT_FALSE(saw_incomplete_makernote);
+        EXPECT_EQ(saw_incomplete_carrier, preserve_carriers);
+    }
+}
+
+
+TEST(MetadataTransferApi,
+     ReadTransferSourceResidualDiagnosticsProjectEachReason)
+{
+    openmeta::ReadTransferSourceSnapshotRandomAccessResult result;
+    result.format                 = openmeta::ContainerFormat::Tiff;
+    result.residual_metadata_paths = 5U;
+    result.residual_reasons.maker_note_paths = 1U;
+    result.residual_reasons.raw_carrier_preservation = 1U;
+    result.residual_reasons.embedded_container_enrichment = 1U;
+    result.residual_reasons.source_enrichment = 1U;
+    result.residual_reasons.unclassified = 1U;
+    result.maker_note_residual_location_known = true;
+    result.maker_note_residual_offset = 0x1234U;
+    result.maker_note_residual_tag    = 0x927CU;
+
+    std::array<openmeta::ReadTransferSourceDiagnostic, 2> prefix {};
+    const openmeta::ReadTransferSourceDiagnosticsResult partial
+        = openmeta::collect_read_transfer_source_diagnostics(result, prefix);
+    EXPECT_EQ(partial.needed, 5U);
+    EXPECT_EQ(partial.written, 2U);
+    EXPECT_FALSE(partial.complete());
+    EXPECT_EQ(prefix[0].code,
+              openmeta::ReadTransferSourceDiagnosticCode::IncompleteMakerNote);
+    EXPECT_EQ(prefix[1].code,
+              openmeta::ReadTransferSourceDiagnosticCode::
+                  IncompleteRawCarrierPreservation);
+
+    std::array<openmeta::ReadTransferSourceDiagnostic, 8> diagnostics {};
+    const openmeta::ReadTransferSourceDiagnosticsResult complete
+        = openmeta::collect_read_transfer_source_diagnostics(result,
+                                                             diagnostics);
+    ASSERT_TRUE(complete.complete());
+    ASSERT_EQ(complete.written, 5U);
+    EXPECT_EQ(diagnostics[0].domain,
+              openmeta::ReadTransferSourceDiagnosticDomain::MakerNote);
+    EXPECT_EQ(diagnostics[0].count, 1U);
+    EXPECT_EQ(diagnostics[0].offset, 0x1234U);
+    EXPECT_EQ(diagnostics[0].tag, 0x927CU);
+    EXPECT_EQ(diagnostics[1].domain,
+              openmeta::ReadTransferSourceDiagnosticDomain::Payload);
+    EXPECT_EQ(diagnostics[1].count, 1U);
+    EXPECT_EQ(diagnostics[2].code,
+              openmeta::ReadTransferSourceDiagnosticCode::
+                  IncompleteEmbeddedContainerEnrichment);
+    EXPECT_EQ(diagnostics[2].domain,
+              openmeta::ReadTransferSourceDiagnosticDomain::Container);
+    EXPECT_EQ(diagnostics[3].code,
+              openmeta::ReadTransferSourceDiagnosticCode::
+                  IncompleteSourceEnrichment);
+    EXPECT_EQ(diagnostics[3].domain,
+              openmeta::ReadTransferSourceDiagnosticDomain::ResidualPath);
+    EXPECT_EQ(diagnostics[4].code,
+              openmeta::ReadTransferSourceDiagnosticCode::ResidualMetadataPath);
+    EXPECT_EQ(diagnostics[4].count, 1U);
+}
+
+
+TEST(MetadataTransferApi,
+     ReadTransferSourceResidualDiagnosticsKeepAggregateOnlyGeneric)
+{
+    openmeta::ReadTransferSourceSnapshotRandomAccessResult result;
+    result.residual_metadata_paths = 3U;
+
+    std::array<openmeta::ReadTransferSourceDiagnostic, 1> diagnostics {};
+    const openmeta::ReadTransferSourceDiagnosticsResult projected
+        = openmeta::collect_read_transfer_source_diagnostics(result,
+                                                             diagnostics);
+    EXPECT_EQ(projected.needed, 1U);
+    EXPECT_EQ(projected.written, 1U);
+    EXPECT_TRUE(projected.complete());
+    EXPECT_EQ(diagnostics[0].code,
+              openmeta::ReadTransferSourceDiagnosticCode::ResidualMetadataPath);
+    EXPECT_EQ(diagnostics[0].domain,
+              openmeta::ReadTransferSourceDiagnosticDomain::ResidualPath);
+    EXPECT_EQ(diagnostics[0].count, 3U);
+}
+
+
+TEST(MetadataTransferApi,
+     ReadTransferSourceResidualDiagnosticsClampInconsistentReasonCounts)
+{
+    openmeta::ReadTransferSourceSnapshotRandomAccessResult result;
+    result.residual_metadata_paths = 2U;
+    result.residual_reasons.maker_note_paths = 1U;
+    result.residual_reasons.raw_carrier_preservation = 2U;
+    result.residual_reasons.embedded_container_enrichment = 4U;
+
+    std::array<openmeta::ReadTransferSourceDiagnostic, 4> diagnostics {};
+    const openmeta::ReadTransferSourceDiagnosticsResult projected
+        = openmeta::collect_read_transfer_source_diagnostics(result,
+                                                             diagnostics);
+    EXPECT_EQ(projected.needed, 2U);
+    EXPECT_EQ(projected.written, 2U);
+    EXPECT_TRUE(projected.complete());
+    EXPECT_EQ(diagnostics[0].code,
+              openmeta::ReadTransferSourceDiagnosticCode::IncompleteMakerNote);
+    EXPECT_EQ(diagnostics[0].count, 1U);
+    EXPECT_EQ(diagnostics[1].code,
+              openmeta::ReadTransferSourceDiagnosticCode::
+                  IncompleteRawCarrierPreservation);
+    EXPECT_EQ(diagnostics[1].count, 1U);
+}
+
+
+TEST(MetadataTransferApi,
+     ReadTransferSourceSnapshotRandomAccessDecodesMrwWithoutPixelReads)
+{
+    std::vector<std::byte> mrw(8U, std::byte { 0U });
+    mrw[1] = std::byte { 'M' };
+    mrw[2] = std::byte { 'R' };
+    mrw[3] = std::byte { 'M' };
+    const std::array<std::byte, 12U> wbg = {
+        std::byte { 1U }, std::byte { 2U }, std::byte { 3U }, std::byte { 4U },
+        std::byte { 0x01U }, std::byte { 0x02U }, std::byte { 0x03U },
+        std::byte { 0x04U }, std::byte { 0x05U }, std::byte { 0x06U },
+        std::byte { 0x07U }, std::byte { 0x08U }
+    };
+    append_bytes(&mrw, std::string_view("\0WBG", 4U));
+    append_u32be(&mrw, static_cast<uint32_t>(wbg.size()));
+    mrw.insert(mrw.end(), wbg.begin(), wbg.end());
+    ASSERT_TRUE(write_test_u32be(&mrw, 4U,
+                                 static_cast<uint32_t>(mrw.size() - 8U)));
+    const uint64_t metadata_end = mrw.size();
+
+    // A valid-looking RIF chunk follows the declared metadata region.
+    std::array<std::byte, 84U> pixel_rif {};
+    append_bytes(&mrw, std::string_view("\0RIF", 4U));
+    append_u32be(&mrw, static_cast<uint32_t>(pixel_rif.size()));
+    mrw.insert(mrw.end(), pixel_rif.begin(), pixel_rif.end());
+
+    constexpr size_t kSourcePrefix = 7U;
+    std::vector<std::byte> backing(kSourcePrefix, std::byte { 0xa5U });
+    backing.insert(backing.end(), mrw.begin(), mrw.end());
+    SnapshotCallbackState callback { backing };
+    callback.forbidden_begin = kSourcePrefix + metadata_end;
+    callback.forbidden_end   = backing.size();
+    const openmeta::RandomAccessSource source
+        = openmeta::make_callback_random_access_source(
+            backing.size(), &callback, snapshot_read_at, true);
+    const openmeta::RandomAccessSourceRange range
+        = openmeta::make_random_access_source_range(source, kSourcePrefix,
+                                                    mrw.size());
+
+    std::array<openmeta::ContainerBlockRef, 8U> blocks {};
+    std::array<openmeta::ExifIfdRef, 8U> ifds {};
+    std::array<uint32_t, 8U> indices {};
+    std::array<std::byte, 64U> read_window {};
+    std::array<std::byte, 128U> payload {};
+    std::array<std::byte, 128U> compressed {};
+    std::array<std::byte, 128U> value {};
+    openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+    scratch.blocks = blocks;
+    scratch.ifds = ifds;
+    scratch.payload_indices = indices;
+    scratch.read_window = read_window;
+    scratch.payload = payload;
+    scratch.compressed_payload = compressed;
+    scratch.value = value;
+    scratch.window_options.minimum_read_bytes = read_window.size();
+
+    const openmeta::ReadTransferSourceSnapshotRandomAccessResult result
+        = openmeta::read_transfer_source_snapshot_random_access(
+            range, openmeta::ContainerFormat::Mrw, scratch);
+    ASSERT_TRUE(result.complete());
+    EXPECT_EQ(result.format, openmeta::ContainerFormat::Mrw);
+    EXPECT_EQ(result.entry_count, 2U);
+    EXPECT_GT(callback.calls, 0U);
+    EXPECT_FALSE(callback.touched_forbidden);
+    EXPECT_LT(result.input.bytes_requested, backing.size());
+
+    const std::span<const openmeta::EntryId> gains_ids
+        = result.snapshot.store.find_all(
+            openmeta::make_exif_tag_key_view("mk_minoltaraw_wbg_0", 0x0004U));
+    ASSERT_EQ(gains_ids.size(), 1U);
+    const openmeta::Entry& gains = result.snapshot.store.entry(gains_ids[0]);
+    EXPECT_EQ(gains.value.kind, openmeta::MetaValueKind::Array);
+    EXPECT_EQ(gains.value.elem_type, openmeta::MetaElementType::U16);
+    EXPECT_EQ(gains.value.count, 4U);
+}
+
+TEST(MetadataTransferApi,
+     ReadTransferSourceSnapshotRandomAccessKeepsMrwHardLimitAfterScratchGap)
+{
+    std::vector<std::byte> mrw(8U, std::byte { 0U });
+    mrw[1] = std::byte { 'M' };
+    mrw[2] = std::byte { 'R' };
+    mrw[3] = std::byte { 'M' };
+
+    const std::array<std::byte, 24U> first_value {};
+    append_bytes(&mrw, std::string_view("\0PRD", 4U));
+    append_u32be(&mrw, static_cast<uint32_t>(first_value.size()));
+    mrw.insert(mrw.end(), first_value.begin(), first_value.end());
+
+    const std::array<std::byte, 84U> limited_value {};
+    append_bytes(&mrw, std::string_view("\0RIF", 4U));
+    append_u32be(&mrw, static_cast<uint32_t>(limited_value.size()));
+    mrw.insert(mrw.end(), limited_value.begin(), limited_value.end());
+    ASSERT_TRUE(write_test_u32be(&mrw, 4U,
+                                 static_cast<uint32_t>(mrw.size() - 8U)));
+
+    SnapshotCallbackState callback { mrw };
+    const openmeta::RandomAccessSource source
+        = openmeta::make_callback_random_access_source(
+            mrw.size(), &callback, snapshot_read_at, true);
+    const openmeta::RandomAccessSourceRange range
+        = openmeta::make_random_access_source_range(source);
+
+    std::array<openmeta::ContainerBlockRef, 4U> blocks {};
+    std::array<openmeta::ExifIfdRef, 4U> ifds {};
+    std::array<uint32_t, 4U> indices {};
+    std::array<std::byte, 64U> read_window {};
+    std::array<std::byte, 8U> value_scratch {};
+    openmeta::ReadTransferSourceSnapshotRandomAccessScratch scratch;
+    scratch.blocks = blocks;
+    scratch.ifds = ifds;
+    scratch.payload_indices = indices;
+    scratch.read_window = read_window;
+    scratch.value = value_scratch;
+
+    openmeta::ReadTransferSourceSnapshotRandomAccessOptions options;
+    options.policy.exif_limits.max_value_bytes = 64U;
+    const openmeta::ReadTransferSourceSnapshotRandomAccessResult result
+        = openmeta::read_transfer_source_snapshot_random_access(
+            range, openmeta::ContainerFormat::Mrw, scratch, options);
+
+    EXPECT_EQ(result.status, openmeta::TransferStatus::LimitExceeded);
+    EXPECT_EQ(result.code,
+              openmeta::ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed);
+    EXPECT_EQ(result.value_scratch_needed, first_value.size());
+    EXPECT_TRUE(result.input.ok());
+    EXPECT_GT(callback.calls, 0U);
+}
+
 TEST(MetadataTransferApi, ReadTransferSourceSnapshotRandomAccessDecodesPngText)
 {
     std::vector<std::byte> text;
@@ -33865,9 +34157,14 @@ TEST(MetadataTransferApi, TransferConceptDiagnosticsMatchRenderedSafety)
     ASSERT_NE(store.add_entry(stitch_processing), openmeta::kInvalidEntryId);
     store.finalize();
 
+    const openmeta::MetadataDirectorySelector image { block, {} };
+    openmeta::MetadataQueryOptions options;
+    options.scope.enabled=true;
+    options.scope.directories=std::span<const openmeta::MetadataDirectorySelector>(&image,1U);
+    options.scope.inherit_across_directories=true;
     const openmeta::TransferConceptDiagnostics rendered
         = openmeta::transfer_concept_diagnostics_from_store(
-            store, openmeta::TransferSafetyMode::RenderedImage);
+            store, openmeta::TransferSafetyMode::RenderedImage, options);
 
     EXPECT_EQ(rendered.safety, openmeta::TransferSafetyMode::RenderedImage);
     EXPECT_GT(rendered.candidate_count, 0U);
@@ -65558,4 +65855,34 @@ TEST(MetadataTransferApi,
     PreparedJxlEncoderHandoffView handoff;
     EXPECT_NE(build_prepared_jxl_encoder_handoff_view(wrong, &handoff).status,
               TransferStatus::Ok);
+}
+
+TEST(MetadataTransferApi, ConceptDiagnosticsPreserveSelectionAndIncompleteStatus)
+{
+    openmeta::MetaStore store;
+    const auto a=store.add_block({}),b=store.add_block({});
+    for (auto block : {a,b}) {
+        openmeta::Entry e; e.origin.block=block;
+        e.key=openmeta::make_exif_tag_key(store.arena(),"exififd",0xa001);
+        e.value=openmeta::make_u16(block==a?1:2); store.add_entry(e);
+    }
+    store.finalize();
+    const auto safety=openmeta::TransferSafetyMode::RenderedImage;
+    const auto all=openmeta::transfer_concept_diagnostics_from_store(store,safety);
+    EXPECT_EQ(all.conflict_count,0U);
+    const std::array<openmeta::MetadataDirectorySelector,2> selected {{{a,"exififd"},{b,"exififd"}}};
+    openmeta::MetadataQueryOptions options; options.scope.enabled=true;
+    options.scope.directories=std::span<const openmeta::MetadataDirectorySelector>(selected).first(1U);
+    auto result=openmeta::transfer_concept_diagnostics_from_store(store,safety,options);
+    EXPECT_EQ(result.candidate_count,1U); EXPECT_EQ(result.conflict_count,0U);
+    options.scope.directories=selected;
+    result=openmeta::transfer_concept_diagnostics_from_store(store,safety,options);
+    EXPECT_EQ(result.conflict_count,2U); EXPECT_FALSE(result.semantic_work_limited);
+    options.max_semantic_work=1U;
+    result=openmeta::transfer_concept_diagnostics_from_store(store,safety,options);
+    EXPECT_TRUE(result.semantic_work_limited); EXPECT_LE(result.semantic_work_used,1U);
+    for (const auto& diagnostic : result.diagnostics) EXPECT_FALSE(diagnostic.preferred);
+    const openmeta::MetadataRawDataDescriptor raw;
+    result=openmeta::transfer_concept_diagnostics_from_store(store,safety,raw,options);
+    EXPECT_TRUE(result.semantic_work_limited); EXPECT_LE(result.semantic_work_used,1U);
 }

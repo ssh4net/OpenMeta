@@ -75,7 +75,22 @@ namespace exif_internal {
         RandomAccessReadLimits limits;
         RandomAccessReadWindowOptions window_options;
         ExifRandomAccessDecodeResult* result = nullptr;
+        // Private directories share the outer max_ifds budget but do not emit
+        // public ExifIfdRef slots counted by ifds_needed/ifds_written.
+        uint32_t private_ifds_visited = 0U;
     };
+
+    enum class SourceIfdValueExpansionStatus : uint8_t {
+        NotApplicable,
+        Expanded,
+        Incomplete,
+    };
+
+    using SourceIfdValueExpansionHook = SourceIfdValueExpansionStatus (*)(
+        const TiffConfig& cfg, const ClassicIfdEntry& entry, bool have_value,
+        std::span<const std::byte> value, std::string_view ifd_name,
+        MetaStore& store, const ExifDecodeOptions& options,
+        ExifDecodeResult* status_out) noexcept;
 
     struct ExifContext final {
         explicit ExifContext(const MetaStore& store) noexcept;
@@ -146,7 +161,8 @@ namespace exif_internal {
         uint16_t forced_entry_count             = 0U,
         const TiffConfig* out_of_line_value_cfg = nullptr,
         bool mark_contextual_names              = true,
-        bool allow_zero_count_unknown_type      = false) noexcept;
+        bool allow_zero_count_unknown_type      = false,
+        SourceIfdValueExpansionHook value_hook  = nullptr) noexcept;
 
     // Low-level helpers (implemented in exif_tiff_decode.cc).
     bool match_bytes(std::span<const std::byte> bytes, uint64_t offset,
@@ -275,6 +291,12 @@ namespace exif_internal {
         std::span<const std::byte> raw, bool le, uint16_t source_tag,
         uint32_t index, std::string_view model, MetaStore& store,
         const ExifDecodeLimits& limits, ExifDecodeResult* result) noexcept;
+
+    SourceIfdValueExpansionStatus decode_canon_makernote_value(
+        const TiffConfig& cfg, const ClassicIfdEntry& entry, bool have_value,
+        std::span<const std::byte> value, std::string_view ifd_name,
+        MetaStore& store, const ExifDecodeOptions& options,
+        ExifDecodeResult* status_out) noexcept;
 
     bool decode_canon_makernote(const TiffConfig& parent_cfg,
                                 std::span<const std::byte> tiff_bytes,

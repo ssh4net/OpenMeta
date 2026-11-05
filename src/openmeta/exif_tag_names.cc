@@ -175,6 +175,27 @@ namespace {
         }
     }
 
+    static std::string_view raf_private_tiff_tag_name(uint16_t tag) noexcept
+    {
+        switch (tag) {
+        case 0xf000U: return "FujiSubIFD";
+        case 0xf001U: return "RawImageFullWidth";
+        case 0xf002U: return "RawImageFullHeight";
+        case 0xf003U: return "BitsPerSample";
+        case 0xf006U: return "FujiPrivateFlagF006";
+        case 0xf007U: return "StripOffsets";
+        case 0xf008U: return "StripByteCounts";
+        case 0xf00aU: return "BlackLevel";
+        case 0xf00bU: return "GeometricDistortionParams";
+        case 0xf00cU: return "WB_GRBLevelsStandard";
+        case 0xf00dU: return "WB_GRBLevelsAuto";
+        case 0xf00eU: return "WB_GRBLevels";
+        case 0xf00fU: return "ChromaticAberrationParams";
+        case 0xf010U: return "VignettingParams";
+        default: return {};
+        }
+    }
+
     static std::string_view
     synthesize_x3f_placeholder_name(uint16_t tag) noexcept
     {
@@ -1268,6 +1289,9 @@ exif_tag_name(std::string_view ifd, uint16_t tag) noexcept
         }
         if (ifd == "raf_header") {
             return raf_header_tag_name(tag);
+        }
+        if (ifd.starts_with("raf_tiff_")) {
+            return raf_private_tiff_tag_name(tag);
         }
         if (is_raf_ifd(ifd)) {
             return raf_tag_name(tag);

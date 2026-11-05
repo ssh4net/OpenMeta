@@ -131,6 +131,15 @@ struct ExifRandomAccessDecodeResult final {
     /// Nested vendor payloads or derived subtables not fully decoded by the
     /// callback-backed path. Zero is required before claiming nested parity.
     uint32_t nested_payloads_skipped = 0U;
+    /// Number of the skipped nested payloads that are MakerNote paths.
+    /// Current producers set this for every MakerNote-specific residual while
+    /// leaving any future unclassified nested residuals in the aggregate only.
+    uint32_t maker_note_paths_skipped = 0U;
+    /// First known absolute source offset and TIFF tag for a skipped MakerNote
+    /// path. The tag is zero when the producer cannot identify one.
+    uint64_t maker_note_path_offset = 0U;
+    uint16_t maker_note_path_tag = 0U;
+    bool maker_note_path_location_known = false;
 
     /// True when source I/O and supported nested paths had no scratch/residual
     /// gap. The TIFF payload can still be malformed or unsupported; inspect

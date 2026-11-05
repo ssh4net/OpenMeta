@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "openmeta/exif_tag_names.h"
+#include "../src/openmeta/sony_sr2_decode_internal.h"
 #include "openmeta/exif_tiff_decode.h"
 #include "openmeta/meta_key.h"
 #include "openmeta/metadata_transfer.h"
@@ -546,3 +547,185 @@ TEST(SonyRawGaps, ExtraInfoUsesFullFrameModelBoundary)
     }
 }
 }  // namespace openmeta
+
+namespace openmeta {
+namespace {
+    static constexpr std::array<uint8_t, 48> sr2_reference_cipher {{
+        0x84U, 0x66U, 0x3bU, 0x08U, 0xc3U, 0x26U, 0xe5U, 0x48U,
+        0x78U, 0x10U, 0x55U, 0x4eU, 0xbdU, 0x04U, 0x5bU, 0xacU,
+        0xffU, 0xecU, 0x98U, 0x68U, 0xfaU, 0x45U, 0x59U, 0x2eU,
+        0x09U, 0xf9U, 0xd2U, 0x4eU, 0x8eU, 0x82U, 0x51U, 0xe1U,
+        0x15U, 0x2bU, 0x9fU, 0x4eU, 0xe9U, 0x8cU, 0x40U, 0x9fU,
+        0xc7U, 0xa7U, 0x79U, 0x05U, 0x42U, 0x19U, 0x20U, 0xf9U,
+    }};
+
+    static std::vector<std::byte> encrypted_sr2_fixture(uint32_t key = 886953816U,
+                                                        uint32_t size = 48U,
+                                                        uint32_t offset = 256U)
+    {
+        std::array<std::byte, 42> root {};
+        word(root, 0U, 3U);
+        descriptor(root, 2U, 0x7200U, 4U, 1U, offset);
+        descriptor(root, 14U, 0x7201U, 4U, 1U, size);
+        descriptor(root, 26U, 0x7221U, 7U, 4U, key);
+        std::vector<std::byte> bytes = c634_fixture(root);
+        bytes.resize(8192U, std::byte {0xe3});
+        if (offset <= bytes.size() && sr2_reference_cipher.size() <= bytes.size() - offset) {
+            for (size_t i = 0U; i < sr2_reference_cipher.size(); ++i)
+                bytes[offset + i] = static_cast<std::byte>(sr2_reference_cipher[i]);
+        }
+        return bytes;
+    }
+
+    static void expect_sr2_levels(const MetaStore& store)
+    {
+        const Entry* black = find(store, "mk_sony_sr2subifd_0", 0x7300U);
+        const Entry* white = find(store, "mk_sony_sr2subifd_0", 0x7302U);
+        ASSERT_NE(black, nullptr);
+        ASSERT_NE(white, nullptr);
+        EXPECT_EQ(black->origin.wire_type.family, WireFamily::Tiff);
+        EXPECT_EQ(black->origin.wire_type.code, 3U);
+        EXPECT_EQ(black->origin.wire_count, 4U);
+        EXPECT_EQ(black->value.count, 4U);
+        const std::array<uint16_t, 4> expected_black { 511, 515, 512, 513 };
+        const std::array<uint16_t, 4> expected_white { 256, 485, 396, 256 };
+        std::array<uint16_t, 4> actual {};
+        ASSERT_EQ(store.arena().span(black->value.data.span).size(), sizeof(actual));
+        std::memcpy(actual.data(), store.arena().span(black->value.data.span).data(), sizeof(actual));
+        EXPECT_EQ(actual, expected_black);
+        ASSERT_EQ(store.arena().span(white->value.data.span).size(), sizeof(actual));
+        std::memcpy(actual.data(), store.arena().span(white->value.data.span).data(), sizeof(actual));
+        EXPECT_EQ(actual, expected_white);
+    }
+}
+
+TEST(SonyRawGaps, Sr2CipherMatchesIndependentReference)
+{
+    std::array<std::byte, 48> bytes {};
+    for (size_t i = 0U; i < bytes.size(); ++i)
+        bytes[i] = static_cast<std::byte>(sr2_reference_cipher[i]);
+    ASSERT_TRUE(exif_internal::sony_sr2_decrypt(bytes, 886953816U));
+    std::array<std::byte, 48> expected {};
+    word(expected, 0U, 2U);
+    descriptor(expected, 2U, 0x7300U, 3U, 4U, 288U);
+    descriptor(expected, 14U, 0x7302U, 3U, 4U, 296U);
+    const std::array<uint16_t, 8> values { 511, 515, 512, 513, 256, 485, 396, 256 };
+    for (size_t i = 0U; i < values.size(); ++i) word(expected, 32U + i * 2U, values[i]);
+    EXPECT_EQ(bytes, expected);
+    std::array<std::byte, 3> malformed {};
+    EXPECT_FALSE(exif_internal::sony_sr2_decrypt(malformed, 886953816U));
+    EXPECT_EQ(malformed, (std::array<std::byte, 3> {}));
+}
+
+TEST(SonyRawGaps, Sr2PrivateSubtreeMatchesMemoryAndPrefixedCallback)
+{
+    const std::vector<std::byte> bytes = encrypted_sr2_fixture();
+    const std::vector<std::byte> original = bytes;
+    MetaStore memory;
+    ASSERT_EQ(decode(bytes, memory, false).status, ExifDecodeStatus::Ok);
+    memory.finalize();
+    expect_sr2_levels(memory);
+    EXPECT_EQ(bytes, original);
+    constexpr uint64_t prefix = 37U;
+    std::vector<std::byte> backing(prefix, std::byte {0x5a});
+    backing.insert(backing.end(), bytes.begin(), bytes.end());
+    Source state { backing, prefix + 304U };
+    const RandomAccessSource source = make_callback_random_access_source(backing.size(), &state, read_at, false);
+    std::array<std::byte, 32> window {};
+    std::array<std::byte, 64> value {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window = window;
+    scratch.value = value;
+    scratch.window_options.minimum_read_bytes = 0U;
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    MetaStore callback;
+    const ExifRandomAccessDecodeResult result = decode_exif_tiff_random_access(
+        make_random_access_source_range(source, prefix, bytes.size()), callback, {}, scratch, options);
+    ASSERT_EQ(result.decode.status, ExifDecodeStatus::Ok);
+    EXPECT_TRUE(result.complete());
+    EXPECT_FALSE(state.bad_read);
+    callback.finalize();
+    expect_sr2_levels(callback);
+}
+
+TEST(SonyRawGaps, Sr2PrivateRejectsWrongKeyLengthAndOffsetBase)
+{
+    for (bool callback : {false, true}) {
+        for (uint32_t key : {886953816U ^ 1U}) {
+            MetaStore store;
+            EXPECT_EQ(decode(encrypted_sr2_fixture(key), store, callback).status,
+                      ExifDecodeStatus::Malformed);
+        }
+        MetaStore unaligned, outside, wrong_base, limited;
+        EXPECT_EQ(decode(encrypted_sr2_fixture(886953816U, 47U), unaligned, callback).status,
+                  ExifDecodeStatus::Malformed);
+        EXPECT_EQ(decode(encrypted_sr2_fixture(886953816U, 48U, 9000U), outside, callback).status,
+                  ExifDecodeStatus::Malformed);
+        EXPECT_EQ(decode(encrypted_sr2_fixture(886953816U, 48U, 512U), wrong_base, callback).status,
+                  ExifDecodeStatus::Malformed);
+        ExifDecodeLimits limits;
+        limits.max_value_bytes = 40U;
+        EXPECT_EQ(decode(encrypted_sr2_fixture(), limited, callback, limits).status,
+                  ExifDecodeStatus::LimitExceeded);
+    }
+}
+
+TEST(SonyRawGaps, Sr2PrivateReportsExactDecryptionScratch)
+{
+    const std::vector<std::byte> bytes = encrypted_sr2_fixture();
+    Source state { bytes, 304U };
+    const RandomAccessSource source = make_callback_random_access_source(bytes.size(), &state, read_at, false);
+    std::array<std::byte, 32> window {};
+    std::array<std::byte, 8> value {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window = window;
+    scratch.value = value;
+    scratch.window_options.minimum_read_bytes = 0U;
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result = decode_exif_tiff_random_access(
+        make_random_access_source_range(source), store, {}, scratch, options);
+    EXPECT_FALSE(result.complete());
+    EXPECT_EQ(result.value_scratch_needed, 48U);
+    EXPECT_FALSE(state.bad_read);
+}
+}  // namespace openmeta
+
+namespace openmeta {
+TEST(SonyRawGaps, Sr2PrivateSharesOuterIfdBudget)
+{
+    for (bool callback : { false, true }) for (uint32_t max_ifds : {1U,2U,3U}) {
+        MetaStore store; ExifDecodeLimits limits; limits.max_ifds=max_ifds;
+        const auto r=decode(encrypted_sr2_fixture(),store,callback,limits,304U);
+        EXPECT_EQ(r.status,max_ifds<3U?ExifDecodeStatus::LimitExceeded:ExifDecodeStatus::Ok);
+        store.finalize();
+        EXPECT_EQ(find(store,"mk_sony_sr2subifd_0",0x7300U)!=nullptr,max_ifds==3U);
+    }
+}
+}
+
+namespace openmeta {
+TEST(SonyRawGaps, Sr2PrivateStructuralReadsStopBeforePixelTailWithDefaultWindow)
+{
+    auto bytes=encrypted_sr2_fixture();
+    bytes.resize(16384U);
+    // Move only the C634 wrapper beside the pixel boundary. Outer TIFF
+    // structure remains far enough away for the caller's normal read-ahead.
+    constexpr uint32_t root=8138U;
+    std::memcpy(bytes.data()+root,bytes.data()+128U,42U);
+    dword(bytes,42U,root);
+    Source state{bytes,8192U};
+    const auto input=make_callback_random_access_source(bytes.size(),&state,read_at);
+    std::array<std::byte,4096> window{};
+    std::array<std::byte,64> value{};
+    ExifRandomAccessScratch scratch; scratch.read_window=window; scratch.value=value;
+    ExifDecodeOptions options; options.decode_makernote=true;
+    MetaStore store; const auto r=decode_exif_tiff_random_access(
+        make_random_access_source_range(input),store,{},scratch,options);
+    EXPECT_FALSE(state.bad_read); EXPECT_TRUE(r.complete());
+    EXPECT_EQ(r.decode.status,ExifDecodeStatus::Ok);
+    store.finalize(); expect_sr2_levels(store);
+}
+}

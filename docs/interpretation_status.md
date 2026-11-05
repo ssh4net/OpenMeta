@@ -126,3 +126,13 @@ codes, raw rational components, unknown sentinel bits and provenance. This edit
 milestone does not establish broader reader parity, vendor MakerNote interpretation,
 all-RAW acceptance, codec conformance or downstream application adoption. Bounded
 original-backed evidence belongs in the private repository; reader code is unchanged.
+
+
+Scoped services in 0.8.30
+-------------------------
+
+The declared-target percentages above are unchanged. The 0.8.30 query services
+add caller-selected directory membership, explicit numeric completeness and
+per-component roles/shapes/coordinate context. Sony SR2-private and RAF F000
+metadata traversal is qualified on selected original samples, without a new
+all-camera coverage claim. See semantic_queries for the API contract.

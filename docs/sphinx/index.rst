@@ -46,6 +46,7 @@ and must not be used as an asset-authenticity or trust gate.
    xmp_sync_policy
    writer_target_contract
    interpretation_status
+   semantic_queries
    fuzzy_search
    creation
    generic_authoring

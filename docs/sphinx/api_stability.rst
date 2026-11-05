@@ -1,6 +1,16 @@
 API Stability
 =============
 
+Scoped metadata services (0.8.30)
+---------------------------------
+
+Query, interpretation, concept, CCM and positional-read result layouts and
+signatures change within unfrozen ABI 4. Rebuild hosts with matching headers
+and binaries. See :doc:`semantic_queries` and :doc:`migration_0_8`.
+Host Adoption Profile v1 remains the narrow workflow label; it does not freeze
+these development binary layouts.
+
+
 Primary ICC removal and collection precedence (0.8.28)
 ------------------------------------------------------
 

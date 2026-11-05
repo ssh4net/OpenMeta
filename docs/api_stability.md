@@ -324,3 +324,10 @@ Native schema validation, typed editing, portable output and serialization use
 the same checks. ABI 3, snapshot v1 and host-owned synchronization remain
 unchanged. LearningOptOutIn and complete-file profile validation remain outside
 this contract. See [development and correction data](translation.md#exif-31-development-and-correction-data-0511).
+
+
+Version 0.8.30 retains unfrozen ABI 4 while changing query, interpretation,
+concept, CCM and positional-read result layouts/signatures. Rebuild hosts with
+matching headers/libraries. See [scoped semantic queries](semantic_queries.md)
+and [0.8 migration](migration_0_8.md). Host Adoption Profile v1 describes the
+narrow workflow; its label does not freeze these development binary layouts.

@@ -1956,6 +1956,18 @@ guess_canon_value_base(const TiffConfig& cfg,
         }
     }
 
+    // A short declared MakerNote byte count can stop at the end of the IFD,
+    // while a value whose offset equals the IFD end still uses the
+    // MakerNote-relative base. In this exact-boundary case, prefer that base
+    // over an equally plausible prefix address. Adjusted-base and in-payload
+    // evidence above still wins.
+    if (best.base == base_abs && cands[1].score != 0U
+        && cands[1].score == cands[0].score
+        && cands[1].in_mn == cands[0].in_mn
+        && min_off32 == ifd_needed_bytes) {
+        return cands[1].base;
+    }
+
     return best.base;
 }
 
@@ -3621,6 +3633,14 @@ decode_canon_u32_bin_dir(const TiffConfig& cfg,
     return true;
 }
 
+static bool canon_value_has_width(std::span<const std::byte> value,
+                                  uint32_t count, uint32_t width) noexcept
+{
+    return width != 0U
+           && uint64_t(count) * uint64_t(width)
+                  <= static_cast<uint64_t>(value.size());
+}
+
 static void
 decode_canon_colordata_embedded_u16_table(
     const TiffConfig& cfg, std::span<const std::byte> tiff_bytes,
@@ -3796,6 +3816,490 @@ decode_canon_colordata_blob(const TiffConfig& cfg,
                                            colordata_version_i16, mk_prefix,
                                            canon_model, store, options,
                                            status_out);
+}
+
+struct CanonMakerNoteValueContext final {
+    std::span<const std::byte> tiff_bytes;
+    uint64_t abs_value_off = 0U;
+    uint64_t maker_note_off = 0U;
+    uint64_t maker_note_span_bytes = 0U;
+    uint32_t value_or_off32 = 0U;
+    int64_t auto_value_base = INT64_MIN;
+    int64_t schema_value_base = INT64_MIN;
+};
+
+static SourceIfdValueExpansionStatus
+expand_canon_makernote_value(
+    const TiffConfig& cfg, const ClassicIfdEntry& entry, bool have_value,
+    std::span<const std::byte> value, std::string_view ifd_name,
+    MetaStore& store, const ExifDecodeOptions& options,
+    ExifDecodeResult* status_out,
+    const CanonMakerNoteValueContext* context) noexcept
+{
+    if (!ifd_name.starts_with("mk_canon") || entry.count32 == 0U) {
+        return SourceIfdValueExpansionStatus::NotApplicable;
+    }
+
+    char model_buffer[128] {};
+    const std::string_view model
+        = canon_find_model_text(store, std::span<char>(model_buffer));
+    const bool known_tag
+        = (entry.type == 1U && entry.tag == 0x0029U
+           && model == "Canon PowerShot G9")
+          || (entry.type == 3U
+              && (entry.tag == 0x0001U || entry.tag == 0x0002U
+                  || entry.tag == 0x0004U || entry.tag == 0x0005U
+                  || entry.tag == 0x000fU || entry.tag == 0x0012U
+                  || entry.tag == 0x001dU || entry.tag == 0x0026U
+                  || entry.tag == 0x0090U || entry.tag == 0x0091U
+                  || entry.tag == 0x0092U || entry.tag == 0x0093U
+                  || entry.tag == 0x0098U || entry.tag == 0x00a0U
+                  || entry.tag == 0x00aaU || entry.tag == 0x00e0U
+                  || entry.tag == 0x4001U))
+          || (entry.type == 4U
+              && (entry.tag == 0x000dU || entry.tag == 0x0035U
+                  || entry.tag == 0x009aU || entry.tag == 0x4013U
+                  || entry.tag == 0x4016U || entry.tag == 0x4018U
+                  || entry.tag == 0x4020U || entry.tag == 0x4021U
+                  || entry.tag == 0x4024U || entry.tag == 0x4025U
+                  || entry.tag == 0x4028U || entry.tag == 0x403fU))
+          || (entry.type == 7U
+              && (entry.tag == 0x000dU || entry.tag == 0x0099U
+                  || entry.tag == 0x4011U || entry.tag == 0x4019U
+                  || entry.tag == 0x4001U))
+          || entry.tag == 0x0099U
+          || (entry.tag == 0x0029U
+              && (entry.type == 1U || entry.type == 4U || entry.type == 7U)
+              && model == "Canon PowerShot G9");
+    if (!known_tag) {
+        return SourceIfdValueExpansionStatus::NotApplicable;
+    }
+    if (!have_value || value.empty()
+        || value.size() > options.limits.max_value_bytes) {
+        return SourceIfdValueExpansionStatus::Incomplete;
+    }
+
+    std::span<const std::byte> tiff_bytes = value;
+    uint64_t abs_value_off = 0U;
+    if (context) {
+        tiff_bytes = context->tiff_bytes;
+        abs_value_off = context->abs_value_off;
+        if (abs_value_off > tiff_bytes.size()
+            || value.size() > tiff_bytes.size() - abs_value_off) {
+            return SourceIfdValueExpansionStatus::Incomplete;
+        }
+    }
+
+    const std::string_view prefix = "mk_canon";
+    char sub_ifd_buffer[96];
+
+    if (entry.tag == 0x0029U
+        && (entry.type == 1U || entry.type == 4U || entry.type == 7U)
+        && model == "Canon PowerShot G9") {
+        decode_canon_wbinfo(cfg, value, store, options, status_out);
+        return SourceIfdValueExpansionStatus::Expanded;
+    }
+
+    if (entry.type == 7U && entry.tag == 0x000dU) {
+        const std::span<const std::byte> cam = value;
+        ClassicIfdCandidate best;
+        const bool has_best
+            = find_best_classic_ifd_candidate(cam, 512U, options.limits,
+                                              &best)
+              && best.valid_entries == best.entry_count;
+        uint32_t cam_tag_extent = cam.empty()
+                                      ? 0U
+                                      : static_cast<uint32_t>(cam.size() - 1U);
+        if (has_best) {
+            TiffConfig cam_cfg;
+            cam_cfg.le = best.le;
+            cam_cfg.bigtiff = false;
+            const uint32_t ifd_tag_extent
+                = canon_camerainfo_candidate_tag_extent(cam_cfg, cam, best);
+            if (ifd_tag_extent > cam_tag_extent) {
+                cam_tag_extent = ifd_tag_extent;
+            }
+        }
+        std::string_view cam_subtable
+            = canon_camerainfo_subtable_suffix(model, cam_tag_extent);
+        if (cam_subtable == "camerainfo" && has_best) {
+            TiffConfig cam_cfg;
+            cam_cfg.le = best.le;
+            cam_cfg.bigtiff = false;
+            const std::string_view fallback_subtable
+                = canon_camerainfo_subtable_suffix_from_candidate(cam_cfg, cam,
+                                                                  best);
+            if (!fallback_subtable.empty()) {
+                cam_subtable = fallback_subtable;
+            }
+        }
+        const std::string_view sub_ifd
+            = make_mk_subtable_ifd_token(prefix, cam_subtable, 0U,
+                                         std::span<char>(sub_ifd_buffer));
+        if (has_best) {
+            TiffConfig cam_cfg;
+            cam_cfg.le = best.le;
+            cam_cfg.bigtiff = false;
+            decode_classic_ifd_no_header(cam_cfg, cam, best.offset, sub_ifd,
+                                         store, options, status_out,
+                                         EntryFlags::Derived);
+        }
+        decode_canon_camerainfo_fixed_fields(cfg, cam, sub_ifd, model, store,
+                                             options, status_out);
+
+        if (cam.size() > 0x025bU) {
+            const uint64_t ps_bytes = cam.size() - 0x025bU;
+            if (ps_bytes >= 0x00deU) {
+                const bool use_psinfo2
+                    = canon_camerainfo_prefers_psinfo2(model)
+                          ? true
+                          : (canon_camerainfo_prefers_psinfo(model)
+                                 ? false
+                                 : canon_psinfo2_tail_looks_valid(
+                                       cfg, cam, 0x025bU, ps_bytes));
+                const std::string_view ps_table
+                    = use_psinfo2 ? "psinfo2" : "psinfo";
+                const std::string_view ps_ifd = make_mk_subtable_ifd_token(
+                    prefix, ps_table, 0U, std::span<char>(sub_ifd_buffer));
+                decode_canon_psinfo_table(cam, 0x025bU, ps_bytes, ps_ifd,
+                                          store, options, status_out);
+            }
+        }
+        return SourceIfdValueExpansionStatus::Expanded;
+    }
+
+    if (entry.tag == 0x4019U && entry.type == 7U) {
+        const size_t serial_bytes = value.size() < 5U ? value.size() : 5U;
+        if (serial_bytes == 0U) {
+            return SourceIfdValueExpansionStatus::Incomplete;
+        }
+        const std::string_view sub_ifd = make_mk_subtable_ifd_token(
+            prefix, "lensinfo", 0U, std::span<char>(sub_ifd_buffer));
+        const uint16_t tags_out[] = { 0x0000U };
+        const MetaValue vals_out[] = { make_bytes(
+            store.arena(), value.first(serial_bytes)) };
+        emit_bin_dir_entries(sub_ifd, store,
+                             std::span<const uint16_t>(tags_out),
+                             std::span<const MetaValue>(vals_out),
+                             options.limits, status_out);
+        return SourceIfdValueExpansionStatus::Expanded;
+    }
+
+    if (entry.tag == 0x0099U) {
+        uint64_t custom_off = abs_value_off;
+        if (context) {
+            custom_off = canon_choose_custom_functions2_offset(
+                tiff_bytes, context->value_or_off32, abs_value_off,
+                value.size(), context->maker_note_off,
+                context->auto_value_base, context->schema_value_base);
+        }
+        char canoncustom_ifd_buffer[96];
+        const std::string_view canoncustom_ifd = make_mk_subtable_ifd_token(
+            "mk_canoncustom", "functions2", 0U,
+            std::span<char>(canoncustom_ifd_buffer));
+        if (!decode_canon_custom_functions2(cfg, tiff_bytes, custom_off,
+                                            value.size(), canoncustom_ifd,
+                                            store, options, status_out)) {
+            return SourceIfdValueExpansionStatus::Incomplete;
+        }
+        return SourceIfdValueExpansionStatus::Expanded;
+    }
+
+    if (entry.type == 7U && entry.tag == 0x4011U) {
+        if (value.size() < 2U || (value.size() % 2U) != 0U) {
+            return SourceIfdValueExpansionStatus::Incomplete;
+        }
+        const uint32_t count16 = static_cast<uint32_t>(value.size() / 2U);
+        const std::string_view sub_ifd = make_mk_subtable_ifd_token(
+            prefix, "vignettingcorr", 0U, std::span<char>(sub_ifd_buffer));
+        decode_canon_u16_table(cfg, tiff_bytes, abs_value_off, count16, sub_ifd,
+                               store, model, options, status_out);
+        return SourceIfdValueExpansionStatus::Expanded;
+    }
+    if (entry.tag == 0x4001U
+        && (entry.type == 3U || entry.type == 7U)) {
+        if (value.size() < 2U || (value.size() % 2U) != 0U) {
+            return SourceIfdValueExpansionStatus::Incomplete;
+        }
+        const uint32_t count16 = static_cast<uint32_t>(value.size() / 2U);
+        decode_canon_colordata_blob(cfg, tiff_bytes, abs_value_off, count16,
+                                    entry.count32, prefix, model, store,
+                                    options, status_out);
+        return SourceIfdValueExpansionStatus::Expanded;
+    }
+
+    std::string_view table;
+    bool u16_table = false;
+    bool u32_table = false;
+    bool i32_table = false;
+    if (entry.type == 3U) {
+        switch (entry.tag) {
+        case 0x0001U: table = "camerasettings"; break;
+        case 0x0004U: table = "shotinfo"; break;
+        case 0x0005U: table = "panorama"; break;
+        case 0x0012U: table = "afinfo"; break;
+        case 0x001dU: table = "mycolors"; break;
+        case 0x0093U: table = "fileinfo"; break;
+        case 0x0098U: table = "cropinfo"; break;
+        case 0x00a0U: table = "processing"; break;
+        case 0x00e0U: table = "sensorinfo"; break;
+        case 0x0002U:
+            table = "focallength";
+            if (entry.count32 > 3U) {
+                uint16_t x = 0U;
+                uint16_t y = 0U;
+                if (read_tiff_u16(cfg, value, 4U, &x)
+                    && read_tiff_u16(cfg, value, 6U, &y)
+                    && !(x > 0U && y > 0U && x <= 5000U && y <= 5000U)) {
+                    table = "focallength_unknown";
+                }
+            }
+            break;
+        default: break;
+        }
+        if (!table.empty()) {
+            if (!canon_value_has_width(value, entry.count32, 2U)
+                || entry.count32 > options.limits.max_entries_per_ifd) {
+                return SourceIfdValueExpansionStatus::Incomplete;
+            }
+            u16_table = true;
+        }
+    } else if (entry.type == 4U) {
+        switch (entry.tag) {
+        case 0x0035U: table = "timeinfo"; break;
+        case 0x009aU: table = "aspectinfo"; break;
+        case 0x000dU:
+            table = canon_camerainfo_subtable_suffix(model,
+                                                      entry.count32 - 1U);
+            break;
+        case 0x4016U: table = "vignettingcorr2"; break;
+        case 0x4018U: table = "lightingopt"; break;
+        case 0x4020U: table = "ambience"; break;
+        case 0x4021U: table = "multiexp"; i32_table = true; break;
+        case 0x4024U: table = "filterinfo"; break;
+        case 0x4025U: table = "hdrinfo"; break;
+        case 0x4028U: table = "afconfig"; i32_table = true; break;
+        case 0x403fU: table = "rawburstinfo"; break;
+        default: break;
+        }
+        if (!table.empty()) {
+            if (!canon_value_has_width(value, entry.count32, 4U)
+                || entry.count32 > options.limits.max_entries_per_ifd) {
+                return SourceIfdValueExpansionStatus::Incomplete;
+            }
+            u32_table = !i32_table;
+        }
+    }
+    if (!table.empty()) {
+        const std::string_view sub_ifd = make_mk_subtable_ifd_token(
+            prefix, table, 0U, std::span<char>(sub_ifd_buffer));
+        bool binary_directory_decoded = true;
+        if (u16_table) {
+            decode_canon_u16_table(cfg, tiff_bytes, abs_value_off,
+                                   entry.count32, sub_ifd, store, model,
+                                   options, status_out);
+        } else if (i32_table) {
+            decode_canon_i32_table(cfg, tiff_bytes, abs_value_off,
+                                   entry.count32, sub_ifd, store, options,
+                                   status_out);
+        } else if (u32_table) {
+            if (entry.tag == 0x4024U) {
+                uint64_t filterinfo_off = abs_value_off;
+                if (context) {
+                    filterinfo_off = canon_choose_u32_binary_dir_offset(
+                        tiff_bytes, context->value_or_off32, abs_value_off,
+                        value.size(), context->maker_note_off,
+                        context->auto_value_base,
+                        context->schema_value_base);
+                }
+                binary_directory_decoded = decode_canon_u32_bin_dir(
+                    cfg, tiff_bytes, filterinfo_off, value.size(), sub_ifd,
+                    store, options, status_out);
+            }
+            decode_canon_u32_table(cfg, tiff_bytes, abs_value_off,
+                                   entry.count32, sub_ifd, store, options,
+                                   status_out);
+        }
+        return binary_directory_decoded
+                   ? SourceIfdValueExpansionStatus::Expanded
+                   : SourceIfdValueExpansionStatus::Incomplete;
+    }
+
+    if (entry.type == 3U && entry.tag == 0x0090U) {
+        char canoncustom_ifd_buffer[96];
+        const std::string_view canoncustom_ifd = make_mk_subtable_ifd_token(
+            "mk_canoncustom", "functions1d", 0U,
+            std::span<char>(canoncustom_ifd_buffer));
+        if (!canon_value_has_width(value, entry.count32, 2U)) {
+            return SourceIfdValueExpansionStatus::Incomplete;
+        }
+        decode_canon_custom_word_table(
+            cfg, tiff_bytes, abs_value_off, entry.count32, canoncustom_ifd,
+            0x0000U, CanonCustomTagMode::HighByte,
+            CanonCustomMode::LowByteAsU8, model, store, options, status_out);
+        return SourceIfdValueExpansionStatus::Expanded;
+    }
+    if (entry.type == 3U && entry.tag == 0x000fU) {
+        uint32_t effective_count = entry.count32;
+        uint16_t first_word = 0U;
+        if (read_tiff_u16(cfg, value, 0U, &first_word)) {
+            const uint16_t expected
+                = static_cast<uint16_t>(entry.count32 * 2U);
+            if (first_word == expected || first_word + 2U == expected) {
+                --effective_count;
+            }
+        }
+        const std::string_view subtable
+            = canoncustom_subtable_for_tag_0x000f(model, effective_count);
+        char canoncustom_ifd_buffer[96];
+        const std::string_view canoncustom_ifd = make_mk_subtable_ifd_token(
+            "mk_canoncustom", subtable, 0U,
+            std::span<char>(canoncustom_ifd_buffer));
+        if (!canon_value_has_width(value, entry.count32, 2U)) {
+            return SourceIfdValueExpansionStatus::Incomplete;
+        }
+        decode_canon_custom_word_table(
+            cfg, tiff_bytes, abs_value_off, entry.count32, canoncustom_ifd,
+            0x0000U, CanonCustomTagMode::HighByte,
+            CanonCustomMode::LowByteAsU8, model, store, options, status_out);
+        return SourceIfdValueExpansionStatus::Expanded;
+    }
+    if (entry.type == 3U
+        && (entry.tag == 0x0091U || entry.tag == 0x0092U)) {
+        const std::string_view subtable
+            = entry.tag == 0x0091U ? "personalfuncs" : "personalfuncvalues";
+        char canoncustom_ifd_buffer[96];
+        const std::string_view canoncustom_ifd = make_mk_subtable_ifd_token(
+            "mk_canoncustom", subtable, 0U,
+            std::span<char>(canoncustom_ifd_buffer));
+        if (!canon_value_has_width(value, entry.count32, 2U)) {
+            return SourceIfdValueExpansionStatus::Incomplete;
+        }
+        decode_canon_custom_word_table(
+            cfg, tiff_bytes, abs_value_off, entry.count32, canoncustom_ifd,
+            0x0001U, CanonCustomTagMode::Index, CanonCustomMode::U16, model,
+            store, options, status_out);
+        return SourceIfdValueExpansionStatus::Expanded;
+    }
+    if (entry.type == 3U && entry.tag == 0x0026U) {
+        const std::string_view sub_ifd = make_mk_subtable_ifd_token(
+            prefix, "afinfo2", 0U, std::span<char>(sub_ifd_buffer));
+        bool decoded = decode_canon_afinfo2(cfg, tiff_bytes, abs_value_off,
+                                            value.size(), sub_ifd, store,
+                                            options, status_out);
+        if (!decoded && context) {
+            uint64_t alternate_off = 0U;
+            if (canon_find_afinfo2_payload(
+                    cfg, tiff_bytes, context->maker_note_off,
+                    context->maker_note_span_bytes, value.size(),
+                    abs_value_off, options.limits, &alternate_off)) {
+                decoded = decode_canon_afinfo2(
+                    cfg, tiff_bytes, alternate_off, value.size(), sub_ifd,
+                    store, options, status_out);
+            }
+        }
+        return decoded ? SourceIfdValueExpansionStatus::Expanded
+                       : SourceIfdValueExpansionStatus::Incomplete;
+    }
+    if (entry.type == 3U && entry.tag == 0x00aaU) {
+        const std::string_view sub_ifd = make_mk_subtable_ifd_token(
+            prefix, "measuredcolor", 0U, std::span<char>(sub_ifd_buffer));
+        if (entry.count32 >= 5U) {
+            std::array<uint16_t, 4> values {};
+            for (uint32_t i = 0U; i < values.size(); ++i) {
+                if (!read_tiff_u16(cfg, value, 2U * (i + 1U), &values[i])) {
+                    return SourceIfdValueExpansionStatus::Incomplete;
+                }
+            }
+            const BlockId block = store.add_block(BlockInfo {});
+            if (block != kInvalidBlockId) {
+                Entry derived;
+                derived.key = make_exif_tag_key(store.arena(), sub_ifd, 0x0001U);
+                derived.origin.block = block;
+                derived.origin.order_in_block = 0U;
+                derived.origin.wire_type = WireType { WireFamily::Other, 2U };
+                derived.origin.wire_count = 4U;
+                derived.value = make_u16_array(store.arena(), values);
+                derived.flags = EntryFlags::Derived;
+                (void)store.add_entry(derived);
+                if (status_out) {
+                    ++status_out->entries_decoded;
+                }
+            }
+        } else {
+            if (!canon_value_has_width(value, entry.count32, 2U)) {
+                return SourceIfdValueExpansionStatus::Incomplete;
+            }
+            decode_canon_u16_table(cfg, tiff_bytes, abs_value_off,
+                                   entry.count32, sub_ifd, store, model,
+                                   options, status_out);
+        }
+        return SourceIfdValueExpansionStatus::Expanded;
+    }
+    if (entry.type == 4U && entry.tag == 0x4013U) {
+        const std::string_view sub_ifd = make_mk_subtable_ifd_token(
+            prefix, "afmicroadj", 0U, std::span<char>(sub_ifd_buffer));
+        uint32_t mode = 0U;
+        uint32_t numer = 0U;
+        uint32_t denom = 0U;
+        if (value.size() >= 16U
+            && read_tiff_u32(cfg, value, 4U, &mode)
+            && read_tiff_u32(cfg, value, 8U, &numer)
+            && read_tiff_u32(cfg, value, 12U, &denom)) {
+            const BlockId block = store.add_block(BlockInfo {});
+            if (block != kInvalidBlockId) {
+                Entry mode_entry;
+                mode_entry.key = make_exif_tag_key(store.arena(), sub_ifd,
+                                                   0x0001U);
+                mode_entry.origin.block = block;
+                mode_entry.origin.order_in_block = 0U;
+                mode_entry.origin.wire_type = WireType { WireFamily::Other,
+                                                         4U };
+                mode_entry.origin.wire_count = 1U;
+                mode_entry.value = make_u32(mode);
+                mode_entry.flags = EntryFlags::Derived;
+                (void)store.add_entry(mode_entry);
+
+                Entry value_entry;
+                value_entry.key = make_exif_tag_key(store.arena(), sub_ifd,
+                                                    0x0002U);
+                value_entry.origin.block = block;
+                value_entry.origin.order_in_block = 1U;
+                value_entry.origin.wire_type = WireType { WireFamily::Other,
+                                                          10U };
+                value_entry.origin.wire_count = 1U;
+                value_entry.value = make_urational(numer, denom);
+                value_entry.flags = EntryFlags::Derived;
+                (void)store.add_entry(value_entry);
+                if (status_out) {
+                    status_out->entries_decoded += 2U;
+                }
+            }
+        } else {
+            if (!canon_value_has_width(value, entry.count32, 4U)) {
+                return SourceIfdValueExpansionStatus::Incomplete;
+            }
+            decode_canon_u32_table(cfg, tiff_bytes, abs_value_off,
+                                   entry.count32, sub_ifd, store, options,
+                                   status_out);
+        }
+        return SourceIfdValueExpansionStatus::Expanded;
+    }
+
+    return SourceIfdValueExpansionStatus::NotApplicable;
+}
+
+SourceIfdValueExpansionStatus
+decode_canon_makernote_value(const TiffConfig& cfg,
+                             const ClassicIfdEntry& entry, bool have_value,
+                             std::span<const std::byte> value,
+                             std::string_view ifd_name, MetaStore& store,
+                             const ExifDecodeOptions& options,
+                             ExifDecodeResult* status_out) noexcept
+{
+    return expand_canon_makernote_value(cfg, entry, have_value, value,
+                                         ifd_name, store, options, status_out,
+                                         nullptr);
 }
 
 
@@ -3981,518 +4485,16 @@ decode_canon_makernote(const TiffConfig& cfg,
             model = canon_find_model_text(store, std::span<char>(model_buf));
         }
 
-        // Decode common Canon BinaryData subdirectories into derived blocks.
-        // The raw MakerNote entries are always preserved in mk_canon0.
-        char sub_ifd_buf[96];
-        const std::string_view mk_prefix = "mk_canon";
-
-        if (tag == 0x0029U && (type == 1U || type == 4U || type == 7U)
-            && model == "Canon PowerShot G9") {
-            decode_canon_wbinfo(mk_cfg,
-                                tiff_bytes.subspan(static_cast<size_t>(abs_value_off),
-                                                   static_cast<size_t>(value_bytes)),
-                                store, options, status_out);
-        }
-
-        // CanonCameraInfo* (tag 0x000d) often contains an embedded TIFF-like
-        // IFD stream describing a "CameraInfo" block. Best-effort: locate a
-        // plausible classic IFD and decode it into mk_canon_camerainfo_0.
-        if (tag == 0x000d && type == 7 && value_bytes != 0U) {
-            const std::span<const std::byte> cam
-                = tiff_bytes.subspan(static_cast<size_t>(abs_value_off),
-                                     static_cast<size_t>(value_bytes));
-            ClassicIfdCandidate best;
-            const bool has_best
-                = find_best_classic_ifd_candidate(cam, 512, options.limits,
-                                                  &best)
-                  && best.valid_entries == best.entry_count;
-            uint32_t cam_tag_extent = (cam.size() > 0U) ? static_cast<uint32_t>(
-                                                              cam.size() - 1U)
-                                                        : 0U;
-            if (has_best) {
-                TiffConfig cam_cfg;
-                cam_cfg.le      = best.le;
-                cam_cfg.bigtiff = false;
-                const uint32_t ifd_tag_extent
-                    = canon_camerainfo_candidate_tag_extent(cam_cfg, cam, best);
-                if (ifd_tag_extent > cam_tag_extent) {
-                    cam_tag_extent = ifd_tag_extent;
-                }
-            }
-            std::string_view cam_subtable
-                = canon_camerainfo_subtable_suffix(model, cam_tag_extent);
-            if (cam_subtable == "camerainfo" && has_best) {
-                TiffConfig cam_cfg;
-                cam_cfg.le      = best.le;
-                cam_cfg.bigtiff = false;
-                const std::string_view fallback_subtable
-                    = canon_camerainfo_subtable_suffix_from_candidate(cam_cfg,
-                                                                      cam,
-                                                                      best);
-                if (!fallback_subtable.empty()) {
-                    cam_subtable = fallback_subtable;
-                }
-            }
-            const std::string_view sub_ifd
-                = make_mk_subtable_ifd_token(mk_prefix, cam_subtable, 0,
-                                             std::span<char>(sub_ifd_buf));
-            if (has_best) {
-                TiffConfig cam_cfg;
-                cam_cfg.le      = best.le;
-                cam_cfg.bigtiff = false;
-
-                decode_classic_ifd_no_header(cam_cfg, cam, best.offset, sub_ifd,
-                                             store, options, status_out,
-                                             EntryFlags::Derived);
-            }
-            // CanonCameraInfo fixed-layout fields are common and are used by
-            // ExifTool for a number of camera models. Decode them even if an
-            // embedded IFD candidate was found.
-            decode_canon_camerainfo_fixed_fields(mk_cfg, cam, sub_ifd, model,
-                                                 store, options, status_out);
-        }
-
-        // Canon LensInfo (tag 0x4019) contains the raw lens serial bytes.
-        if (tag == 0x4019 && type == 7 && value_bytes != 0U) {
-            const uint64_t serial_bytes = (value_bytes < 5) ? value_bytes : 5;
-            if (serial_bytes != 0) {
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "lensinfo", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                const uint16_t tags_out[]  = { 0x0000 };
-                const MetaValue vals_out[] = { make_bytes(
-                    store.arena(),
-                    tiff_bytes.subspan(static_cast<size_t>(abs_value_off),
-                                       static_cast<size_t>(serial_bytes))) };
-                emit_bin_dir_entries(sub_ifd, store,
-                                     std::span<const uint16_t>(tags_out),
-                                     std::span<const MetaValue>(vals_out),
-                                     options.limits, status_out);
-            }
-        }
-
-        // CanonCameraInfo* blobs (tag 0x000d) may embed a PictureStyleInfo
-        // table at a fixed offset for some models. Best-effort: decode a
-        // psinfo table from the tail starting at 0x025b.
-        if (tag == 0x000d && type == 7 && value_bytes > 0x025b) {
-            const uint64_t ps_off   = abs_value_off + 0x025b;
-            const uint64_t ps_bytes = value_bytes - 0x025b;
-            if (ps_bytes >= 0x00dc + 2U
-                && ps_off + ps_bytes <= tiff_bytes.size()) {
-                const bool use_psinfo2
-                    = canon_camerainfo_prefers_psinfo2(model)
-                          ? true
-                          : (canon_camerainfo_prefers_psinfo(model)
-                                 ? false
-                                 : canon_psinfo2_tail_looks_valid(
-                                       mk_cfg, tiff_bytes, ps_off, ps_bytes));
-                const std::string_view ps_table
-                    = use_psinfo2 ? std::string_view("psinfo2")
-                                  : std::string_view("psinfo");
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, ps_table, 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_psinfo_table(tiff_bytes, ps_off, ps_bytes, sub_ifd,
-                                          store, options, status_out);
-            }
-        }
-
-        if (tag == 0x0099 && value_bytes != 0U) {  // CustomFunctions2
-            const uint64_t canoncustom_abs_value_off
-                = canon_choose_custom_functions2_offset(
-                    tiff_bytes, ifd_entry.value_or_off32, abs_value_off,
-                    value_bytes, maker_note_off, auto_value_base,
-                    schema_value_base);
-            char canoncustom_ifd_buf[96];
-            const std::string_view canoncustom_ifd = make_mk_subtable_ifd_token(
-                "mk_canoncustom", "functions2", 0,
-                std::span<char>(canoncustom_ifd_buf));
-            (void)decode_canon_custom_functions2(mk_cfg, tiff_bytes,
-                                                 canoncustom_abs_value_off,
-                                                 value_bytes, canoncustom_ifd,
-                                                 store, options, status_out);
-        }
-
-        if (tag == 0x4011 && type == 7 && value_bytes >= 2U
-            && (value_bytes % 2U) == 0U) {
-            const uint32_t count16 = static_cast<uint32_t>(value_bytes / 2U);
-            const std::string_view sub_ifd
-                = make_mk_subtable_ifd_token(mk_prefix, "vignettingcorr", 0,
-                                             std::span<char>(sub_ifd_buf));
-            decode_canon_u16_table(mk_cfg, tiff_bytes, abs_value_off, count16,
-                                   sub_ifd, store, model, options, status_out);
-        }
-        if (tag == 0x4001 && type == 7 && value_bytes >= 2U
-            && (value_bytes % 2U) == 0U) {
-            const uint32_t count16 = static_cast<uint32_t>(value_bytes / 2U);
-            decode_canon_colordata_blob(mk_cfg, tiff_bytes, abs_value_off,
-                                        count16, count32, mk_prefix, model,
-                                        store, options, status_out);
-        }
-
-        if (type == 3 && count32 != 0) {  // SHORT
-            if (tag == 0x0001) {          // CanonCameraSettings
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "camerasettings", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u16_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, model, options,
-                                       status_out);
-            } else if (tag == 0x0090) {  // CustomFunctions1D (EOS-1D/1Ds)
-                char canoncustom_ifd_buf[96];
-                const std::string_view canoncustom_ifd
-                    = make_mk_subtable_ifd_token("mk_canoncustom",
-                                                 "functions1d", 0,
-                                                 std::span<char>(
-                                                     canoncustom_ifd_buf));
-                decode_canon_custom_word_table(mk_cfg, tiff_bytes,
-                                               abs_value_off, count32,
-                                               canoncustom_ifd, 0x0000,
-                                               CanonCustomTagMode::HighByte,
-                                               CanonCustomMode::LowByteAsU8,
-                                               model, store, options,
-                                               status_out);
-            } else if (tag == 0x000f) {  // CustomFunctions (older models)
-                uint32_t effective_count = count32;
-                uint16_t first_word      = 0;
-                if (count32 != 0
-                    && read_tiff_u16(mk_cfg, tiff_bytes, abs_value_off,
-                                     &first_word)) {
-                    const uint16_t expected = static_cast<uint16_t>(count32
-                                                                    * 2U);
-                    if (first_word == expected || first_word + 2U == expected) {
-                        effective_count -= 1U;
-                    }
-                }
-                const std::string_view subtable
-                    = canoncustom_subtable_for_tag_0x000f(model,
-                                                          effective_count);
-                char canoncustom_ifd_buf[96];
-                const std::string_view canoncustom_ifd
-                    = make_mk_subtable_ifd_token("mk_canoncustom", subtable, 0,
-                                                 std::span<char>(
-                                                     canoncustom_ifd_buf));
-                decode_canon_custom_word_table(mk_cfg, tiff_bytes,
-                                               abs_value_off, count32,
-                                               canoncustom_ifd, 0x0000,
-                                               CanonCustomTagMode::HighByte,
-                                               CanonCustomMode::LowByteAsU8,
-                                               model, store, options,
-                                               status_out);
-            } else if (tag == 0x0091) {  // PersonalFunctions
-                char canoncustom_ifd_buf[96];
-                const std::string_view canoncustom_ifd
-                    = make_mk_subtable_ifd_token("mk_canoncustom",
-                                                 "personalfuncs", 0,
-                                                 std::span<char>(
-                                                     canoncustom_ifd_buf));
-                decode_canon_custom_word_table(mk_cfg, tiff_bytes,
-                                               abs_value_off, count32,
-                                               canoncustom_ifd, 0x0001,
-                                               CanonCustomTagMode::Index,
-                                               CanonCustomMode::U16, model,
-                                               store, options, status_out);
-            } else if (tag == 0x0092) {  // PersonalFunctionValues
-                char canoncustom_ifd_buf[96];
-                const std::string_view canoncustom_ifd
-                    = make_mk_subtable_ifd_token("mk_canoncustom",
-                                                 "personalfuncvalues", 0,
-                                                 std::span<char>(
-                                                     canoncustom_ifd_buf));
-                decode_canon_custom_word_table(mk_cfg, tiff_bytes,
-                                               abs_value_off, count32,
-                                               canoncustom_ifd, 0x0001,
-                                               CanonCustomTagMode::Index,
-                                               CanonCustomMode::U16, model,
-                                               store, options, status_out);
-            } else if (tag == 0x0005) {  // CanonPanorama
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "panorama", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u16_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, model, options,
-                                       status_out);
-            } else if (tag == 0x0026) {  // CanonAFInfo2
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "afinfo2", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                bool decoded_afinfo2
-                    = decode_canon_afinfo2(mk_cfg, tiff_bytes, abs_value_off,
-                                           value_bytes, sub_ifd, store, options,
-                                           status_out);
-                if (!decoded_afinfo2) {
-                    uint64_t afinfo2_value_off = 0;
-                    if (canon_find_afinfo2_payload(
-                            mk_cfg, tiff_bytes, maker_note_off,
-                            maker_note_span_bytes, value_bytes, abs_value_off,
-                            options.limits, &afinfo2_value_off)) {
-                        decoded_afinfo2 = decode_canon_afinfo2(
-                            mk_cfg, tiff_bytes, afinfo2_value_off, value_bytes,
-                            sub_ifd, store, options, status_out);
-                    }
-                }
-                (void)decoded_afinfo2;
-            } else if (tag == 0x0002) {  // CanonFocalLength
-                bool use_unknown = false;
-                if (count32 > 3U) {
-                    uint16_t x = 0;
-                    uint16_t y = 0;
-                    if (read_tiff_u16(mk_cfg, tiff_bytes,
-                                      abs_value_off + 2ULL * 2ULL, &x)
-                        && read_tiff_u16(mk_cfg, tiff_bytes,
-                                         abs_value_off + 2ULL * 3ULL, &y)) {
-                        const bool plausible_size
-                            = (x > 0U && y > 0U && x <= 5000U && y <= 5000U);
-                        use_unknown = !plausible_size;
-                    }
-                }
-
-                const std::string_view table = use_unknown
-                                                   ? "focallength_unknown"
-                                                   : "focallength";
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, table, 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u16_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, model, options,
-                                       status_out);
-            } else if (tag == 0x0012) {  // CanonAFInfo (older models)
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "afinfo", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u16_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, model, options,
-                                       status_out);
-            } else if (tag == 0x0004) {  // CanonShotInfo
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "shotinfo", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u16_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, model, options,
-                                       status_out);
-            } else if (tag == 0x0093) {  // CanonFileInfo
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "fileinfo", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u16_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, model, options,
-                                       status_out);
-            } else if (tag == 0x0098) {  // CropInfo
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "cropinfo", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u16_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, model, options,
-                                       status_out);
-            } else if (tag == 0x001d) {  // MyColors
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "mycolors", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u16_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, model, options,
-                                       status_out);
-            } else if (tag == 0x00aa) {  // MeasuredColor
-                // Emit the full MeasuredRGGB array (4x u16) as tag 0x0001.
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "measuredcolor", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                if (count32 >= 5) {
-                    uint16_t v_u16[4];
-                    for (uint32_t k = 0; k < 4; ++k) {
-                        (void)read_tiff_u16(mk_cfg, tiff_bytes,
-                                            abs_value_off
-                                                + uint64_t(2U * (k + 1U)),
-                                            &v_u16[k]);
-                    }
-                    const BlockId block2 = store.add_block(BlockInfo {});
-                    if (block2 != kInvalidBlockId) {
-                        Entry e;
-                        e.key = make_exif_tag_key(store.arena(), sub_ifd,
-                                                  0x0001);
-                        e.origin.block          = block2;
-                        e.origin.order_in_block = 0;
-                        e.origin.wire_type  = WireType { WireFamily::Other, 2 };
-                        e.origin.wire_count = 4;
-                        e.value
-                            = make_u16_array(store.arena(),
-                                             std::span<const uint16_t>(v_u16));
-                        e.flags |= EntryFlags::Derived;
-                        (void)store.add_entry(e);
-                        if (status_out) {
-                            status_out->entries_decoded += 1;
-                        }
-                    }
-                } else {
-                    decode_canon_u16_table(mk_cfg, tiff_bytes, abs_value_off,
-                                           count32, sub_ifd, store, model,
-                                           options, status_out);
-                }
-            } else if (tag == 0x00e0) {  // SensorInfo
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "sensorinfo", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u16_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, model, options,
-                                       status_out);
-            } else if (tag == 0x00A0) {  // ProcessingInfo
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "processing", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u16_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, model, options,
-                                       status_out);
-            } else if (tag == 0x4001) {  // ColorData (multiple versions)
-                decode_canon_colordata_blob(mk_cfg, tiff_bytes, abs_value_off,
-                                            count32, count32, mk_prefix, model,
-                                            store, options, status_out);
-            }
-        } else if (type == 4 && count32 != 0) {  // LONG
-            if (tag == 0x0035) {                 // TimeInfo
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "timeinfo", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u32_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, options,
-                                       status_out);
-            } else if (tag == 0x009A) {  // AspectInfo
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "aspectinfo", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u32_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, options,
-                                       status_out);
-            } else if (tag == 0x000d) {  // CanonCameraInfo (older models)
-                const uint32_t cam_tag_extent = (count32 > 0U) ? (count32 - 1U)
-                                                               : 0U;
-                const std::string_view cam_subtable
-                    = canon_camerainfo_subtable_suffix(model, cam_tag_extent);
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, cam_subtable, 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u32_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, options,
-                                       status_out);
-            } else if (tag == 0x4016) {  // VignettingCorr2
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "vignettingcorr2",
-                                                 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u32_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, options,
-                                       status_out);
-            } else if (tag == 0x4013) {  // AFMicroAdj
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "afmicroadj", 0,
-                                                 std::span<char>(sub_ifd_buf));
-
-                uint32_t mode  = 0;
-                uint32_t numer = 0;
-                uint32_t denom = 0;
-                if (value_bytes >= 16
-                    && read_tiff_u32(mk_cfg, tiff_bytes, abs_value_off + 4,
-                                     &mode)
-                    && read_tiff_u32(mk_cfg, tiff_bytes, abs_value_off + 8,
-                                     &numer)
-                    && read_tiff_u32(mk_cfg, tiff_bytes, abs_value_off + 12,
-                                     &denom)) {
-                    const BlockId block2 = store.add_block(BlockInfo {});
-                    if (block2 != kInvalidBlockId) {
-                        Entry e_mode;
-                        e_mode.key = make_exif_tag_key(store.arena(), sub_ifd,
-                                                       0x0001);
-                        e_mode.origin.block          = block2;
-                        e_mode.origin.order_in_block = 0;
-                        e_mode.origin.wire_type  = WireType { WireFamily::Other,
-                                                             4 };
-                        e_mode.origin.wire_count = 1;
-                        e_mode.value             = make_u32(mode);
-                        e_mode.flags |= EntryFlags::Derived;
-                        (void)store.add_entry(e_mode);
-
-                        Entry e_val;
-                        e_val.key = make_exif_tag_key(store.arena(), sub_ifd,
-                                                      0x0002);
-                        e_val.origin.block          = block2;
-                        e_val.origin.order_in_block = 1;
-                        e_val.origin.wire_type  = WireType { WireFamily::Other,
-                                                            10 };
-                        e_val.origin.wire_count = 1;
-                        e_val.value             = make_urational(numer, denom);
-                        e_val.flags |= EntryFlags::Derived;
-                        (void)store.add_entry(e_val);
-
-                        if (status_out) {
-                            status_out->entries_decoded += 2;
-                        }
-                    }
-                } else {
-                    decode_canon_u32_table(mk_cfg, tiff_bytes, abs_value_off,
-                                           count32, sub_ifd, store, options,
-                                           status_out);
-                }
-            } else if (tag == 0x4018) {  // LightingOpt
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "lightingopt", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u32_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, options,
-                                       status_out);
-            } else if (tag == 0x4020) {  // AmbienceInfo
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "ambience", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u32_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, options,
-                                       status_out);
-            } else if (tag == 0x4021) {  // MultiExp
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "multiexp", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_i32_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, options,
-                                       status_out);
-            } else if (tag == 0x4024) {  // FilterInfo (BinaryData directory)
-                const uint64_t filterinfo_abs_value_off
-                    = canon_choose_u32_binary_dir_offset(
-                        tiff_bytes, ifd_entry.value_or_off32, abs_value_off,
-                        value_bytes, maker_note_off, auto_value_base,
-                        schema_value_base);
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "filterinfo", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                (void)decode_canon_u32_bin_dir(mk_cfg, tiff_bytes,
-                                               filterinfo_abs_value_off,
-                                               value_bytes, sub_ifd, store,
-                                               options, status_out);
-                // Some files expose FilterInfo as a flat LONG table where
-                // Exiv2 reports numeric CanonFil indices (0x0032, 0x0033,
-                // ...). Emit that index form as well for parity.
-                decode_canon_u32_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, options,
-                                       status_out);
-            } else if (tag == 0x4025) {  // HDRInfo
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "hdrinfo", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u32_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, options,
-                                       status_out);
-            } else if (tag == 0x4028) {  // AFConfig
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "afconfig", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_i32_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, options,
-                                       status_out);
-            } else if (tag == 0x403f) {  // RawBurstInfo
-                const std::string_view sub_ifd
-                    = make_mk_subtable_ifd_token(mk_prefix, "rawburstinfo", 0,
-                                                 std::span<char>(sub_ifd_buf));
-                decode_canon_u32_table(mk_cfg, tiff_bytes, abs_value_off,
-                                       count32, sub_ifd, store, options,
-                                       status_out);
-            }
-        }
+        const std::span<const std::byte> value_raw
+            = tiff_bytes.subspan(static_cast<size_t>(abs_value_off),
+                                 static_cast<size_t>(value_bytes));
+        const CanonMakerNoteValueContext value_context {
+            tiff_bytes, abs_value_off, maker_note_off, maker_note_span_bytes,
+            ifd_entry.value_or_off32, auto_value_base, schema_value_base
+        };
+        (void)expand_canon_makernote_value(
+            mk_cfg, ifd_entry, true, value_raw, mk_ifd0, store, options,
+            status_out, &value_context);
     }
 
     return true;

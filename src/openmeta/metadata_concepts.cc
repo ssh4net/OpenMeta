@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "openmeta/metadata_concepts.h"
+#include "metadata_scope_internal.h"
 
 #include "openmeta/byte_arena.h"
 #include "openmeta/exif_tag_names.h"
@@ -23,6 +24,37 @@
 
 namespace openmeta {
 namespace {
+
+    static constexpr uint64_t kMetadataConceptSemanticWorkDefault
+        = 1048576U;
+
+    struct ConceptWorkBudget final {
+        uint64_t cap = kMetadataConceptSemanticWorkDefault;
+        uint64_t used = 0U;
+        bool limited = false;
+        MetadataConceptResolution* current_resolution = nullptr;
+
+        explicit ConceptWorkBudget(uint64_t requested_cap) noexcept
+            : cap(requested_cap == 0U ? kMetadataConceptSemanticWorkDefault
+                                      : requested_cap)
+        {}
+
+        bool consume() noexcept
+        {
+            if (used >= cap) {
+                limited = true;
+                if (current_resolution) {
+                    current_resolution->semantic_work_limited = true;
+                }
+                return false;
+            }
+            ++used;
+            if (current_resolution) {
+                ++current_resolution->semantic_work_used;
+            }
+            return true;
+        }
+    };
 
     static constexpr uint16_t kExifOrientationTag               = 0x0112U;
     static constexpr uint16_t kExifDateTimeTag                  = 0x0132U;
@@ -1683,6 +1715,20 @@ namespace {
         if (!dst) {
             return;
         }
+        if (src.numeric_status != MetadataQueryNumericStatus::NotNumeric
+            && (dst->numeric_status == MetadataQueryNumericStatus::NotNumeric
+                || src.numeric_status == MetadataQueryNumericStatus::Complete)) {
+            if (src.has_values) {
+                dst->values = src.values;
+                dst->has_values = true;
+            }
+            dst->total_numeric_values = src.total_numeric_values;
+            dst->numeric_status = src.numeric_status;
+            dst->components = src.components;
+        }
+        if (src.coordinate_basis != MetadataQueryCoordinateBasis::Unknown) {
+            dst->coordinate_basis = src.coordinate_basis;
+        }
         if (src.priority > dst->priority) {
             dst->priority = src.priority;
         }
@@ -1830,6 +1876,8 @@ namespace {
         out.priority = priority;
         if (entry_id != kInvalidEntryId) {
             out.family = source_family_for_entry(store.entry(entry_id));
+            out.source_block = store.entry(entry_id).origin.block;
+            out.source_ifd = metadata_scope_entry_ifd(store, store.entry(entry_id));
             out.source_entries.push_back(entry_id);
         }
         return out;
@@ -1868,27 +1916,80 @@ namespace {
         return ascii_equal_ci(entry_field, field);
     }
 
+    static uint8_t companion_context_pass_count(
+        const MetadataQueryOptions& query_options) noexcept
+    {
+        return query_options.scope.enabled
+                       && query_options.scope.inherit_across_directories
+                   ? 2U
+                   : 1U;
+    }
+
+    static bool companion_context_matches(
+        const MetaStore& store, const MetadataQueryOptions& query_options,
+        EntryId anchor_id, EntryId companion_id, uint8_t pass) noexcept
+    {
+        const std::span<const Entry> entries = store.entries();
+        if (anchor_id == kInvalidEntryId || anchor_id >= entries.size()
+            || companion_id >= entries.size()) {
+            return false;
+        }
+        const Entry& anchor = entries[anchor_id];
+        const Entry& companion = entries[companion_id];
+        if (!metadata_scope_contains(store, query_options.scope, anchor)
+            || !metadata_scope_contains(store, query_options.scope, companion)) {
+            return false;
+        }
+        const bool same_directory
+            = metadata_scope_same_directory(store, anchor, companion);
+        if (pass == 0U) {
+            return same_directory;
+        }
+        return !same_directory && query_options.scope.enabled
+               && query_options.scope.inherit_across_directories;
+    }
+
     static bool find_exif_text_entry(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                     ConceptWorkBudget& work_budget,
+                                     EntryId anchor_id,
                                      std::string_view ifd, uint16_t tag,
                                      EntryId* out_id, std::string* out)
     {
         const std::span<const Entry> entries = store.entries();
-        for (EntryId id = 0U; id < entries.size(); ++id) {
-            const Entry& entry = entries[id];
-            if (any(entry.flags, EntryFlags::Deleted)) {
-                continue;
+        if (out_id) {
+            *out_id = kInvalidEntryId;
+        }
+        if (out) {
+            out->clear();
+        }
+        for (uint8_t pass = 0U;
+             pass < companion_context_pass_count(query_options); ++pass) {
+            for (EntryId id = 0U; id < entries.size(); ++id) {
+                if (!work_budget.consume()) {
+                    return false;
+                }
+                const Entry& entry = entries[id];
+                if (!companion_context_matches(store, query_options, anchor_id,
+                                               id, pass)) {
+                    continue;
+                }
+                if (any(entry.flags, EntryFlags::Deleted)) {
+                    continue;
+                }
+                if (!exif_entry_ifd_and_tag(store, entry, ifd, tag)) {
+                    continue;
+                }
+                if (!value_to_text(store.arena(), entry.value, out)
+                    && !byte_value_to_ascii_field(store.arena(), entry.value,
+                                                  out)) {
+                    continue;
+                }
+                if (out_id) {
+                    *out_id = id;
+                }
+                return true;
             }
-            if (!exif_entry_ifd_and_tag(store, entry, ifd, tag)) {
-                continue;
-            }
-            if (!value_to_text(store.arena(), entry.value, out)
-                && !byte_value_to_ascii_field(store.arena(), entry.value, out)) {
-                continue;
-            }
-            if (out_id) {
-                *out_id = id;
-            }
-            return true;
         }
         if (out_id) {
             *out_id = kInvalidEntryId;
@@ -1900,29 +2001,46 @@ namespace {
     }
 
     static bool find_exif_time_entry(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                     ConceptWorkBudget& work_budget,
+                                     EntryId anchor_id,
                                      std::string_view ifd, uint16_t tag,
                                      EntryId* out_id, uint8_t* hour,
                                      uint8_t* minute, uint8_t* second)
     {
         const std::span<const Entry> entries = store.entries();
-        for (EntryId id = 0U; id < entries.size(); ++id) {
-            const Entry& entry = entries[id];
-            if (any(entry.flags, EntryFlags::Deleted)) {
-                continue;
+        if (out_id) {
+            *out_id = kInvalidEntryId;
+        }
+        for (uint8_t pass = 0U;
+             pass < companion_context_pass_count(query_options); ++pass) {
+            for (EntryId id = 0U; id < entries.size(); ++id) {
+                if (!work_budget.consume()) {
+                    return false;
+                }
+                const Entry& entry = entries[id];
+                if (!companion_context_matches(store, query_options, anchor_id,
+                                               id, pass)) {
+                    continue;
+                }
+                if (any(entry.flags, EntryFlags::Deleted)) {
+                    continue;
+                }
+                if (!exif_entry_ifd_and_tag(store, entry, ifd, tag)) {
+                    continue;
+                }
+                bool has_offset = false;
+                int16_t offset  = 0;
+                if (!fill_time_from_value(store.arena(), entry.value, hour,
+                                          minute, second, &has_offset,
+                                          &offset)) {
+                    continue;
+                }
+                if (out_id) {
+                    *out_id = id;
+                }
+                return true;
             }
-            if (!exif_entry_ifd_and_tag(store, entry, ifd, tag)) {
-                continue;
-            }
-            bool has_offset = false;
-            int16_t offset  = 0;
-            if (!fill_time_from_value(store.arena(), entry.value, hour, minute,
-                                      second, &has_offset, &offset)) {
-                continue;
-            }
-            if (out_id) {
-                *out_id = id;
-            }
-            return true;
         }
         if (out_id) {
             *out_id = kInvalidEntryId;
@@ -1931,30 +2049,50 @@ namespace {
     }
 
     static bool find_exif_numeric_entry(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                        ConceptWorkBudget& work_budget,
+                                        EntryId anchor_id,
                                         std::string_view ifd, uint16_t tag,
                                         EntryId* out_id, double* out) noexcept
     {
         const std::span<const Entry> entries = store.entries();
-        for (EntryId id = 0U; id < entries.size(); ++id) {
-            const Entry& entry = entries[id];
-            if (any(entry.flags, EntryFlags::Deleted)) {
-                continue;
+        if (out_id) {
+            *out_id = kInvalidEntryId;
+        }
+        if (out) {
+            *out = 0.0;
+        }
+        for (uint8_t pass = 0U;
+             pass < companion_context_pass_count(query_options); ++pass) {
+            for (EntryId id = 0U; id < entries.size(); ++id) {
+                if (!work_budget.consume()) {
+                    return false;
+                }
+                const Entry& entry = entries[id];
+                if (!companion_context_matches(store, query_options, anchor_id,
+                                               id, pass)) {
+                    continue;
+                }
+                if (any(entry.flags, EntryFlags::Deleted)) {
+                    continue;
+                }
+                if (!exif_entry_ifd_and_tag(store, entry, ifd, tag)) {
+                    continue;
+                }
+                double values[1] {};
+                if (value_to_numeric_array(store.arena(), entry.value, values,
+                                           1U)
+                    != 1U) {
+                    continue;
+                }
+                if (out_id) {
+                    *out_id = id;
+                }
+                if (out) {
+                    *out = values[0];
+                }
+                return true;
             }
-            if (!exif_entry_ifd_and_tag(store, entry, ifd, tag)) {
-                continue;
-            }
-            double values[1] {};
-            if (value_to_numeric_array(store.arena(), entry.value, values, 1U)
-                != 1U) {
-                continue;
-            }
-            if (out_id) {
-                *out_id = id;
-            }
-            if (out) {
-                *out = values[0];
-            }
-            return true;
         }
         if (out_id) {
             *out_id = kInvalidEntryId;
@@ -1974,6 +2112,21 @@ namespace {
         for (uint8_t i = 0U; i < copy_count; ++i) {
             candidate->numeric[i] = values[i];
         }
+        if (candidate->values.empty()
+            && candidate->numeric_status
+                   == MetadataQueryNumericStatus::NotNumeric
+            && candidate->total_numeric_values == 0U) {
+            candidate->total_numeric_values = copy_count;
+            for (uint8_t i = 0U; i < copy_count; ++i) {
+                if (!std::isfinite(values[i])) {
+                    candidate->numeric_status = MetadataQueryNumericStatus::Invalid;
+                    return;
+                }
+            }
+            candidate->values.assign(values, values + copy_count);
+            candidate->has_values = true;
+            candidate->numeric_status = MetadataQueryNumericStatus::Complete;
+        }
     }
 
     static void fill_values_candidate(MetadataConceptCandidate* candidate,
@@ -1984,6 +2137,8 @@ namespace {
         }
         candidate->has_values = true;
         candidate->values     = values;
+        candidate->total_numeric_values = values.size();
+        candidate->numeric_status = MetadataQueryNumericStatus::Complete;
         if (!candidate->has_numeric) {
             const uint8_t count = static_cast<uint8_t>(
                 std::min<size_t>(values.size(), 4U));
@@ -2145,30 +2300,42 @@ namespace {
         return true;
     }
 
+    static void copy_interpretation_values(
+        const MetadataInterpretationRecord& record,
+        MetadataConceptCandidate* candidate);
+
     static void append_interpretation_candidates(
-        const MetaStore& store, MetadataQueryKind query_kind,
+        const MetaStore& store,
+                            const MetadataQueryOptions& query_options, MetadataQueryKind query_kind,
         MetadataConceptKind concept_kind, MetadataConceptRole role,
         uint8_t priority, MetadataConceptResolution* out)
     {
+        MetadataQueryOptions remaining = query_options;
+        if (query_options.max_total_values != 0U) {
+            if (out->returned_numeric_values >= query_options.max_total_values) {
+                remaining.include_numeric_values = false;
+            } else {
+                remaining.max_total_values = query_options.max_total_values
+                                             - out->returned_numeric_values;
+            }
+        }
         MetadataInterpretationResult result
-            = interpret_metadata_query(store, query_kind);
+            = interpret_metadata_query(store, query_kind, remaining);
+        out->total_numeric_values += result.total_numeric_values;
+        out->returned_numeric_values += result.returned_numeric_values;
+        out->numeric_values_limited |= result.numeric_values_limited;
+        out->has_invalid_numeric_values |= result.has_invalid_numeric_values;
         for (size_t i = 0U; i < result.records.size(); ++i) {
             const MetadataInterpretationRecord& record = result.records[i];
-            for (size_t e = 0U; e < record.source_entries.size(); ++e) {
-                const EntryId entry_id = record.source_entries[e];
-                if (entry_id == kInvalidEntryId) {
-                    continue;
-                }
-                MetadataConceptCandidate candidate
-                    = make_entry_candidate(store, entry_id, concept_kind, role,
-                                           record.semantic, record.shape,
-                                           priority);
-                if (record.has_values && !record.values.empty()) {
-                    fill_values_candidate(&candidate, record.values);
-                    candidate.value_key = numeric_key(record.values[0]);
-                }
-                append_candidate(out, candidate);
-            }
+            if (record.source_entries.empty()) continue;
+            const EntryId entry_id = record.source_entries[0];
+            if (entry_id == kInvalidEntryId) continue;
+            MetadataConceptCandidate candidate = make_entry_candidate(
+                store, entry_id, concept_kind, role, record.semantic,
+                record.shape, priority);
+            candidate.source_entries = record.source_entries;
+            copy_interpretation_values(record, &candidate);
+            append_candidate(out, candidate);
         }
     }
 
@@ -2226,9 +2393,10 @@ namespace {
     }
 
     static void append_orientation_candidates(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
                                               MetadataConceptResolution* out)
     {
-        append_interpretation_candidates(store, MetadataQueryKind::Orientation,
+        append_interpretation_candidates(store, query_options, MetadataQueryKind::Orientation,
                                          MetadataConceptKind::Orientation,
                                          MetadataConceptRole::Orientation, 95U,
                                          out);
@@ -2236,6 +2404,9 @@ namespace {
         const std::span<const Entry> entries = store.entries();
         for (EntryId id = 0U; id < entries.size(); ++id) {
             const Entry& entry = entries[id];
+            if (!metadata_scope_contains(store, query_options.scope, entry)) {
+                continue;
+            }
             if (any(entry.flags, EntryFlags::Deleted)) {
                 continue;
             }
@@ -2273,7 +2444,10 @@ namespace {
     }
 
     static void
-    attach_exif_datetime_companions(const MetaStore& store, uint16_t offset_tag,
+    attach_exif_datetime_companions(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                    ConceptWorkBudget& work_budget,
+                                    uint16_t offset_tag,
                                     uint16_t subsecond_tag,
                                     MetadataConceptCandidate* candidate)
     {
@@ -2286,7 +2460,9 @@ namespace {
         std::string subsecond_text;
         std::string normalized_subsecond;
         bool has_subsecond_companion = false;
-        if (find_exif_text_entry(store, "exififd", subsecond_tag, &subsecond_id,
+        if (find_exif_text_entry(store, query_options, work_budget,
+                                 candidate->entry_id,
+                                 "exififd", subsecond_tag, &subsecond_id,
                                  &subsecond_text)
             && normalize_subsecond_text(subsecond_text, &normalized_subsecond)) {
             candidate->date_time_has_subsecond = true;
@@ -2299,7 +2475,9 @@ namespace {
         std::string offset_text;
         int16_t offset_min = 0;
         bool has_offset    = false;
-        if (find_exif_text_entry(store, "exififd", offset_tag, &offset_id,
+        if (find_exif_text_entry(store, query_options, work_budget,
+                                 candidate->entry_id,
+                                 "exififd", offset_tag, &offset_id,
                                  &offset_text)
             && exif_timezone_offset_from_text(offset_text, &offset_min)) {
             set_datetime_timezone(candidate, true, offset_min);
@@ -2321,6 +2499,8 @@ namespace {
     }
 
     static void append_exif_datetime_candidate(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                               ConceptWorkBudget& work_budget,
                                                EntryId id, const Entry& entry,
                                                MetadataConceptResolution* out)
     {
@@ -2378,7 +2558,8 @@ namespace {
             }
             normalize_text_key(text, &candidate.value_key);
         } else {
-            attach_exif_datetime_companions(store, offset_tag, subsecond_tag,
+            attach_exif_datetime_companions(store, query_options, work_budget,
+                                            offset_tag, subsecond_tag,
                                             &candidate);
         }
         append_candidate(out, candidate);
@@ -2447,30 +2628,49 @@ namespace {
         }
     }
 
-    static bool find_iptc_text_entry(const MetaStore& store, uint16_t record,
+    static bool find_iptc_text_entry(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                     ConceptWorkBudget& work_budget,
+                                     EntryId anchor_id, uint16_t record,
                                      uint16_t dataset, EntryId* out_id,
                                      std::string* out)
     {
         const std::span<const Entry> entries = store.entries();
-        for (EntryId id = 0U; id < entries.size(); ++id) {
-            const Entry& entry = entries[id];
-            if (any(entry.flags, EntryFlags::Deleted)) {
-                continue;
+        for (uint8_t pass = 0U;
+             pass < companion_context_pass_count(query_options); ++pass) {
+            for (EntryId id = 0U; id < entries.size(); ++id) {
+                if (!work_budget.consume()) {
+                    if (out_id) {
+                        *out_id = kInvalidEntryId;
+                    }
+                    if (out) {
+                        out->clear();
+                    }
+                    return false;
+                }
+                const Entry& entry = entries[id];
+                if (!companion_context_matches(store, query_options, anchor_id,
+                                               id, pass)) {
+                    continue;
+                }
+                if (any(entry.flags, EntryFlags::Deleted)) {
+                    continue;
+                }
+                if (entry.key.kind != MetaKeyKind::IptcDataset) {
+                    continue;
+                }
+                if (entry.key.data.iptc_dataset.record != record
+                    || entry.key.data.iptc_dataset.dataset != dataset) {
+                    continue;
+                }
+                if (!iptc_value_to_text(store.arena(), entry.value, out)) {
+                    continue;
+                }
+                if (out_id) {
+                    *out_id = id;
+                }
+                return true;
             }
-            if (entry.key.kind != MetaKeyKind::IptcDataset) {
-                continue;
-            }
-            if (entry.key.data.iptc_dataset.record != record
-                || entry.key.data.iptc_dataset.dataset != dataset) {
-                continue;
-            }
-            if (!iptc_value_to_text(store.arena(), entry.value, out)) {
-                continue;
-            }
-            if (out_id) {
-                *out_id = id;
-            }
-            return true;
         }
         if (out_id) {
             *out_id = kInvalidEntryId;
@@ -2482,80 +2682,107 @@ namespace {
     }
 
     static void append_iptc_datetime_composite(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                               ConceptWorkBudget& work_budget,
                                                uint16_t date_dataset,
                                                uint16_t time_dataset,
                                                MetadataConceptRole role,
                                                uint8_t priority,
                                                MetadataConceptResolution* out)
     {
-        EntryId date_id = kInvalidEntryId;
-        EntryId time_id = kInvalidEntryId;
-        std::string date_text;
-        std::string time_text;
-        if (!find_iptc_text_entry(store, 2U, date_dataset, &date_id,
-                                  &date_text)) {
-            return;
-        }
-        if (!find_iptc_text_entry(store, 2U, time_dataset, &time_id,
-                                  &time_text)) {
-            return;
-        }
-        MetadataConceptCandidate candidate
-            = make_entry_candidate(store, date_id,
-                                   MetadataConceptKind::DateTime, role,
-                                   MetadataQuerySemanticKind::Unknown,
-                                   MetadataQueryValueShape::Text, priority);
-        candidate.text = date_text;
-        candidate.text.push_back(' ');
-        candidate.text.append(time_text);
-        if (!fill_datetime_from_text(date_text, &candidate)) {
-            return;
-        }
-        const Entry& time_entry = store.entry(time_id);
-        uint8_t hour            = 0U;
-        uint8_t minute          = 0U;
-        uint8_t second          = 0U;
-        bool has_offset         = false;
-        int16_t offset          = 0;
-        if (!fill_time_from_value(store.arena(), time_entry.value, &hour,
-                                  &minute, &second, &has_offset, &offset)) {
-            return;
-        }
-        (void)attach_time_to_candidate(&candidate, hour, minute, second,
-                                       has_offset, offset);
-        add_unique_entry(&candidate.source_entries, time_id);
-        append_candidate(out, candidate);
+        const std::span<const Entry> entries = store.entries();
+        for (EntryId date_id = 0U; date_id < entries.size(); ++date_id) {
+            if (!work_budget.consume()) {
+                return;
+            }
+            const Entry& date_entry = entries[date_id];
+            if (!metadata_scope_contains(store, query_options.scope,
+                                         date_entry)
+                || any(date_entry.flags, EntryFlags::Deleted)
+                || date_entry.key.kind != MetaKeyKind::IptcDataset
+                || date_entry.key.data.iptc_dataset.record != 2U
+                || date_entry.key.data.iptc_dataset.dataset != date_dataset) {
+                continue;
+            }
+            std::string date_text;
+            if (!iptc_value_to_text(store.arena(), date_entry.value,
+                                    &date_text)) {
+                continue;
+            }
+            EntryId time_id = kInvalidEntryId;
+            std::string time_text;
+            if (!find_iptc_text_entry(store, query_options, work_budget,
+                                      date_id, 2U,
+                                      time_dataset, &time_id, &time_text)) {
+                continue;
+            }
+            MetadataConceptCandidate candidate
+                = make_entry_candidate(store, date_id,
+                                       MetadataConceptKind::DateTime, role,
+                                       MetadataQuerySemanticKind::Unknown,
+                                       MetadataQueryValueShape::Text,
+                                       priority);
+            candidate.text = date_text;
+            candidate.text.push_back(' ');
+            candidate.text.append(time_text);
+            if (!fill_datetime_from_text(date_text, &candidate)) {
+                continue;
+            }
+            const Entry& time_entry = store.entry(time_id);
+            uint8_t hour            = 0U;
+            uint8_t minute          = 0U;
+            uint8_t second          = 0U;
+            bool has_offset         = false;
+            int16_t offset          = 0;
+            if (!fill_time_from_value(store.arena(), time_entry.value,
+                                      &hour, &minute, &second, &has_offset,
+                                      &offset)) {
+                continue;
+            }
+            (void)attach_time_to_candidate(&candidate, hour, minute, second,
+                                           has_offset, offset);
+            add_unique_entry(&candidate.source_entries, time_id);
+            append_candidate(out, candidate);
 
-        if (role == MetadataConceptRole::DateCreated) {
-            MetadataConceptCandidate created_candidate = candidate;
-            created_candidate.role     = MetadataConceptRole::Created;
-            created_candidate.priority = 85U;
-            append_candidate(out, created_candidate);
+            if (role == MetadataConceptRole::DateCreated) {
+                MetadataConceptCandidate created_candidate = candidate;
+                created_candidate.role     = MetadataConceptRole::Created;
+                created_candidate.priority = 85U;
+                append_candidate(out, created_candidate);
+            }
         }
     }
 
     static void append_datetime_candidates(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                           ConceptWorkBudget& work_budget,
                                            MetadataConceptResolution* out)
     {
         const std::span<const Entry> entries = store.entries();
         for (EntryId id = 0U; id < entries.size(); ++id) {
             const Entry& entry = entries[id];
+            if (!metadata_scope_contains(store, query_options.scope, entry)) {
+                continue;
+            }
             if (any(entry.flags, EntryFlags::Deleted)) {
                 continue;
             }
             if (entry.key.kind == MetaKeyKind::ExifTag) {
-                append_exif_datetime_candidate(store, id, entry, out);
+                append_exif_datetime_candidate(store, query_options,
+                                               work_budget, id, entry, out);
             } else if (entry.key.kind == MetaKeyKind::XmpProperty) {
                 append_xmp_datetime_candidate(store, id, entry, out);
             } else if (entry.key.kind == MetaKeyKind::IptcDataset) {
                 append_iptc_datetime_candidate(store, id, entry, out);
             }
         }
-        append_iptc_datetime_composite(store, kIptcDateCreatedDataset,
+        append_iptc_datetime_composite(store, query_options, work_budget,
+                                       kIptcDateCreatedDataset,
                                        kIptcTimeCreatedDataset,
                                        MetadataConceptRole::DateCreated, 76U,
                                        out);
-        append_iptc_datetime_composite(store, kIptcDigitalCreationDateDataset,
+        append_iptc_datetime_composite(store, query_options, work_budget,
+                                       kIptcDigitalCreationDateDataset,
                                        kIptcDigitalCreationTimeDataset,
                                        MetadataConceptRole::Digitized, 74U,
                                        out);
@@ -2863,10 +3090,11 @@ namespace {
     }
 
     static void append_exposure_candidates(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
                                            MetadataConceptResolution* out)
     {
         MetadataInterpretationResult result
-            = interpret_metadata_query(store, MetadataQueryKind::ExposureGain);
+            = interpret_metadata_query(store, MetadataQueryKind::ExposureGain, query_options);
         for (size_t i = 0U; i < result.records.size(); ++i) {
             const MetadataInterpretationRecord& record = result.records[i];
             if (record.source_entries.empty()) {
@@ -2881,6 +3109,8 @@ namespace {
             MetadataConceptCandidate candidate = make_entry_candidate(
                 store, entry_id, MetadataConceptKind::Exposure, role,
                 record.semantic, record.shape, record.confidence);
+                candidate.total_numeric_values = record.total_numeric_values;
+                candidate.numeric_status = record.numeric_status;
             candidate.source_entries.clear();
             for (size_t e = 0U; e < record.source_entries.size(); ++e) {
                 add_unique_entry(&candidate.source_entries,
@@ -3095,23 +3325,42 @@ namespace {
         if (!candidate) {
             return;
         }
-        if (!record.has_values || record.values.empty()) {
-            return;
+        if (record.has_values && !record.values.empty()) {
+            fill_values_candidate(candidate, record.values);
+            if (record.numeric_status == MetadataQueryNumericStatus::Complete) {
+                candidate->value_key = values_key(record.values);
+            }
         }
-        fill_values_candidate(candidate, record.values);
-        candidate->value_key = values_key(record.values);
+        candidate->total_numeric_values = record.total_numeric_values;
+        candidate->numeric_status = record.numeric_status;
+        candidate->components = record.components;
+        candidate->coordinate_basis = record.coordinate_basis;
     }
 
     typedef MetadataConceptRole (*ConceptRoleFromSemanticFn)(
         MetadataQuerySemanticKind) noexcept;
 
     static void append_query_concept_candidates(
-        const MetaStore& store, MetadataQueryKind query_kind,
+        const MetaStore& store,
+                            const MetadataQueryOptions& query_options, MetadataQueryKind query_kind,
         MetadataConceptKind concept_kind, ConceptRoleFromSemanticFn role_fn,
         uint8_t default_priority, MetadataConceptResolution* out)
     {
+        MetadataQueryOptions remaining = query_options;
+        if (query_options.max_total_values != 0U) {
+            if (out->returned_numeric_values >= query_options.max_total_values) {
+                remaining.include_numeric_values = false;
+            } else {
+                remaining.max_total_values = query_options.max_total_values
+                                             - out->returned_numeric_values;
+            }
+        }
         MetadataInterpretationResult result
-            = interpret_metadata_query(store, query_kind);
+            = interpret_metadata_query(store, query_kind, remaining);
+        out->total_numeric_values += result.total_numeric_values;
+        out->returned_numeric_values += result.returned_numeric_values;
+        out->numeric_values_limited |= result.numeric_values_limited;
+        out->has_invalid_numeric_values |= result.has_invalid_numeric_values;
         for (size_t i = 0U; i < result.records.size(); ++i) {
             const MetadataInterpretationRecord& record = result.records[i];
             if (!role_fn || record.source_entries.empty()) {
@@ -3126,6 +3375,8 @@ namespace {
                 store, entry_id, concept_kind, role, record.semantic,
                 record.shape,
                 record.confidence != 0U ? record.confidence : default_priority);
+                candidate.total_numeric_values = record.total_numeric_values;
+                candidate.numeric_status = record.numeric_status;
             candidate.source_entries.clear();
             for (size_t e = 0U; e < record.source_entries.size(); ++e) {
                 add_unique_entry(&candidate.source_entries,
@@ -3138,11 +3389,25 @@ namespace {
 
     static void
     append_color_query_concept_candidates(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
                                           MetadataQueryKind query_kind,
                                           MetadataConceptResolution* out)
     {
+        MetadataQueryOptions remaining = query_options;
+        if (query_options.max_total_values != 0U) {
+            if (out->returned_numeric_values >= query_options.max_total_values) {
+                remaining.include_numeric_values = false;
+            } else {
+                remaining.max_total_values = query_options.max_total_values
+                                             - out->returned_numeric_values;
+            }
+        }
         MetadataInterpretationResult result
-            = interpret_metadata_query(store, query_kind);
+            = interpret_metadata_query(store, query_kind, remaining);
+        out->total_numeric_values += result.total_numeric_values;
+        out->returned_numeric_values += result.returned_numeric_values;
+        out->numeric_values_limited |= result.numeric_values_limited;
+        out->has_invalid_numeric_values |= result.has_invalid_numeric_values;
         for (size_t i = 0U; i < result.records.size(); ++i) {
             const MetadataInterpretationRecord& record = result.records[i];
             if (record.source_entries.empty()) {
@@ -3158,6 +3423,8 @@ namespace {
                 store, entry_id, MetadataConceptKind::ColorProfile, role,
                 record.semantic, record.shape,
                 record.confidence != 0U ? record.confidence : 60U);
+                candidate.total_numeric_values = record.total_numeric_values;
+                candidate.numeric_status = record.numeric_status;
             candidate.source_entries.clear();
             for (size_t e = 0U; e < record.source_entries.size(); ++e) {
                 add_unique_entry(&candidate.source_entries,
@@ -3170,28 +3437,31 @@ namespace {
 
     static void
     append_color_interpretation_candidates(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
                                            MetadataConceptResolution* out)
     {
-        append_color_query_concept_candidates(store, MetadataQueryKind::Color,
+        append_color_query_concept_candidates(store, query_options, MetadataQueryKind::Color,
                                               out);
-        append_color_query_concept_candidates(store,
+        append_color_query_concept_candidates(store, query_options,
                                               MetadataQueryKind::WhiteBalance,
                                               out);
     }
 
     static void append_lens_correction_candidates(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
                                                   MetadataConceptResolution* out)
     {
-        append_query_concept_candidates(store,
+        append_query_concept_candidates(store, query_options,
                                         MetadataQueryKind::LensCorrection,
                                         MetadataConceptKind::LensCorrection,
                                         lens_role_from_semantic, 70U, out);
     }
 
     static void append_raw_processing_candidates(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
                                                  MetadataConceptResolution* out)
     {
-        append_query_concept_candidates(store, MetadataQueryKind::RawProcessing,
+        append_query_concept_candidates(store, query_options, MetadataQueryKind::RawProcessing,
                                         MetadataConceptKind::RawProcessing,
                                         raw_role_from_semantic, 70U, out);
     }
@@ -3294,12 +3564,16 @@ namespace {
     }
 
     static void append_color_profile_candidates(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
                                                 MetadataConceptResolution* out)
     {
-        append_color_interpretation_candidates(store, out);
+        append_color_interpretation_candidates(store, query_options, out);
         const std::span<const Entry> entries = store.entries();
         for (EntryId id = 0U; id < entries.size(); ++id) {
             const Entry& entry = entries[id];
+            if (!metadata_scope_contains(store, query_options.scope, entry)) {
+                continue;
+            }
             if (any(entry.flags, EntryFlags::Deleted)) {
                 continue;
             }
@@ -3397,20 +3671,19 @@ namespace {
                             candidate->rect);
         fill_quad_candidate(record.has_margins, record.margins,
                             &candidate->has_margins, candidate->margins);
-        if (record.has_values && !record.values.empty()) {
-            fill_values_candidate(candidate, record.values);
-        }
+        copy_interpretation_values(record, candidate);
         candidate->value_key = geometry_key(*candidate);
     }
 
     static void append_geometry_candidates(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
                                            MetadataConceptResolution* out)
     {
         if (!out) {
             return;
         }
         MetadataInterpretationResult result
-            = interpret_metadata_query(store, MetadataQueryKind::Crop);
+            = interpret_metadata_query(store, MetadataQueryKind::Crop, query_options);
         for (size_t i = 0U; i < result.records.size(); ++i) {
             const MetadataInterpretationRecord& record = result.records[i];
             const MetadataConceptRole role = geometry_role_from_semantic(
@@ -3428,6 +3701,8 @@ namespace {
             MetadataConceptCandidate candidate = make_entry_candidate(
                 store, entry_id, MetadataConceptKind::Geometry, role,
                 record.semantic, record.shape, record.confidence);
+                candidate.total_numeric_values = record.total_numeric_values;
+                candidate.numeric_status = record.numeric_status;
             candidate.source_entries.clear();
             for (size_t e = 0U; e < record.source_entries.size(); ++e) {
                 add_unique_entry(&candidate.source_entries,
@@ -3477,7 +3752,10 @@ namespace {
         ref->assign(normalized);
     }
 
-    static void append_exif_gps_candidate(const MetaStore& store, EntryId id,
+    static void append_exif_gps_candidate(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                          ConceptWorkBudget& work_budget,
+                                          EntryId id,
                                           const Entry& entry,
                                           MetadataConceptResolution* out)
     {
@@ -3489,8 +3767,9 @@ namespace {
         if (entry.key.data.exif_tag.tag == kGpsLatitudeTag) {
             EntryId ref_id = kInvalidEntryId;
             std::string ref;
-            (void)find_exif_text_entry(store, "gpsifd", kGpsLatitudeRefTag,
-                                       &ref_id, &ref);
+            (void)find_exif_text_entry(store, query_options, work_budget, id,
+                                       "gpsifd",
+                                       kGpsLatitudeRefTag, &ref_id, &ref);
             normalize_gps_coordinate_ref(&ref, &ref_id, 'N', 'S');
             double value = 0.0;
             if (gps_coordinate_from_value(store, entry.value, ref, &value)) {
@@ -3501,8 +3780,9 @@ namespace {
         } else if (entry.key.data.exif_tag.tag == kGpsLongitudeTag) {
             EntryId ref_id = kInvalidEntryId;
             std::string ref;
-            (void)find_exif_text_entry(store, "gpsifd", kGpsLongitudeRefTag,
-                                       &ref_id, &ref);
+            (void)find_exif_text_entry(store, query_options, work_budget, id,
+                                       "gpsifd",
+                                       kGpsLongitudeRefTag, &ref_id, &ref);
             normalize_gps_coordinate_ref(&ref, &ref_id, 'E', 'W');
             double value = 0.0;
             if (gps_coordinate_from_value(store, entry.value, ref, &value)) {
@@ -3513,8 +3793,10 @@ namespace {
         } else if (entry.key.data.exif_tag.tag == kGpsDestLatitudeTag) {
             EntryId ref_id = kInvalidEntryId;
             std::string ref;
-            (void)find_exif_text_entry(store, "gpsifd", kGpsDestLatitudeRefTag,
-                                       &ref_id, &ref);
+            (void)find_exif_text_entry(store, query_options, work_budget, id,
+                                       "gpsifd",
+                                       kGpsDestLatitudeRefTag, &ref_id,
+                                       &ref);
             normalize_gps_coordinate_ref(&ref, &ref_id, 'N', 'S');
             double value = 0.0;
             if (gps_coordinate_from_value(store, entry.value, ref, &value)) {
@@ -3525,8 +3807,10 @@ namespace {
         } else if (entry.key.data.exif_tag.tag == kGpsDestLongitudeTag) {
             EntryId ref_id = kInvalidEntryId;
             std::string ref;
-            (void)find_exif_text_entry(store, "gpsifd", kGpsDestLongitudeRefTag,
-                                       &ref_id, &ref);
+            (void)find_exif_text_entry(store, query_options, work_budget, id,
+                                       "gpsifd",
+                                       kGpsDestLongitudeRefTag, &ref_id,
+                                       &ref);
             normalize_gps_coordinate_ref(&ref, &ref_id, 'E', 'W');
             double value = 0.0;
             if (gps_coordinate_from_value(store, entry.value, ref, &value)) {
@@ -3540,9 +3824,9 @@ namespace {
                 == 1U) {
                 double ref         = 0.0;
                 EntryId ref_id     = kInvalidEntryId;
-                const bool has_ref = find_exif_numeric_entry(store, "gpsifd",
-                                                             kGpsAltitudeRefTag,
-                                                             &ref_id, &ref);
+                const bool has_ref = find_exif_numeric_entry(
+                    store, query_options, work_budget, id, "gpsifd",
+                    kGpsAltitudeRefTag, &ref_id, &ref);
                 const bool below_sea_level = has_ref && ref > 0.0;
                 if (below_sea_level) {
                     value = -std::fabs(value);
@@ -3590,6 +3874,9 @@ namespace {
     }
 
     static bool find_xmp_gps_altitude_ref(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                          ConceptWorkBudget& work_budget,
+                                          EntryId anchor_id,
                                           std::string_view schema,
                                           std::string_view scope,
                                           EntryId* out_id,
@@ -3602,70 +3889,92 @@ namespace {
             *out_ref_code = 0U;
         }
         const std::span<const Entry> entries = store.entries();
-        for (EntryId id = 0U; id < entries.size(); ++id) {
-            const Entry& entry = entries[id];
-            if (any(entry.flags, EntryFlags::Deleted)) {
-                continue;
-            }
-            if (!xmp_schema_matches(store, entry, schema)) {
-                continue;
-            }
-            const std::string_view path
-                = arena_string(store.arena(),
-                               entry.key.data.xmp_property.property_path);
-            if (xmp_property_scope(path) != scope
-                || !xmp_leaf_matches(path, "GPSAltitudeRef")) {
-                continue;
-            }
+        for (uint8_t pass = 0U;
+             pass < companion_context_pass_count(query_options); ++pass) {
+            for (EntryId id = 0U; id < entries.size(); ++id) {
+                if (!work_budget.consume()) {
+                    return false;
+                }
+                const Entry& entry = entries[id];
+                if (!companion_context_matches(store, query_options, anchor_id,
+                                               id, pass)) {
+                    continue;
+                }
+                if (any(entry.flags, EntryFlags::Deleted)
+                    || !xmp_schema_matches(store, entry, schema)) {
+                    continue;
+                }
+                const std::string_view path
+                    = arena_string(store.arena(),
+                                   entry.key.data.xmp_property.property_path);
+                if (xmp_property_scope(path) != scope
+                    || !xmp_leaf_matches(path, "GPSAltitudeRef")) {
+                    continue;
+                }
 
-            double numeric = 0.0;
-            if (value_to_numeric_array(store.arena(), entry.value, &numeric, 1U)
-                == 1U) {
+                double numeric = 0.0;
+                if (value_to_numeric_array(store.arena(), entry.value,
+                                           &numeric, 1U)
+                    == 1U) {
+                    if (out_id) {
+                        *out_id = id;
+                    }
+                    if (out_ref_code) {
+                        *out_ref_code = numeric > 0.0 ? 1U : 0U;
+                    }
+                    return true;
+                }
+
+                std::string text;
+                if (!value_to_text(store.arena(), entry.value, &text)) {
+                    continue;
+                }
+                std::string key;
+                normalize_text_key(text, &key);
+                uint8_t ref_code = 0U;
+                if (!key.empty() && key[0] == '1') {
+                    ref_code = 1U;
+                } else if (ascii_contains_ci(key, "below")
+                           || ascii_contains_ci(key, "sealevelbelow")) {
+                    ref_code = 1U;
+                }
                 if (out_id) {
                     *out_id = id;
                 }
                 if (out_ref_code) {
-                    *out_ref_code = numeric > 0.0 ? 1U : 0U;
+                    *out_ref_code = ref_code;
                 }
                 return true;
             }
-
-            std::string text;
-            if (!value_to_text(store.arena(), entry.value, &text)) {
-                continue;
-            }
-            std::string key;
-            normalize_text_key(text, &key);
-            uint8_t ref_code = 0U;
-            if (!key.empty() && key[0] == '1') {
-                ref_code = 1U;
-            } else if (ascii_contains_ci(key, "below")
-                       || ascii_contains_ci(key, "sealevelbelow")) {
-                ref_code = 1U;
-            }
-            if (out_id) {
-                *out_id = id;
-            }
-            if (out_ref_code) {
-                *out_ref_code = ref_code;
-            }
-            return true;
         }
         return false;
     }
 
     static bool xmp_leaf_entry_exists(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                      ConceptWorkBudget& work_budget,
                                       std::string_view schema,
                                       std::string_view scope,
                                       std::string_view path_leaf,
+                                      EntryId anchor_id,
                                       EntryId skip_id) noexcept
     {
         const std::span<const Entry> entries = store.entries();
         for (EntryId id = 0U; id < entries.size(); ++id) {
+            if (!work_budget.consume()) {
+                return false;
+            }
             if (id == skip_id) {
                 continue;
             }
             const Entry& entry = entries[id];
+            if (!companion_context_matches(store, query_options, anchor_id, id,
+                                           0U)
+                && !(companion_context_pass_count(query_options) > 1U
+                     && companion_context_matches(store, query_options,
+                                                  anchor_id, id, 1U))) {
+                continue;
+            }
             if (any(entry.flags, EntryFlags::Deleted)) {
                 continue;
             }
@@ -3683,7 +3992,10 @@ namespace {
         return false;
     }
 
-    static void append_xmp_gps_candidate(const MetaStore& store, EntryId id,
+    static void append_xmp_gps_candidate(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                         ConceptWorkBudget& work_budget,
+                                         EntryId id,
                                          const Entry& entry,
                                          MetadataConceptResolution* out)
     {
@@ -3731,8 +4043,9 @@ namespace {
                     EntryId ref_id   = kInvalidEntryId;
                     uint8_t ref_code = 0U;
                     const bool has_ref
-                        = find_xmp_gps_altitude_ref(store, kIptcExtXmpSchema,
-                                                    scope, &ref_id, &ref_code);
+                        = find_xmp_gps_altitude_ref(
+                            store, query_options, work_budget, id,
+                            kIptcExtXmpSchema, scope, &ref_id, &ref_code);
                     if (has_ref && ref_code != 0U) {
                         numeric = -std::fabs(numeric);
                     }
@@ -3759,10 +4072,13 @@ namespace {
         const bool split_date_stamp   = xmp_leaf_matches(path, "GPSDateStamp");
         const bool split_time_stamp   = xmp_leaf_matches(path, "GPSTimeStamp");
         if ((split_date_stamp
-             && xmp_leaf_entry_exists(store, schema, scope, "GPSTimeStamp", id))
+             && xmp_leaf_entry_exists(store, query_options, work_budget,
+                                      schema, scope,
+                                      "GPSTimeStamp", id, id))
             || (split_time_stamp
-                && xmp_leaf_entry_exists(store, schema, scope, "GPSDateStamp",
-                                         id))) {
+                && xmp_leaf_entry_exists(store, query_options, work_budget,
+                                         schema, scope,
+                                         "GPSDateStamp", id, id))) {
             return;
         }
         MetadataConceptRole role = MetadataConceptRole::Primary;
@@ -3822,9 +4138,9 @@ namespace {
             if (parse_xmp_gps_coordinate(text, &numeric)) {
                 EntryId ref_id     = kInvalidEntryId;
                 uint8_t ref_code   = 0U;
-                const bool has_ref = find_xmp_gps_altitude_ref(store, schema,
-                                                               scope, &ref_id,
-                                                               &ref_code);
+                const bool has_ref = find_xmp_gps_altitude_ref(
+                    store, query_options, work_budget, id, schema, scope,
+                    &ref_id, &ref_code);
                 if (has_ref && ref_code != 0U) {
                     numeric = -std::fabs(numeric);
                 }
@@ -3851,111 +4167,195 @@ namespace {
 
     static void
     append_exif_gps_timestamp_composite(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                        ConceptWorkBudget& work_budget,
                                         MetadataConceptResolution* out)
     {
-        EntryId date_id = kInvalidEntryId;
-        EntryId time_id = kInvalidEntryId;
-        std::string date_text;
-        if (!find_exif_text_entry(store, "gpsifd", kGpsDateStampTag, &date_id,
-                                  &date_text)) {
-            return;
+        const std::span<const Entry> entries = store.entries();
+        for (EntryId date_id = 0U; date_id < entries.size(); ++date_id) {
+            if (!work_budget.consume()) {
+                return;
+            }
+            const Entry& date_entry = entries[date_id];
+            if (!metadata_scope_contains(store, query_options.scope,
+                                         date_entry)
+                || any(date_entry.flags, EntryFlags::Deleted)
+                || !exif_entry_ifd_and_tag(store, date_entry, "gpsifd",
+                                           kGpsDateStampTag)) {
+                continue;
+            }
+            std::string date_text;
+            if (!value_to_text(store.arena(), date_entry.value, &date_text)
+                && !byte_value_to_ascii_field(store.arena(), date_entry.value,
+                                              &date_text)) {
+                continue;
+            }
+            MetadataConceptCandidate candidate
+                = make_entry_candidate(store, date_id, MetadataConceptKind::Gps,
+                                       MetadataConceptRole::Timestamp,
+                                       MetadataQuerySemanticKind::Unknown,
+                                       MetadataQueryValueShape::Text, 90U);
+            candidate.text = date_text;
+            if (!fill_datetime_from_text(date_text, &candidate)) {
+                continue;
+            }
+            EntryId time_id = kInvalidEntryId;
+            uint8_t hour    = 0U;
+            uint8_t minute  = 0U;
+            uint8_t second  = 0U;
+            if (!find_exif_time_entry(store, query_options, work_budget,
+                                      date_id, "gpsifd",
+                                      kGpsTimeStampTag, &time_id, &hour,
+                                      &minute, &second)) {
+                continue;
+            }
+            char time_buf[16];
+            std::snprintf(time_buf, sizeof(time_buf), " %02u:%02u:%02uZ",
+                          static_cast<unsigned>(hour),
+                          static_cast<unsigned>(minute),
+                          static_cast<unsigned>(second));
+            candidate.text.append(time_buf);
+            (void)attach_time_to_candidate(&candidate, hour, minute, second,
+                                           true, 0);
+            add_unique_entry(&candidate.source_entries, time_id);
+            append_candidate(out, candidate);
         }
-        uint8_t hour   = 0U;
-        uint8_t minute = 0U;
-        uint8_t second = 0U;
-        if (!find_exif_time_entry(store, "gpsifd", kGpsTimeStampTag, &time_id,
-                                  &hour, &minute, &second)) {
-            return;
-        }
-
-        MetadataConceptCandidate candidate
-            = make_entry_candidate(store, date_id, MetadataConceptKind::Gps,
-                                   MetadataConceptRole::Timestamp,
-                                   MetadataQuerySemanticKind::Unknown,
-                                   MetadataQueryValueShape::Text, 90U);
-        candidate.text = date_text;
-        char time_buf[16];
-        std::snprintf(time_buf, sizeof(time_buf), " %02u:%02u:%02uZ",
-                      static_cast<unsigned>(hour),
-                      static_cast<unsigned>(minute),
-                      static_cast<unsigned>(second));
-        candidate.text.append(time_buf);
-        if (!fill_datetime_from_text(date_text, &candidate)) {
-            return;
-        }
-        (void)attach_time_to_candidate(&candidate, hour, minute, second, true,
-                                       0);
-        add_unique_entry(&candidate.source_entries, time_id);
-        append_candidate(out, candidate);
     }
 
     static void
     append_exif_gps_time_only_candidate(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                        ConceptWorkBudget& work_budget,
                                         MetadataConceptResolution* out)
     {
-        EntryId date_id = kInvalidEntryId;
-        std::string date_text;
-        if (find_exif_text_entry(store, "gpsifd", kGpsDateStampTag, &date_id,
-                                 &date_text)) {
-            MetadataConceptCandidate date_candidate;
-            if (fill_datetime_from_text(date_text, &date_candidate)) {
+        const std::span<const Entry> entries = store.entries();
+        for (EntryId time_id = 0U; time_id < entries.size(); ++time_id) {
+            if (!work_budget.consume()) {
                 return;
             }
-        }
+            const Entry& time_entry = entries[time_id];
+            if (!metadata_scope_contains(store, query_options.scope,
+                                         time_entry)
+                || any(time_entry.flags, EntryFlags::Deleted)
+                || !exif_entry_ifd_and_tag(store, time_entry, "gpsifd",
+                                           kGpsTimeStampTag)) {
+                continue;
+            }
+            uint8_t hour   = 0U;
+            uint8_t minute = 0U;
+            uint8_t second = 0U;
+            bool has_offset = false;
+            int16_t offset = 0;
+            if (!fill_time_from_value(store.arena(), time_entry.value, &hour,
+                                      &minute, &second, &has_offset,
+                                      &offset)) {
+                continue;
+            }
 
-        EntryId time_id = kInvalidEntryId;
-        uint8_t hour    = 0U;
-        uint8_t minute  = 0U;
-        uint8_t second  = 0U;
-        if (!find_exif_time_entry(store, "gpsifd", kGpsTimeStampTag, &time_id,
-                                  &hour, &minute, &second)) {
-            return;
-        }
+            bool has_valid_date = false;
+            for (EntryId date_id = 0U; date_id < entries.size(); ++date_id) {
+                if (!work_budget.consume()) {
+                    return;
+                }
+                const Entry& date_entry = entries[date_id];
+                bool matches_context = false;
+                for (uint8_t pass = 0U;
+                     pass < companion_context_pass_count(query_options);
+                     ++pass) {
+                    if (companion_context_matches(store, query_options,
+                                                  time_id, date_id, pass)) {
+                        matches_context = true;
+                        break;
+                    }
+                }
+                if (!matches_context
+                    || any(date_entry.flags, EntryFlags::Deleted)
+                    || !exif_entry_ifd_and_tag(store, date_entry, "gpsifd",
+                                               kGpsDateStampTag)) {
+                    continue;
+                }
+                std::string date_text;
+                if ((!value_to_text(store.arena(), date_entry.value,
+                                    &date_text)
+                     && !byte_value_to_ascii_field(store.arena(),
+                                                   date_entry.value,
+                                                   &date_text))) {
+                    continue;
+                }
+                MetadataConceptCandidate date_candidate;
+                if (fill_datetime_from_text(date_text, &date_candidate)) {
+                    has_valid_date = true;
+                    break;
+                }
+            }
+            if (has_valid_date) {
+                continue;
+            }
 
-        MetadataConceptCandidate candidate
-            = make_entry_candidate(store, time_id, MetadataConceptKind::Gps,
-                                   MetadataConceptRole::Timestamp,
-                                   MetadataQuerySemanticKind::Unknown,
-                                   MetadataQueryValueShape::Text, 75U);
-        char time_buf[16];
-        std::snprintf(time_buf, sizeof(time_buf), "%02u:%02u:%02uZ",
-                      static_cast<unsigned>(hour),
-                      static_cast<unsigned>(minute),
-                      static_cast<unsigned>(second));
-        candidate.text.assign(time_buf);
-        normalize_text_key(candidate.text, &candidate.value_key);
-        append_candidate(out, candidate);
+            MetadataConceptCandidate candidate
+                = make_entry_candidate(store, time_id, MetadataConceptKind::Gps,
+                                       MetadataConceptRole::Timestamp,
+                                       MetadataQuerySemanticKind::Unknown,
+                                       MetadataQueryValueShape::Text, 75U);
+            char time_buf[16];
+            std::snprintf(time_buf, sizeof(time_buf), "%02u:%02u:%02uZ",
+                          static_cast<unsigned>(hour),
+                          static_cast<unsigned>(minute),
+                          static_cast<unsigned>(second));
+            candidate.text.assign(time_buf);
+            normalize_text_key(candidate.text, &candidate.value_key);
+            append_candidate(out, candidate);
+        }
     }
 
     static bool find_xmp_text_entry_leaf(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                         ConceptWorkBudget& work_budget,
+                                         EntryId anchor_id,
                                          std::string_view schema,
                                          std::string_view scope,
                                          std::string_view path_leaf,
                                          EntryId* out_id, std::string* out)
     {
         const std::span<const Entry> entries = store.entries();
-        for (EntryId id = 0U; id < entries.size(); ++id) {
-            const Entry& entry = entries[id];
-            if (any(entry.flags, EntryFlags::Deleted)) {
-                continue;
+        for (uint8_t pass = 0U;
+             pass < companion_context_pass_count(query_options); ++pass) {
+            for (EntryId id = 0U; id < entries.size(); ++id) {
+                if (!work_budget.consume()) {
+                    if (out_id) {
+                        *out_id = kInvalidEntryId;
+                    }
+                    if (out) {
+                        out->clear();
+                    }
+                    return false;
+                }
+                const Entry& entry = entries[id];
+                if (!companion_context_matches(store, query_options, anchor_id,
+                                               id, pass)) {
+                    continue;
+                }
+                if (any(entry.flags, EntryFlags::Deleted)) {
+                    continue;
+                }
+                if (!xmp_schema_matches(store, entry, schema)) {
+                    continue;
+                }
+                const std::string_view path
+                    = arena_string(store.arena(),
+                                   entry.key.data.xmp_property.property_path);
+                if (xmp_property_scope(path) != scope
+                    || !xmp_leaf_matches(path, path_leaf)) {
+                    continue;
+                }
+                if (!value_to_text(store.arena(), entry.value, out)) {
+                    continue;
+                }
+                if (out_id) {
+                    *out_id = id;
+                }
+                return true;
             }
-            if (!xmp_schema_matches(store, entry, schema)) {
-                continue;
-            }
-            const std::string_view path
-                = arena_string(store.arena(),
-                               entry.key.data.xmp_property.property_path);
-            if (xmp_property_scope(path) != scope
-                || !xmp_leaf_matches(path, path_leaf)) {
-                continue;
-            }
-            if (!value_to_text(store.arena(), entry.value, out)) {
-                continue;
-            }
-            if (out_id) {
-                *out_id = id;
-            }
-            return true;
         }
         if (out_id) {
             *out_id = kInvalidEntryId;
@@ -3968,11 +4368,19 @@ namespace {
 
     static void
     append_xmp_gps_timestamp_composite(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                       ConceptWorkBudget& work_budget,
                                        MetadataConceptResolution* out)
     {
         const std::span<const Entry> entries = store.entries();
         for (EntryId date_id = 0U; date_id < entries.size(); ++date_id) {
+            if (!work_budget.consume()) {
+                return;
+            }
             const Entry& date_entry = entries[date_id];
+            if (!metadata_scope_contains(store, query_options.scope, date_entry)) {
+                continue;
+            }
             if (any(date_entry.flags, EntryFlags::Deleted)
                 || !xmp_schema_matches(store, date_entry, kExifXmpSchema)) {
                 continue;
@@ -3991,9 +4399,10 @@ namespace {
             const std::string_view scope = xmp_property_scope(date_path);
             EntryId time_id              = kInvalidEntryId;
             std::string time_text;
-            if (!find_xmp_text_entry_leaf(store, kExifXmpSchema, scope,
-                                          "GPSTimeStamp", &time_id,
-                                          &time_text)) {
+            if (!find_xmp_text_entry_leaf(
+                    store, query_options, work_budget, date_id,
+                    kExifXmpSchema, scope,
+                    "GPSTimeStamp", &time_id, &time_text)) {
                 continue;
             }
 
@@ -4030,23 +4439,33 @@ namespace {
     }
 
     static void append_gps_candidates(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                      ConceptWorkBudget& work_budget,
                                       MetadataConceptResolution* out)
     {
         const std::span<const Entry> entries = store.entries();
         for (EntryId id = 0U; id < entries.size(); ++id) {
             const Entry& entry = entries[id];
+            if (!metadata_scope_contains(store, query_options.scope, entry)) {
+                continue;
+            }
             if (any(entry.flags, EntryFlags::Deleted)) {
                 continue;
             }
             if (entry.key.kind == MetaKeyKind::ExifTag) {
-                append_exif_gps_candidate(store, id, entry, out);
+                append_exif_gps_candidate(store, query_options, work_budget,
+                                          id, entry, out);
             } else if (entry.key.kind == MetaKeyKind::XmpProperty) {
-                append_xmp_gps_candidate(store, id, entry, out);
+                append_xmp_gps_candidate(store, query_options, work_budget,
+                                         id, entry, out);
             }
         }
-        append_exif_gps_timestamp_composite(store, out);
-        append_exif_gps_time_only_candidate(store, out);
-        append_xmp_gps_timestamp_composite(store, out);
+        append_exif_gps_timestamp_composite(store, query_options, work_budget,
+                                            out);
+        append_exif_gps_time_only_candidate(store, query_options, work_budget,
+                                            out);
+        append_xmp_gps_timestamp_composite(store, query_options, work_budget,
+                                           out);
     }
 
     static bool descriptive_role_is_collection(MetadataConceptRole role) noexcept
@@ -4995,50 +5414,71 @@ namespace {
     }
 
     static void append_iptc_editorial_schedule_candidate(
-        const MetaStore& store, uint16_t date_dataset, uint16_t time_dataset,
+        const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+        ConceptWorkBudget& work_budget, uint16_t date_dataset,
+        uint16_t time_dataset,
         MetadataConceptRole role, MetadataConceptResolution* out)
     {
-        EntryId date_id = kInvalidEntryId;
-        EntryId time_id = kInvalidEntryId;
-        std::string date_text;
-        std::string time_text;
-        if (!find_iptc_text_entry(store, 2U, date_dataset, &date_id,
-                                  &date_text)) {
-            return;
-        }
-
-        MetadataConceptCandidate candidate = make_entry_candidate(
-            store, date_id, MetadataConceptKind::Descriptive, role,
-            MetadataQuerySemanticKind::Editorial,
-            MetadataQueryValueShape::Text, 86U);
-        candidate.record_kind  = MetadataConceptRecordKind::EditorialWorkflow;
-        candidate.record_scope = "EditorialWorkflow";
-        candidate.text         = date_text;
-        if (!fill_datetime_from_text(date_text, &candidate)) {
-            normalize_text_key(date_text, &candidate.value_key);
-            if (!candidate.value_key.empty()) {
-                append_candidate(out, candidate);
+        const std::span<const Entry> entries = store.entries();
+        for (EntryId date_id = 0U; date_id < entries.size(); ++date_id) {
+            if (!work_budget.consume()) {
+                return;
             }
-            return;
-        }
-
-        if (find_iptc_text_entry(store, 2U, time_dataset, &time_id, &time_text)) {
-            const Entry& time_entry = store.entry(time_id);
-            uint8_t hour            = 0U;
-            uint8_t minute          = 0U;
-            uint8_t second          = 0U;
-            bool has_offset         = false;
-            int16_t offset          = 0;
-            if (fill_time_from_value(store.arena(), time_entry.value, &hour,
-                                     &minute, &second, &has_offset, &offset)) {
-                candidate.text.push_back(' ');
-                candidate.text.append(time_text);
-                (void)attach_time_to_candidate(&candidate, hour, minute, second,
-                                               has_offset, offset);
-                add_unique_entry(&candidate.source_entries, time_id);
+            const Entry& date_entry = entries[date_id];
+            if (!metadata_scope_contains(store, query_options.scope,
+                                         date_entry)
+                || any(date_entry.flags, EntryFlags::Deleted)
+                || date_entry.key.kind != MetaKeyKind::IptcDataset
+                || date_entry.key.data.iptc_dataset.record != 2U
+                || date_entry.key.data.iptc_dataset.dataset != date_dataset) {
+                continue;
             }
+            std::string date_text;
+            if (!iptc_value_to_text(store.arena(), date_entry.value,
+                                    &date_text)) {
+                continue;
+            }
+
+            MetadataConceptCandidate candidate = make_entry_candidate(
+                store, date_id, MetadataConceptKind::Descriptive, role,
+                MetadataQuerySemanticKind::Editorial,
+                MetadataQueryValueShape::Text, 86U);
+            candidate.record_kind =
+                MetadataConceptRecordKind::EditorialWorkflow;
+            candidate.record_scope = "EditorialWorkflow";
+            candidate.text = date_text;
+            if (!fill_datetime_from_text(date_text, &candidate)) {
+                normalize_text_key(date_text, &candidate.value_key);
+                if (!candidate.value_key.empty()) {
+                    append_candidate(out, candidate);
+                }
+                continue;
+            }
+
+            EntryId time_id = kInvalidEntryId;
+            std::string time_text;
+            if (find_iptc_text_entry(store, query_options, work_budget,
+                                     date_id, 2U, time_dataset, &time_id,
+                                     &time_text)) {
+                const Entry& time_entry = store.entry(time_id);
+                uint8_t hour = 0U;
+                uint8_t minute = 0U;
+                uint8_t second = 0U;
+                bool has_offset = false;
+                int16_t offset = 0;
+                if (fill_time_from_value(store.arena(), time_entry.value,
+                                         &hour, &minute, &second,
+                                         &has_offset, &offset)) {
+                    candidate.text.push_back(' ');
+                    candidate.text.append(time_text);
+                    (void)attach_time_to_candidate(
+                        &candidate, hour, minute, second, has_offset, offset);
+                    add_unique_entry(&candidate.source_entries, time_id);
+                }
+            }
+            append_candidate(out, candidate);
         }
-        append_candidate(out, candidate);
     }
 
     static void
@@ -6559,11 +6999,16 @@ namespace {
     }
 
     static void append_descriptive_candidates(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
+                                              ConceptWorkBudget& work_budget,
                                               MetadataConceptResolution* out)
     {
         const std::span<const Entry> entries = store.entries();
         for (EntryId id = 0U; id < entries.size(); ++id) {
             const Entry& entry = entries[id];
+            if (!metadata_scope_contains(store, query_options.scope, entry)) {
+                continue;
+            }
             if (any(entry.flags, EntryFlags::Deleted)) {
                 continue;
             }
@@ -6581,20 +7026,26 @@ namespace {
             }
         }
         append_iptc_editorial_schedule_candidate(
-            store, kIptcReleaseDateDataset, kIptcReleaseTimeDataset,
+            store, query_options, work_budget, kIptcReleaseDateDataset,
+            kIptcReleaseTimeDataset,
             MetadataConceptRole::EditorialReleaseDate, out);
         append_iptc_editorial_schedule_candidate(
-            store, kIptcExpirationDateDataset, kIptcExpirationTimeDataset,
+            store, query_options, work_budget, kIptcExpirationDateDataset,
+            kIptcExpirationTimeDataset,
             MetadataConceptRole::EditorialExpirationDate, out);
         append_image_region_boundary_geometries(store, out);
     }
 
     static void append_container_graph_candidates(const MetaStore& store,
+                            const MetadataQueryOptions& query_options,
                                                   MetadataConceptResolution* out)
     {
         const std::span<const Entry> entries = store.entries();
         for (EntryId id = 0U; id < entries.size(); ++id) {
             const Entry& entry = entries[id];
+            if (!metadata_scope_contains(store, query_options.scope, entry)) {
+                continue;
+            }
             if (any(entry.flags, EntryFlags::Deleted)
                 || entry.key.kind != MetaKeyKind::BmffField) {
                 continue;
@@ -6790,11 +7241,37 @@ namespace {
                >= static_cast<uint8_t>(MetadataConceptRole::Title);
     }
 
+    static bool candidates_share_image_scope(
+        const MetadataConceptCandidate& a, const MetadataConceptCandidate& b,
+        const MetadataQueryScope& scope) noexcept
+    {
+        if (scope.enabled) {
+            return true;
+        }
+        if (a.source_block != b.source_block) {
+            return false;
+        }
+        if (a.source_block == kInvalidBlockId) {
+            return true;
+        }
+        return a.source_ifd == b.source_ifd;
+    }
+
+    static bool candidate_values_usable(const MetadataConceptCandidate& candidate) noexcept
+    {
+        return candidate.numeric_status != MetadataQueryNumericStatus::Partial
+               && candidate.numeric_status != MetadataQueryNumericStatus::Invalid;
+    }
+
     static bool
     candidates_share_role_scope(MetadataConceptRole role,
                                 const MetadataConceptCandidate& a,
-                                const MetadataConceptCandidate& b) noexcept
+                                const MetadataConceptCandidate& b,
+                                const MetadataQueryScope& scope) noexcept
     {
+        if (!candidates_share_image_scope(a, b, scope)) {
+            return false;
+        }
         if (role_uses_record_scope(role)
             && (a.record_kind != b.record_kind
                 || a.record_scope != b.record_scope)) {
@@ -7068,163 +7545,141 @@ namespace {
     }
 
     static void mark_role_conflicts(MetadataConceptResolution* resolution,
-                                    MetadataConceptRole role)
+                                    MetadataConceptRole role,
+                                    const MetadataQueryScope& scope,
+                                    ConceptWorkBudget& work_budget)
     {
-        if (!resolution) {
+        if (work_budget.limited) {
             return;
         }
         if (descriptive_role_is_collection(role)) {
             return;
         }
-        if (role_uses_location_scope(role) || role_uses_language_scope(role)
-            || role_uses_record_scope(role)) {
-            for (size_t i = 0U; i < resolution->candidates.size(); ++i) {
-                MetadataConceptCandidate& a = resolution->candidates[i];
-                if (a.role != role) {
-                    continue;
-                }
-                for (size_t j = i + 1U; j < resolution->candidates.size();
-                     ++j) {
-                    MetadataConceptCandidate& b = resolution->candidates[j];
-                    if (b.role != role
-                        || !candidates_share_role_scope(role, a, b)) {
-                        continue;
-                    }
-                    if (concept_values_conflict(a, b)) {
-                        a.conflict           = true;
-                        b.conflict           = true;
-                        resolution->conflict = true;
-                    }
-                }
-            }
-            return;
-        }
         const MetadataConceptRole group = conflict_group_role(role);
-        bool conflict                   = false;
         for (size_t i = 0U; i < resolution->candidates.size(); ++i) {
-            const MetadataConceptCandidate& a = resolution->candidates[i];
-            if (conflict_group_role(a.role) != group) {
+            if (work_budget.limited) {
+                return;
+            }
+            MetadataConceptCandidate& a = resolution->candidates[i];
+            if (conflict_group_role(a.role) != group || !candidate_values_usable(a)) {
                 continue;
             }
             for (size_t j = i + 1U; j < resolution->candidates.size(); ++j) {
-                const MetadataConceptCandidate& b = resolution->candidates[j];
-                if (conflict_group_role(b.role) != group) {
+                if (!work_budget.consume()) {
+                    return;
+                }
+                MetadataConceptCandidate& b = resolution->candidates[j];
+                if (conflict_group_role(b.role) != group || !candidate_values_usable(b)
+                    || !candidates_share_role_scope(role, a, b, scope)) {
                     continue;
                 }
                 if (concept_values_conflict(a, b)) {
-                    conflict = true;
-                    break;
+                    a.conflict = true;
+                    b.conflict = true;
+                    resolution->conflict = true;
                 }
-            }
-            if (conflict) {
-                break;
-            }
-        }
-        if (!conflict) {
-            return;
-        }
-        resolution->conflict = true;
-        for (size_t i = 0U; i < resolution->candidates.size(); ++i) {
-            MetadataConceptCandidate& candidate = resolution->candidates[i];
-            if (conflict_group_role(candidate.role) == group) {
-                candidate.conflict = true;
             }
         }
     }
 
     static void mark_role_preferred(MetadataConceptResolution* resolution,
-                                    MetadataConceptRole role)
+                                    MetadataConceptRole role,
+                                    const MetadataQueryScope& scope,
+                                    ConceptWorkBudget& work_budget)
     {
-        if (!resolution) {
+        if (work_budget.limited) {
             return;
         }
-        if (descriptive_role_is_collection(role)) {
-            for (size_t i = 0U; i < resolution->candidates.size(); ++i) {
-                MetadataConceptCandidate& candidate = resolution->candidates[i];
-                if (candidate.role != role) {
-                    continue;
-                }
-                bool best = true;
-                for (size_t j = 0U; j < resolution->candidates.size(); ++j) {
-                    if (i == j) {
-                        continue;
-                    }
-                    const MetadataConceptCandidate& other
-                        = resolution->candidates[j];
-                    if (other.role != role
-                        || !candidates_share_role_scope(role, candidate, other)
-                        || other.value_key != candidate.value_key) {
-                        continue;
-                    }
-                    if (other.priority > candidate.priority
-                        || (other.priority == candidate.priority && j < i)) {
-                        best = false;
-                        break;
-                    }
-                }
-                if (best) {
-                    candidate.preferred = true;
-                }
-            }
-            return;
-        }
-        if (role_uses_location_scope(role) || role_uses_language_scope(role)
-            || role_uses_record_scope(role)) {
-            for (size_t i = 0U; i < resolution->candidates.size(); ++i) {
-                MetadataConceptCandidate& candidate = resolution->candidates[i];
-                if (candidate.role != role) {
-                    continue;
-                }
-                bool best = true;
-                for (size_t j = 0U; j < resolution->candidates.size(); ++j) {
-                    if (i == j) {
-                        continue;
-                    }
-                    const MetadataConceptCandidate& other
-                        = resolution->candidates[j];
-                    if (other.role != role
-                        || !candidates_share_role_scope(role, candidate,
-                                                        other)) {
-                        continue;
-                    }
-                    if (other.priority > candidate.priority
-                        || (other.priority == candidate.priority && j < i)) {
-                        best = false;
-                        break;
-                    }
-                }
-                if (best) {
-                    candidate.preferred = true;
-                }
-            }
-            return;
-        }
-        size_t best_index  = resolution->candidates.size();
-        uint8_t best_score = 0U;
+        const bool collection = descriptive_role_is_collection(role);
         for (size_t i = 0U; i < resolution->candidates.size(); ++i) {
-            const MetadataConceptCandidate& candidate
-                = resolution->candidates[i];
-            if (candidate.role != role) {
+            if (work_budget.limited) {
+                return;
+            }
+            MetadataConceptCandidate& candidate = resolution->candidates[i];
+            if (candidate.role != role || !candidate_values_usable(candidate)) {
                 continue;
             }
-            if (best_index == resolution->candidates.size()
-                || candidate.priority > best_score) {
-                best_index = i;
-                best_score = candidate.priority;
+            bool best = true;
+            for (size_t j = 0U; j < resolution->candidates.size(); ++j) {
+                if (i == j) {
+                    continue;
+                }
+                if (!work_budget.consume()) {
+                    return;
+                }
+                const MetadataConceptCandidate& other = resolution->candidates[j];
+                if (other.role != role || !candidate_values_usable(other)
+                    || !candidates_share_role_scope(role, candidate, other, scope)
+                    || (collection && other.value_key != candidate.value_key)) {
+                    continue;
+                }
+                if (other.priority > candidate.priority
+                    || (other.priority == candidate.priority && j < i)) {
+                    best = false;
+                    break;
+                }
             }
-        }
-        if (best_index < resolution->candidates.size()) {
-            resolution->candidates[best_index].preferred = true;
+            candidate.preferred = best;
         }
     }
 
     static void
     finalize_resolution(MetadataConceptResolution* resolution,
-                        const MetadataRawDataDescriptor* raw_descriptor)
+                        const MetadataRawDataDescriptor* raw_descriptor,
+                        const MetadataQueryOptions& options,
+                        ConceptWorkBudget& work_budget)
     {
         if (!resolution) {
             return;
         }
+        const MetadataQueryScope& scope = options.scope;
+        // Query-backed candidates have already been bounded before allocation.
+        // Also account for small directly normalized GPS/orientation values and
+        // for merged candidates so totals describe the vectors actually returned.
+        resolution->total_numeric_values = 0U;
+        resolution->returned_numeric_values = 0U;
+        resolution->numeric_values_limited = false;
+        resolution->has_invalid_numeric_values = false;
+        for (MetadataConceptCandidate& candidate : resolution->candidates) {
+            uint64_t keep = candidate.values.size();
+            if (!options.include_numeric_values) keep = 0U;
+            if (options.max_values_per_candidate != 0U
+                && keep > options.max_values_per_candidate)
+                keep = options.max_values_per_candidate;
+            if (candidate.components.empty() && options.max_values_per_entry != 0U
+                && keep > options.max_values_per_entry)
+                keep = options.max_values_per_entry;
+            if (options.max_total_values != 0U) {
+                const uint64_t left = options.max_total_values
+                    - resolution->returned_numeric_values;
+                if (keep > left) keep = left;
+            }
+            if (keep < candidate.values.size()) {
+                candidate.values.resize(static_cast<size_t>(keep));
+                candidate.has_values = keep != 0U;
+                if (candidate.numeric_status != MetadataQueryNumericStatus::Invalid)
+                    candidate.numeric_status = MetadataQueryNumericStatus::Partial;
+                for (MetadataQueryComponent& component : candidate.components) {
+                    const uint64_t available = component.value_offset < keep
+                        ? keep - component.value_offset : 0U;
+                    if (component.returned_value_count > available) {
+                        component.returned_value_count = available;
+                        if (component.numeric_status != MetadataQueryNumericStatus::Invalid)
+                            component.numeric_status = MetadataQueryNumericStatus::Partial;
+                    }
+                    if (component.value_offset > keep) component.value_offset = keep;
+                }
+            }
+            resolution->total_numeric_values += candidate.total_numeric_values;
+            resolution->returned_numeric_values += candidate.values.size();
+            resolution->numeric_values_limited |= candidate.numeric_status == MetadataQueryNumericStatus::Partial;
+            resolution->has_invalid_numeric_values |= candidate.numeric_status == MetadataQueryNumericStatus::Invalid;
+        }
+        resolution->numeric_status = resolution->has_invalid_numeric_values
+            ? MetadataQueryNumericStatus::Invalid
+            : (resolution->numeric_values_limited ? MetadataQueryNumericStatus::Partial
+               : (resolution->total_numeric_values != 0U ? MetadataQueryNumericStatus::Complete
+                                                         : MetadataQueryNumericStatus::NotNumeric));
         resolution->found           = !resolution->candidates.empty();
         resolution->conflict        = false;
         resolution->preferred_entry = kInvalidEntryId;
@@ -7246,6 +7701,10 @@ namespace {
                                      candidate.source_entries[e]);
                 }
             }
+        }
+
+        if (work_budget.limited) {
+            resolution->semantic_work_limited = true;
         }
 
         const MetadataConceptRole roles[] = {
@@ -7483,8 +7942,19 @@ namespace {
             MetadataConceptRole::TiledImageConfiguration,
         };
         for (size_t i = 0U; i < std::size(roles); ++i) {
-            mark_role_preferred(resolution, roles[i]);
-            mark_role_conflicts(resolution, roles[i]);
+            if (work_budget.limited) {
+                break;
+            }
+            mark_role_preferred(resolution, roles[i], scope, work_budget);
+            mark_role_conflicts(resolution, roles[i], scope, work_budget);
+        }
+
+        if (resolution->semantic_work_limited) {
+            for (MetadataConceptCandidate& candidate : resolution->candidates) {
+                candidate.preferred = false;
+            }
+            resolution->preferred_entry = kInvalidEntryId;
+            return;
         }
 
         uint8_t best_score = 0U;
@@ -7500,154 +7970,187 @@ namespace {
                 best_score                  = candidate.priority;
             }
         }
+        const MetadataConceptCandidate* first_context = nullptr;
+        for (const MetadataConceptCandidate& candidate : resolution->candidates) {
+            if (!candidate.preferred) {
+                continue;
+            }
+            if (!first_context) {
+                first_context = &candidate;
+            } else if (!candidates_share_image_scope(*first_context, candidate, scope)) {
+                resolution->preferred_entry = kInvalidEntryId;
+                break;
+            }
+        }
+    }
+
+    static MetadataConceptResolution resolve_metadata_concept_with_budget(
+        const MetaStore& store, MetadataConceptKind kind,
+        const MetadataRawDataDescriptor* raw_descriptor,
+        const MetadataQueryOptions& query_options,
+        ConceptWorkBudget& work_budget)
+    {
+        MetadataConceptResolution out;
+        out.kind = kind;
+        work_budget.current_resolution = &out;
+        switch (kind) {
+        case MetadataConceptKind::Orientation:
+            append_orientation_candidates(store, query_options, &out);
+            break;
+        case MetadataConceptKind::DateTime:
+            append_datetime_candidates(store, query_options, work_budget,
+                                       &out);
+            break;
+        case MetadataConceptKind::ColorProfile:
+            append_color_profile_candidates(store, query_options, &out);
+            break;
+        case MetadataConceptKind::Gps:
+            append_gps_candidates(store, query_options, work_budget, &out);
+            break;
+        case MetadataConceptKind::Geometry:
+            append_geometry_candidates(store, query_options, &out);
+            break;
+        case MetadataConceptKind::LensCorrection:
+            append_lens_correction_candidates(store, query_options, &out);
+            break;
+        case MetadataConceptKind::RawProcessing:
+            append_raw_processing_candidates(store, query_options, &out);
+            break;
+        case MetadataConceptKind::Exposure:
+            append_exposure_candidates(store, query_options, &out);
+            break;
+        case MetadataConceptKind::ContainerGraph:
+            append_container_graph_candidates(store, query_options, &out);
+            break;
+        case MetadataConceptKind::Descriptive:
+            append_descriptive_candidates(store, query_options, work_budget,
+                                          &out);
+            break;
+        }
+        finalize_resolution(&out, raw_descriptor, query_options, work_budget);
+        work_budget.current_resolution = nullptr;
+        return out;
     }
 
 }  // namespace
 
 MetadataConceptResolution
-resolve_metadata_concept(const MetaStore& store, MetadataConceptKind kind)
+resolve_metadata_concept(const MetaStore& store, MetadataConceptKind kind,
+                         const MetadataQueryOptions& query_options)
 {
-    MetadataConceptResolution out;
-    out.kind = kind;
-    switch (kind) {
-    case MetadataConceptKind::Orientation:
-        append_orientation_candidates(store, &out);
-        break;
-    case MetadataConceptKind::DateTime:
-        append_datetime_candidates(store, &out);
-        break;
-    case MetadataConceptKind::ColorProfile:
-        append_color_profile_candidates(store, &out);
-        break;
-    case MetadataConceptKind::Gps: append_gps_candidates(store, &out); break;
-    case MetadataConceptKind::Geometry:
-        append_geometry_candidates(store, &out);
-        break;
-    case MetadataConceptKind::LensCorrection:
-        append_lens_correction_candidates(store, &out);
-        break;
-    case MetadataConceptKind::RawProcessing:
-        append_raw_processing_candidates(store, &out);
-        break;
-    case MetadataConceptKind::Exposure:
-        append_exposure_candidates(store, &out);
-        break;
-    case MetadataConceptKind::ContainerGraph:
-        append_container_graph_candidates(store, &out);
-        break;
-    case MetadataConceptKind::Descriptive:
-        append_descriptive_candidates(store, &out);
-        break;
-    }
-    finalize_resolution(&out, nullptr);
-    return out;
+    ConceptWorkBudget work_budget(query_options.max_semantic_work);
+    return resolve_metadata_concept_with_budget(store, kind, nullptr,
+                                                query_options, work_budget);
 }
 
-MetadataConceptResult
-resolve_metadata_concepts(const MetaStore& store)
+static void account_concept_budget(const MetadataConceptResolution& resolution,
+                                    const MetadataQueryOptions& options,
+                                    MetadataConceptResult* result,
+                                    MetadataQueryOptions* remaining)
+{
+    result->total_numeric_values += resolution.total_numeric_values;
+    result->returned_numeric_values += resolution.returned_numeric_values;
+    result->numeric_values_limited |= resolution.numeric_values_limited;
+    result->has_invalid_numeric_values |= resolution.has_invalid_numeric_values;
+    result->semantic_work_used += resolution.semantic_work_used;
+    result->semantic_work_limited |= resolution.semantic_work_limited;
+    result->numeric_status = result->has_invalid_numeric_values
+        ? MetadataQueryNumericStatus::Invalid
+        : (result->numeric_values_limited ? MetadataQueryNumericStatus::Partial
+           : (result->total_numeric_values != 0U ? MetadataQueryNumericStatus::Complete
+                                                : MetadataQueryNumericStatus::NotNumeric));
+    if (options.max_total_values != 0U) {
+        if (result->returned_numeric_values >= options.max_total_values) {
+            remaining->include_numeric_values = false;
+        } else {
+            remaining->max_total_values = options.max_total_values
+                                          - result->returned_numeric_values;
+        }
+    }
+}
+
+static void append_concept_with_budget(
+    const MetaStore& store, MetadataConceptKind kind,
+    const MetadataRawDataDescriptor* raw_descriptor,
+    const MetadataQueryOptions& options, ConceptWorkBudget& work_budget,
+    MetadataConceptResult* result, MetadataQueryOptions* remaining)
+{
+    result->concepts.push_back(resolve_metadata_concept_with_budget(
+        store, kind, raw_descriptor, *remaining, work_budget));
+    account_concept_budget(result->concepts.back(), options, result,
+                           remaining);
+}
+
+static MetadataConceptResult resolve_metadata_concepts_with_budget(
+    const MetaStore& store,
+    const MetadataRawDataDescriptor* raw_descriptor,
+    const MetadataQueryOptions& query_options)
 {
     MetadataConceptResult out;
     out.concepts.reserve(10U);
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::Orientation));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::DateTime));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::Exposure));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::ColorProfile));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::Gps));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::Geometry));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::LensCorrection));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::RawProcessing));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::ContainerGraph));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::Descriptive));
-    return out;
-}
-
-MetadataConceptResolution
-resolve_metadata_concept(const MetaStore& store, MetadataConceptKind kind,
-                         const MetadataRawDataDescriptor& raw_descriptor)
-{
-    MetadataConceptResolution out;
-    out.kind = kind;
-    switch (kind) {
-    case MetadataConceptKind::Orientation:
-        append_orientation_candidates(store, &out);
-        break;
-    case MetadataConceptKind::DateTime:
-        append_datetime_candidates(store, &out);
-        break;
-    case MetadataConceptKind::ColorProfile:
-        append_color_profile_candidates(store, &out);
-        break;
-    case MetadataConceptKind::Gps: append_gps_candidates(store, &out); break;
-    case MetadataConceptKind::Geometry:
-        append_geometry_candidates(store, &out);
-        break;
-    case MetadataConceptKind::LensCorrection:
-        append_lens_correction_candidates(store, &out);
-        break;
-    case MetadataConceptKind::RawProcessing:
-        append_raw_processing_candidates(store, &out);
-        break;
-    case MetadataConceptKind::Exposure:
-        append_exposure_candidates(store, &out);
-        break;
-    case MetadataConceptKind::ContainerGraph:
-        append_container_graph_candidates(store, &out);
-        break;
-    case MetadataConceptKind::Descriptive:
-        append_descriptive_candidates(store, &out);
-        break;
-    }
-    finalize_resolution(&out, &raw_descriptor);
+    MetadataQueryOptions remaining = query_options;
+    ConceptWorkBudget work_budget(query_options.max_semantic_work);
+    append_concept_with_budget(store, MetadataConceptKind::Orientation,
+                               raw_descriptor, query_options, work_budget,
+                               &out, &remaining);
+    append_concept_with_budget(store, MetadataConceptKind::DateTime,
+                               raw_descriptor, query_options, work_budget,
+                               &out, &remaining);
+    append_concept_with_budget(store, MetadataConceptKind::Exposure,
+                               raw_descriptor, query_options, work_budget,
+                               &out, &remaining);
+    append_concept_with_budget(store, MetadataConceptKind::ColorProfile,
+                               raw_descriptor, query_options, work_budget,
+                               &out, &remaining);
+    append_concept_with_budget(store, MetadataConceptKind::Gps,
+                               raw_descriptor, query_options, work_budget,
+                               &out, &remaining);
+    append_concept_with_budget(store, MetadataConceptKind::Geometry,
+                               raw_descriptor, query_options, work_budget,
+                               &out, &remaining);
+    append_concept_with_budget(store, MetadataConceptKind::LensCorrection,
+                               raw_descriptor, query_options, work_budget,
+                               &out, &remaining);
+    append_concept_with_budget(store, MetadataConceptKind::RawProcessing,
+                               raw_descriptor, query_options, work_budget,
+                               &out, &remaining);
+    append_concept_with_budget(store, MetadataConceptKind::ContainerGraph,
+                               raw_descriptor, query_options, work_budget,
+                               &out, &remaining);
+    append_concept_with_budget(store, MetadataConceptKind::Descriptive,
+                               raw_descriptor, query_options, work_budget,
+                               &out, &remaining);
+    out.semantic_work_used = work_budget.used;
+    out.semantic_work_limited = work_budget.limited;
     return out;
 }
 
 MetadataConceptResult
 resolve_metadata_concepts(const MetaStore& store,
-                          const MetadataRawDataDescriptor& raw_descriptor)
+                         const MetadataQueryOptions& query_options)
 {
-    MetadataConceptResult out;
-    out.concepts.reserve(10U);
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::Orientation,
-                                 raw_descriptor));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::DateTime,
-                                 raw_descriptor));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::Exposure,
-                                 raw_descriptor));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::ColorProfile,
-                                 raw_descriptor));
-    out.concepts.push_back(resolve_metadata_concept(store,
-                                                    MetadataConceptKind::Gps,
-                                                    raw_descriptor));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::Geometry,
-                                 raw_descriptor));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::LensCorrection,
-                                 raw_descriptor));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::RawProcessing,
-                                 raw_descriptor));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::ContainerGraph,
-                                 raw_descriptor));
-    out.concepts.push_back(
-        resolve_metadata_concept(store, MetadataConceptKind::Descriptive,
-                                 raw_descriptor));
-    return out;
+    return resolve_metadata_concepts_with_budget(store, nullptr,
+                                                 query_options);
+}
+
+MetadataConceptResolution
+resolve_metadata_concept(const MetaStore& store, MetadataConceptKind kind,
+                         const MetadataRawDataDescriptor& raw_descriptor,
+                         const MetadataQueryOptions& query_options)
+{
+    ConceptWorkBudget work_budget(query_options.max_semantic_work);
+    return resolve_metadata_concept_with_budget(store, kind,
+                                                &raw_descriptor,
+                                                query_options, work_budget);
+}
+
+MetadataConceptResult
+resolve_metadata_concepts(const MetaStore& store,
+                          const MetadataRawDataDescriptor& raw_descriptor,
+                         const MetadataQueryOptions& query_options)
+{
+    return resolve_metadata_concepts_with_budget(store, &raw_descriptor,
+                                                 query_options);
 }
 
 MetadataRawApplicabilityState

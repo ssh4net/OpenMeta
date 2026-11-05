@@ -6,6 +6,7 @@
 
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_store.h"
+#include "openmeta/metadata_scope.h"
 
 #include <cstdint>
 #include <string>
@@ -104,6 +105,91 @@ enum class MetadataQueryValueShape : uint8_t {
     Text,
 };
 
+enum class MetadataQueryNumericStatus : uint8_t {
+    NotNumeric,
+    Complete,
+    Partial,
+    Invalid,
+};
+
+enum class MetadataQueryComponentRole : uint8_t {
+    Unknown,
+    NumericValue,
+    WhiteBalance,
+    ColorMatrix,
+    CameraCalibration,
+    ReductionMatrix,
+    ForwardMatrix,
+    CalibrationIlluminant,
+    AnalogBalance,
+    AsShotNeutral,
+    AsShotWhiteXy,
+    BlackLevelRepeatDimensions,
+    BlackLevel,
+    BlackLevelDeltaH,
+    BlackLevelDeltaV,
+    WhiteLevel,
+    LinearizationTable,
+    CfaRepeatDimensions,
+    CfaPattern,
+    CfaPlaneColors,
+    CfaLayout,
+    ActiveArea,
+    MaskedAreas,
+    DefaultCropOrigin,
+    DefaultCropSize,
+    DerivedGeometry,
+};
+
+enum class MetadataQueryMatrixSubtype : uint8_t {
+    Unknown,
+    ColorMatrix,
+    CameraCalibration,
+    ReductionMatrix,
+    ForwardMatrix,
+};
+
+enum class MetadataQueryCoordinateBasis : uint8_t {
+    Unknown,
+    ActiveAreaRelativeRaw,
+    StoredImageRelativeRaw,
+};
+
+struct MetadataQueryComponent final {
+    EntryId source_entry = kInvalidEntryId;
+    MetaKeyKind key_kind = MetaKeyKind::ExifTag;
+    uint16_t tag = 0U;
+    MetadataQueryComponentRole role = MetadataQueryComponentRole::Unknown;
+    uint64_t value_offset = 0U;
+    uint64_t returned_value_count = 0U;
+    uint64_t total_value_count = 0U;
+    MetadataQueryNumericStatus numeric_status
+        = MetadataQueryNumericStatus::NotNumeric;
+    uint32_t rows = 0U;
+    uint32_t columns = 0U;
+    uint32_t channels = 0U;
+    MetadataQueryMatrixSubtype matrix_subtype
+        = MetadataQueryMatrixSubtype::Unknown;
+    uint8_t calibration_index = 0U;
+    EntryId associated_entry = kInvalidEntryId;
+    uint16_t associated_tag = 0U;
+};
+
+struct MetadataQueryOptions final {
+    MetadataQueryScope scope;
+    /// False suppresses numeric vectors while retaining their source counts.
+    bool include_numeric_values = true;
+    /// Zero means unlimited. Defaults retain values up to 65536 per entry.
+    uint32_t max_values_per_entry = 65536U;
+    /// Zero means unlimited. Defaults retain up to 262144 values per candidate.
+    uint32_t max_values_per_candidate = 262144U;
+    /// Zero means unlimited. Defaults retain up to 1048576 values per result.
+    uint64_t max_total_values = 1048576U;
+    /// Concept companion/composite scans and preference/conflict comparisons are capped.
+    /// Zero selects the finite default cap of 1048576 operations.
+    uint64_t max_semantic_work = 1048576U;
+};
+
 enum class MetadataQueryMatchTerm : uint32_t {
     None             = 0U,
     Crop             = 1U << 0U,
@@ -160,6 +246,10 @@ struct MetadataQueryCandidate final {
     MetadataQueryValueShape normalized_shape = MetadataQueryValueShape::Unknown;
     uint8_t confidence                       = 0U;
     std::vector<EntryId> source_entries;
+    uint64_t total_numeric_values = 0U;
+    MetadataQueryNumericStatus numeric_status
+        = MetadataQueryNumericStatus::NotNumeric;
+    std::vector<MetadataQueryComponent> components;
 
     bool has_origin = false;
     double origin[2] {};
@@ -177,40 +267,57 @@ struct MetadataQueryCandidate final {
 
     bool has_values = false;
     std::vector<double> values;
+    MetadataQueryCoordinateBasis coordinate_basis
+        = MetadataQueryCoordinateBasis::Unknown;
 };
 
 struct MetadataQueryResult final {
     MetadataQueryKind kind = MetadataQueryKind::Crop;
     std::vector<MetadataQueryMatch> matches;
     std::vector<MetadataQueryCandidate> candidates;
+    uint64_t total_numeric_values = 0U;
+    uint64_t returned_numeric_values = 0U;
+    bool numeric_values_limited = false;
+    bool has_invalid_numeric_values = false;
+    MetadataQueryNumericStatus numeric_status
+        = MetadataQueryNumericStatus::NotNumeric;
 };
 
 MetadataQueryResult
-query_metadata(const MetaStore& store, MetadataQueryKind kind);
+query_metadata(const MetaStore& store, MetadataQueryKind kind,
+               const MetadataQueryOptions& options = {});
 
 MetadataQueryResult
-query_crop_metadata(const MetaStore& store);
+query_crop_metadata(const MetaStore& store,
+                    const MetadataQueryOptions& options = {});
 
 MetadataQueryResult
-query_exposure_gain_metadata(const MetaStore& store);
+query_exposure_gain_metadata(const MetaStore& store,
+                             const MetadataQueryOptions& options = {});
 
 MetadataQueryResult
-query_white_balance_metadata(const MetaStore& store);
+query_white_balance_metadata(const MetaStore& store,
+                             const MetadataQueryOptions& options = {});
 
 MetadataQueryResult
-query_color_metadata(const MetaStore& store);
+query_color_metadata(const MetaStore& store,
+                     const MetadataQueryOptions& options = {});
 
 MetadataQueryResult
-query_lens_correction_metadata(const MetaStore& store);
+query_lens_correction_metadata(const MetaStore& store,
+                               const MetadataQueryOptions& options = {});
 
 MetadataQueryResult
-query_orientation_metadata(const MetaStore& store);
+query_orientation_metadata(const MetaStore& store,
+                           const MetadataQueryOptions& options = {});
 
 MetadataQueryResult
-query_raw_processing_metadata(const MetaStore& store);
+query_raw_processing_metadata(const MetaStore& store,
+                              const MetadataQueryOptions& options = {});
 
 MetadataQueryResult
-query_descriptive_metadata(const MetaStore& store);
+query_descriptive_metadata(const MetaStore& store,
+                           const MetadataQueryOptions& options = {});
 
 /// Compatibility capability query; prefer metadata_fuzzy_search_available().
 bool
@@ -224,6 +331,19 @@ metadata_query_semantic_kind_name(MetadataQuerySemanticKind kind) noexcept;
 
 const char*
 metadata_query_value_shape_name(MetadataQueryValueShape shape) noexcept;
+
+const char*
+metadata_query_numeric_status_name(MetadataQueryNumericStatus status) noexcept;
+
+const char*
+metadata_query_component_role_name(MetadataQueryComponentRole role) noexcept;
+
+const char*
+metadata_query_matrix_subtype_name(MetadataQueryMatrixSubtype subtype) noexcept;
+
+const char*
+metadata_query_coordinate_basis_name(
+    MetadataQueryCoordinateBasis basis) noexcept;
 
 }  // namespace openmeta
 OPENMETA_PUBLIC_END

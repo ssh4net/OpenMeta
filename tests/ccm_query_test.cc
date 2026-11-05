@@ -10,9 +10,21 @@
 #include <array>
 #include <string_view>
 #include <vector>
+#include <span>
 
 namespace openmeta {
 namespace {
+
+    static EntryId add_scoped_ccm(MetaStore& store, BlockId block,
+                                  std::string_view ifd, uint16_t tag,
+                                  const MetaValue& value)
+    {
+        Entry entry;
+        entry.key = make_exif_tag_key(store.arena(), ifd, tag);
+        entry.value = value;
+        entry.origin.block = block;
+        return store.add_entry(entry);
+    }
 
     static const CcmField* find_field(const std::vector<CcmField>& fields,
                                       std::string_view ifd,
@@ -62,6 +74,107 @@ namespace {
 
 }  // namespace
 
+
+TEST(CcmQuery, ScopeControlsDngContextAndExplicitInheritance)
+{
+    MetaStore store;
+    const BlockId parent = store.add_block({}), raw = store.add_block({});
+    const std::array<uint8_t, 4> version { 1, 7, 0, 0 };
+    const std::array<uint32_t, 9> matrix { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+    ASSERT_NE(add_scoped_ccm(store, parent, "ifd0", 0xc612,
+                             make_u8_array(store.arena(), version)), kInvalidEntryId);
+    ASSERT_NE(add_scoped_ccm(store, parent, "ifd0", 0xc65a, make_u16(21)), kInvalidEntryId);
+    const EntryId matrix_id = add_scoped_ccm(store, raw, "subifd0", 0xc621,
+                                             make_u32_array(store.arena(), matrix));
+    store.finalize();
+    std::vector<CcmField> fields;
+    std::vector<CcmIssue> issues;
+    CcmQueryOptions options;
+    ASSERT_EQ(collect_dng_ccm_fields(store, &fields, options).status, CcmQueryStatus::Ok);
+    ASSERT_EQ(fields.size(), 1U);
+    EXPECT_EQ(fields[0].block, parent);
+    const std::array<MetadataDirectorySelector, 2> directories {{{ parent, "ifd0" }, { raw, "subifd0" }}};
+    options.scope.enabled = true;
+    options.scope.directories = directories;
+    options.scope.inherit_across_directories = true;
+    ASSERT_EQ(collect_dng_ccm_fields(store, &fields, options, &issues).status, CcmQueryStatus::Ok);
+    ASSERT_EQ(fields.size(), 2U);
+    EXPECT_FALSE(has_issue(issues, CcmIssueCode::MissingCompanionTag));
+    const CcmField* found = find_field(fields, "subifd0", "ColorMatrix1");
+    ASSERT_NE(found, nullptr);
+    EXPECT_EQ(found->entry_id, matrix_id);
+    EXPECT_EQ(found->block, raw);
+    options.scope.directories = std::span<const MetadataDirectorySelector>(directories).subspan(1U);
+    EXPECT_EQ(collect_dng_ccm_fields(store, &fields, options).fields_found, 0U);
+}
+
+TEST(CcmQuery, DoesNotShareCompanionValidationAcrossBlocks)
+{
+    MetaStore store;
+    const BlockId a = store.add_block({}), b = store.add_block({});
+    const std::array<uint8_t, 4> version { 1, 7, 0, 0 };
+    const std::array<uint32_t, 9> matrix { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+    for (BlockId block : { a, b }) {
+        ASSERT_NE(add_scoped_ccm(store, block, "ifd0", 0xc612,
+                                 make_u8_array(store.arena(), version)), kInvalidEntryId);
+        ASSERT_NE(add_scoped_ccm(store, block, "ifd0", 0xc621,
+                                 make_u32_array(store.arena(), matrix)), kInvalidEntryId);
+    }
+    ASSERT_NE(add_scoped_ccm(store, a, "ifd0", 0xc65a, make_u16(21)), kInvalidEntryId);
+    store.finalize();
+    std::vector<CcmField> fields;
+    std::vector<CcmIssue> issues;
+    CcmQueryOptions options;
+    ASSERT_EQ(collect_dng_ccm_fields(store, &fields, options, &issues).status, CcmQueryStatus::Ok);
+    ASSERT_EQ(fields.size(), 3U);
+    bool missing_b = false;
+    for (const CcmIssue& issue : issues) {
+        if (issue.code == CcmIssueCode::MissingCompanionTag) {
+            EXPECT_EQ(issue.block, b);
+            missing_b = true;
+        }
+    }
+    EXPECT_TRUE(missing_b);
+    const MetadataDirectorySelector selected { a, "ifd0" };
+    options.scope.enabled = true;
+    options.scope.directories = std::span<const MetadataDirectorySelector>(&selected, 1U);
+    ASSERT_EQ(collect_dng_ccm_fields(store, &fields, options, &issues).fields_found, 2U);
+    EXPECT_FALSE(has_issue(issues, CcmIssueCode::MissingCompanionTag));
+    options.scope.directories = {};
+    EXPECT_EQ(collect_dng_ccm_fields(store, &fields, options).fields_found, 0U);
+}
+
+TEST(CcmQuery, MarksLimitedValuesAndRejectsMalformedBacking)
+{
+    MetaStore store;
+    const BlockId block = store.add_block({});
+    const std::array<uint32_t, 9> matrix { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+    const EntryId id = add_scoped_ccm(store, block, "ifd0", 0xc621,
+                                      make_u32_array(store.arena(), matrix));
+    store.finalize();
+    CcmQueryOptions options;
+    options.require_dng_context = false;
+    options.limits.max_values_per_field = 4U;
+    std::vector<CcmField> fields;
+    ASSERT_EQ(collect_dng_ccm_fields(store, &fields, options).status, CcmQueryStatus::LimitExceeded);
+    ASSERT_EQ(fields.size(), 1U);
+    EXPECT_EQ(fields[0].entry_id, id);
+    EXPECT_EQ(fields[0].total_values, 9U);
+    EXPECT_FALSE(fields[0].values_complete);
+    EXPECT_EQ(fields[0].values.size(), 4U);
+    EXPECT_EQ(fields[0].rows, 3U);
+    EXPECT_EQ(fields[0].cols, 3U);
+    EXPECT_EQ(store.entry(id).value.count, 9U);
+    MetaStore malformed;
+    MetaValue short_value = make_u32_array(malformed.arena(), std::span<const uint32_t>(matrix).first(2U));
+    short_value.count = 9U;
+    ASSERT_NE(add_scoped_ccm(malformed, kInvalidBlockId, "ifd0", 0xc621, short_value), kInvalidEntryId);
+    malformed.finalize();
+    std::vector<CcmIssue> issues;
+    (void)collect_dng_ccm_fields(malformed, &fields, options, &issues);
+    EXPECT_TRUE(fields.empty());
+    EXPECT_TRUE(has_issue(issues, CcmIssueCode::DecodeFailed));
+}
 
 TEST(CcmQuery, CollectsNormalizedFieldsInDngContext)
 {
@@ -551,3 +664,27 @@ TEST(CcmQuery, ValidationWarnsWhenAsShotChannelCountDiffersFromColorMatrix1)
 }
 
 }  // namespace openmeta
+
+namespace openmeta {
+TEST(CcmQuery, FourPlaneMatricesUseTheirDefinedShapes)
+{
+    MetaStore store;
+    const std::array<uint32_t,12> matrix {1,0,0,0,1,0,0,0,1,1,1,1};
+    const std::array<uint32_t,16> calibration {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    add_scoped_ccm(store,kInvalidBlockId,"ifd0",0xc621,make_u32_array(store.arena(),matrix));
+    add_scoped_ccm(store,kInvalidBlockId,"ifd0",0xc623,make_u32_array(store.arena(),calibration));
+    add_scoped_ccm(store,kInvalidBlockId,"ifd0",0xc714,make_u32_array(store.arena(),matrix));
+    store.finalize();
+    CcmQueryOptions options; options.require_dng_context=false;
+    std::vector<CcmField> fields; std::vector<CcmIssue> issues;
+    (void)collect_dng_ccm_fields(store,&fields,options,&issues);
+    const CcmField* color=find_field(fields,"ifd0","ColorMatrix1");
+    const CcmField* camera=find_field(fields,"ifd0","CameraCalibration1");
+    const CcmField* forward=find_field(fields,"ifd0","ForwardMatrix1");
+    ASSERT_NE(color,nullptr); ASSERT_NE(camera,nullptr); ASSERT_NE(forward,nullptr);
+    EXPECT_EQ(color->rows,4U); EXPECT_EQ(color->cols,3U);
+    EXPECT_EQ(camera->rows,4U); EXPECT_EQ(camera->cols,4U);
+    EXPECT_EQ(forward->rows,3U); EXPECT_EQ(forward->cols,4U);
+    EXPECT_FALSE(has_issue(issues,CcmIssueCode::UnexpectedCount));
+}
+}

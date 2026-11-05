@@ -120,6 +120,8 @@ namespace {
     struct MakerNoteCallbackState final {
         std::span<const std::byte> bytes;
         uint32_t calls = 0U;
+        uint64_t forbidden_begin = UINT64_MAX;
+        bool touched_forbidden = false;
     };
 
 
@@ -133,6 +135,13 @@ namespace {
         if (offset > state->bytes.size()
             || destination.size() > state->bytes.size() - offset) {
             return RandomAccessIoResult { RandomAccessIoCode::Ok, 0U };
+        }
+        const uint64_t request_end = offset
+                                     + static_cast<uint64_t>(destination.size());
+        if (state->forbidden_begin != UINT64_MAX
+            && offset < state->forbidden_begin
+            && request_end > state->forbidden_begin) {
+            state->touched_forbidden = true;
         }
         if (!destination.empty()) {
             std::memcpy(destination.data(),
@@ -149,25 +158,36 @@ namespace {
     decode_makernote_callback(std::span<const std::byte> tiff, MetaStore& store,
                               const RandomAccessReadLimits& limits
                               = RandomAccessReadLimits {},
-                              size_t value_capacity = 4096U) noexcept
+                              size_t value_capacity = 4096U,
+                              size_t read_window_capacity = 64U,
+                              uint64_t minimum_read_bytes = 64U,
+                              uint64_t forbidden_begin = UINT64_MAX,
+                              bool* touched_forbidden_out = nullptr) noexcept
     {
-        MakerNoteCallbackState state { tiff };
+        MakerNoteCallbackState state;
+        state.bytes = tiff;
+        state.forbidden_begin = forbidden_begin;
         const RandomAccessSource source
             = make_callback_random_access_source(tiff.size(), &state,
                                                  maker_note_read_at);
-        std::array<std::byte, 64> read_window {};
+        std::array<std::byte, 4096> read_window_storage {};
         std::array<std::byte, 16384> value_scratch {};
         ExifRandomAccessScratch scratch;
-        scratch.read_window                       = read_window;
+        scratch.read_window = std::span<std::byte>(read_window_storage).first(
+            read_window_capacity);
         scratch.value = std::span<std::byte>(value_scratch).first(value_capacity);
-        scratch.window_options.minimum_read_bytes = read_window.size();
+        scratch.window_options.minimum_read_bytes = minimum_read_bytes;
         ExifDecodeOptions options;
         options.decode_makernote = true;
         std::array<ExifIfdRef, 16> ifds {};
-        return decode_exif_tiff_random_access(make_random_access_source_range(
-                                                  source),
-                                              store, ifds, scratch, options,
-                                              limits);
+        const ExifRandomAccessDecodeResult result
+            = decode_exif_tiff_random_access(
+                make_random_access_source_range(source), store, ifds, scratch,
+                options, limits);
+        if (touched_forbidden_out) {
+            *touched_forbidden_out = state.touched_forbidden;
+        }
+        return result;
     }
 
     static uint8_t sony_encipher_byte(uint8_t b) noexcept
@@ -190,6 +210,16 @@ namespace {
         key.data.exif_tag.ifd = ifd;
         key.data.exif_tag.tag = tag;
         return key;
+    }
+
+    static const Entry* find_entry(const MetaStore& store,
+                                   std::string_view ifd, uint16_t tag)
+    {
+        const std::span<const EntryId> ids = store.find_all(exif_key(ifd, tag));
+        if (ids.size() != 1U) {
+            return nullptr;
+        }
+        return &store.entry(ids[0]);
     }
 
     static bool read_u16le_at(std::span<const std::byte> bytes, size_t off,
@@ -8034,25 +8064,259 @@ TEST(MakerNoteDecode, RandomAccessDecodesCanonAdjustedBaseAndDerivedTable)
     EXPECT_TRUE(any(store.entry(ids[0]).flags, EntryFlags::Derived));
 }
 
-TEST(MakerNoteDecode, RandomAccessReportsCanonExternalDerivedTableResidual)
+TEST(MakerNoteDecode, RandomAccessDecodesCanonExternalDerivedTable)
 {
     const std::vector<std::byte> mn = make_canon_camera_settings_makernote();
     std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
     ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
+    const size_t maker_note_offset = tiff.size() - mn.size();
+    uint16_t prefix_decoy = 0U;
+    uint16_t relative_value = 0U;
+    ASSERT_TRUE(read_u16le_at(tiff, 18U, &prefix_decoy));
+    ASSERT_TRUE(read_u16le_at(tiff, maker_note_offset + 18U,
+                               &relative_value));
+    EXPECT_NE(prefix_decoy, relative_value);
+
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    MetaStore span_store;
+    const ExifDecodeResult span_result
+        = decode_exif_tiff(tiff, span_store, {}, options);
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(result.input.ok());
+    EXPECT_EQ(result.nested_payloads_skipped, 0U);
+    EXPECT_TRUE(result.complete());
+    EXPECT_EQ(result.decode.status, span_result.status);
+    EXPECT_EQ(result.decode.entries_decoded, span_result.entries_decoded);
+    span_store.finalize();
+    callback_store.finalize();
+    const std::span<const EntryId> main_ids = callback_store.find_all(
+        exif_key("mk_canon0", 0x0001));
+    ASSERT_EQ(main_ids.size(), 1U);
+    EXPECT_EQ(callback_store.entry(main_ids[0]).value.count, 3U);
+    const std::span<const EntryId> derived_ids = callback_store.find_all(
+        exif_key("mk_canon_camerasettings_0", 0x0002));
+    ASSERT_EQ(derived_ids.size(), 1U);
+    const Entry& derived = callback_store.entry(derived_ids[0]);
+    EXPECT_EQ(derived.value.kind, MetaValueKind::Scalar);
+    EXPECT_EQ(derived.value.elem_type, MetaElementType::U16);
+    EXPECT_EQ(derived.value.data.u64, 22U);
+    EXPECT_TRUE(any(derived.flags, EntryFlags::Derived));
+    const std::span<const EntryId> span_derived_ids = span_store.find_all(
+        exif_key("mk_canon_camerasettings_0", 0x0002));
+    ASSERT_EQ(span_derived_ids.size(), 1U);
+    EXPECT_EQ(span_store.entry(span_derived_ids[0]).value.data.u64,
+              derived.value.data.u64);
+}
+
+TEST(MakerNoteDecode, RandomAccessDecodesCanonExternalColorDataTables)
+{
+    const std::vector<std::byte> mn = make_canon_colordata8_makernote();
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
+    ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
+
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    MetaStore span_store;
+    const ExifDecodeResult span_result
+        = decode_exif_tiff(tiff, span_store, {}, options);
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.input.ok());
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    span_store.finalize();
+    callback_store.finalize();
+    const Entry* callback_color_calib
+        = find_entry(callback_store, "mk_canon_colorcalib_0", 0x0000U);
+    const Entry* span_color_calib
+        = find_entry(span_store, "mk_canon_colorcalib_0", 0x0000U);
+    ASSERT_NE(callback_color_calib, nullptr);
+    ASSERT_NE(span_color_calib, nullptr);
+    EXPECT_EQ(callback_color_calib->value.data.u64, 100U);
+    EXPECT_EQ(callback_color_calib->value.data.u64,
+              span_color_calib->value.data.u64);
+    EXPECT_TRUE(any(callback_color_calib->flags, EntryFlags::Derived));
+
+    const Entry* callback_color_data
+        = find_entry(callback_store, "mk_canon_colordata8_0", 0x0043U);
+    const Entry* span_color_data
+        = find_entry(span_store, "mk_canon_colordata8_0", 0x0043U);
+    ASSERT_NE(callback_color_data, nullptr);
+    ASSERT_NE(span_color_data, nullptr);
+    EXPECT_EQ(callback_color_data->value.data.u64, 6100U);
+    EXPECT_EQ(callback_color_data->value.data.u64,
+              span_color_data->value.data.u64);
+    EXPECT_TRUE(any(callback_color_data->flags, EntryFlags::Derived));
+}
+
+TEST(MakerNoteDecode, RandomAccessDecodesCanonExternalCameraInfo)
+{
+    const std::vector<std::byte> mn = make_canon_camera_info_psinfo_makernote();
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
+    ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
+
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    MetaStore span_store;
+    const ExifDecodeResult span_result
+        = decode_exif_tiff(tiff, span_store, {}, options);
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.input.ok());
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    span_store.finalize();
+    callback_store.finalize();
+    const Entry* callback_camera_info
+        = find_entry(callback_store, "mk_canon_camerainfo_0", 0x0003U);
+    const Entry* span_camera_info
+        = find_entry(span_store, "mk_canon_camerainfo_0", 0x0003U);
+    ASSERT_NE(callback_camera_info, nullptr);
+    ASSERT_NE(span_camera_info, nullptr);
+    EXPECT_EQ(callback_camera_info->value.data.u64, 42U);
+    EXPECT_EQ(callback_camera_info->value.data.u64,
+              span_camera_info->value.data.u64);
+
+    const Entry* callback_psinfo
+        = find_entry(callback_store, "mk_canon_psinfo_0", 0x0004U);
+    const Entry* span_psinfo
+        = find_entry(span_store, "mk_canon_psinfo_0", 0x0004U);
+    ASSERT_NE(callback_psinfo, nullptr);
+    ASSERT_NE(span_psinfo, nullptr);
+    EXPECT_EQ(callback_psinfo->value.data.i64, 3);
+    EXPECT_EQ(callback_psinfo->value.data.i64, span_psinfo->value.data.i64);
+}
+
+TEST(MakerNoteDecode, RandomAccessCanonCameraInfoHonorsValueScratchLimit)
+{
+    const std::vector<std::byte> mn = make_canon_camera_info_psinfo_makernote();
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
+    ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
+    const uint32_t maker_offset=static_cast<uint32_t>(tiff.size()-mn.size());
+    write_u32le_at(&tiff,maker_offset+10U,maker_offset+18U);
 
     MetaStore store;
     const ExifRandomAccessDecodeResult result
-        = decode_makernote_callback(tiff, store);
+        = decode_makernote_callback(tiff, store, RandomAccessReadLimits {},
+                                   128U);
     EXPECT_TRUE(result.input.ok());
-    EXPECT_EQ(result.nested_payloads_skipped, 1U);
-    EXPECT_FALSE(result.complete());
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::OutputTruncated);
+    EXPECT_EQ(result.value_scratch_needed, 0x025bU + 0x00deU);
+    EXPECT_EQ(result.maker_note_paths_skipped, 1U);
+    EXPECT_TRUE(result.maker_note_path_location_known);
+    EXPECT_EQ(result.maker_note_path_tag, 0x000dU);
+    EXPECT_EQ(result.maker_note_path_offset,
+              static_cast<uint64_t>(tiff.size() - mn.size() + 18U));
+}
+
+TEST(MakerNoteDecode, RandomAccessCanonValueRefillStopsAtValueEnd)
+{
+    const std::vector<std::byte> mn = make_canon_filterinfo_makernote();
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
+    const uint32_t maker_note_offset
+        = static_cast<uint32_t>(tiff.size() - mn.size());
+    write_u32le_at(&tiff, maker_note_offset + 10U, maker_note_offset + 18U);
+    ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
+    const uint64_t value_end = static_cast<uint64_t>(maker_note_offset) + 18U
+                               + 48U;
+    std::array<std::byte, 128U> pixel_tail {};
+    tiff.insert(tiff.end(), pixel_tail.begin(), pixel_tail.end());
+
+    bool touched_pixel_tail = false;
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result = decode_makernote_callback(
+        tiff, store, RandomAccessReadLimits {}, 4U, 128U, 64U, value_end,
+        &touched_pixel_tail);
+    EXPECT_TRUE(result.input.ok());
+    EXPECT_TRUE(result.complete());
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::Ok);
+    EXPECT_EQ(result.value_scratch_needed, 0U);
+    EXPECT_FALSE(touched_pixel_tail);
+
     store.finalize();
-    const std::span<const EntryId> main_ids = store.find_all(
-        exif_key("mk_canon0", 0x0001));
-    ASSERT_EQ(main_ids.size(), 1U);
-    EXPECT_EQ(store.entry(main_ids[0]).value.count, 3U);
-    EXPECT_TRUE(
-        store.find_all(exif_key("mk_canon_camerasettings_0", 0x0002)).empty());
+    const Entry* orientation
+        = find_entry(store, "mk_canon_filterinfo_0", 0x0402U);
+    ASSERT_NE(orientation, nullptr);
+    EXPECT_EQ(orientation->value.data.u64, 2U);
+}
+
+TEST(MakerNoteDecode,
+     RandomAccessCanonFilterInfoRelativeBoundaryMatchesMemory)
+{
+    const std::vector<std::byte> mn = make_canon_filterinfo_makernote();
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
+    ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
+
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    MetaStore memory_store;
+    const ExifDecodeResult memory_result
+        = decode_exif_tiff(tiff, memory_store, {}, options);
+    EXPECT_EQ(memory_result.status, ExifDecodeStatus::Ok);
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.input.ok());
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_EQ(callback_result.maker_note_paths_skipped, 0U);
+
+    memory_store.finalize();
+    callback_store.finalize();
+    EXPECT_EQ(memory_store.find_all(exif_key("mk_canon_filterinfo_0", 0x0402U))
+                  .size(),
+              1U);
+    const Entry* orientation=find_entry(callback_store,"mk_canon_filterinfo_0",0x0402U);
+    ASSERT_NE(orientation,nullptr);
+    EXPECT_EQ(orientation->value.data.u64,2U);
+}
+
+TEST(MakerNoteDecode,
+     RandomAccessCanonFilterInfoReportsUnfetchedAlternateDirectory)
+{
+    std::vector<std::byte> mn = make_canon_filterinfo_makernote();
+    // Padding moves the valid relative directory away from the exact IFD-end
+    // tie-break. The memory decoder can validate the alternate signature;
+    // the callback reports that it has fetched only the competing value span.
+    mn.insert(mn.begin()+18U,6U,std::byte{0});
+    write_u32le_at(&mn,10U,24U);
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
+    ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
+
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    MetaStore memory_store;
+    const ExifDecodeResult memory_result
+        = decode_exif_tiff(tiff, memory_store, {}, options);
+    EXPECT_EQ(memory_result.status, ExifDecodeStatus::Ok);
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback_result.input.ok());
+    EXPECT_FALSE(callback_result.complete());
+    EXPECT_EQ(callback_result.maker_note_paths_skipped, 1U);
+    EXPECT_TRUE(callback_result.maker_note_path_location_known);
+    EXPECT_EQ(callback_result.maker_note_path_offset, 24U);
+    EXPECT_EQ(callback_result.maker_note_path_tag, 0x4024U);
+
+    memory_store.finalize();
+    callback_store.finalize();
+    EXPECT_EQ(memory_store.find_all(exif_key("mk_canon_filterinfo_0", 0x0402U))
+                  .size(),
+              1U);
+    EXPECT_TRUE(callback_store
+                    .find_all(exif_key("mk_canon_filterinfo_0", 0x0402U))
+                    .empty());
 }
 
 
@@ -8816,7 +9080,7 @@ TEST(MakerNoteDecode, RejectsPartialIfdCoincidenceInCanonCameraInfo)
     EXPECT_FALSE(store.find_all(exif_key("mk_canon0", 0x000dU)).empty());
 }
 
-TEST(MakerNoteDecode, CanonG9WbInfoKeepsSignedWordArrays)
+TEST(MakerNoteDecode, CanonG9WbInfoDecodesExternalValuesAndKeepsSignedWordArrays)
 {
     std::vector<std::byte> mn;
     append_u16le(&mn, 1U);
@@ -8834,8 +9098,9 @@ TEST(MakerNoteDecode, CanonG9WbInfoKeepsSignedWordArrays)
                            i == 1U ? 0xffffffffU : 0x01020300U + i);
         }
     }
-    const std::vector<std::byte> tiff = make_test_tiff_with_makernote_and_model(
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote_and_model(
         "Canon", "Canon PowerShot G9", mn);
+    ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
     MetaStore span_store;
     ExifDecodeOptions options;
     options.decode_makernote = true;

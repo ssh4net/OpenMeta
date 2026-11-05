@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "openmeta/ccm_query.h"
+#include "metadata_scope_internal.h"
 
 #include <cmath>
 #include <cstring>
@@ -46,6 +47,7 @@ namespace {
     };
 
     struct IfdValidationState final {
+        BlockId block = kInvalidBlockId;
         std::string ifd;
         bool has_analog_balance        = false;
         bool has_as_shot_neutral       = false;
@@ -122,12 +124,13 @@ namespace {
         return nullptr;
     }
 
-    static bool
-    ifd_is_dng_context(std::string_view ifd,
-                       const std::vector<std::string>& dng_ifds) noexcept
+    static bool ifd_is_dng_context(const MetaStore& store,
+                                   const MetadataQueryScope& scope,
+                                   const Entry& entry,
+                                   const std::vector<EntryId>& versions) noexcept
     {
-        for (size_t i = 0; i < dng_ifds.size(); ++i) {
-            if (dng_ifds[i] == ifd) {
+        for (EntryId id : versions) {
+            if (metadata_scope_can_inherit(store, scope, entry, store.entry(id))) {
                 return true;
             }
         }
@@ -135,7 +138,7 @@ namespace {
     }
 
     static void add_issue(std::vector<CcmIssue>* issues, CcmIssueSeverity sev,
-                          CcmIssueCode code, std::string_view ifd, uint16_t tag,
+                          CcmIssueCode code, BlockId block, std::string_view ifd, uint16_t tag,
                           std::string_view name, std::string_view message,
                           CcmQueryResult* result)
     {
@@ -148,6 +151,7 @@ namespace {
         CcmIssue issue;
         issue.severity = sev;
         issue.code     = code;
+        issue.block    = block;
         issue.ifd.assign(ifd.data(), ifd.size());
         issue.name.assign(name.data(), name.size());
         issue.tag = tag;
@@ -157,17 +161,18 @@ namespace {
 
     static IfdValidationState*
     find_or_add_ifd_state(std::vector<IfdValidationState>* states,
-                          std::string_view ifd) noexcept
+                          BlockId block, std::string_view ifd, bool inherit) noexcept
     {
         if (!states) {
             return nullptr;
         }
         for (size_t i = 0; i < states->size(); ++i) {
-            if ((*states)[i].ifd == ifd) {
+            if (inherit || ((*states)[i].block == block && (*states)[i].ifd == ifd)) {
                 return &(*states)[i];
             }
         }
         IfdValidationState state;
+        state.block = block;
         state.ifd.assign(ifd.data(), ifd.size());
         states->push_back(std::move(state));
         return &(*states)[states->size() - 1U];
@@ -335,6 +340,24 @@ namespace {
         }
         const std::span<const std::byte> raw = arena.span(value.data.span);
         const uint32_t n                     = value.count;
+        uint32_t element_bytes = 0U;
+        switch (value.elem_type) {
+        case MetaElementType::U8:
+        case MetaElementType::I8: element_bytes = 1U; break;
+        case MetaElementType::U16:
+        case MetaElementType::I16: element_bytes = 2U; break;
+        case MetaElementType::U32:
+        case MetaElementType::I32:
+        case MetaElementType::F32: element_bytes = 4U; break;
+        case MetaElementType::U64:
+        case MetaElementType::I64:
+        case MetaElementType::F64:
+        case MetaElementType::URational:
+        case MetaElementType::SRational: element_bytes = 8U; break;
+        }
+        if (element_bytes == 0U || n > raw.size() / element_bytes) {
+            return false;
+        }
         if (n == 0U) {
             return true;
         }
@@ -528,10 +551,26 @@ namespace {
             *cols = 1U;
             return;
         }
-        if (info.is_matrix3xN && (value_count % 3U) == 0U) {
-            *rows = 3U;
-            *cols = static_cast<uint32_t>(value_count / 3U);
-            return;
+        if (info.tag == 0xc623U || info.tag == 0xc624U || info.tag == 0xcd32U) {
+            const uint32_t planes = static_cast<uint32_t>(std::sqrt(static_cast<double>(value_count)));
+            if (uint64_t(planes) * planes == value_count) {
+                *rows = planes;
+                *cols = planes;
+            } else {
+                *rows = 0U;
+                *cols = 0U;
+            }
+        } else if (info.is_matrix3xN) {
+            if ((value_count % 3U) != 0U) {
+                *rows = 0U;
+                *cols = 0U;
+            } else if (info.tag == 0xc621U || info.tag == 0xc622U || info.tag == 0xcd33U) {
+                *rows = static_cast<uint32_t>(value_count / 3U);
+                *cols = 3U;
+            } else {
+                *rows = 3U;
+                *cols = static_cast<uint32_t>(value_count / 3U);
+            }
         }
     }
 
@@ -620,7 +659,7 @@ namespace {
     {
         if (is_non_finite_present(field.values)) {
             add_issue(issues, CcmIssueSeverity::Error,
-                      CcmIssueCode::NonFiniteValue, field.ifd, field.tag,
+                      CcmIssueCode::NonFiniteValue, field.block, field.ifd, field.tag,
                       field.name, "field contains non-finite numeric value",
                       result);
             return false;
@@ -631,15 +670,24 @@ namespace {
         }
 
         const uint32_t n = static_cast<uint32_t>(field.values.size());
-        if (is_matrix_tag(field.tag) && (n % 3U) != 0U) {
+        const bool square_calibration = field.tag == 0xc623U || field.tag == 0xc624U || field.tag == 0xcd32U;
+        if (square_calibration) {
+            const uint32_t planes = static_cast<uint32_t>(std::sqrt(static_cast<double>(n)));
+            if (uint64_t(planes) * planes != n) {
+                add_issue(issues, CcmIssueSeverity::Warning,
+                          CcmIssueCode::UnexpectedCount, field.block, field.ifd,
+                          field.tag, field.name, "camera calibration count is not square", result);
+            }
+        }
+        if (is_matrix_tag(field.tag) && !square_calibration && (n % 3U) != 0U) {
             add_issue(issues, CcmIssueSeverity::Warning,
-                      CcmIssueCode::MatrixCountNotDivisibleBy3, field.ifd,
+                      CcmIssueCode::MatrixCountNotDivisibleBy3, field.block, field.ifd,
                       field.tag, field.name,
                       "matrix-like field count is not divisible by 3", result);
         }
         if (is_matrix_tag(field.tag) && n > 36U) {
             add_issue(issues, CcmIssueSeverity::Warning,
-                      CcmIssueCode::UnexpectedCount, field.ifd, field.tag,
+                      CcmIssueCode::UnexpectedCount, field.block, field.ifd, field.tag,
                       field.name,
                       "matrix-like field count exceeds conservative bound (36)",
                       result);
@@ -647,7 +695,7 @@ namespace {
 
         if (field.tag == 0xC629U && n != 2U) {
             add_issue(issues, CcmIssueSeverity::Warning,
-                      CcmIssueCode::UnexpectedCount, field.ifd, field.tag,
+                      CcmIssueCode::UnexpectedCount, field.block, field.ifd, field.tag,
                       field.name,
                       "AsShotWhiteXY should contain exactly 2 values", result);
         } else if (field.tag == 0xC629U && n == 2U) {
@@ -655,7 +703,7 @@ namespace {
             const double y = field.values[1];
             if (!(x > 0.0 && x < 1.0 && y > 0.0 && y < 1.0 && (x + y) <= 1.0)) {
                 add_issue(issues, CcmIssueSeverity::Warning,
-                          CcmIssueCode::WhiteXYOutOfRange, field.ifd, field.tag,
+                          CcmIssueCode::WhiteXYOutOfRange, field.block, field.ifd, field.tag,
                           field.name,
                           "AsShotWhiteXY values should be in (0,1) and x+y<=1",
                           result);
@@ -664,7 +712,7 @@ namespace {
 
         if (info.is_scalar_illuminant && n != 1U) {
             add_issue(issues, CcmIssueSeverity::Warning,
-                      CcmIssueCode::UnexpectedCount, field.ifd, field.tag,
+                      CcmIssueCode::UnexpectedCount, field.block, field.ifd, field.tag,
                       field.name,
                       "CalibrationIlluminant should contain exactly 1 value",
                       result);
@@ -674,7 +722,7 @@ namespace {
             if (std::fabs(field.values[0] - static_cast<double>(code)) > 1e-9
                 || !is_valid_calibration_illuminant(code)) {
                 add_issue(issues, CcmIssueSeverity::Warning,
-                          CcmIssueCode::InvalidIlluminantCode, field.ifd,
+                          CcmIssueCode::InvalidIlluminantCode, field.block, field.ifd,
                           field.tag, field.name,
                           "CalibrationIlluminant contains unsupported value",
                           result);
@@ -683,7 +731,7 @@ namespace {
 
         if ((field.tag == 0xC627U || field.tag == 0xC628U) && n < 3U) {
             add_issue(issues, CcmIssueSeverity::Warning,
-                      CcmIssueCode::UnexpectedCount, field.ifd, field.tag,
+                      CcmIssueCode::UnexpectedCount, field.block, field.ifd, field.tag,
                       field.name,
                       "value count below common minimum of 3 channels", result);
         }
@@ -699,7 +747,7 @@ namespace {
             if (non_positive) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::NonPositiveValue, field.ifd, field.tag,
+                    CcmIssueCode::NonPositiveValue, field.block, field.ifd, field.tag,
                     field.name,
                     "contains non-positive values (often invalid in DNG practice)",
                     result);
@@ -715,7 +763,7 @@ namespace {
         if (!state) {
             return;
         }
-        const uint32_t n = static_cast<uint32_t>(field.values.size());
+        const uint32_t n = static_cast<uint32_t>(field.total_values);
         switch (field.tag) {
         case 0xC621U:
             state->has_color1   = true;
@@ -809,14 +857,14 @@ namespace {
 
             if (s.has_as_shot_neutral && s.has_as_shot_white_xy) {
                 add_issue(issues, CcmIssueSeverity::Warning,
-                          CcmIssueCode::AsShotConflict, s.ifd, 0U, "AsShot*",
+                          CcmIssueCode::AsShotConflict, s.block, s.ifd, 0U, "AsShot*",
                           "AsShotNeutral and AsShotWhiteXY both present",
                           result);
             }
             if (s.has_analog_balance && s.has_as_shot_neutral
                 && s.analog_balance_count != s.as_shot_neutral_count) {
                 add_issue(issues, CcmIssueSeverity::Warning,
-                          CcmIssueCode::UnexpectedCount, s.ifd, 0xC627U,
+                          CcmIssueCode::UnexpectedCount, s.block, s.ifd, 0xC627U,
                           "AnalogBalance",
                           "AnalogBalance count differs from AsShotNeutral count",
                           result);
@@ -827,7 +875,7 @@ namespace {
                     && s.as_shot_neutral_count != color1_channels) {
                     add_issue(
                         issues, CcmIssueSeverity::Warning,
-                        CcmIssueCode::UnexpectedCount, s.ifd, 0xC628U,
+                        CcmIssueCode::UnexpectedCount, s.block, s.ifd, 0xC628U,
                         "AsShotNeutral",
                         "AsShotNeutral count differs from ColorMatrix1 channel count",
                         result);
@@ -836,7 +884,7 @@ namespace {
                     && s.analog_balance_count != color1_channels) {
                     add_issue(
                         issues, CcmIssueSeverity::Warning,
-                        CcmIssueCode::UnexpectedCount, s.ifd, 0xC627U,
+                        CcmIssueCode::UnexpectedCount, s.block, s.ifd, 0xC627U,
                         "AnalogBalance",
                         "AnalogBalance count differs from ColorMatrix1 channel count",
                         result);
@@ -847,7 +895,7 @@ namespace {
                 && s.color1_count != s.color2_count) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::UnexpectedCount, s.ifd, 0xC622U,
+                    CcmIssueCode::UnexpectedCount, s.block, s.ifd, 0xC622U,
                     "ColorMatrix2",
                     "ColorMatrix1 and ColorMatrix2 should use the same element count",
                     result);
@@ -855,7 +903,7 @@ namespace {
             if (s.has_color3 && s.has_color1
                 && s.color3_count != s.color1_count) {
                 add_issue(issues, CcmIssueSeverity::Warning,
-                          CcmIssueCode::UnexpectedCount, s.ifd, 0xCD33U,
+                          CcmIssueCode::UnexpectedCount, s.block, s.ifd, 0xCD33U,
                           "ColorMatrix3",
                           "ColorMatrix3 should match ColorMatrix1 element count",
                           result);
@@ -864,7 +912,7 @@ namespace {
                 && s.cam_cal1_count != s.cam_cal2_count) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::UnexpectedCount, s.ifd, 0xC624U,
+                    CcmIssueCode::UnexpectedCount, s.block, s.ifd, 0xC624U,
                     "CameraCalibration2",
                     "CameraCalibration1 and CameraCalibration2 should use the same element count",
                     result);
@@ -873,7 +921,7 @@ namespace {
                 && s.cam_cal3_count != s.cam_cal1_count) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::UnexpectedCount, s.ifd, 0xCD32U,
+                    CcmIssueCode::UnexpectedCount, s.block, s.ifd, 0xCD32U,
                     "CameraCalibration3",
                     "CameraCalibration3 should match CameraCalibration1 element count",
                     result);
@@ -882,7 +930,7 @@ namespace {
                 && s.forward1_count != s.forward2_count) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::UnexpectedCount, s.ifd, 0xC715U,
+                    CcmIssueCode::UnexpectedCount, s.block, s.ifd, 0xC715U,
                     "ForwardMatrix2",
                     "ForwardMatrix1 and ForwardMatrix2 should use the same element count",
                     result);
@@ -891,7 +939,7 @@ namespace {
                 && s.forward3_count != s.forward1_count) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::UnexpectedCount, s.ifd, 0xCD34U,
+                    CcmIssueCode::UnexpectedCount, s.block, s.ifd, 0xCD34U,
                     "ForwardMatrix3",
                     "ForwardMatrix3 should match ForwardMatrix1 element count",
                     result);
@@ -900,7 +948,7 @@ namespace {
                 && s.reduction1_count != s.reduction2_count) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::UnexpectedCount, s.ifd, 0xC626U,
+                    CcmIssueCode::UnexpectedCount, s.block, s.ifd, 0xC626U,
                     "ReductionMatrix2",
                     "ReductionMatrix1 and ReductionMatrix2 should use the same element count",
                     result);
@@ -909,7 +957,7 @@ namespace {
                 && s.reduction3_count != s.reduction1_count) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::UnexpectedCount, s.ifd, 0xCD3AU,
+                    CcmIssueCode::UnexpectedCount, s.block, s.ifd, 0xCD3AU,
                     "ReductionMatrix3",
                     "ReductionMatrix3 should match ReductionMatrix1 element count",
                     result);
@@ -917,28 +965,28 @@ namespace {
 
             if (s.has_cal_illum1 && !s.has_color1) {
                 add_issue(issues, CcmIssueSeverity::Warning,
-                          CcmIssueCode::MissingCompanionTag, s.ifd, 0xC65AU,
+                          CcmIssueCode::MissingCompanionTag, s.block, s.ifd, 0xC65AU,
                           "CalibrationIlluminant1",
                           "CalibrationIlluminant1 present without ColorMatrix1",
                           result);
             }
             if (!s.has_cal_illum1 && s.has_color1) {
                 add_issue(issues, CcmIssueSeverity::Warning,
-                          CcmIssueCode::MissingCompanionTag, s.ifd, 0xC621U,
+                          CcmIssueCode::MissingCompanionTag, s.block, s.ifd, 0xC621U,
                           "ColorMatrix1",
                           "ColorMatrix1 present without CalibrationIlluminant1",
                           result);
             }
             if (s.has_cal_illum2 && !s.has_color2) {
                 add_issue(issues, CcmIssueSeverity::Warning,
-                          CcmIssueCode::MissingCompanionTag, s.ifd, 0xC65BU,
+                          CcmIssueCode::MissingCompanionTag, s.block, s.ifd, 0xC65BU,
                           "CalibrationIlluminant2",
                           "CalibrationIlluminant2 present without ColorMatrix2",
                           result);
             }
             if (!s.has_cal_illum2 && s.has_color2) {
                 add_issue(issues, CcmIssueSeverity::Warning,
-                          CcmIssueCode::MissingCompanionTag, s.ifd, 0xC622U,
+                          CcmIssueCode::MissingCompanionTag, s.block, s.ifd, 0xC622U,
                           "ColorMatrix2",
                           "ColorMatrix2 present without CalibrationIlluminant2",
                           result);
@@ -948,14 +996,14 @@ namespace {
                 if (!s.has_cal_illum1 || !s.has_cal_illum2) {
                     add_issue(
                         issues, CcmIssueSeverity::Warning,
-                        CcmIssueCode::TripleIlluminantRule, s.ifd, 0xCD31U,
+                        CcmIssueCode::TripleIlluminantRule, s.block, s.ifd, 0xCD31U,
                         "CalibrationIlluminant3",
                         "CalibrationIlluminant3 requires CalibrationIlluminant1 and CalibrationIlluminant2",
                         result);
                 }
                 if (!s.has_color3) {
                     add_issue(issues, CcmIssueSeverity::Warning,
-                              CcmIssueCode::TripleIlluminantRule, s.ifd,
+                              CcmIssueCode::TripleIlluminantRule, s.block, s.ifd,
                               0xCD33U, "ColorMatrix3",
                               "CalibrationIlluminant3 requires ColorMatrix3",
                               result);
@@ -966,7 +1014,7 @@ namespace {
                     && !(s.has_forward1 && s.has_forward2 && s.has_forward3)) {
                     add_issue(
                         issues, CcmIssueSeverity::Warning,
-                        CcmIssueCode::TripleIlluminantRule, s.ifd, 0xCD34U,
+                        CcmIssueCode::TripleIlluminantRule, s.block, s.ifd, 0xCD34U,
                         "ForwardMatrix*",
                         "Triple-illuminant mode expects ForwardMatrix1/2/3 all present or all absent",
                         result);
@@ -978,7 +1026,7 @@ namespace {
                          && s.has_reduction3)) {
                     add_issue(
                         issues, CcmIssueSeverity::Warning,
-                        CcmIssueCode::TripleIlluminantRule, s.ifd, 0xCD3AU,
+                        CcmIssueCode::TripleIlluminantRule, s.block, s.ifd, 0xCD3AU,
                         "ReductionMatrix*",
                         "Triple-illuminant mode expects ReductionMatrix1/2/3 all present or all absent",
                         result);
@@ -986,7 +1034,7 @@ namespace {
             } else if (s.has_color3 || s.has_forward3 || s.has_reduction3) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::TripleIlluminantRule, s.ifd, 0U,
+                    CcmIssueCode::TripleIlluminantRule, s.block, s.ifd, 0U,
                     "ThirdIlluminantTags",
                     "third-illuminant tags present without CalibrationIlluminant3",
                     result);
@@ -995,7 +1043,7 @@ namespace {
             if (s.has_cal_illum1 && s.cal_illum1 == 255 && !s.has_illum_data1) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::MissingIlluminantData, s.ifd, 0xCD35U,
+                    CcmIssueCode::MissingIlluminantData, s.block, s.ifd, 0xCD35U,
                     "IlluminantData1",
                     "CalibrationIlluminant1=Other but IlluminantData1 is missing",
                     result);
@@ -1003,7 +1051,7 @@ namespace {
             if (s.has_cal_illum2 && s.cal_illum2 == 255 && !s.has_illum_data2) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::MissingIlluminantData, s.ifd, 0xCD36U,
+                    CcmIssueCode::MissingIlluminantData, s.block, s.ifd, 0xCD36U,
                     "IlluminantData2",
                     "CalibrationIlluminant2=Other but IlluminantData2 is missing",
                     result);
@@ -1011,7 +1059,7 @@ namespace {
             if (s.has_cal_illum3 && s.cal_illum3 == 255 && !s.has_illum_data3) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::MissingIlluminantData, s.ifd, 0xCD37U,
+                    CcmIssueCode::MissingIlluminantData, s.block, s.ifd, 0xCD37U,
                     "IlluminantData3",
                     "CalibrationIlluminant3=Other but IlluminantData3 is missing",
                     result);
@@ -1022,7 +1070,7 @@ namespace {
                 && s.camera_cal_sig != s.profile_cal_sig) {
                 add_issue(
                     issues, CcmIssueSeverity::Warning,
-                    CcmIssueCode::CalibrationSignatureMismatch, s.ifd,
+                    CcmIssueCode::CalibrationSignatureMismatch, s.block, s.ifd,
                     kTagCameraCalibrationSignature,
                     "CameraCalibrationSignature",
                     "CameraCalibrationSignature and ProfileCalibrationSignature do not match",
@@ -1051,12 +1099,13 @@ collect_dng_ccm_fields(const MetaStore& store, std::vector<CcmField>* out,
     const ByteArena& arena           = store.arena();
     const std::span<const Entry> all = store.entries();
 
-    std::vector<std::string> dng_ifds;
-    dng_ifds.reserve(8);
+    std::vector<EntryId> dng_versions;
+    dng_versions.reserve(8);
 
     for (size_t i = 0; i < all.size(); ++i) {
         const Entry& e = all[i];
-        if (any(e.flags, EntryFlags::Deleted)) {
+        if (any(e.flags, EntryFlags::Deleted)
+            || !metadata_scope_contains(store, options.scope, e)) {
             continue;
         }
         if (!is_dng_version_tag(e)) {
@@ -1067,19 +1116,10 @@ collect_dng_ccm_fields(const MetaStore& store, std::vector<CcmField>* out,
         if (ifd.empty()) {
             continue;
         }
-        bool exists = false;
-        for (size_t j = 0; j < dng_ifds.size(); ++j) {
-            if (dng_ifds[j] == ifd) {
-                exists = true;
-                break;
-            }
-        }
-        if (!exists) {
-            dng_ifds.emplace_back(ifd.data(), ifd.size());
-        }
+        dng_versions.push_back(static_cast<EntryId>(i));
     }
 
-    if (options.require_dng_context && dng_ifds.empty()) {
+    if (options.require_dng_context && dng_versions.empty()) {
         return result;
     }
 
@@ -1088,7 +1128,8 @@ collect_dng_ccm_fields(const MetaStore& store, std::vector<CcmField>* out,
 
     for (size_t i = 0; i < all.size(); ++i) {
         const Entry& e = all[i];
-        if (any(e.flags, EntryFlags::Deleted)) {
+        if (any(e.flags, EntryFlags::Deleted)
+            || !metadata_scope_contains(store, options.scope, e)) {
             continue;
         }
         if (e.key.kind != MetaKeyKind::ExifTag) {
@@ -1096,10 +1137,11 @@ collect_dng_ccm_fields(const MetaStore& store, std::vector<CcmField>* out,
         }
         const std::string_view ifd = arena_string(arena,
                                                   e.key.data.exif_tag.ifd);
-        if (options.require_dng_context && !ifd_is_dng_context(ifd, dng_ifds)) {
+        if (options.require_dng_context && !ifd_is_dng_context(store, options.scope, e, dng_versions)) {
             continue;
         }
-        IfdValidationState* state = find_or_add_ifd_state(&ifd_states, ifd);
+        IfdValidationState* state = find_or_add_ifd_state(&ifd_states, e.origin.block, ifd,
+                options.scope.enabled && options.scope.inherit_across_directories);
         if (!state) {
             continue;
         }
@@ -1121,7 +1163,8 @@ collect_dng_ccm_fields(const MetaStore& store, std::vector<CcmField>* out,
 
     for (size_t i = 0; i < all.size(); ++i) {
         const Entry& e = all[i];
-        if (any(e.flags, EntryFlags::Deleted)) {
+        if (any(e.flags, EntryFlags::Deleted)
+            || !metadata_scope_contains(store, options.scope, e)) {
             continue;
         }
         if (e.key.kind != MetaKeyKind::ExifTag) {
@@ -1137,7 +1180,7 @@ collect_dng_ccm_fields(const MetaStore& store, std::vector<CcmField>* out,
 
         const std::string_view ifd = arena_string(arena,
                                                   e.key.data.exif_tag.ifd);
-        if (options.require_dng_context && !ifd_is_dng_context(ifd, dng_ifds)) {
+        if (options.require_dng_context && !ifd_is_dng_context(store, options.scope, e, dng_versions)) {
             continue;
         }
 
@@ -1148,6 +1191,9 @@ collect_dng_ccm_fields(const MetaStore& store, std::vector<CcmField>* out,
         }
 
         CcmField field;
+        field.entry_id = static_cast<EntryId>(i);
+        field.block = e.origin.block;
+        field.total_values = e.value.kind == MetaValueKind::Scalar ? 1U : e.value.count;
         field.name.assign(info->name ? info->name : "");
         field.ifd.assign(ifd.data(), ifd.size());
         field.tag = info->tag;
@@ -1157,7 +1203,7 @@ collect_dng_ccm_fields(const MetaStore& store, std::vector<CcmField>* out,
                            &field.values, &values_limit_exceeded)) {
             if (options.validation_mode != CcmValidationMode::None) {
                 add_issue(issues, CcmIssueSeverity::Warning,
-                          CcmIssueCode::DecodeFailed, field.ifd, field.tag,
+                          CcmIssueCode::DecodeFailed, field.block, field.ifd, field.tag,
                           field.name, "failed to decode field payload",
                           &result);
             }
@@ -1166,21 +1212,24 @@ collect_dng_ccm_fields(const MetaStore& store, std::vector<CcmField>* out,
         if (field.values.empty()) {
             continue;
         }
+        field.values_complete = !values_limit_exceeded;
         if (values_limit_exceeded) {
             result.status = CcmQueryStatus::LimitExceeded;
         }
 
-        if (!validate_field(*info, field, options.validation_mode, issues,
-                            &result)) {
+        if (field.values_complete
+            && !validate_field(*info, field, options.validation_mode, issues,
+                               &result)) {
             result.fields_dropped += 1U;
             continue;
         }
 
-        infer_shape(*info, field.values.size(), &field.rows, &field.cols);
+        infer_shape(*info, static_cast<size_t>(field.total_values), &field.rows, &field.cols);
         out->push_back(field);
 
         if (options.validation_mode != CcmValidationMode::None) {
-            IfdValidationState* state = find_or_add_ifd_state(&ifd_states, ifd);
+            IfdValidationState* state = find_or_add_ifd_state(&ifd_states, e.origin.block, ifd,
+                options.scope.enabled && options.scope.inherit_across_directories);
             mark_field_presence(field, state);
         }
     }

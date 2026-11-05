@@ -52,11 +52,19 @@ retain ImageInfo, CameraInfo, FaceInfo, SerialInfo, and Theta expansion, while
 Nintendo CameraInfo, Casio QVC/DCI, Minolta binary tables, and FLIR
 outer-TIFF-relative values retain their contiguous behavior.
 
-Callback decoding still reports Canon derived subtables whose values extend
-outside the declared MakerNote, plus unknown or unsupported vendor layouts,
-through ``nested_payloads_skipped`` and ``complete()`` rather than decoding
-against an incorrect subspan. Contiguous sources retain the complete existing
-nested-decoder behavior.
+Version 0.8.30 shares Canon's existing derived-table dispatch between memory
+and callback inputs, including individually fetched values outside the declared
+MakerNote span. Alternate binary directories outside a fetched value remain
+explicit residuals. Standalone MRW callbacks read PRD/WBG/RIF chunks and skip
+unrelated/pixel payloads. Sony SR2-private metadata uses bounded decryption
+scratch; native RAF follows private TIFF F000 edges without following pixel
+strip offsets. This is targeted metadata support, not universal layout parity.
+
+Snapshot ``residual_reasons`` distinguishes MakerNote, raw-carrier preservation,
+embedded-container enrichment, source enrichment and unclassified paths.
+Projection uses producer reasons, never request intent alone. The first known
+skipped MakerNote offset/tag is retained. Aggregate-only manually constructed
+results produce a generic residual diagnostic.
 
 ``scan_jpeg_random_access(...)`` locates leading EXIF, XMP, ICC, MPF, vendor
 APP, JUMBF, Photoshop IRB, FLIR, and comment segments through the same
@@ -251,14 +259,9 @@ Project machine-readable diagnostics without allocation:
 .. code-block:: cpp
 
    std::array<openmeta::ReadTransferSourceDiagnostic, 8> diagnostics;
-   openmeta::ReadTransferSourceDiagnosticOptions diagnostic_options;
-   diagnostic_options.decode_makernote_requested = options.decode_makernote;
-   diagnostic_options.decode_embedded_containers_requested =
-       options.decode_embedded_containers;
-
    openmeta::ReadTransferSourceDiagnosticsResult diagnostic_result =
        openmeta::collect_read_transfer_source_diagnostics(
-           result, diagnostics, diagnostic_options);
+           result, diagnostics);
 
 Each record has severity, stable code, domain, format, source offset, required
 byte count, item count, EXIF/native tag, and original input failure code where

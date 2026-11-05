@@ -658,4 +658,210 @@ decode_mrw_native(std::span<const std::byte> file_bytes, MetaStore& store,
     return out;
 }
 
+ExifRandomAccessDecodeResult
+decode_mrw_native_random_access(
+    const RandomAccessSourceRange& source, MetaStore& store,
+    const ExifRandomAccessScratch& scratch, const ExifDecodeLimits& limits,
+    const RandomAccessReadLimits& read_limits) noexcept
+{
+    ExifRandomAccessDecodeResult result;
+    result.decode.status = ExifDecodeStatus::Unsupported;
+    if (!random_access_source_range_valid(source)) {
+        result.input.code = RandomAccessReadCode::InvalidArgument;
+        return result;
+    }
+    if (source.source.contiguous_data != nullptr) {
+        if (source.size > SIZE_MAX) {
+            set_limit(&result.decode, ExifLimitReason::ValueCountTooLarge);
+            return result;
+        }
+        const std::byte* begin
+            = source.source.contiguous_data
+              + static_cast<size_t>(source.source_offset);
+        result.decode = decode_mrw_native(
+            std::span<const std::byte>(begin,
+                                       static_cast<size_t>(source.size)),
+            store, limits);
+        return result;
+    }
+    if (source.size < 4U) {
+        return result;
+    }
+
+    std::array<std::byte, 8U> header {};
+    const size_t header_size = static_cast<size_t>(
+        source.size < header.size() ? source.size : header.size());
+    if (random_access_read_exact(source, 0U,
+                                 std::span<std::byte>(header).first(header_size),
+                                 &result.input, read_limits)
+        != RandomAccessReadCode::Ok) {
+        return result;
+    }
+    const std::span<const std::byte> header_bytes(header.data(), header_size);
+    if (!matches(header_bytes, 0U, "\0MRM", 4U)
+        && !matches(header_bytes, 0U, "\0MRI", 4U)) {
+        return result;
+    }
+    if (header_size < 8U) {
+        result.decode.status = ExifDecodeStatus::Malformed;
+        return result;
+    }
+
+    const bool le = matches(header_bytes, 0U, "\0MRI", 4U);
+    uint32_t metadata_size = 0U;
+    if (!read_dword(header_bytes, 4U, le, &metadata_size)
+        || metadata_size > source.size - 8U) {
+        result.decode.status = ExifDecodeStatus::Malformed;
+        return result;
+    }
+    const uint64_t metadata_end = 8U + static_cast<uint64_t>(metadata_size);
+
+    store.constrain_resources(limits.max_total_entries, limits.max_arena_bytes);
+    if (store.resource_limit_exceeded()) {
+        set_limit(&result.decode, ExifLimitReason::MaxArenaBytes);
+        return result;
+    }
+
+    // RIF interpretation depends on PRD presence. Inspect only segment
+    // headers in this pass; segment bodies remain unread until their own turn.
+    bool prd_present = false;
+    uint64_t offset  = 8U;
+    while (offset < metadata_end) {
+        if (metadata_end - offset < 8U) {
+            update_status(&result.decode, ExifDecodeStatus::Malformed);
+            return result;
+        }
+        std::array<std::byte, 8U> segment_header {};
+        if (random_access_read_exact(source, offset, segment_header,
+                                     &result.input, read_limits)
+            != RandomAccessReadCode::Ok) {
+            return result;
+        }
+        uint32_t segment_size = 0U;
+        if (!read_dword(segment_header, 4U, le, &segment_size)) {
+            update_status(&result.decode, ExifDecodeStatus::Malformed);
+            return result;
+        }
+        const uint64_t payload_offset = offset + 8U;
+        if (segment_size > metadata_end - payload_offset) {
+            update_status(&result.decode, ExifDecodeStatus::Malformed);
+            return result;
+        }
+        if (matches(segment_header, 0U, "\0PRD", 4U)
+            && segment_size >= 8U) {
+            prd_present = true;
+        }
+        offset = payload_offset + static_cast<uint64_t>(segment_size);
+    }
+
+    std::array<char, 64> make_scratch {};
+    std::array<char, 64> model_scratch {};
+    const std::string_view make = snapshot_ifd0_text(store, 0x010fU,
+                                                     make_scratch);
+    const std::string_view model = snapshot_ifd0_text(store, 0x0110U,
+                                                      model_scratch);
+    const bool standalone_mrm = !le;
+    const bool sony_make      = make.starts_with("SONY");
+    const bool non_sony_make  = make.empty() ? standalone_mrm : !sony_make;
+    RifContext rif_context;
+    rif_context.non_sony_make      = non_sony_make;
+    rif_context.sony_make          = sony_make;
+    rif_context.a100_model         = model == "DSLR-A100";
+    rif_context.a200_or_a700_model = model == "DSLR-A200"
+                                     || model == "DSLR-A700";
+    rif_context.prd_present        = standalone_mrm && prd_present;
+
+    result.decode.status = ExifDecodeStatus::Ok;
+    uint32_t prd_index    = 0U;
+    uint32_t wbg_index    = 0U;
+    uint32_t rif_index    = 0U;
+    uint32_t known_blocks = 0U;
+    offset                = 8U;
+    while (offset < metadata_end) {
+        std::array<std::byte, 8U> segment_header {};
+        if (random_access_read_exact(source, offset, segment_header,
+                                     &result.input, read_limits)
+            != RandomAccessReadCode::Ok) {
+            return result;
+        }
+        uint32_t segment_size = 0U;
+        if (!read_dword(segment_header, 4U, le, &segment_size)) {
+            update_status(&result.decode, ExifDecodeStatus::Malformed);
+            break;
+        }
+        const uint64_t payload_offset = offset + 8U;
+        if (segment_size > metadata_end - payload_offset) {
+            update_status(&result.decode, ExifDecodeStatus::Malformed);
+            break;
+        }
+
+        const bool is_prd = matches(segment_header, 0U, "\0PRD", 4U);
+        const bool is_wbg = matches(segment_header, 0U, "\0WBG", 4U);
+        const bool is_rif = matches(segment_header, 0U, "\0RIF", 4U);
+        const bool known_segment = is_prd || is_wbg || is_rif;
+        BlockId block = kInvalidBlockId;
+        if (known_segment) {
+            if (known_blocks >= limits.max_ifds) {
+                set_limit(&result.decode, ExifLimitReason::MaxIfds);
+                break;
+            }
+            ++known_blocks;
+            block = store.add_block(BlockInfo {});
+            if (block == kInvalidBlockId) {
+                set_limit(&result.decode, ExifLimitReason::MaxArenaBytes);
+                break;
+            }
+        }
+
+        if (known_segment) {
+            if (segment_size > limits.max_value_bytes) {
+                set_limit(&result.decode,
+                          ExifLimitReason::ValueCountTooLarge);
+            } else if (segment_size > scratch.value.size()) {
+                if (segment_size > result.value_scratch_needed) {
+                    result.value_scratch_needed = segment_size;
+                }
+                update_status(&result.decode, ExifDecodeStatus::OutputTruncated);
+            } else {
+                const std::span<std::byte> segment = scratch.value.first(
+                    static_cast<size_t>(segment_size));
+                if (segment_size != 0U
+                    && random_access_read_exact(source, payload_offset,
+                                                segment, &result.input,
+                                                read_limits)
+                           != RandomAccessReadCode::Ok) {
+                    return result;
+                }
+                std::span<const std::byte> body(segment.data(),
+                                                segment.size());
+                uint32_t order = 0U;
+                if (is_prd) {
+                    decode_segment("prd", body, prd_index++, store, block,
+                                   &order, le, rif_context, limits,
+                                   &result.decode);
+                } else if (is_wbg) {
+                    decode_segment("wbg", body, wbg_index++, store, block,
+                                   &order, le, rif_context, limits,
+                                   &result.decode);
+                } else {
+                    decode_segment("rif", body, rif_index++, store, block,
+                                   &order, le, rif_context, limits,
+                                   &result.decode);
+                }
+            }
+        }
+
+        if (result.decode.status == ExifDecodeStatus::LimitExceeded) {
+            break;
+        }
+        offset = payload_offset + static_cast<uint64_t>(segment_size);
+    }
+
+    if (result.decode.status == ExifDecodeStatus::Ok
+        && result.decode.entries_decoded == 0U) {
+        result.decode.status = ExifDecodeStatus::Unsupported;
+    }
+    return result;
+}
+
 }  // namespace openmeta::mrw_internal

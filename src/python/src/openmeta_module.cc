@@ -712,6 +712,12 @@ namespace {
     static nb::dict ccm_field_to_python(const CcmField& field)
     {
         nb::dict d;
+        d["entry_id"] = nb::int_(field.entry_id);
+        d["block"] = nb::int_(field.block);
+        d["total_values"] = nb::int_(field.total_values);
+        d["returned_values"] = nb::int_(
+            static_cast<uint64_t>(field.values.size()));
+        d["values_complete"] = nb::bool_(field.values_complete);
         d["name"] = nb::str(field.name.c_str(), field.name.size());
         d["ifd"]  = nb::str(field.ifd.c_str(), field.ifd.size());
         d["tag"]  = nb::int_(field.tag);
@@ -936,6 +942,45 @@ namespace {
         return out;
     }
 
+    static nb::dict
+    metadata_query_component_to_python(const MetadataQueryComponent& component)
+    {
+        nb::dict out;
+        out["source_entry"] = nb::int_(component.source_entry);
+        out["key_kind"] = component.key_kind;
+        out["tag"] = nb::int_(component.tag);
+        out["role"] = component.role;
+        out["role_name"] = nb::str(
+            metadata_query_component_role_name(component.role));
+        out["value_offset"] = nb::int_(component.value_offset);
+        out["returned_value_count"] = nb::int_(
+            component.returned_value_count);
+        out["total_value_count"] = nb::int_(component.total_value_count);
+        out["numeric_status"] = component.numeric_status;
+        out["numeric_status_name"] = nb::str(
+            metadata_query_numeric_status_name(component.numeric_status));
+        out["rows"] = nb::int_(component.rows);
+        out["columns"] = nb::int_(component.columns);
+        out["channels"] = nb::int_(component.channels);
+        out["matrix_subtype"] = component.matrix_subtype;
+        out["matrix_subtype_name"] = nb::str(
+            metadata_query_matrix_subtype_name(component.matrix_subtype));
+        out["calibration_index"] = nb::int_(component.calibration_index);
+        out["associated_entry"] = nb::int_(component.associated_entry);
+        out["associated_tag"] = nb::int_(component.associated_tag);
+        return out;
+    }
+
+    static nb::list metadata_query_components_to_python(
+        const std::vector<MetadataQueryComponent>& components)
+    {
+        nb::list out;
+        for (size_t i = 0U; i < components.size(); ++i) {
+            out.append(metadata_query_component_to_python(components[i]));
+        }
+        return out;
+    }
+
     static nb::object
     metadata_query_optional_pair_to_python(bool present, const double* values)
     {
@@ -1011,6 +1056,18 @@ namespace {
         out["confidence"]     = nb::int_(candidate.confidence);
         out["source_entries"] = metadata_query_entry_ids_to_python(
             candidate.source_entries);
+        out["total_numeric_values"] = nb::int_(
+            candidate.total_numeric_values);
+        out["returned_numeric_values"] = nb::int_(
+            static_cast<uint64_t>(candidate.values.size()));
+        out["numeric_status"] = candidate.numeric_status;
+        out["numeric_status_name"] = nb::str(
+            metadata_query_numeric_status_name(candidate.numeric_status));
+        out["components"] = metadata_query_components_to_python(
+            candidate.components);
+        out["coordinate_basis"] = candidate.coordinate_basis;
+        out["coordinate_basis_name"] = nb::str(
+            metadata_query_coordinate_basis_name(candidate.coordinate_basis));
         out["has_origin"] = nb::bool_(candidate.has_origin);
         out["origin"]
             = metadata_query_optional_pair_to_python(candidate.has_origin,
@@ -1050,6 +1107,16 @@ namespace {
         nb::dict out;
         out["kind"]       = result.kind;
         out["kind_name"]  = nb::str(metadata_query_kind_name(result.kind));
+        out["total_numeric_values"] = nb::int_(result.total_numeric_values);
+        out["returned_numeric_values"] = nb::int_(
+            result.returned_numeric_values);
+        out["numeric_values_limited"] = nb::bool_(
+            result.numeric_values_limited);
+        out["has_invalid_numeric_values"] = nb::bool_(
+            result.has_invalid_numeric_values);
+        out["numeric_status"] = result.numeric_status;
+        out["numeric_status_name"] = nb::str(
+            metadata_query_numeric_status_name(result.numeric_status));
         out["matches"]    = std::move(matches);
         out["candidates"] = std::move(candidates);
         return out;
@@ -1117,6 +1184,17 @@ namespace {
         out["confidence"]     = nb::int_(record.confidence);
         out["source_entries"] = metadata_query_entry_ids_to_python(
             record.source_entries);
+        out["total_numeric_values"] = nb::int_(record.total_numeric_values);
+        out["returned_numeric_values"] = nb::int_(
+            static_cast<uint64_t>(record.values.size()));
+        out["numeric_status"] = record.numeric_status;
+        out["numeric_status_name"] = nb::str(
+            metadata_query_numeric_status_name(record.numeric_status));
+        out["components"] = metadata_query_components_to_python(
+            record.components);
+        out["coordinate_basis"] = record.coordinate_basis;
+        out["coordinate_basis_name"] = nb::str(
+            metadata_query_coordinate_basis_name(record.coordinate_basis));
         out["has_origin"] = nb::bool_(record.has_origin);
         out["origin"] = metadata_query_optional_pair_to_python(record.has_origin,
                                                                record.origin);
@@ -1148,6 +1226,16 @@ namespace {
                 metadata_interpretation_record_to_python(result.records[i]));
         }
         nb::dict out;
+        out["total_numeric_values"] = nb::int_(result.total_numeric_values);
+        out["returned_numeric_values"] = nb::int_(
+            result.returned_numeric_values);
+        out["numeric_values_limited"] = nb::bool_(
+            result.numeric_values_limited);
+        out["has_invalid_numeric_values"] = nb::bool_(
+            result.has_invalid_numeric_values);
+        out["numeric_status"] = result.numeric_status;
+        out["numeric_status_name"] = nb::str(
+            metadata_query_numeric_status_name(result.numeric_status));
         out["records"] = std::move(records);
         return out;
     }
@@ -1252,8 +1340,21 @@ namespace {
         out["shape_name"] = nb::str(
             metadata_query_value_shape_name(candidate.shape));
         out["entry_id"]       = nb::int_(candidate.entry_id);
+        out["source_block"]   = nb::int_(candidate.source_block);
         out["source_entries"] = metadata_query_entry_ids_to_python(
             candidate.source_entries);
+        out["total_numeric_values"] = nb::int_(
+            candidate.total_numeric_values);
+        out["returned_numeric_values"] = nb::int_(
+            static_cast<uint64_t>(candidate.values.size()));
+        out["numeric_status"] = candidate.numeric_status;
+        out["numeric_status_name"] = nb::str(
+            metadata_query_numeric_status_name(candidate.numeric_status));
+        out["components"] = metadata_query_components_to_python(
+            candidate.components);
+        out["coordinate_basis"] = candidate.coordinate_basis;
+        out["coordinate_basis_name"] = nb::str(
+            metadata_query_coordinate_basis_name(candidate.coordinate_basis));
         if (candidate.location_scope.empty()) {
             out["location_scope"] = nb::none();
         } else {
@@ -1349,6 +1450,20 @@ namespace {
         out["preferred_entry"] = nb::int_(resolution.preferred_entry);
         out["source_entries"]  = metadata_query_entry_ids_to_python(
             resolution.source_entries);
+        out["total_numeric_values"] = nb::int_(
+            resolution.total_numeric_values);
+        out["returned_numeric_values"] = nb::int_(
+            resolution.returned_numeric_values);
+        out["numeric_values_limited"] = nb::bool_(
+            resolution.numeric_values_limited);
+        out["has_invalid_numeric_values"] = nb::bool_(
+            resolution.has_invalid_numeric_values);
+        out["numeric_status"] = resolution.numeric_status;
+        out["numeric_status_name"] = nb::str(
+            metadata_query_numeric_status_name(resolution.numeric_status));
+        out["semantic_work_used"] = nb::int_(resolution.semantic_work_used);
+        out["semantic_work_limited"] = nb::bool_(
+            resolution.semantic_work_limited);
         out["candidates"] = std::move(candidates);
         return out;
     }
@@ -1362,6 +1477,19 @@ namespace {
                 metadata_concept_resolution_to_python(result.concepts[i]));
         }
         nb::dict out;
+        out["total_numeric_values"] = nb::int_(result.total_numeric_values);
+        out["returned_numeric_values"] = nb::int_(
+            result.returned_numeric_values);
+        out["numeric_values_limited"] = nb::bool_(
+            result.numeric_values_limited);
+        out["has_invalid_numeric_values"] = nb::bool_(
+            result.has_invalid_numeric_values);
+        out["numeric_status"] = result.numeric_status;
+        out["numeric_status_name"] = nb::str(
+            metadata_query_numeric_status_name(result.numeric_status));
+        out["semantic_work_used"] = nb::int_(result.semantic_work_used);
+        out["semantic_work_limited"] = nb::bool_(
+            result.semantic_work_limited);
         out["concepts"] = std::move(concepts);
         return out;
     }
@@ -1708,6 +1836,10 @@ namespace {
                 diagnostics.diagnostics[i]));
         }
         nb::dict out;
+        out["semantic_work_used"] = nb::int_(diagnostics.semantic_work_used);
+        out["semantic_work_limited"] = nb::bool_(diagnostics.semantic_work_limited);
+        out["numeric_values_limited"] = nb::bool_(diagnostics.numeric_values_limited);
+        out["has_invalid_numeric_values"] = nb::bool_(diagnostics.has_invalid_numeric_values);
         out["safety"]          = diagnostics.safety;
         out["candidate_count"] = nb::int_(diagnostics.candidate_count);
         out["kept_count"]      = nb::int_(diagnostics.kept_count);
@@ -8867,6 +8999,65 @@ NB_MODULE(_openmeta, m)
         .value("Array", MetadataQueryValueShape::Array)
         .value("Blob", MetadataQueryValueShape::Blob)
         .value("Text", MetadataQueryValueShape::Text);
+
+    nb::enum_<MetadataQueryNumericStatus>(m, "MetadataQueryNumericStatus")
+        .value("NotNumeric", MetadataQueryNumericStatus::NotNumeric)
+        .value("Complete", MetadataQueryNumericStatus::Complete)
+        .value("Partial", MetadataQueryNumericStatus::Partial)
+        .value("Invalid", MetadataQueryNumericStatus::Invalid);
+
+    nb::enum_<MetadataQueryComponentRole>(m, "MetadataQueryComponentRole")
+        .value("Unknown", MetadataQueryComponentRole::Unknown)
+        .value("NumericValue", MetadataQueryComponentRole::NumericValue)
+        .value("WhiteBalance", MetadataQueryComponentRole::WhiteBalance)
+        .value("ColorMatrix", MetadataQueryComponentRole::ColorMatrix)
+        .value("CameraCalibration",
+               MetadataQueryComponentRole::CameraCalibration)
+        .value("ReductionMatrix",
+               MetadataQueryComponentRole::ReductionMatrix)
+        .value("ForwardMatrix", MetadataQueryComponentRole::ForwardMatrix)
+        .value("CalibrationIlluminant",
+               MetadataQueryComponentRole::CalibrationIlluminant)
+        .value("AnalogBalance", MetadataQueryComponentRole::AnalogBalance)
+        .value("AsShotNeutral", MetadataQueryComponentRole::AsShotNeutral)
+        .value("AsShotWhiteXy", MetadataQueryComponentRole::AsShotWhiteXy)
+        .value("BlackLevelRepeatDimensions",
+               MetadataQueryComponentRole::BlackLevelRepeatDimensions)
+        .value("BlackLevel", MetadataQueryComponentRole::BlackLevel)
+        .value("BlackLevelDeltaH",
+               MetadataQueryComponentRole::BlackLevelDeltaH)
+        .value("BlackLevelDeltaV",
+               MetadataQueryComponentRole::BlackLevelDeltaV)
+        .value("WhiteLevel", MetadataQueryComponentRole::WhiteLevel)
+        .value("LinearizationTable",
+               MetadataQueryComponentRole::LinearizationTable)
+        .value("CfaRepeatDimensions",
+               MetadataQueryComponentRole::CfaRepeatDimensions)
+        .value("CfaPattern", MetadataQueryComponentRole::CfaPattern)
+        .value("CfaPlaneColors", MetadataQueryComponentRole::CfaPlaneColors)
+        .value("CfaLayout", MetadataQueryComponentRole::CfaLayout)
+        .value("ActiveArea", MetadataQueryComponentRole::ActiveArea)
+        .value("MaskedAreas", MetadataQueryComponentRole::MaskedAreas)
+        .value("DefaultCropOrigin",
+               MetadataQueryComponentRole::DefaultCropOrigin)
+        .value("DefaultCropSize", MetadataQueryComponentRole::DefaultCropSize)
+        .value("DerivedGeometry", MetadataQueryComponentRole::DerivedGeometry);
+
+    nb::enum_<MetadataQueryMatrixSubtype>(m, "MetadataQueryMatrixSubtype")
+        .value("Unknown", MetadataQueryMatrixSubtype::Unknown)
+        .value("ColorMatrix", MetadataQueryMatrixSubtype::ColorMatrix)
+        .value("CameraCalibration",
+               MetadataQueryMatrixSubtype::CameraCalibration)
+        .value("ReductionMatrix", MetadataQueryMatrixSubtype::ReductionMatrix)
+        .value("ForwardMatrix", MetadataQueryMatrixSubtype::ForwardMatrix);
+
+    nb::enum_<MetadataQueryCoordinateBasis>(m,
+                                            "MetadataQueryCoordinateBasis")
+        .value("Unknown", MetadataQueryCoordinateBasis::Unknown)
+        .value("ActiveAreaRelativeRaw",
+               MetadataQueryCoordinateBasis::ActiveAreaRelativeRaw)
+        .value("StoredImageRelativeRaw",
+               MetadataQueryCoordinateBasis::StoredImageRelativeRaw);
 
     nb::enum_<MetadataQueryMatchTerm>(m, "MetadataQueryMatchTerm")
         .value("None_", MetadataQueryMatchTerm::None)

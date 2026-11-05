@@ -159,3 +159,33 @@ Existing signatures, options, prepared bundle layout, snapshot v1 and package
 selection policy remain the same. Keep development ABI label 4 and rebuild
 consumers against matching headers and libraries. This batch changes no reader,
 pixel/RAW transfer exclusion, vendor interpretation or codec contract.
+
+
+Scoped metadata services in 0.8.30
+---------------------------------
+
+Query, interpretation and concept calls now accept MetadataQueryOptions.
+CcmQueryOptions gains the same directory scope. Numeric outputs carry full
+counts, completeness, component roles/shapes and crop coordinate basis. These
+experimental public layouts and exported signatures change within unfrozen
+ABI 4; rebuild applications and plugins with matching 0.8.30 headers/libraries.
+
+Positional snapshot results gain producer-specific residual counts and the
+first known skipped MakerNote offset/tag. Diagnostic projection takes the result
+and output span directly; the old request-intent options are removed. Update
+three-argument calls to collect_read_transfer_source_diagnostics accordingly.
+The narrow Host Adoption Profile label remains v1. Standalone MRW and existing
+Canon derived values now use bounded callbacks; Sony SR2-private and RAF F000
+metadata have targeted memory/callback traversal. Unknown private layouts still
+require explicit support and can leave residuals.
+
+Concept resolution also caps companion/composite scans and preference/conflict
+comparisons through max_semantic_work (default/zero1048576). Check
+semantic_work_limited before accepting a preferred/conflict conclusion. The
+aggregate shares one cap across all ten concept kinds, including RAW descriptor
+variants. Direct orientation/GPS numeric vectors consume the same numeric
+output budget as query-backed candidates.
+
+The two transfer_concept_diagnostics_from_store overloads take final query
+options and return semantic-work/numeric incompleteness flags. Their layouts
+and signatures also require matching rebuilt0.8.30 headers and libraries.

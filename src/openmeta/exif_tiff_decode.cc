@@ -9,6 +9,7 @@
 
 #include "exif_tiff_decode_internal.h"
 #include "mrw_decode_internal.h"
+#include "sony_sr2_decode_internal.h"
 #include "geotiff_decode_internal.h"
 #include "metadata_structured_fields_internal.h"
 
@@ -4590,6 +4591,12 @@ source_decode_sony_raw_private(exif_internal::SourceTiffReader* source,
                             0xc634U);
         return;
     }
+    if (uint64_t(result->ifds_needed) + source->private_ifds_visited
+        >= options.limits.max_ifds) {
+        mark_limit_exceeded(result, ExifLimitReason::MaxIfds, offset, 0xc634U);
+        return;
+    }
+    ++source->private_ifds_visited;
     (void)exif_internal::decode_classic_ifd_from_source(
         source, cfg, offset, exif_internal::OffsetPolicy {},
         "mk_sony_sr2private_0", store, options, result, EntryFlags::None);
@@ -4611,6 +4618,8 @@ source_decode_sony_raw_private(exif_internal::SourceTiffReader* source,
                                    store, options, result);
         }
     }
+    exif_internal::decode_sony_sr2_subifds(source, cfg, offset, count,
+                                           store, options, result);
 }
 static std::string_view
 find_current_exif_ascii_value(const MetaStore& store, size_t first_entry,
@@ -5673,6 +5682,36 @@ namespace exif_internal {
     }
 
 
+    static void record_maker_note_residual(
+        ExifRandomAccessDecodeResult* result, const SourceTiffReader* source,
+        uint64_t local_offset, uint16_t tag) noexcept
+    {
+        if (!result) {
+            return;
+        }
+        if (result->nested_payloads_skipped == UINT32_MAX
+            || result->maker_note_paths_skipped == UINT32_MAX) {
+            result->nested_payloads_skipped = UINT32_MAX;
+            result->maker_note_paths_skipped = UINT32_MAX;
+            update_status(&result->decode, ExifDecodeStatus::LimitExceeded);
+            return;
+        }
+        result->nested_payloads_skipped += 1U;
+        result->maker_note_paths_skipped += 1U;
+        if (result->maker_note_path_location_known || !source
+            || !source->range) {
+            return;
+        }
+        uint64_t absolute_offset = 0U;
+        if (checked_add_u64(source->range->source_offset, local_offset,
+                            &absolute_offset)) {
+            result->maker_note_path_offset = absolute_offset;
+            result->maker_note_path_tag = tag;
+            result->maker_note_path_location_known = true;
+        }
+    }
+
+
     bool source_tiff_view(SourceTiffReader* source, uint64_t offset,
                           uint64_t size,
                           std::span<const std::byte>* out) noexcept
@@ -5705,7 +5744,17 @@ namespace exif_internal {
         }
         if (size > static_cast<uint64_t>(source->value_scratch.size())) {
             if (size <= static_cast<uint64_t>(source->window.storage.size())) {
-                return source_tiff_view(source, offset, size, out);
+                RandomAccessReadWindowOptions value_options;
+                value_options.minimum_read_bytes = 0U;
+                const RandomAccessViewResult view = random_access_read_view(
+                    *source->range, offset, size, &source->window,
+                    &source->result->input, source->limits, value_options);
+                if (!view.ok()) {
+                    map_source_failure(source);
+                    return false;
+                }
+                *out = view.bytes;
+                return true;
             }
             if (size > source->result->value_scratch_needed) {
                 source->result->value_scratch_needed = size;
@@ -5745,7 +5794,8 @@ namespace exif_internal {
         ExifDecodeResult* status_out, EntryFlags extra_flags,
         bool allow_missing_next_ifd_pointer, uint16_t forced_entry_count,
         const TiffConfig* out_of_line_value_cfg, bool mark_contextual_names,
-        bool allow_zero_count_unknown_type) noexcept
+        bool allow_zero_count_unknown_type,
+        SourceIfdValueExpansionHook value_hook) noexcept
     {
         if (!source || !source->range || !source->result || cfg.bigtiff
             || ifd_name.empty()) {
@@ -5887,6 +5937,15 @@ namespace exif_internal {
             }
             if (status_out) {
                 status_out->entries_decoded += 1U;
+            }
+            if (value_hook) {
+                const SourceIfdValueExpansionStatus expansion = value_hook(
+                    cfg, ifd_entry, have_value, value_raw, ifd_name, store,
+                    options, status_out);
+                if (expansion == SourceIfdValueExpansionStatus::Incomplete) {
+                    record_maker_note_residual(source->result, source,
+                                               ref.value_off, ifd_entry.tag);
+                }
             }
         }
         return true;
@@ -6147,6 +6206,14 @@ namespace {
                 best_score = scores[i];
                 best_index = i;
                 best_in    = all_in[i];
+            } else if (scores[i] == best_score && scores[i] != 0U
+                       && i == 1U && best_index == 0U
+                       && all_in[i] == best_in && min_offset == needed) {
+                // A declared MakerNote length may stop at the IFD end even
+                // when a Canon value offset equals the IFD end and remains
+                // MakerNote-relative. Prefer that exact-boundary base over a
+                // coincidentally in-range outer-TIFF offset when evidence ties.
+                best_index = i;
             }
         }
 
@@ -6208,6 +6275,22 @@ namespace {
         } else {
             source->result->nested_payloads_skipped
                 += nested.nested_payloads_skipped;
+        }
+        if (nested.maker_note_paths_skipped
+            > UINT32_MAX - source->result->maker_note_paths_skipped) {
+            source->result->maker_note_paths_skipped = UINT32_MAX;
+            update_status(&source->result->decode,
+                          ExifDecodeStatus::LimitExceeded);
+        } else {
+            source->result->maker_note_paths_skipped
+                += nested.maker_note_paths_skipped;
+        }
+        if (!source->result->maker_note_path_location_known
+            && nested.maker_note_path_location_known) {
+            source->result->maker_note_path_offset
+                = nested.maker_note_path_offset;
+            source->result->maker_note_path_tag = nested.maker_note_path_tag;
+            source->result->maker_note_path_location_known = true;
         }
         exif_internal::map_source_failure(source);
         source->window.reset();
@@ -6304,11 +6387,8 @@ namespace {
                 && exif_internal::decode_classic_ifd_from_source(
                     source, layout.cfg, maker_note_off, layout.offsets,
                     maker_ifd, store, mn_options, &result->decode,
-                    EntryFlags::None)) {
-                // Canon's main IFD is source-backed, but derived BinaryData
-                // tables still require conversion from span-only helpers when
-                // their values lie outside the declared MakerNote payload.
-                result->nested_payloads_skipped += 1U;
+                    EntryFlags::None, false, 0U, nullptr, true, false,
+                    exif_internal::decode_canon_makernote_value)) {
                 return;
             }
         }
@@ -6616,7 +6696,8 @@ namespace {
         }
 
         if (hasselblad_parent_offsets) {
-            result->nested_payloads_skipped += 1U;
+            exif_internal::record_maker_note_residual(
+                result, source, maker_note_off, 0x927CU);
             return;
         }
 
@@ -6641,7 +6722,8 @@ namespace {
             }
         }
 
-        result->nested_payloads_skipped += 1U;
+        exif_internal::record_maker_note_residual(
+            result, source, maker_note_off, 0x927CU);
     }
 
 
@@ -7153,7 +7235,9 @@ decode_exif_tiff_random_access(
                 // A configured metadata-value ceiling may intentionally skip
                 // the bytes before vendor detection. Keep completion
                 // conservative when nested decoding was requested.
-                result.nested_payloads_skipped += 1U;
+                exif_internal::record_maker_note_residual(
+                    &result, &source, value_offset,
+                    static_cast<uint16_t>(tag));
             }
         }
 
@@ -7199,10 +7283,15 @@ decode_exif_tiff_random_access(
         }
     }
 
-    if (result.input.ok())
+    if (result.input.ok()) {
+        // Private tables can sit immediately before pixels. Preserve caller
+        // read-ahead for the outer structure, then fetch these metadata views
+        // exactly rather than extending into an unrelated payload.
+        source.window_options.minimum_read_bytes = 0U;
         source_decode_sony_root_private(&source, cfg, first_ifd,
                                         decode_entry_start, store, options,
                                         &result.decode);
+    }
     maybe_decode_nikon_nefinfo_blocks(store, options, &result.decode);
     exif_internal::decode_nikon_preview_aliases(store, options, &result.decode);
     if (store.resource_limit_exceeded()) {

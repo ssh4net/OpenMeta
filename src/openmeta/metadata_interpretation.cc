@@ -46,6 +46,10 @@ namespace {
         out.shape          = candidate.normalized_shape;
         out.confidence     = candidate.confidence;
         out.source_entries = candidate.source_entries;
+        out.total_numeric_values = candidate.total_numeric_values;
+        out.numeric_status = candidate.numeric_status;
+        out.components = candidate.components;
+        out.coordinate_basis = candidate.coordinate_basis;
 
         copy_pair_if_present(candidate.has_origin, candidate.origin,
                              &out.has_origin, out.origin);
@@ -69,6 +73,15 @@ namespace {
         if (!query || !out) {
             return;
         }
+        out->total_numeric_values += query->total_numeric_values;
+        out->returned_numeric_values += query->returned_numeric_values;
+        out->numeric_values_limited |= query->numeric_values_limited;
+        out->has_invalid_numeric_values |= query->has_invalid_numeric_values;
+        out->numeric_status = out->has_invalid_numeric_values
+            ? MetadataQueryNumericStatus::Invalid
+            : (out->numeric_values_limited ? MetadataQueryNumericStatus::Partial
+               : (out->total_numeric_values != 0U ? MetadataQueryNumericStatus::Complete
+                                                  : MetadataQueryNumericStatus::NotNumeric));
         out->records.reserve(out->records.size() + query->candidates.size());
         for (size_t i = 0U; i < query->candidates.size(); ++i) {
             const MetadataQueryCandidate& candidate = query->candidates[i];
@@ -84,34 +97,45 @@ namespace {
 
     static void append_kind_records(const MetaStore& store,
                                     MetadataQueryKind kind,
+                                    const MetadataQueryOptions& options,
                                     MetadataInterpretationResult* out)
     {
-        MetadataQueryResult query = query_metadata(store, kind);
+        MetadataQueryOptions remaining = options;
+        if (options.max_total_values != 0U) {
+            if (out->returned_numeric_values >= options.max_total_values) {
+                remaining.include_numeric_values = false;
+            } else {
+                remaining.max_total_values = options.max_total_values
+                                             - out->returned_numeric_values;
+            }
+        }
+        MetadataQueryResult query = query_metadata(store, kind, remaining);
         append_query_records(&query, out);
     }
 
 }  // namespace
 
 MetadataInterpretationResult
-interpret_metadata_query(const MetaStore& store, MetadataQueryKind kind)
+interpret_metadata_query(const MetaStore& store, MetadataQueryKind kind,
+                         const MetadataQueryOptions& options)
 {
     MetadataInterpretationResult out;
-    append_kind_records(store, kind, &out);
+    append_kind_records(store, kind, options, &out);
     return out;
 }
 
 MetadataInterpretationResult
-interpret_metadata(const MetaStore& store)
+interpret_metadata(const MetaStore& store, const MetadataQueryOptions& options)
 {
     MetadataInterpretationResult out;
-    append_kind_records(store, MetadataQueryKind::Crop, &out);
-    append_kind_records(store, MetadataQueryKind::Orientation, &out);
-    append_kind_records(store, MetadataQueryKind::ExposureGain, &out);
-    append_kind_records(store, MetadataQueryKind::WhiteBalance, &out);
-    append_kind_records(store, MetadataQueryKind::Color, &out);
-    append_kind_records(store, MetadataQueryKind::LensCorrection, &out);
-    append_kind_records(store, MetadataQueryKind::RawProcessing, &out);
-    append_kind_records(store, MetadataQueryKind::Descriptive, &out);
+    append_kind_records(store, MetadataQueryKind::Crop, options, &out);
+    append_kind_records(store, MetadataQueryKind::Orientation, options, &out);
+    append_kind_records(store, MetadataQueryKind::ExposureGain, options, &out);
+    append_kind_records(store, MetadataQueryKind::WhiteBalance, options, &out);
+    append_kind_records(store, MetadataQueryKind::Color, options, &out);
+    append_kind_records(store, MetadataQueryKind::LensCorrection, options, &out);
+    append_kind_records(store, MetadataQueryKind::RawProcessing, options, &out);
+    append_kind_records(store, MetadataQueryKind::Descriptive, options, &out);
     return out;
 }
 

@@ -401,6 +401,7 @@ set(OPENMETA_SOURCES
   src/openmeta/exr_decode.cc
   src/openmeta/exif_tag_names.cc
   src/openmeta/exif_tiff_decode.cc
+  src/openmeta/sony_sr2_decode.cc
   src/openmeta/geotiff_decode.cc
   src/openmeta/geotiff_key_names.cc
   src/openmeta/host_adoption.cc
@@ -1077,10 +1078,13 @@ if(OPENMETA_BUILD_TESTS)
     tests/metadata_fuzzy_search_test.cc
     tests/metadata_interpretation_test.cc
     tests/metadata_query_test.cc
+    tests/metadata_scope_propagation_test.cc
+    tests/metadata_companion_scope_test.cc
     tests/metadata_transfer_api_test.cc
     tests/prepared_transfer_handoff_test.cc
     tests/ciff_raw_gap_test.cc
     tests/sony_raw_gap_test.cc
+    tests/raf_private_metadata_test.cc
     tests/minolta_a100_gap_test.cc
     tests/mrw_decode_test.cc
     tests/flir_fff_decode_test.cc
@@ -1378,6 +1382,16 @@ if(OPENMETA_BUILD_TESTS)
         "-DOPENMETA_PYTHON_EXECUTABLE=${Python_EXECUTABLE}"
         "-DOPENMETA_PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/python_metadata_editing_smoke_test.cmake"
+    )
+  endif()
+
+  if(TARGET openmeta_python)
+    add_test(
+      NAME openmeta_python_metadata_numeric_results
+      COMMAND ${CMAKE_COMMAND} -E env
+        "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python"
+        "${Python_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/python_metadata_numeric_results_test.py"
     )
   endif()
 

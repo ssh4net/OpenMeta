@@ -475,7 +475,12 @@ namespace {
             = add_exif_u32(&store, "mk_google_shotlogdata", 0x0001U, 7U);
         store.finalize();
 
-        const MetadataConceptResult result = resolve_metadata_concepts(store);
+        const MetadataDirectorySelector imported { kInvalidBlockId, {} };
+        MetadataQueryOptions options;
+        options.scope.enabled=true;
+        options.scope.directories=std::span<const MetadataDirectorySelector>(&imported,1U);
+        options.scope.inherit_across_directories=true;
+        const MetadataConceptResult result = resolve_metadata_concepts(store,options);
 
         const MetadataConceptResolution* orientation
             = find_concept(result, MetadataConceptKind::Orientation);
@@ -909,7 +914,12 @@ namespace {
                                               0x0002U, 2U);
         store.finalize();
 
-        const MetadataConceptResult result = resolve_metadata_concepts(store);
+        const MetadataDirectorySelector imported { kInvalidBlockId, {} };
+        MetadataQueryOptions options;
+        options.scope.enabled=true;
+        options.scope.directories=std::span<const MetadataDirectorySelector>(&imported,1U);
+        options.scope.inherit_across_directories=true;
+        const MetadataConceptResult result = resolve_metadata_concepts(store,options);
 
         const MetadataConceptResolution* color
             = find_concept(result, MetadataConceptKind::ColorProfile);
@@ -1019,7 +1029,12 @@ namespace {
                                              0x001AU, 2U);
         store.finalize();
 
-        const MetadataConceptResult result = resolve_metadata_concepts(store);
+        const MetadataDirectorySelector imported { kInvalidBlockId, {} };
+        MetadataQueryOptions options;
+        options.scope.enabled=true;
+        options.scope.directories=std::span<const MetadataDirectorySelector>(&imported,1U);
+        options.scope.inherit_across_directories=true;
+        const MetadataConceptResult result = resolve_metadata_concepts(store,options);
 
         const MetadataConceptResolution* color
             = find_concept(result, MetadataConceptKind::ColorProfile);
@@ -1207,8 +1222,13 @@ namespace {
                                                           0x9292U, "500");
         store.finalize();
 
+        const MetadataDirectorySelector image { kInvalidBlockId, {} };
+        MetadataQueryOptions options;
+        options.scope.enabled=true;
+        options.scope.directories=std::span<const MetadataDirectorySelector>(&image,1U);
+        options.scope.inherit_across_directories=true;
         const MetadataConceptResolution datetime
-            = resolve_metadata_concept(store, MetadataConceptKind::DateTime);
+            = resolve_metadata_concept(store, MetadataConceptKind::DateTime,options);
         const MetadataConceptCandidate* modified
             = find_role(datetime, MetadataConceptRole::Modified);
         const MetadataConceptCandidate* digitized

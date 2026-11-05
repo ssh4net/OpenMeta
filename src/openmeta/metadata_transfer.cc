@@ -31,6 +31,7 @@
 #include "interop_safety_internal.h"
 #include "interop_value_format_internal.h"
 #include "meta_store_resource_internal.h"
+#include "mrw_decode_internal.h"
 #include "metadata_logical_field_internal.h"
 #include "raf_decode_internal.h"
 #include "x3f_decode_internal.h"
@@ -16263,6 +16264,10 @@ namespace {
         if (!out) {
             return;
         }
+        out->semantic_work_used = concepts.semantic_work_used;
+        out->semantic_work_limited = concepts.semantic_work_limited;
+        out->numeric_values_limited = concepts.numeric_values_limited;
+        out->has_invalid_numeric_values = concepts.has_invalid_numeric_values;
         for (size_t c = 0U; c < concepts.concepts.size(); ++c) {
             const MetadataConceptResolution& resolution = concepts.concepts[c];
             out->diagnostics.reserve(out->diagnostics.size()
@@ -16280,11 +16285,12 @@ namespace {
 
 TransferConceptDiagnostics
 transfer_concept_diagnostics_from_store(const MetaStore& store,
-                                        TransferSafetyMode safety)
+                                        TransferSafetyMode safety,
+                                        const MetadataQueryOptions& options)
 {
     TransferConceptDiagnostics out;
     out.safety                           = safety;
-    const MetadataConceptResult concepts = resolve_metadata_concepts(store);
+    const MetadataConceptResult concepts = resolve_metadata_concepts(store, options);
     append_transfer_concept_diagnostics(concepts, safety, &out);
     return out;
 }
@@ -16292,12 +16298,13 @@ transfer_concept_diagnostics_from_store(const MetaStore& store,
 TransferConceptDiagnostics
 transfer_concept_diagnostics_from_store(
     const MetaStore& store, TransferSafetyMode safety,
-    const MetadataRawDataDescriptor& raw_descriptor)
+    const MetadataRawDataDescriptor& raw_descriptor,
+    const MetadataQueryOptions& options)
 {
     TransferConceptDiagnostics out;
     out.safety = safety;
     const MetadataConceptResult concepts
-        = resolve_metadata_concepts(store, raw_descriptor);
+        = resolve_metadata_concepts(store, raw_descriptor, options);
     append_transfer_concept_diagnostics(concepts, safety, &out);
     return out;
 }
@@ -17721,21 +17728,91 @@ namespace {
     }
 
 
+    enum class SnapshotResidualReason : uint8_t {
+        MakerNote,
+        RawCarrier,
+        EmbeddedContainer,
+        SourceEnrichment,
+        Unclassified,
+    };
+
+    static void add_snapshot_residual(
+        ReadTransferSourceSnapshotRandomAccessResult* result,
+        SnapshotResidualReason reason, uint32_t count = 1U) noexcept
+    {
+        if (!result || count == 0U) {
+            return;
+        }
+        const uint32_t accepted
+            = count < UINT32_MAX - result->residual_metadata_paths
+                  ? count
+                  : UINT32_MAX - result->residual_metadata_paths;
+        if (accepted == 0U) {
+            return;
+        }
+        result->residual_metadata_paths += accepted;
+        switch (reason) {
+        case SnapshotResidualReason::MakerNote:
+            result->residual_reasons.maker_note_paths += accepted;
+            break;
+        case SnapshotResidualReason::RawCarrier:
+            result->residual_reasons.raw_carrier_preservation += accepted;
+            break;
+        case SnapshotResidualReason::EmbeddedContainer:
+            result->residual_reasons.embedded_container_enrichment += accepted;
+            break;
+        case SnapshotResidualReason::SourceEnrichment:
+            result->residual_reasons.source_enrichment += accepted;
+            break;
+        case SnapshotResidualReason::Unclassified:
+            result->residual_reasons.unclassified += accepted;
+            break;
+        }
+    }
+
+    static void add_exif_snapshot_residuals(
+        ReadTransferSourceSnapshotRandomAccessResult* result,
+        const ExifRandomAccessDecodeResult& decoded) noexcept
+    {
+        const uint32_t maker_note_paths
+            = decoded.maker_note_paths_skipped
+                      < decoded.nested_payloads_skipped
+                  ? decoded.maker_note_paths_skipped
+                  : decoded.nested_payloads_skipped;
+        if (maker_note_paths != 0U) {
+            if (!result->maker_note_residual_location_known
+                && decoded.maker_note_path_location_known) {
+                result->maker_note_residual_offset
+                    = decoded.maker_note_path_offset;
+                result->maker_note_residual_tag = decoded.maker_note_path_tag;
+                result->maker_note_residual_location_known = true;
+            }
+            add_snapshot_residual(result, SnapshotResidualReason::MakerNote,
+                                  maker_note_paths);
+        }
+        if (decoded.nested_payloads_skipped > maker_note_paths) {
+            add_snapshot_residual(
+                result, SnapshotResidualReason::Unclassified,
+                decoded.nested_payloads_skipped - maker_note_paths);
+        }
+    }
+
     static bool decode_snapshot_payload_block(
         const ContainerBlockRef& block, std::span<const std::byte> payload,
         std::span<const std::byte> outer_prefix, MetaStore* store,
         std::span<ExifIfdRef> ifds, uint32_t* io_ifd_write_pos,
         const SimpleMetaDecodeOptions& options, SimpleMetaResult* read,
-        uint32_t* residual_paths) noexcept
+        ReadTransferSourceSnapshotRandomAccessResult* result) noexcept
     {
-        if (!store || !io_ifd_write_pos || !read || !residual_paths) {
+        if (!store || !io_ifd_write_pos || !read || !result) {
             return false;
         }
         if (block.kind == ContainerBlockKind::Exif) {
             if (block.format == ContainerFormat::Cr3
                 && block.id == fourcc('C', 'M', 'T', '3')) {
                 if (options.exif.decode_makernote) {
-                    *residual_paths += 1U;
+                    add_snapshot_residual(result,
+                                          SnapshotResidualReason::MakerNote);
                 }
                 return true;
             }
@@ -17753,7 +17830,8 @@ namespace {
             *io_ifd_write_pos += one.ifds_written < room ? one.ifds_written
                                                          : room;
             if (options.exif.decode_embedded_containers) {
-                *residual_paths += 1U;
+                add_snapshot_residual(
+                    result, SnapshotResidualReason::EmbeddedContainer);
             }
             return true;
         }
@@ -17807,7 +17885,8 @@ namespace {
         }
         if (block.kind == ContainerBlockKind::MakerNote) {
             if (options.exif.decode_makernote) {
-                *residual_paths += 1U;
+                add_snapshot_residual(result,
+                                      SnapshotResidualReason::MakerNote);
             }
             return true;
         }
@@ -17837,7 +17916,7 @@ namespace {
                                                      payload.subspan(offset),
                                                      {}, store, ifds,
                                                      io_ifd_write_pos, options,
-                                                     read, residual_paths);
+                                                     read, result);
             }
             if (block.aux_u32 == fourcc('x', 'm', 'l', ' ')) {
                 ContainerBlockRef xmp_block = block;
@@ -17845,7 +17924,7 @@ namespace {
                 return decode_snapshot_payload_block(xmp_block, payload, {},
                                                      store, ifds,
                                                      io_ifd_write_pos, options,
-                                                     read, residual_paths);
+                                                     read, result);
             }
             if (block.aux_u32 == fourcc('j', 'u', 'm', 'b')
                 || block.aux_u32 == fourcc('c', '2', 'p', 'a')) {
@@ -17854,10 +17933,10 @@ namespace {
                 return decode_snapshot_payload_block(jumbf_block, payload, {},
                                                      store, ifds,
                                                      io_ifd_write_pos, options,
-                                                     read, residual_paths);
+                                                     read, result);
             }
         }
-        *residual_paths += 1U;
+        add_snapshot_residual(result, SnapshotResidualReason::Unclassified);
         return true;
     }
 
@@ -17986,7 +18065,7 @@ namespace {
         if (decoded.value_scratch_needed > out->value_scratch_needed) {
             out->value_scratch_needed = decoded.value_scratch_needed;
         }
-        out->residual_metadata_paths += decoded.nested_payloads_skipped;
+        add_exif_snapshot_residuals(out, decoded);
 
         const uint32_t room = *ifd_write_pos < scratch.ifds.size()
                                   ? static_cast<uint32_t>(scratch.ifds.size()
@@ -18152,7 +18231,7 @@ namespace {
                                                &out->snapshot.store,
                                                scratch.ifds, &ifd_write_pos,
                                                block_options, &out->read,
-                                               &out->residual_metadata_paths)) {
+                                               out)) {
                 out->status = TransferStatus::Malformed;
                 if (block_options.xmp.preserve_custom_structures) {
                     if (out->read.xmp.status == XmpDecodeStatus::LimitExceeded
@@ -18250,7 +18329,8 @@ namespace {
                 return out;
             }
             if (options.preserve_raw_carriers) {
-                out.residual_metadata_paths += 1U;
+                add_snapshot_residual(&out,
+                                      SnapshotResidualReason::RawCarrier);
             }
         } else if (format == ContainerFormat::Tiff) {
             ExifRandomAccessScratch exif_scratch;
@@ -18265,7 +18345,7 @@ namespace {
             merge_random_access_state(&out.input, exif.input);
             out.read.exif            = exif.decode;
             out.value_scratch_needed = exif.value_scratch_needed;
-            out.residual_metadata_paths += exif.nested_payloads_skipped;
+            add_exif_snapshot_residuals(&out, exif);
             if (!out.input.ok()) {
                 out.status = map_random_access_failure_status(out.input);
                 out.code   = map_random_access_failure_code(
@@ -18287,11 +18367,13 @@ namespace {
                 return out;
             }
             if (options.preserve_raw_carriers) {
-                out.residual_metadata_paths += 1U;
+                add_snapshot_residual(&out,
+                                      SnapshotResidualReason::RawCarrier);
             }
         } else if (format == ContainerFormat::Crw
                    || format == ContainerFormat::Raf
-                   || format == ContainerFormat::X3f) {
+                   || format == ContainerFormat::X3f
+                   || format == ContainerFormat::Mrw) {
             ExifRandomAccessScratch native_scratch;
             native_scratch.read_window    = scratch.read_window;
             native_scratch.value          = scratch.value;
@@ -18307,8 +18389,13 @@ namespace {
                     source, out.snapshot.store, native_scratch,
                     decode_options.exif.limits,
                     remaining_random_access_limits(read_limits, out.input));
-            } else {
+            } else if (format == ContainerFormat::X3f) {
                 native = x3f_internal::decode_x3f_native_random_access(
+                    source, out.snapshot.store, native_scratch,
+                    decode_options.exif.limits,
+                    remaining_random_access_limits(read_limits, out.input));
+            } else {
+                native = mrw_internal::decode_mrw_native_random_access(
                     source, out.snapshot.store, native_scratch,
                     decode_options.exif.limits,
                     remaining_random_access_limits(read_limits, out.input));
@@ -18316,7 +18403,7 @@ namespace {
             merge_random_access_state(&out.input, native.input);
             out.read.exif            = native.decode;
             out.value_scratch_needed = native.value_scratch_needed;
-            out.residual_metadata_paths += native.nested_payloads_skipped;
+            add_exif_snapshot_residuals(&out, native);
             if (!out.input.ok()) {
                 out.status = map_random_access_failure_status(out.input);
                 out.code   = map_random_access_failure_code(
@@ -18330,14 +18417,16 @@ namespace {
                     = ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
                 return out;
             }
-            if (native.decode.status == ExifDecodeStatus::LimitExceeded
-                || native.decode.status == ExifDecodeStatus::OutputTruncated) {
+            if (native.decode.status == ExifDecodeStatus::LimitExceeded) {
                 out.status = TransferStatus::LimitExceeded;
-                out.code   = native.value_scratch_needed != 0U
-                                 ? ReadTransferSourceSnapshotRandomAccessCode::
-                                     ScratchTooSmall
-                                 : ReadTransferSourceSnapshotRandomAccessCode::
-                                     DecodeFailed;
+                out.code = ReadTransferSourceSnapshotRandomAccessCode::
+                    DecodeFailed;
+                return out;
+            }
+            if (native.decode.status == ExifDecodeStatus::OutputTruncated) {
+                out.status = TransferStatus::LimitExceeded;
+                out.code   = ReadTransferSourceSnapshotRandomAccessCode::
+                    ScratchTooSmall;
                 return out;
             }
             if (native.decode.status == ExifDecodeStatus::Unsupported) {
@@ -18400,18 +18489,21 @@ namespace {
                                           == ContainerBlockKind::XmpExtended;
                         }
                         if (!have_xmp) {
-                            out.residual_metadata_paths += 1U;
+                            add_snapshot_residual(
+                                &out, SnapshotResidualReason::SourceEnrichment);
                         }
                     }
                 } else {
                     // Callback-backed bounded traversal does not perform the
                     // contiguous compatibility scanner's source-wide Exif/XMP
                     // signature search through arbitrary image bytes.
-                    out.residual_metadata_paths += 1U;
+                    add_snapshot_residual(
+                        &out, SnapshotResidualReason::SourceEnrichment);
                 }
             }
             if (options.preserve_raw_carriers) {
-                out.residual_metadata_paths += 1U;
+                add_snapshot_residual(&out,
+                                      SnapshotResidualReason::RawCarrier);
             }
         } else {
             if (format == ContainerFormat::Unknown) {
@@ -18454,7 +18546,8 @@ namespace {
             if (format == ContainerFormat::Heif
                 || format == ContainerFormat::Avif
                 || format == ContainerFormat::Cr3) {
-                out.residual_metadata_paths += 1U;
+                add_snapshot_residual(
+                    &out, SnapshotResidualReason::EmbeddedContainer);
             }
 
             const uint32_t block_count
@@ -18528,6 +18621,41 @@ namespace {
         if (sink->result.needed != UINT32_MAX) {
             sink->result.needed += 1U;
         }
+    }
+
+    static ReadTransferSourceDiagnostic make_read_diagnostic(
+        const ReadTransferSourceSnapshotRandomAccessResult& result,
+        ReadTransferSourceDiagnosticSeverity severity,
+        ReadTransferSourceDiagnosticDomain domain,
+        ReadTransferSourceDiagnosticCode code) noexcept;
+
+    static void emit_reasoned_residual_diagnostic(
+        ReadDiagnosticSink* sink,
+        const ReadTransferSourceSnapshotRandomAccessResult& result,
+        uint32_t requested_count, uint32_t* remaining_count,
+        ReadTransferSourceDiagnosticDomain domain,
+        ReadTransferSourceDiagnosticCode code, bool maker_note_location)
+        noexcept
+    {
+        if (!sink || !remaining_count) {
+            return;
+        }
+        const uint32_t count = requested_count < *remaining_count
+                                   ? requested_count
+                                   : *remaining_count;
+        if (count == 0U) {
+            return;
+        }
+        *remaining_count -= count;
+        ReadTransferSourceDiagnostic diagnostic = make_read_diagnostic(
+            result, ReadTransferSourceDiagnosticSeverity::Warning, domain,
+            code);
+        diagnostic.count = count;
+        if (maker_note_location && result.maker_note_residual_location_known) {
+            diagnostic.offset = result.maker_note_residual_offset;
+            diagnostic.tag    = result.maker_note_residual_tag;
+        }
+        emit_read_diagnostic(sink, diagnostic);
     }
 
     static ReadTransferSourceDiagnostic make_read_diagnostic(
@@ -18727,8 +18855,7 @@ read_transfer_source_snapshot_random_access(
 ReadTransferSourceDiagnosticsResult
 collect_read_transfer_source_diagnostics(
     const ReadTransferSourceSnapshotRandomAccessResult& result,
-    std::span<ReadTransferSourceDiagnostic> out,
-    const ReadTransferSourceDiagnosticOptions& options) noexcept
+    std::span<ReadTransferSourceDiagnostic> out) noexcept
 {
     ReadDiagnosticSink sink;
     sink.output = out;
@@ -18816,26 +18943,37 @@ collect_read_transfer_source_diagnostics(
     }
 
     if (result.residual_metadata_paths != 0U) {
-        if (options.decode_makernote_requested
-            && (result.format == ContainerFormat::Tiff
-                || result.format == ContainerFormat::Raf
-                || result.format == ContainerFormat::X3f)) {
+        uint32_t remaining_paths = result.residual_metadata_paths;
+        emit_reasoned_residual_diagnostic(
+            &sink, result, result.residual_reasons.maker_note_paths,
+            &remaining_paths, ReadTransferSourceDiagnosticDomain::MakerNote,
+            ReadTransferSourceDiagnosticCode::IncompleteMakerNote, true);
+        emit_reasoned_residual_diagnostic(
+            &sink, result, result.residual_reasons.raw_carrier_preservation,
+            &remaining_paths, ReadTransferSourceDiagnosticDomain::Payload,
+            ReadTransferSourceDiagnosticCode::IncompleteRawCarrierPreservation,
+            false);
+        emit_reasoned_residual_diagnostic(
+            &sink, result,
+            result.residual_reasons.embedded_container_enrichment,
+            &remaining_paths, ReadTransferSourceDiagnosticDomain::Container,
+            ReadTransferSourceDiagnosticCode::
+                IncompleteEmbeddedContainerEnrichment,
+            false);
+        emit_reasoned_residual_diagnostic(
+            &sink, result, result.residual_reasons.source_enrichment,
+            &remaining_paths, ReadTransferSourceDiagnosticDomain::ResidualPath,
+            ReadTransferSourceDiagnosticCode::IncompleteSourceEnrichment,
+            false);
+        const uint32_t generic_paths = remaining_paths;
+        if (generic_paths != 0U) {
             ReadTransferSourceDiagnostic diagnostic = make_read_diagnostic(
                 result, ReadTransferSourceDiagnosticSeverity::Warning,
-                ReadTransferSourceDiagnosticDomain::MakerNote,
-                ReadTransferSourceDiagnosticCode::IncompleteMakerNote);
-            diagnostic.count = result.residual_metadata_paths;
+                ReadTransferSourceDiagnosticDomain::ResidualPath,
+                ReadTransferSourceDiagnosticCode::ResidualMetadataPath);
+            diagnostic.count = generic_paths;
             emit_read_diagnostic(&sink, diagnostic);
         }
-        ReadTransferSourceDiagnostic diagnostic = make_read_diagnostic(
-            result, ReadTransferSourceDiagnosticSeverity::Warning,
-            ReadTransferSourceDiagnosticDomain::ResidualPath,
-            ReadTransferSourceDiagnosticCode::ResidualMetadataPath);
-        diagnostic.count = result.residual_metadata_paths;
-        if (options.decode_embedded_containers_requested) {
-            diagnostic.domain = ReadTransferSourceDiagnosticDomain::Container;
-        }
-        emit_read_diagnostic(&sink, diagnostic);
     }
 
     if (result.raw_carrier_bytes_truncated) {
@@ -18900,6 +19038,12 @@ read_transfer_source_diagnostic_code_name(
         return "scratch_too_small";
     case ReadTransferSourceDiagnosticCode::IncompleteMakerNote:
         return "incomplete_makernote";
+    case ReadTransferSourceDiagnosticCode::IncompleteRawCarrierPreservation:
+        return "incomplete_raw_carrier_preservation";
+    case ReadTransferSourceDiagnosticCode::IncompleteEmbeddedContainerEnrichment:
+        return "incomplete_embedded_container_enrichment";
+    case ReadTransferSourceDiagnosticCode::IncompleteSourceEnrichment:
+        return "incomplete_source_enrichment";
     case ReadTransferSourceDiagnosticCode::ResidualMetadataPath:
         return "residual_metadata_path";
     case ReadTransferSourceDiagnosticCode::RawCarrierTruncated:
@@ -18933,6 +19077,12 @@ read_transfer_source_diagnostic_message(
         return "caller metadata scratch is too small";
     case ReadTransferSourceDiagnosticCode::IncompleteMakerNote:
         return "requested MakerNote decode has residual paths";
+    case ReadTransferSourceDiagnosticCode::IncompleteRawCarrierPreservation:
+        return "raw carrier preservation has residual paths";
+    case ReadTransferSourceDiagnosticCode::IncompleteEmbeddedContainerEnrichment:
+        return "embedded container enrichment has residual paths";
+    case ReadTransferSourceDiagnosticCode::IncompleteSourceEnrichment:
+        return "source metadata enrichment has residual paths";
     case ReadTransferSourceDiagnosticCode::ResidualMetadataPath:
         return "metadata read has residual paths";
     case ReadTransferSourceDiagnosticCode::RawCarrierTruncated:

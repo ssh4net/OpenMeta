@@ -551,27 +551,41 @@ TEST(PublicMetadataFixtures, StructuredDiagnosticsClassifyDecoderLimits)
               openmeta::ReadTransferSourceDiagnosticDomain::Exr);
 }
 
-TEST(PublicMetadataFixtures, StructuredDiagnosticsClassifyRequestedResiduals)
+TEST(PublicMetadataFixtures, StructuredDiagnosticsUseProducerReasons)
 {
     openmeta::ReadTransferSourceSnapshotRandomAccessResult result;
     result.format = openmeta::ContainerFormat::Tiff;
-    result.code   = openmeta::ReadTransferSourceSnapshotRandomAccessCode::
-        ResidualMetadataPaths;
+    result.code = openmeta::ReadTransferSourceSnapshotRandomAccessCode::ResidualMetadataPaths;
     result.residual_metadata_paths = 3U;
-    openmeta::ReadTransferSourceDiagnosticOptions options;
-    options.decode_makernote_requested           = true;
-    options.decode_embedded_containers_requested = true;
-
     std::array<openmeta::ReadTransferSourceDiagnostic, 1U> diagnostic {};
-    const openmeta::ReadTransferSourceDiagnosticsResult collected
-        = openmeta::collect_read_transfer_source_diagnostics(result, diagnostic,
-                                                             options);
-    EXPECT_FALSE(collected.complete());
-    EXPECT_EQ(collected.written, 1U);
-    EXPECT_EQ(collected.needed, 2U);
+    const openmeta::ReadTransferSourceDiagnosticsResult generic
+        = openmeta::collect_read_transfer_source_diagnostics(result, diagnostic);
+    EXPECT_TRUE(generic.complete());
+    EXPECT_EQ(generic.written, 1U);
+    EXPECT_EQ(generic.needed, 1U);
     EXPECT_EQ(diagnostic[0].code,
-              openmeta::ReadTransferSourceDiagnosticCode::IncompleteMakerNote);
+              openmeta::ReadTransferSourceDiagnosticCode::ResidualMetadataPath);
     EXPECT_EQ(diagnostic[0].count, 3U);
+
+    result.residual_reasons.maker_note_paths = 1U;
+    result.residual_reasons.raw_carrier_preservation = 1U;
+    result.residual_reasons.embedded_container_enrichment = 1U;
+    result.maker_note_residual_location_known = true;
+    result.maker_note_residual_offset = 216U;
+    result.maker_note_residual_tag = 0x927cU;
+    std::array<openmeta::ReadTransferSourceDiagnostic, 2U> prefix {};
+    const openmeta::ReadTransferSourceDiagnosticsResult classified
+        = openmeta::collect_read_transfer_source_diagnostics(result, prefix);
+    EXPECT_FALSE(classified.complete());
+    EXPECT_EQ(classified.written, 2U);
+    EXPECT_EQ(classified.needed, 3U);
+    EXPECT_EQ(prefix[0].code,
+              openmeta::ReadTransferSourceDiagnosticCode::IncompleteMakerNote);
+    EXPECT_EQ(prefix[0].count, 1U);
+    EXPECT_EQ(prefix[0].offset, 216U);
+    EXPECT_EQ(prefix[0].tag, 0x927cU);
+    EXPECT_EQ(prefix[1].code,
+              openmeta::ReadTransferSourceDiagnosticCode::IncompleteRawCarrierPreservation);
 }
 
 }  // namespace

@@ -5,6 +5,7 @@
 #include "openmeta/api.h"
 
 #include "openmeta/meta_store.h"
+#include "openmeta/metadata_scope.h"
 
 #include <cstdint>
 #include <string>
@@ -64,6 +65,7 @@ struct CcmQueryLimits final {
 
 /// Options for \ref collect_dng_ccm_fields.
 struct CcmQueryOptions final {
+    MetadataQueryScope scope;
     /// Require DNG context marker (`DNGVersion`) in the source IFD.
     bool require_dng_context = true;
     /// Include `ReductionMatrix*` tags.
@@ -75,6 +77,10 @@ struct CcmQueryOptions final {
 
 /// One normalized CCM/white-balance/calibration field.
 struct CcmField final {
+    EntryId entry_id = kInvalidEntryId;
+    BlockId block = kInvalidBlockId;
+    uint64_t total_values = 0U;
+    bool values_complete = true;
     /// Canonical field name (e.g. `ColorMatrix1`).
     std::string name;
     /// Source EXIF IFD token (e.g. `ifd0`).
@@ -91,6 +97,7 @@ struct CcmField final {
 
 /// Validation issue emitted by \ref collect_dng_ccm_fields.
 struct CcmIssue final {
+    BlockId block = kInvalidBlockId;
     CcmIssueSeverity severity = CcmIssueSeverity::Warning;
     CcmIssueCode code         = CcmIssueCode::DecodeFailed;
     std::string ifd;

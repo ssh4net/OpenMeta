@@ -362,6 +362,132 @@ namespace {
         return any;
     }
 
+    static void decode_raf_private_ifds(
+        const RandomAccessSourceRange& raf, std::span<const std::byte> header,
+        MetaStore& store, const ExifRandomAccessScratch& scratch,
+        const ExifDecodeLimits& limits, const RandomAccessReadLimits& read_limits,
+        ExifRandomAccessDecodeResult* result) noexcept
+    {
+        static constexpr uint32_t offsets[] = { 0x64U, 0x80U };
+        std::array<uint32_t, 2> previous {};
+        uint32_t total_ifds = 0U;
+        for (uint32_t stream = 0U; stream < 2U && result->input.ok(); ++stream) {
+            uint32_t start = 0U, size = 0U;
+            if (!exif_internal::read_u32be(header, offsets[stream], &start)
+                || !exif_internal::read_u32be(header, offsets[stream] + 4U, &size)
+                || start == 0U || size == 0U) continue;
+            if (stream != 0U && start == previous[0]) continue;
+            previous[stream] = start;
+            if (start > raf.size || size > raf.size - start || size < 8U) {
+                update_status(&result->decode, ExifDecodeStatus::Malformed);
+                return;
+            }
+            const RandomAccessSourceRange range = make_random_access_source_range(
+                raf.source, raf.source_offset + start, size);
+            exif_internal::SourceTiffReader reader;
+            reader.range = &range;
+            reader.result = result;
+            reader.limits = read_limits;
+            reader.window.storage = scratch.read_window;
+            reader.window_options = scratch.window_options;
+            reader.window_options.minimum_read_bytes = 0U;
+            reader.value_scratch = scratch.value;
+            std::span<const std::byte> raw;
+            if (!exif_internal::source_tiff_view(&reader, 0U, 8U, &raw)) return;
+            TiffConfig cfg;
+            if (u8(raw[0]) == 'I' && u8(raw[1]) == 'I') cfg.le = true;
+            else if (u8(raw[0]) == 'M' && u8(raw[1]) == 'M') cfg.le = false;
+            else continue;
+            uint16_t magic = 0U;
+            uint32_t first = 0U;
+            if (!exif_internal::read_tiff_u16(cfg, raw, 2U, &magic)
+                || magic != 42U) continue;
+            if (!exif_internal::read_tiff_u32(cfg, raw, 4U, &first)) return;
+            std::array<uint32_t, 128> pending {}, visited {};
+            uint32_t pending_count = 0U, visited_count = 0U;
+            if (first != 0U) pending[pending_count++] = first;
+            ExifDecodeOptions options;
+            options.decode_printim = false;
+            options.decode_geotiff = false;
+            options.limits = limits;
+            while (pending_count != 0U && result->input.ok()) {
+                const uint32_t at = pending[--pending_count];
+                bool seen = false;
+                for (uint32_t i = 0U; i < visited_count; ++i) seen |= visited[i] == at;
+                if (seen) {
+                    update_status(&result->decode, ExifDecodeStatus::Malformed);
+                    return;
+                }
+                if (visited_count == visited.size() || total_ifds >= limits.max_ifds) {
+                    update_status(&result->decode, ExifDecodeStatus::LimitExceeded);
+                    result->decode.limit_reason = ExifLimitReason::MaxIfds;
+                    result->decode.limit_ifd_offset = uint64_t(start) + at;
+                    result->decode.limit_tag = 0xf000U;
+                    return;
+                }
+                ++total_ifds;
+                visited[visited_count++] = at;
+                if (!exif_internal::source_tiff_view(&reader, at, 2U, &raw)) return;
+                uint16_t count = 0U;
+                if (!exif_internal::read_tiff_u16(cfg, raw, 0U, &count)) return;
+                if (count > limits.max_entries_per_ifd) {
+                    update_status(&result->decode, ExifDecodeStatus::LimitExceeded);
+                    result->decode.limit_reason = ExifLimitReason::MaxEntriesPerIfd;
+                    result->decode.limit_ifd_offset = uint64_t(start) + at;
+                    result->decode.limit_tag = 0xf000U;
+                    return;
+                }
+                const uint64_t table_size = 2U + uint64_t(count) * 12U + 4U;
+                if (!exif_internal::source_tiff_contains(reader, at, table_size)) {
+                    update_status(&result->decode, ExifDecodeStatus::Malformed);
+                    return;
+                }
+                if (at != first && count != 0U) {
+                    for (uint32_t i = 0U; i < count; ++i) {
+                        if (!exif_internal::source_tiff_view(&reader,
+                              uint64_t(at) + 2U + uint64_t(i) * 12U, 12U, &raw)) return;
+                        exif_internal::ClassicIfdEntry entry;
+                        if (!exif_internal::read_classic_ifd_entry(cfg, raw, 0U, &entry)) return;
+                        if (uint64_t(entry.count32) * exif_internal::tiff_type_size(entry.type)
+                            > limits.max_value_bytes) {
+                            update_status(&result->decode, ExifDecodeStatus::LimitExceeded);
+                            result->decode.limit_reason = ExifLimitReason::ValueCountTooLarge;
+                            result->decode.limit_ifd_offset = uint64_t(start) + at;
+                            result->decode.limit_tag = entry.tag;
+                        }
+                    }
+                    char token[48];
+                    const int written = std::snprintf(token, sizeof(token), "raf_tiff_%u_%u",
+                                                      stream, visited_count - 2U);
+                    if (written <= 0 || static_cast<size_t>(written) >= sizeof(token)) return;
+                    (void)exif_internal::decode_classic_ifd_from_source(
+                        &reader, cfg, at, exif_internal::OffsetPolicy {}, token,
+                        store, options, &result->decode, EntryFlags::None);
+                    if (!result->input.ok()) return;
+                }
+                for (uint32_t i = 0U; i < count; ++i) {
+                    if (!exif_internal::source_tiff_view(&reader,
+                            uint64_t(at) + 2U + uint64_t(i) * 12U, 12U, &raw)) return;
+                    exif_internal::ClassicIfdEntry entry;
+                    if (!exif_internal::read_classic_ifd_entry(cfg, raw, 0U, &entry)) return;
+                    if (entry.tag != 0xf000U) continue;
+                    if ((entry.type != 4U && entry.type != 13U) || entry.count32 != 1U) {
+                        update_status(&result->decode, ExifDecodeStatus::Malformed);
+                        return;
+                    }
+                    if (entry.value_or_off32 == 0U) continue;
+                    if (pending_count == pending.size()) {
+                        update_status(&result->decode, ExifDecodeStatus::LimitExceeded);
+                        result->decode.limit_reason = ExifLimitReason::MaxIfds;
+                        result->decode.limit_tag = 0xf000U;
+                        return;
+                    }
+                    pending[pending_count++] = entry.value_or_off32;
+                }
+            }
+        }
+    }
+
 }  // namespace
 
 bool
@@ -381,6 +507,13 @@ decode_raf_native(std::span<const std::byte> file_bytes, MetaStore& store,
 
     if (!looks_like_raf(file_bytes)) {
         out.status = ExifDecodeStatus::Unsupported;
+        return out;
+    }
+
+    store.constrain_resources(limits.max_total_entries, limits.max_arena_bytes);
+    if (store.resource_limit_exceeded()) {
+        out.status = ExifDecodeStatus::LimitExceeded;
+        out.limit_reason = ExifLimitReason::MaxArenaBytes;
         return out;
     }
 
@@ -418,6 +551,13 @@ decode_raf_native(std::span<const std::byte> file_bytes, MetaStore& store,
         any |= decode_raf_directory(dir, i, store, block, limits, &out);
     }
 
+    ExifRandomAccessDecodeResult private_result;
+    private_result.decode = out;
+    const RandomAccessSourceRange range = make_random_access_source_range(
+        make_memory_random_access_source(file_bytes));
+    decode_raf_private_ifds(range, header, store, {}, limits, {}, &private_result);
+    out = private_result.decode;
+    any |= out.entries_decoded != 0U;
     if (!any && out.status == ExifDecodeStatus::Ok) {
         out.status = ExifDecodeStatus::Unsupported;
     }
@@ -464,6 +604,12 @@ decode_raf_native_random_access(
     }
 
     result.decode.status = ExifDecodeStatus::Ok;
+    store.constrain_resources(limits.max_total_entries, limits.max_arena_bytes);
+    if (store.resource_limit_exceeded()) {
+        result.decode.status = ExifDecodeStatus::LimitExceeded;
+        result.decode.limit_reason = ExifLimitReason::MaxArenaBytes;
+        return result;
+    }
     const BlockId block  = store.add_block(BlockInfo {});
     if (block == kInvalidBlockId) {
         result.decode.status = ExifDecodeStatus::LimitExceeded;
@@ -507,6 +653,9 @@ decode_raf_native_random_access(
                                     &result.decode);
     }
 
+    decode_raf_private_ifds(source, header_bytes, store, scratch, limits,
+                            read_limits, &result);
+    any |= result.decode.entries_decoded != 0U;
     if (!any && result.decode.status == ExifDecodeStatus::Ok) {
         result.decode.status = ExifDecodeStatus::Unsupported;
     }

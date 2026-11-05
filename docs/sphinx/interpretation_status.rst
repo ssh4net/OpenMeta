@@ -463,3 +463,13 @@ a bounded policy correction, not general per-family diagnostic completion.
    per-model tables only where context is strong enough to avoid wrong labels.
 4. Keep transfer-safety classification conservative when interpretation is
    incomplete.
+
+
+Scoped services in 0.8.30
+-------------------------
+
+The declared-target percentages above are unchanged. The 0.8.30 query services
+add caller-selected directory membership, explicit numeric completeness and
+per-component roles/shapes/coordinate context. Sony SR2-private and RAF F000
+metadata traversal is qualified on selected original samples, without a new
+all-camera coverage claim. See semantic_queries for the API contract.

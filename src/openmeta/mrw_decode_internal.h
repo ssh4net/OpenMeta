@@ -17,4 +17,10 @@ ExifDecodeResult
 decode_mrw_native(std::span<const std::byte> file_bytes, MetaStore& store,
                   const ExifDecodeLimits& limits) noexcept;
 
+ExifRandomAccessDecodeResult
+decode_mrw_native_random_access(
+    const RandomAccessSourceRange& source, MetaStore& store,
+    const ExifRandomAccessScratch& scratch, const ExifDecodeLimits& limits,
+    const RandomAccessReadLimits& read_limits) noexcept;
+
 }  // namespace openmeta::mrw_internal
