@@ -919,6 +919,75 @@ namespace {
                && second_writer.output == direct_output;
     }
 
+    static void fuzz_icc_chunk_removal(bool png, std::span<const uint8_t> input)
+    {
+        const TransferTargetFormat target = png ? TransferTargetFormat::Png
+                                                : TransferTargetFormat::Webp;
+        std::vector<std::byte> expected
+            = png ? container_test::make_png_fixture()
+                  : container_test::make_webp_fixture();
+        if (!png) {
+            expected.erase(expected.begin() + 30, expected.begin() + 42);
+            expected[20U]
+                = std::byte { 0x10U };  // Preserve the unrelated alpha flag.
+        }
+        std::vector<std::byte> source = expected;
+        const size_t profile_size     = 1U + input_byte(input, 0U) % 63U;
+        std::vector<std::byte> profile(profile_size);
+        for (size_t i = 0U; i < profile.size(); ++i) {
+            profile[i] = static_cast<std::byte>(input_byte(input, i + 1U));
+        }
+        std::vector<std::byte> carrier;
+        for (uint32_t i = 0U; i < 1U + (input_byte(input, 1U) & 1U); ++i) {
+            if (png) {
+                container_test::append_png_chunk(&carrier,
+                                                 fourcc('i', 'C', 'C', 'P'),
+                                                 profile);
+            } else {
+                container_test::append_webp_chunk(&carrier,
+                                                  fourcc('I', 'C', 'C', 'P'),
+                                                  profile);
+            }
+        }
+        source.insert(source.begin() + (png ? 33 : 30), carrier.begin(),
+                      carrier.end());
+        if (!png) {
+            source[20U] = std::byte { 0x30U };
+            for (uint32_t i = 0U; i < 4U; ++i) {
+                expected[4U + i] = static_cast<std::byte>(
+                    static_cast<uint8_t>((expected.size() - 8U) >> (8U * i)));
+                source[4U + i] = static_cast<std::byte>(
+                    static_cast<uint8_t>((source.size() - 8U) >> (8U * i)));
+            }
+        }
+        const std::vector<std::byte> before = source;
+        PreparedTransferBundle removal;
+        require(prepare_icc_removal_bundle(target, &removal));
+        ExecutePreparedTransferOptions options;
+        options.edit_requested = true;
+        options.edit_apply     = true;
+        const ExecutePreparedTransferResult result
+            = execute_prepared_transfer(&removal, source, options);
+        require(result.edit_apply.status == TransferStatus::Ok
+                && result.edited_output == expected && source == before);
+        const PreparedTransferPackagePlan copy
+            = make_generic_source_copy_plan(target, source.size());
+        require(rejected_package_preserves_sentinels(source, removal, copy));
+        PreparedTransferPackageBatch batch;
+        require(build_executed_transfer_package_batch(source, removal, result,
+                                                      &batch)
+                    .status
+                == TransferStatus::Ok);
+        BoundedVectorWriter writer;
+        require(write_prepared_transfer_package_batch(batch, writer).status
+                    == TransferStatus::Ok
+                && writer.output == expected);
+        const auto again = execute_prepared_transfer(&removal, expected,
+                                                     options);
+        require(again.edit_apply.status == TransferStatus::Ok
+                && again.edited_output == expected);
+    }
+
     static void fuzz_icc_jpeg_removal(std::span<const uint8_t> input)
     {
         std::vector<std::byte> base;
@@ -2230,7 +2299,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     openmeta::fuzz_dc_provider_merge(std::span<const uint8_t>(data, size));
     openmeta::fuzz_custom_xmp_root_merge(std::span<const uint8_t>(data, size));
     switch (openmeta::input_byte(std::span<const uint8_t>(data, size), 2U)
-            % 3U) {
+            % 5U) {
     case 0U:
         openmeta::fuzz_icc_jpeg_removal(std::span<const uint8_t>(data, size));
         break;
@@ -2241,6 +2310,14 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     case 2U:
         openmeta::fuzz_icc_tiff_removal(true,
                                         std::span<const uint8_t>(data, size));
+        break;
+    case 3U:
+        openmeta::fuzz_icc_chunk_removal(true,
+                                         std::span<const uint8_t>(data, size));
+        break;
+    case 4U:
+        openmeta::fuzz_icc_chunk_removal(false,
+                                         std::span<const uint8_t>(data, size));
         break;
     default: openmeta::fuzz_trap();
     }

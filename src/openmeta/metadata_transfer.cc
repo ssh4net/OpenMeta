@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "bmff_fields_decode_internal.h"
 #include "metadata_capture_fields_internal.h"
 #include "metadata_learning_fields_internal.h"
 #include "metadata_text_fields_internal.h"
@@ -1406,6 +1407,15 @@ namespace {
         out.scan_end = pos;
         out.status   = TransferStatus::Ok;
         return out;
+    }
+
+    static bool
+    target_supports_primary_icc_removal(TransferTargetFormat target) noexcept
+    {
+        return target == TransferTargetFormat::Jpeg
+               || transfer_target_is_tiff_family(target)
+               || target == TransferTargetFormat::Png
+               || target == TransferTargetFormat::Webp;
     }
 
     static bool prepared_carrier_removal_intents_are_valid(
@@ -11582,8 +11592,11 @@ namespace {
         if (!bundle.remove_existing_iptc && !bundle.remove_existing_icc) {
             return true;
         }
-        if (bundle.target_format != TransferTargetFormat::Jpeg
-            && !transfer_target_is_tiff_family(bundle.target_format)) {
+        if ((bundle.remove_existing_iptc
+             && bundle.target_format != TransferTargetFormat::Jpeg
+             && !transfer_target_is_tiff_family(bundle.target_format))
+            || (bundle.remove_existing_icc
+                && !target_supports_primary_icc_removal(bundle.target_format))) {
             return false;
         }
         for (size_t i = 0U; i < bundle.blocks.size(); ++i) {
@@ -11598,7 +11611,9 @@ namespace {
             if (bundle.remove_existing_icc
                 && (block.kind == TransferBlockKind::Icc
                     || block.route == "jpeg:app2-icc"
-                    || block.route == "tiff:tag-34675-icc")) {
+                    || block.route == "tiff:tag-34675-icc"
+                    || block.route == "png:chunk-iccp"
+                    || block.route == "webp:chunk-iccp")) {
                 return false;
             }
         }
@@ -13826,13 +13841,12 @@ prepare_metadata_for_target_impl(const MetaStore& store,
     }
 
     if (request.remove_existing_icc
-        && request.target_format != TransferTargetFormat::Jpeg
-        && !transfer_target_is_tiff_family(request.target_format)) {
+        && !target_supports_primary_icc_removal(request.target_format)) {
         r.status = TransferStatus::Unsupported;
         r.code   = PrepareTransferCode::RequestedMetadataNotSerializable;
         r.errors = 1U;
         r.message
-            = "primary ICC removal is supported only for JPEG and TIFF/DNG edits";
+            = "primary ICC removal requires a JPEG, TIFF/DNG, PNG or WebP edit";
         *out_bundle = std::move(bundle);
         return r;
     }
@@ -17804,7 +17818,10 @@ namespace {
         std::span<ExifIfdRef> ifds, uint32_t* io_ifd_write_pos,
         const SimpleMetaDecodeOptions& options, SimpleMetaResult* read,
         ReadTransferSourceSnapshotRandomAccessResult* result,
-        const RandomAccessSourceRange* source = nullptr) noexcept
+        const RandomAccessSourceRange* source     = nullptr,
+        const RandomAccessReadLimits& read_limits = {},
+        exif_internal::CanonAfInfo2ModelClass cr3_model
+        = exif_internal::CanonAfInfo2ModelClass::Unknown) noexcept
     {
         if (!store || !io_ifd_write_pos || !read || !result) {
             return false;
@@ -17821,8 +17838,11 @@ namespace {
                           : std::span<ExifIfdRef> {};
                 exif_internal::CanonMakerNoteResiduals residuals;
                 const ExifDecodeResult one
-                    = exif_internal::decode_canon_cr3_tiff(
-                        payload, *store, remaining, options.exif, &residuals);
+                    = exif_internal::decode_canon_cr3_tiff(payload, *store,
+                                                           remaining,
+                                                           options.exif,
+                                                           &residuals,
+                                                           cr3_model);
                 merge_exif_decode_result(&read->exif, one);
                 *io_ifd_write_pos += one.ifds_written;
                 add_snapshot_residual(result, SnapshotResidualReason::MakerNote,
@@ -17916,8 +17936,29 @@ namespace {
         }
         if (block.kind == ContainerBlockKind::MakerNote) {
             if (options.exif.decode_makernote) {
-                add_snapshot_residual(result,
-                                      SnapshotResidualReason::MakerNote);
+                if (block.format == ContainerFormat::Cr3) {
+                    store->constrain_resources(
+                        options.exif.limits.max_total_entries,
+                        options.exif.limits.max_arena_bytes);
+                }
+                const bool decoded
+                    = source
+                      && bmff_internal::decode_cr3_metadata_block(
+                          *source, block, payload, *store, &result->input,
+                          read_limits);
+                if (!result->input.ok()) {
+                    result->status = map_random_access_failure_status(
+                        result->input);
+                    return false;
+                }
+                if (store->resource_limit_exceeded()) {
+                    result->status = TransferStatus::LimitExceeded;
+                    return false;
+                }
+                if (!decoded) {
+                    add_snapshot_residual(result,
+                                          SnapshotResidualReason::MakerNote);
+                }
             }
             return true;
         }
@@ -18143,6 +18184,17 @@ namespace {
         if (!out) {
             return false;
         }
+        exif_internal::CanonAfInfo2ModelClass cr3_model
+            = exif_internal::CanonAfInfo2ModelClass::Unknown;
+        uint32_t cr3_cmt1_blocks = 0U;
+        for (const ContainerBlockRef& block : blocks) {
+            if (block.format == ContainerFormat::Cr3
+                && block.kind == ContainerBlockKind::Exif
+                && block.id == fourcc('C', 'M', 'T', '1')
+                && (block.part_count <= 1U || block.part_index == 0U)) {
+                ++cr3_cmt1_blocks;
+            }
+        }
         uint32_t ifd_write_pos         = 0U;
         PayloadOptions payload_options = decode_options.payload;
         PayloadRandomAccessScratch payload_scratch;
@@ -18258,11 +18310,18 @@ namespace {
                 && block.id != 0U) {
                 block_options.exif.decode_embedded_containers = false;
             }
-            if (!decode_snapshot_payload_block(block, bytes, outer_prefix,
-                                               &out->snapshot.store,
-                                               scratch.ifds, &ifd_write_pos,
-                                               block_options, &out->read,
-                                               out, &source)) {
+            const size_t entry_start = out->snapshot.store.entries().size();
+            if (!decode_snapshot_payload_block(
+                    block, bytes, outer_prefix, &out->snapshot.store,
+                    scratch.ifds, &ifd_write_pos, block_options, &out->read,
+                    out, &source, read_limits, cr3_model)) {
+                if (!out->input.ok()) {
+                    out->status = map_random_access_failure_status(out->input);
+                    out->code   = map_random_access_failure_code(
+                        out->input,
+                        ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed);
+                    return false;
+                }
                 if (out->status != TransferStatus::LimitExceeded) {
                     out->status = TransferStatus::Malformed;
                 }
@@ -18274,6 +18333,16 @@ namespace {
                 out->code
                     = ReadTransferSourceSnapshotRandomAccessCode::DecodeFailed;
                 return false;
+            }
+            if (block.format == ContainerFormat::Cr3
+                && block.kind == ContainerBlockKind::Exif
+                && block.id == fourcc('C', 'M', 'T', '1')) {
+                cr3_model = cr3_cmt1_blocks == 1U
+                                ? exif_internal::classify_canon_afinfo2_model(
+                                      out->snapshot.store,
+                                      out->snapshot.store.entries().subspan(
+                                          entry_start))
+                                : exif_internal::CanonAfInfo2ModelClass::Unknown;
             }
         }
 
@@ -28677,6 +28746,7 @@ namespace {
                                bool strip_existing_xmp) noexcept
     {
         PngRewritePolicy policy;
+        policy.icc = bundle.remove_existing_icc;
         for (size_t i = 0; i < bundle.blocks.size(); ++i) {
             const PreparedTransferBlock& block = bundle.blocks[i];
             if (block.payload.empty()) {
@@ -28705,6 +28775,7 @@ namespace {
                                 bool strip_existing_xmp) noexcept
     {
         WebpRewritePolicy policy;
+        policy.icc = bundle.remove_existing_icc;
         for (size_t i = 0; i < bundle.blocks.size(); ++i) {
             const PreparedTransferBlock& block = bundle.blocks[i];
             if (block.payload.empty()) {
@@ -34047,6 +34118,55 @@ namespace {
                 }
                 const PreparedTransferBlock& block
                     = bundle.blocks[chunk.block_index];
+                if (chunk.kind
+                        == TransferPackageChunkKind::PreparedTransferBlock
+                    && (bundle.target_format == TransferTargetFormat::Png
+                        || bundle.target_format == TransferTargetFormat::Webp)) {
+                    const bool png = bundle.target_format
+                                     == TransferTargetFormat::Png;
+                    const uint64_t payload_size = block.payload.size();
+                    if (payload_size > UINT32_MAX) {
+                        return false;
+                    }
+                    const uint64_t total = png ? 12U + payload_size
+                                               : 8U + payload_size
+                                                     + (payload_size & 1U);
+                    std::array<char, 4> type {};
+                    if (chunk.size != total
+                        || !(png ? png_chunk_from_route(block.route, &type)
+                                 : webp_chunk_from_route(block.route, &type))) {
+                        return false;
+                    }
+                    if (relative < 8U) {
+                        const bool type_byte = png ? relative >= 4U
+                                                   : relative < 4U;
+                        if (type_byte) {
+                            const size_t index = static_cast<size_t>(
+                                png ? relative - 4U : relative);
+                            *value = static_cast<std::byte>(type[index]);
+                        } else {
+                            const uint32_t shift
+                                = png ? static_cast<uint32_t>((3U - relative)
+                                                              * 8U)
+                                      : static_cast<uint32_t>((relative - 4U)
+                                                              * 8U);
+                            *value = static_cast<std::byte>(
+                                static_cast<uint8_t>(payload_size >> shift));
+                        }
+                    } else if (relative - 8U < payload_size) {
+                        *value
+                            = block.payload[static_cast<size_t>(relative - 8U)];
+                    } else if (png) {
+                        const uint32_t crc = png_chunk_crc(type, block.payload);
+                        const uint32_t shift = static_cast<uint32_t>(
+                            (3U - (relative - 8U - payload_size)) * 8U);
+                        *value = static_cast<std::byte>(
+                            static_cast<uint8_t>(crc >> shift));
+                    } else {
+                        *value = std::byte { 0U };
+                    }
+                    return true;
+                }
                 uint8_t marker = chunk.jpeg_marker_code;
                 if (chunk.kind
                         == TransferPackageChunkKind::PreparedTransferBlock
@@ -34356,6 +34476,125 @@ namespace {
         return true;
     }
 
+    static bool package_plan_has_primary_chunk_icc(
+        std::span<const std::byte> input, const PreparedTransferBundle& bundle,
+        const PreparedTransferPackagePlan& plan, bool* found,
+        EmitTransferResult* error) noexcept
+    {
+        if (!found || !error) {
+            return false;
+        }
+        *found          = false;
+        const bool png  = bundle.target_format == TransferTargetFormat::Png;
+        uint64_t offset = png ? 8U : 12U;
+        if (plan.output_size < offset) {
+            set_package_validation_error(
+                error, TransferStatus::Malformed,
+                "ICC removal package header is truncated");
+            return false;
+        }
+        if (png) {
+            for (uint32_t i = 0U; i < kPngSignature.size(); ++i) {
+                std::byte byte {};
+                if (!package_plan_byte_at(input, bundle, plan, i, &byte)
+                    || byte != kPngSignature[i]) {
+                    set_package_validation_error(
+                        error, TransferStatus::Malformed,
+                        "ICC removal package is not PNG");
+                    return false;
+                }
+            }
+        } else {
+            uint64_t riff = 0U, webp = 0U, size = 0U;
+            if (!package_plan_read_uint(input, bundle, plan, 0U, 4U, true, &riff)
+                || !package_plan_read_uint(input, bundle, plan, 8U, 4U, true,
+                                           &webp)
+                || !package_plan_read_uint(input, bundle, plan, 4U, 4U, false,
+                                           &size)
+                || riff != fourcc('R', 'I', 'F', 'F')
+                || webp != fourcc('W', 'E', 'B', 'P')
+                || size + 8U != plan.output_size) {
+                set_package_validation_error(
+                    error, TransferStatus::Malformed,
+                    "ICC removal package has invalid WebP framing");
+                return false;
+            }
+        }
+
+        for (uint32_t count = 0U; count < kMaxPrimaryIccScanItems; ++count) {
+            if (!png && offset == plan.output_size) {
+                return true;
+            }
+            const uint64_t overhead = png ? 12U : 8U;
+            if (offset > plan.output_size
+                || overhead > plan.output_size - offset) {
+                set_package_validation_error(
+                    error, TransferStatus::Malformed,
+                    "ICC removal package chunk is truncated");
+                return false;
+            }
+            uint64_t type = 0U, size = 0U;
+            if (!package_plan_read_uint(input, bundle, plan,
+                                        offset + (png ? 4U : 0U), 4U, true,
+                                        &type)
+                || !package_plan_read_uint(input, bundle, plan,
+                                           offset + (png ? 0U : 4U), 4U, png,
+                                           &size)) {
+                set_package_validation_error(
+                    error, TransferStatus::Malformed,
+                    "ICC removal package chunk header is unreadable");
+                return false;
+            }
+            const uint64_t padded_size = size + (png ? 0U : (size & 1U));
+            if (padded_size > plan.output_size - offset - overhead
+                || (png && count == 0U
+                    && (type != fourcc('I', 'H', 'D', 'R') || size != 13U))) {
+                set_package_validation_error(
+                    error, TransferStatus::Malformed,
+                    "ICC removal package chunk range is invalid");
+                return false;
+            }
+            if (type
+                == (png ? fourcc('i', 'C', 'C', 'P')
+                        : fourcc('I', 'C', 'C', 'P'))) {
+                *found = true;
+                return true;
+            }
+            if (!png && type == fourcc('V', 'P', '8', 'X')) {
+                std::byte flags {};
+                if (size < 10U
+                    || !package_plan_byte_at(input, bundle, plan, offset + 8U,
+                                             &flags)) {
+                    set_package_validation_error(
+                        error, TransferStatus::Malformed,
+                        "ICC removal package VP8X is truncated");
+                    return false;
+                }
+                if ((std::to_integer<uint8_t>(flags) & kWebpVp8xIccBit) != 0U) {
+                    *found = true;
+                    return true;
+                }
+            }
+            if (png && type == fourcc('I', 'E', 'N', 'D')) {
+                if (size != 0U) {
+                    set_package_validation_error(
+                        error, TransferStatus::Malformed,
+                        "ICC removal package IEND is invalid");
+                    return false;
+                }
+                return true;
+            }
+            offset += overhead + padded_size;
+        }
+        if (!png && offset == plan.output_size) {
+            return true;
+        }
+        set_package_validation_error(
+            error, TransferStatus::LimitExceeded,
+            "ICC removal package exceeds the chunk scan limit");
+        return false;
+    }
+
     static EmitTransferResult validate_package_primary_icc_removal(
         std::span<const std::byte> input, const PreparedTransferBundle& bundle,
         const PreparedTransferPackagePlan& plan) noexcept
@@ -34373,6 +34612,10 @@ namespace {
               : transfer_target_is_tiff_family(bundle.target_format)
                   ? package_plan_has_primary_tiff_icc(input, bundle, plan,
                                                       &found, &out)
+              : (bundle.target_format == TransferTargetFormat::Png
+                 || bundle.target_format == TransferTargetFormat::Webp)
+                  ? package_plan_has_primary_chunk_icc(input, bundle, plan,
+                                                       &found, &out)
                   : false;
         if (!valid) {
             if (out.status == TransferStatus::Ok) {
@@ -35473,8 +35716,8 @@ namespace {
                   && bundle->target_format != TransferTargetFormat::Jpeg
                   && !transfer_target_is_tiff_family(bundle->target_format))
               || (has_icc_edit_only_intent
-                  && bundle->target_format != TransferTargetFormat::Jpeg
-                  && !transfer_target_is_tiff_family(bundle->target_format));
+                  && !target_supports_primary_icc_removal(
+                      bundle->target_format));
         if ((has_tiff_edit_only_intent || has_iptc_edit_only_intent
              || has_icc_edit_only_intent)
             && options.edit_requested
@@ -35492,6 +35735,20 @@ namespace {
             out.edit_apply.code    = EmitTransferCode::InvalidArgument;
             out.edit_apply.errors  = 1U;
             out.edit_apply.message = out.compile.message;
+            return out;
+        }
+
+        if (options.edit_requested
+            && !prepared_carrier_removal_intents_are_valid(*bundle)) {
+            out.compile.status  = TransferStatus::InvalidArgument;
+            out.compile.code    = EmitTransferCode::InvalidArgument;
+            out.compile.errors  = 1U;
+            out.compile.message = prepared_carrier_removal_conflict_message(
+                *bundle);
+            out.emit              = out.compile;
+            out.edit_plan_status  = out.compile.status;
+            out.edit_plan_message = out.compile.message;
+            out.edit_apply        = out.compile;
             return out;
         }
 
@@ -35521,7 +35778,8 @@ namespace {
         PreparedTransferExecutionPlan local_plan;
         const PreparedTransferExecutionPlan* effective_plan = compiled_plan;
         const bool destination_edit_only = (has_tiff_edit_only_intent
-                                            || has_iptc_edit_only_intent)
+                                            || has_iptc_edit_only_intent
+                                            || has_icc_edit_only_intent)
                                            && options.edit_requested;
         if (destination_edit_only) {
             out.compile.status = TransferStatus::Ok;
@@ -36653,7 +36911,8 @@ build_prepared_bundle_webp_package(std::span<const std::byte> input_webp,
         append_package_source_chunk(&plan, chunk.offset, chunk.size);
     }
 
-    if (appended_chunks == 0U && removed_chunks == 0U) {
+    if (appended_chunks == 0U && removed_chunks == 0U
+        && !bundle.remove_existing_icc) {
         out.status  = TransferStatus::InvalidArgument;
         out.code    = EmitTransferCode::InvalidArgument;
         out.errors  = 1U;
@@ -36826,7 +37085,8 @@ build_prepared_bundle_png_package(std::span<const std::byte> input_png,
         out.message = "png rewrite requires a terminal iend chunk";
         return out;
     }
-    if (appended_chunks == 0U && removed_chunks == 0U) {
+    if (appended_chunks == 0U && removed_chunks == 0U
+        && !bundle.remove_existing_icc) {
         out.status  = TransferStatus::InvalidArgument;
         out.code    = EmitTransferCode::InvalidArgument;
         out.errors  = 1U;

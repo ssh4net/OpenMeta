@@ -244,6 +244,47 @@ canon_model_matches_any(std::string_view model,
     return false;
 }
 
+CanonAfInfo2ModelClass
+classify_canon_afinfo2_model(const MetaStore& store,
+                             std::span<const Entry> model_evidence) noexcept
+{
+    uint32_t model_candidates = 0U;
+    const ByteArena& arena    = store.arena();
+    std::string_view model;
+    char model_buffer[128] {};
+    for (size_t i = 0U; i < model_evidence.size(); ++i) {
+        const Entry& entry = model_evidence[i];
+        if (entry.key.kind != MetaKeyKind::ExifTag
+            || entry.key.data.exif_tag.tag != 0x0110U
+            || canon_arena_string(arena, entry.key.data.exif_tag.ifd)
+                   != "ifd0") {
+            continue;
+        }
+        ++model_candidates;
+        if (model_candidates > 1U) {
+            return CanonAfInfo2ModelClass::Unknown;
+        }
+        if (entry.value.kind == MetaValueKind::Text) {
+            model = canon_arena_string(arena, entry.value.data.span);
+        } else if (entry.value.kind == MetaValueKind::Bytes) {
+            model = canon_copy_ascii_bytes(arena.span(entry.value.data.span),
+                                           std::span<char>(model_buffer));
+        }
+    }
+    if (model_candidates != 1U || model.empty()) {
+        return CanonAfInfo2ModelClass::Unknown;
+    }
+    if (canon_ascii_contains_insensitive(model, "EOS")) {
+        return CanonAfInfo2ModelClass::Eos;
+    }
+
+    static constexpr std::string_view kKnownNonEosFamilies[]
+        = { "PowerShot", "IXUS", "IXY", "ELPH" };
+    return canon_model_matches_any(model, kKnownNonEosFamilies)
+               ? CanonAfInfo2ModelClass::KnownNonEos
+               : CanonAfInfo2ModelClass::Unknown;
+}
+
 static bool
 canon_custom_functions2_0701_prefers_shutter_button(
     std::string_view model) noexcept
@@ -2811,9 +2852,7 @@ decode_canon_afinfo2_add_u16_scalar(
     uint16_t tag, uint32_t word_index, MetaStore& store,
     const ExifDecodeOptions& options, ExifDecodeResult* status_out) noexcept
 {
-    if (status_out
-        && (status_out->entries_decoded + 1U)
-               > options.limits.max_total_entries) {
+    if (store.entries().size() >= options.limits.max_total_entries) {
         update_status(status_out, ExifDecodeStatus::LimitExceeded);
         return false;
     }
@@ -2836,7 +2875,10 @@ decode_canon_afinfo2_add_u16_scalar(
     entry.value                 = make_u16(v);
     entry.flags |= EntryFlags::Derived;
 
-    (void)store.add_entry(entry);
+    if (store.add_entry(entry) == kInvalidEntryId) {
+        update_status(status_out, ExifDecodeStatus::LimitExceeded);
+        return false;
+    }
     if (status_out) {
         status_out->entries_decoded += 1;
     }
@@ -2844,17 +2886,71 @@ decode_canon_afinfo2_add_u16_scalar(
 }
 
 static bool
-canon_afinfo2_payload_looks_valid(const TiffConfig& cfg,
-                                  std::span<const std::byte> tiff_bytes,
-                                  uint64_t value_off, uint64_t value_bytes,
-                                  const ExifDecodeLimits& limits) noexcept
+canon_afinfo2_words_fit(uint64_t word_count, uint64_t first_word,
+                        uint64_t count) noexcept
 {
-    if (value_bytes < 16U || (value_bytes % 2U) != 0U
-        || value_bytes > limits.max_value_bytes) {
+    return first_word <= word_count && count <= word_count - first_word;
+}
+
+static bool
+decode_canon_afinfo2_add_i16_array(
+    const TiffConfig& cfg, std::span<const std::byte> tiff_bytes,
+    uint64_t value_off, std::string_view ifd_name, BlockId block,
+    uint32_t order, uint16_t tag, uint64_t first_word, uint32_t count,
+    MetaStore& store, const ExifDecodeOptions& options,
+    ExifDecodeResult* status_out) noexcept
+{
+    if (status_out
+        && status_out->entries_decoded >= options.limits.max_total_entries) {
+        update_status(status_out, ExifDecodeStatus::LimitExceeded);
         return false;
     }
+
+    if (first_word > (UINT64_MAX / 2U) || uint64_t(count) > (UINT64_MAX / 2U)) {
+        update_status(status_out, ExifDecodeStatus::Malformed);
+        return false;
+    }
+    const uint64_t byte_offset = first_word * 2U;
+    const uint64_t byte_count  = uint64_t(count) * 2U;
     if (value_off > tiff_bytes.size()
-        || value_bytes > tiff_bytes.size() - value_off) {
+        || byte_offset > tiff_bytes.size() - value_off
+        || byte_count > tiff_bytes.size() - value_off - byte_offset) {
+        update_status(status_out, ExifDecodeStatus::Malformed);
+        return false;
+    }
+
+    Entry entry;
+    entry.key          = make_exif_tag_key(store.arena(), ifd_name, tag);
+    entry.origin.block = block;
+    entry.origin.order_in_block = order;
+    entry.origin.wire_type      = WireType { WireFamily::Tiff, 8U };
+    entry.origin.wire_count     = count;
+    entry.value                 = decode_tiff_value(cfg, tiff_bytes, 8U, count,
+                                                    value_off + byte_offset, byte_count,
+                                                    store.arena(), options.limits, status_out);
+    entry.flags |= EntryFlags::Derived;
+    if (store.add_entry(entry) == kInvalidEntryId) {
+        update_status(status_out, ExifDecodeStatus::LimitExceeded);
+        return false;
+    }
+    if (status_out) {
+        ++status_out->entries_decoded;
+    }
+    return true;
+}
+
+static bool
+canon_afinfo2_header_looks_valid(const TiffConfig& cfg,
+                                 std::span<const std::byte> header,
+                                 uint64_t value_bytes,
+                                 const ExifDecodeLimits& limits,
+                                 CanonAfInfo2ModelClass model_class,
+                                 bool afinfo3_present,
+                                 bool afinfo3_context_known) noexcept
+{
+    if (value_bytes < 16U || (value_bytes % 2U) != 0U
+        || value_bytes > limits.max_value_bytes || value_bytes > UINT16_MAX
+        || header.size() < 16U) {
         return false;
     }
 
@@ -2864,22 +2960,31 @@ canon_afinfo2_payload_looks_valid(const TiffConfig& cfg,
     }
 
     uint16_t size_bytes = 0;
-    if (!read_tiff_u16(cfg, tiff_bytes, value_off, &size_bytes)
+    if (!read_tiff_u16(cfg, header, 0U, &size_bytes)
         || size_bytes != value_bytes) {
         return false;
     }
 
     uint16_t num_points = 0;
-    if (!read_tiff_u16(cfg, tiff_bytes, value_off + 4U, &num_points)) {
+    if (!read_tiff_u16(cfg, header, 4U, &num_points)) {
         return false;
     }
-    if (num_points == 0U
-        || num_points > static_cast<uint16_t>(limits.max_entries_per_ifd)) {
+    if (num_points == 0U || uint32_t(num_points) > limits.max_entries_per_ifd) {
         return false;
     }
 
-    const uint32_t needed_words = 1U + 7U + 4U * uint32_t(num_points) + 3U;
-    if (word_count < needed_words) {
+    const uint64_t n          = uint64_t(num_points);
+    const uint64_t mask_words = (n + 15U) / 16U;
+    uint64_t required_words   = 8U + 4U * n + mask_words;
+    if (model_class == CanonAfInfo2ModelClass::Eos) {
+        required_words += mask_words;
+    } else if (model_class == CanonAfInfo2ModelClass::KnownNonEos) {
+        required_words += mask_words + 1U;
+        if (afinfo3_context_known && !afinfo3_present) {
+            required_words += 1U;
+        }
+    }
+    if (uint64_t(word_count) < required_words) {
         return false;
     }
 
@@ -2887,14 +2992,33 @@ canon_afinfo2_payload_looks_valid(const TiffConfig& cfg,
     uint16_t image_height = 0;
     uint16_t af_width     = 0;
     uint16_t af_height    = 0;
-    if (!read_tiff_u16(cfg, tiff_bytes, value_off + 8U, &image_width)
-        || !read_tiff_u16(cfg, tiff_bytes, value_off + 10U, &image_height)
-        || !read_tiff_u16(cfg, tiff_bytes, value_off + 12U, &af_width)
-        || !read_tiff_u16(cfg, tiff_bytes, value_off + 14U, &af_height)) {
+    if (!read_tiff_u16(cfg, header, 8U, &image_width)
+        || !read_tiff_u16(cfg, header, 10U, &image_height)
+        || !read_tiff_u16(cfg, header, 12U, &af_width)
+        || !read_tiff_u16(cfg, header, 14U, &af_height)) {
         return false;
     }
     return image_width != 0U && image_height != 0U && af_width != 0U
            && af_height != 0U;
+}
+
+static bool
+canon_afinfo2_payload_looks_valid(const TiffConfig& cfg,
+                                  std::span<const std::byte> tiff_bytes,
+                                  uint64_t value_off, uint64_t value_bytes,
+                                  const ExifDecodeLimits& limits,
+                                  CanonAfInfo2ModelClass model_class,
+                                  bool afinfo3_present,
+                                  bool afinfo3_context_known) noexcept
+{
+    if (value_off > tiff_bytes.size()
+        || value_bytes > tiff_bytes.size() - value_off || value_bytes < 16U) {
+        return false;
+    }
+    return canon_afinfo2_header_looks_valid(
+        cfg, tiff_bytes.subspan(static_cast<size_t>(value_off), 16U),
+        value_bytes, limits, model_class, afinfo3_present,
+        afinfo3_context_known);
 }
 
 static bool
@@ -2904,6 +3028,8 @@ canon_find_afinfo2_payload(const TiffConfig& cfg,
                            uint64_t maker_note_span_bytes, uint64_t value_bytes,
                            uint64_t default_value_off,
                            const ExifDecodeLimits& limits,
+                           CanonAfInfo2ModelClass model_class,
+                           bool afinfo3_present, bool afinfo3_context_known,
                            uint64_t* out_value_off) noexcept
 {
     if (!out_value_off || maker_note_off > tiff_bytes.size()) {
@@ -2925,7 +3051,9 @@ canon_find_afinfo2_payload(const TiffConfig& cfg,
             continue;
         }
         if (canon_afinfo2_payload_looks_valid(cfg, tiff_bytes, off, value_bytes,
-                                              limits)) {
+                                              limits, model_class,
+                                              afinfo3_present,
+                                              afinfo3_context_known)) {
             *out_value_off = off;
             return true;
         }
@@ -2937,27 +3065,34 @@ static bool
 decode_canon_afinfo2(const TiffConfig& cfg,
                      std::span<const std::byte> tiff_bytes, uint64_t value_off,
                      uint64_t value_bytes, std::string_view mk_ifd0,
-                     MetaStore& store, const ExifDecodeOptions& options,
-                     ExifDecodeResult* status_out) noexcept
+                     CanonAfInfo2ModelClass model_class, bool afinfo3_present,
+                     bool afinfo3_context_known, MetaStore& store,
+                     const ExifDecodeOptions& options,
+                     ExifDecodeResult* status_out,
+                     bool* fields_complete_out) noexcept
 {
+    if (fields_complete_out) {
+        *fields_complete_out = false;
+    }
     if (mk_ifd0.empty()) {
         return false;
     }
-    if (value_bytes < 16) {
+    if (value_bytes < 16U || value_bytes > UINT16_MAX) {
         return false;
     }
     if (value_bytes > options.limits.max_value_bytes) {
         return false;
     }
-    if (value_off + value_bytes > tiff_bytes.size()) {
+    if (value_off > tiff_bytes.size()
+        || value_bytes > tiff_bytes.size() - value_off) {
         return false;
     }
     if ((value_bytes % 2U) != 0U) {
         return false;
     }
 
-    const uint32_t word_count = static_cast<uint32_t>(value_bytes / 2U);
-    if (word_count < 10) {
+    const uint64_t word_count = value_bytes / 2U;
+    if (word_count < 8U) {
         return false;
     }
 
@@ -2973,225 +3108,305 @@ decode_canon_afinfo2(const TiffConfig& cfg,
     if (!read_tiff_u16(cfg, tiff_bytes, value_off + 2U * 2U, &num_points)) {
         return false;
     }
-    if (num_points == 0
-        || num_points
-               > static_cast<uint16_t>(options.limits.max_entries_per_ifd)) {
+    if (num_points == 0U
+        || uint32_t(num_points) > options.limits.max_entries_per_ifd) {
         return false;
     }
 
-    const uint32_t needed_words = 1U + 7U + 4U * uint32_t(num_points) + 3U;
-    if (word_count < needed_words) {
+    uint16_t image_width  = 0U;
+    uint16_t image_height = 0U;
+    uint16_t af_width     = 0U;
+    uint16_t af_height    = 0U;
+    if (!read_tiff_u16(cfg, tiff_bytes, value_off + 8U, &image_width)
+        || !read_tiff_u16(cfg, tiff_bytes, value_off + 10U, &image_height)
+        || !read_tiff_u16(cfg, tiff_bytes, value_off + 12U, &af_width)
+        || !read_tiff_u16(cfg, tiff_bytes, value_off + 14U, &af_height)
+        || image_width == 0U || image_height == 0U || af_width == 0U
+        || af_height == 0U) {
         return false;
     }
 
     const BlockId block = store.add_block(BlockInfo {});
     if (block == kInvalidBlockId) {
+        update_status(status_out, ExifDecodeStatus::LimitExceeded);
         return true;
     }
 
-    // CanonAFInfo2 layout (word offsets):
-    // [0]=size(bytes), [1]=AFAreaMode, [2]=NumAFPoints, [3]=ValidAFPoints,
-    // [4..7]=image dimensions, then 4 arrays of length NumAFPoints,
-    // then three scalar fields.
-    //
-    // Exiv2 additionally exposes AFInfo2 fields under Canon pseudo tags
-    // 0x2600..0x260e. Emit both forms to keep OpenMeta parity with both
-    // ExifTool-style and Exiv2-style inventories.
+    // Canon AFInfo2 has four signed geometry arrays followed by masks whose
+    // word counts are ceil(NumAFPoints / 16). Tag 0x000d is selected-point
+    // data only for EOS models; non-EOS cameras use an unknown word array
+    // there and place PrimaryAFPoint after it. AFInfo3 suppresses that final
+    // AFInfo2 field. Remaining declared words stay in the raw parent value.
     uint32_t order = 0;
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x0000, 0,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x0001, 1,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x0002, 2,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x0003, 3,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x0004, 4,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x0005, 5,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x0006, 6,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x0007, 7,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x2600, 0,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x2601, 1,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x2602, 2,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x2603, 3,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x2604, 4,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x2605, 5,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x2606, 6,
-                                             store, options, status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x2607, 7,
-                                             store, options, status_out)) {
-        return true;
-    }
+    bool complete                 = true;
+    bool stopped                  = false;
+    const uint32_t n              = uint32_t(num_points);
+    const uint64_t mask_words     = (uint64_t(n) + 15U) / 16U;
+    const uint64_t geometry_start = 8U;
+    const uint64_t mask_start     = geometry_start + 4U * uint64_t(n);
 
-    const uint32_t base = 8U;
-    const uint32_t n    = uint32_t(num_points);
+    for (uint16_t tag = 0U; tag < 8U; ++tag) {
+        if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
+                                                 mk_ifd0, block, order++, tag,
+                                                 tag, store, options,
+                                                 status_out)) {
+            complete = false;
+            stopped  = true;
+            break;
+        }
+    }
+    for (uint16_t tag = 0U; tag < 8U && !stopped; ++tag) {
+        if (!decode_canon_afinfo2_add_u16_scalar(
+                cfg, tiff_bytes, value_off, mk_ifd0, block, order++,
+                static_cast<uint16_t>(0x2600U + tag), tag, store, options,
+                status_out)) {
+            complete = false;
+            stopped  = true;
+            break;
+        }
+    }
 
     struct ArrSpec final {
         uint16_t tag   = 0;
-        uint16_t type  = 0;
-        uint32_t words = 0;
+        uint64_t first_word = 0U;
     };
     const ArrSpec arrays[4] = {
-        { 0x0008, 3, base + 0U * n },  // widths
-        { 0x0009, 3, base + 1U * n },  // heights
-        { 0x000a, 8, base + 2U * n },  // x positions (signed)
-        { 0x000b, 8, base + 3U * n },  // y positions (signed)
+        { 0x0008U, geometry_start + 0U * uint64_t(n) },
+        { 0x0009U, geometry_start + 1U * uint64_t(n) },
+        { 0x000aU, geometry_start + 2U * uint64_t(n) },
+        { 0x000bU, geometry_start + 3U * uint64_t(n) },
     };
 
-    for (uint32_t i = 0; i < 4; ++i) {
-        if (status_out
-            && (status_out->entries_decoded + 1U)
-                   > options.limits.max_total_entries) {
-            update_status(status_out, ExifDecodeStatus::LimitExceeded);
-            return true;
-        }
-
+    for (uint32_t i = 0U; i < 4U && !stopped; ++i) {
         const ArrSpec& a     = arrays[i];
-        const uint64_t off   = value_off + uint64_t(a.words) * 2ULL;
-        const uint64_t bytes = uint64_t(n) * 2ULL;
-        if (off + bytes > tiff_bytes.size()) {
-            if (status_out) {
-                update_status(status_out, ExifDecodeStatus::Malformed);
+        if (!canon_afinfo2_words_fit(word_count, a.first_word, n)) {
+            complete = false;
+            continue;
+        }
+        if (!decode_canon_afinfo2_add_i16_array(cfg, tiff_bytes, value_off,
+                                                mk_ifd0, block, order++, a.tag,
+                                                a.first_word, n, store, options,
+                                                status_out)) {
+            complete = false;
+            stopped  = true;
+            break;
+        }
+        if (!decode_canon_afinfo2_add_i16_array(
+                cfg, tiff_bytes, value_off, mk_ifd0, block, order++,
+                static_cast<uint16_t>(0x2600U + a.tag), a.first_word, n, store,
+                options, status_out)) {
+            complete = false;
+            stopped  = true;
+        }
+    }
+
+    if (!stopped) {
+        if (canon_afinfo2_words_fit(word_count, mask_start, mask_words)) {
+            if (!decode_canon_afinfo2_add_i16_array(
+                    cfg, tiff_bytes, value_off, mk_ifd0, block, order++,
+                    0x000cU, mask_start, static_cast<uint32_t>(mask_words),
+                    store, options, status_out)
+                || !decode_canon_afinfo2_add_i16_array(
+                    cfg, tiff_bytes, value_off, mk_ifd0, block, order++,
+                    0x260cU, mask_start, static_cast<uint32_t>(mask_words),
+                    store, options, status_out)) {
+                complete = false;
+                stopped  = true;
             }
-            return true;
-        }
-
-        Entry entry;
-        entry.key          = make_exif_tag_key(store.arena(), mk_ifd0, a.tag);
-        entry.origin.block = block;
-        entry.origin.order_in_block = order++;
-        entry.origin.wire_type      = WireType { WireFamily::Tiff, a.type };
-        entry.origin.wire_count     = n;
-        entry.value = decode_tiff_value(cfg, tiff_bytes, a.type, n, off, bytes,
-                                        store.arena(), options.limits,
-                                        status_out);
-        entry.flags |= EntryFlags::Derived;
-        (void)store.add_entry(entry);
-        if (status_out) {
-            status_out->entries_decoded += 1;
-        }
-
-        if (status_out
-            && (status_out->entries_decoded + 1U)
-                   > options.limits.max_total_entries) {
-            update_status(status_out, ExifDecodeStatus::LimitExceeded);
-            return true;
-        }
-
-        Entry alias_entry;
-        alias_entry.key
-            = make_exif_tag_key(store.arena(), mk_ifd0,
-                                static_cast<uint16_t>(0x2600u + a.tag));
-        alias_entry.origin.block          = block;
-        alias_entry.origin.order_in_block = order++;
-        alias_entry.origin.wire_type  = WireType { WireFamily::Tiff, a.type };
-        alias_entry.origin.wire_count = n;
-        alias_entry.value = decode_tiff_value(cfg, tiff_bytes, a.type, n, off,
-                                              bytes, store.arena(),
-                                              options.limits, status_out);
-        alias_entry.flags |= EntryFlags::Derived;
-        (void)store.add_entry(alias_entry);
-        if (status_out) {
-            status_out->entries_decoded += 1;
+        } else {
+            complete = false;
         }
     }
 
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x000c,
-                                             base + 4U * n + 0U, store, options,
-                                             status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x000d,
-                                             base + 4U * n + 1U, store, options,
-                                             status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x000e,
-                                             base + 4U * n + 2U, store, options,
-                                             status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x260c,
-                                             base + 4U * n + 0U, store, options,
-                                             status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x260d,
-                                             base + 4U * n + 1U, store, options,
-                                             status_out)) {
-        return true;
-    }
-    if (!decode_canon_afinfo2_add_u16_scalar(cfg, tiff_bytes, value_off,
-                                             mk_ifd0, block, order++, 0x260e,
-                                             base + 4U * n + 2U, store, options,
-                                             status_out)) {
-        return true;
+    if (!stopped && model_class == CanonAfInfo2ModelClass::Eos) {
+        const uint64_t selected_start = mask_start + mask_words;
+        if (canon_afinfo2_words_fit(word_count, selected_start, mask_words)) {
+            if (!decode_canon_afinfo2_add_i16_array(
+                    cfg, tiff_bytes, value_off, mk_ifd0, block, order++,
+                    0x000dU, selected_start, static_cast<uint32_t>(mask_words),
+                    store, options, status_out)
+                || !decode_canon_afinfo2_add_i16_array(
+                    cfg, tiff_bytes, value_off, mk_ifd0, block, order++,
+                    0x260dU, selected_start, static_cast<uint32_t>(mask_words),
+                    store, options, status_out)) {
+                complete = false;
+            }
+        } else {
+            complete = false;
+        }
+    } else if (!stopped && model_class == CanonAfInfo2ModelClass::KnownNonEos) {
+        const uint64_t unknown_start = mask_start + mask_words;
+        const uint64_t unknown_words = mask_words + 1U;
+        if (canon_afinfo2_words_fit(word_count, unknown_start, unknown_words)) {
+            char unknown_ifd_buffer[96];
+            const std::string_view unknown_ifd = make_mk_subtable_ifd_token(
+                "mk_canon", "afinfo2unknown", 0U,
+                std::span<char>(unknown_ifd_buffer));
+            if (!decode_canon_afinfo2_add_i16_array(
+                    cfg, tiff_bytes, value_off, unknown_ifd, block, order++,
+                    0x000dU, unknown_start,
+                    static_cast<uint32_t>(unknown_words), store, options,
+                    status_out)) {
+                complete = false;
+                stopped  = true;
+            }
+        } else {
+            complete = false;
+        }
+
+        if (!stopped && afinfo3_context_known && !afinfo3_present) {
+            const uint64_t primary_word = unknown_start + unknown_words;
+            if (canon_afinfo2_words_fit(word_count, primary_word, 1U)) {
+                if (!decode_canon_afinfo2_add_u16_scalar(
+                        cfg, tiff_bytes, value_off, mk_ifd0, block, order++,
+                        0x000eU, static_cast<uint32_t>(primary_word), store,
+                        options, status_out)
+                    || !decode_canon_afinfo2_add_u16_scalar(
+                        cfg, tiff_bytes, value_off, mk_ifd0, block, order++,
+                        0x260eU, static_cast<uint32_t>(primary_word), store,
+                        options, status_out)) {
+                    complete = false;
+                }
+            } else {
+                complete = false;
+            }
+        } else if (!afinfo3_present && !afinfo3_context_known) {
+            complete = false;
+        }
     }
 
+    if (fields_complete_out) {
+        *fields_complete_out = complete && !stopped;
+    }
     return true;
 }
 
+
+// The fallback examines at most this many two-byte-aligned candidates. The
+// limit is independent of caller I/O ceilings; exhaustion remains visible as
+// LimitExceeded plus the existing MakerNote residual.
+static constexpr uint32_t kCanonAfInfo2MaxScanProbes = 4096U;
+
+static bool
+canon_afinfo2_read_source_header(SourceTiffReader* source, uint64_t offset,
+                                 std::span<const std::byte>* header) noexcept
+{
+    if (!source || !source->range || !header) {
+        return false;
+    }
+    if (source->range->source.contiguous_data
+        || source->window.storage.size() >= 16U) {
+        return source_tiff_view(source, offset, 16U, header);
+    }
+    return source_tiff_value(source, offset, 16U, header);
+}
+
+static void
+canon_afinfo2_mark_scan_limited(ExifDecodeResult* status_out) noexcept
+{
+    update_status(status_out, ExifDecodeStatus::LimitExceeded);
+}
+
+static SourceIfdValueExpansionStatus
+canon_scan_afinfo2_from_source(const TiffConfig& cfg, uint64_t value_bytes,
+                               std::string_view mk_ifd0, MetaStore& store,
+                               const ExifDecodeOptions& options,
+                               ExifDecodeResult* status_out,
+                               CanonAfInfo2ModelClass model_class,
+                               bool afinfo3_present, bool afinfo3_context_known,
+                               const SourceIfdValueContext& context) noexcept
+{
+    SourceTiffReader* const source             = context.source;
+    const SourceTiffMetadataSpan metadata_span = context.bounded_metadata_span;
+    if (!source || !source->range || !source->result || mk_ifd0.empty()
+        || !source->result->input.ok()
+        || source->result->value_scratch_needed != 0U || value_bytes < 16U
+        || value_bytes > options.limits.max_value_bytes
+        || !source_tiff_contains(*source, metadata_span.offset,
+                                 metadata_span.size)
+        || metadata_span.size < value_bytes) {
+        return SourceIfdValueExpansionStatus::Incomplete;
+    }
+
+    uint64_t bounded_source_offset = 0U;
+    if (source->range->source_offset > UINT64_MAX - metadata_span.offset) {
+        update_status(status_out, ExifDecodeStatus::Malformed);
+        return SourceIfdValueExpansionStatus::Incomplete;
+    }
+    bounded_source_offset = source->range->source_offset + metadata_span.offset;
+    const RandomAccessSourceRange bounded_range { source->range->source,
+                                                  bounded_source_offset,
+                                                  metadata_span.size };
+
+    // The current value has been consumed. The scan reader borrows the same
+    // caller window/scratch synchronously, with its range restricted to the
+    // declared MakerNote value. Invalidate the parent cache before reusing its
+    // storage so later structural reads cannot observe overwritten bytes.
+    SourceTiffReader scan_source = *source;
+    scan_source.range            = &bounded_range;
+    scan_source.window.storage   = source->window.storage;
+    scan_source.window.reset();
+    source->window.reset();
+
+    const uint64_t last_candidate  = metadata_span.size - value_bytes;
+    const uint64_t candidate_count = last_candidate / 2U + 1U;
+    const uint64_t probe_count = candidate_count < kCanonAfInfo2MaxScanProbes
+                                     ? candidate_count
+                                     : kCanonAfInfo2MaxScanProbes;
+
+    for (uint64_t probe = 0U; probe < probe_count; ++probe) {
+        const uint64_t candidate_offset = probe * 2U;
+        if (candidate_offset > last_candidate) {
+            break;
+        }
+        uint64_t absolute_candidate_offset = 0U;
+        if (metadata_span.offset > UINT64_MAX - candidate_offset) {
+            update_status(status_out, ExifDecodeStatus::Malformed);
+            return SourceIfdValueExpansionStatus::Incomplete;
+        }
+        absolute_candidate_offset = metadata_span.offset + candidate_offset;
+        if (absolute_candidate_offset == context.value_offset) {
+            continue;
+        }
+
+        std::span<const std::byte> header;
+        if (!canon_afinfo2_read_source_header(&scan_source, candidate_offset,
+                                              &header)) {
+            return SourceIfdValueExpansionStatus::Incomplete;
+        }
+        if (!canon_afinfo2_header_looks_valid(cfg, header, value_bytes,
+                                              options.limits, model_class,
+                                              afinfo3_present,
+                                              afinfo3_context_known)) {
+            continue;
+        }
+
+        std::span<const std::byte> payload;
+        if (!source_tiff_value(&scan_source, candidate_offset, value_bytes,
+                               &payload)) {
+            return SourceIfdValueExpansionStatus::Incomplete;
+        }
+        if (!canon_afinfo2_header_looks_valid(cfg, payload, value_bytes,
+                                              options.limits, model_class,
+                                              afinfo3_present,
+                                              afinfo3_context_known)) {
+            continue;
+        }
+        bool fields_complete = false;
+        if (decode_canon_afinfo2(cfg, payload, 0U, value_bytes, mk_ifd0,
+                                 model_class, afinfo3_present,
+                                 afinfo3_context_known, store, options,
+                                 status_out, &fields_complete)) {
+            return fields_complete ? SourceIfdValueExpansionStatus::Expanded
+                                   : SourceIfdValueExpansionStatus::Incomplete;
+        }
+    }
+
+    if (candidate_count > probe_count) {
+        canon_afinfo2_mark_scan_limited(status_out);
+    }
+    return SourceIfdValueExpansionStatus::Incomplete;
+}
 
 static bool
 decode_canon_custom_functions2(const TiffConfig& cfg,
@@ -3833,9 +4048,13 @@ expand_canon_makernote_value(
     const TiffConfig& cfg, const ClassicIfdEntry& entry, bool have_value,
     std::span<const std::byte> value, std::string_view ifd_name,
     MetaStore& store, const ExifDecodeOptions& options,
-    ExifDecodeResult* status_out,
-    const CanonMakerNoteValueContext* context) noexcept
+    ExifDecodeResult* status_out, const CanonMakerNoteValueContext* context,
+    bool* afinfo2_recognized_out, CanonAfInfo2ModelClass model_class,
+    bool afinfo3_present, bool afinfo3_context_known) noexcept
 {
+    if (afinfo2_recognized_out) {
+        *afinfo2_recognized_out = false;
+    }
     if (!ifd_name.starts_with("mk_canon") || entry.count32 == 0U) {
         return SourceIfdValueExpansionStatus::NotApplicable;
     }
@@ -4184,22 +4403,34 @@ expand_canon_makernote_value(
     if (entry.type == 3U && entry.tag == 0x0026U) {
         const std::string_view sub_ifd = make_mk_subtable_ifd_token(
             prefix, "afinfo2", 0U, std::span<char>(sub_ifd_buffer));
-        bool decoded = decode_canon_afinfo2(cfg, tiff_bytes, abs_value_off,
-                                            value.size(), sub_ifd, store,
-                                            options, status_out);
+        bool fields_complete = false;
+        bool decoded
+            = decode_canon_afinfo2(cfg, tiff_bytes, abs_value_off, value.size(),
+                                   sub_ifd, model_class, afinfo3_present,
+                                   afinfo3_context_known, store, options,
+                                   status_out, &fields_complete);
         if (!decoded && context) {
             uint64_t alternate_off = 0U;
             if (canon_find_afinfo2_payload(
                     cfg, tiff_bytes, context->maker_note_off,
-                    context->maker_note_span_bytes, value.size(),
-                    abs_value_off, options.limits, &alternate_off)) {
-                decoded = decode_canon_afinfo2(
-                    cfg, tiff_bytes, alternate_off, value.size(), sub_ifd,
-                    store, options, status_out);
+                    context->maker_note_span_bytes, value.size(), abs_value_off,
+                    options.limits, model_class, afinfo3_present,
+                    afinfo3_context_known, &alternate_off)) {
+                fields_complete = false;
+                decoded = decode_canon_afinfo2(cfg, tiff_bytes, alternate_off,
+                                               value.size(), sub_ifd,
+                                               model_class, afinfo3_present,
+                                               afinfo3_context_known, store,
+                                               options, status_out,
+                                               &fields_complete);
             }
         }
-        return decoded ? SourceIfdValueExpansionStatus::Expanded
-                       : SourceIfdValueExpansionStatus::Incomplete;
+        if (afinfo2_recognized_out) {
+            *afinfo2_recognized_out = decoded;
+        }
+        return decoded && fields_complete
+                   ? SourceIfdValueExpansionStatus::Expanded
+                   : SourceIfdValueExpansionStatus::Incomplete;
     }
     if (entry.type == 3U && entry.tag == 0x00aaU) {
         const std::string_view sub_ifd = make_mk_subtable_ifd_token(
@@ -4298,14 +4529,36 @@ decode_canon_makernote_value(const TiffConfig& cfg,
                              ExifDecodeResult* status_out,
                              const SourceIfdValueContext& context) noexcept
 {
+    bool afinfo2_recognized = false;
     const SourceIfdValueExpansionStatus expansion
-        = expand_canon_makernote_value(cfg, entry, have_value, value,
-                                      ifd_name, store, options, status_out,
-                                      nullptr);
-    const bool filter_info = entry.tag == 0x4024U && entry.type == 4U;
+        = expand_canon_makernote_value(cfg, entry, have_value, value, ifd_name,
+                                       store, options, status_out, nullptr,
+                                       &afinfo2_recognized,
+                                       context.canon_afinfo2_model,
+                                       context.canon_afinfo3_present,
+                                       context.canon_afinfo3_context_known);
+    if (expansion == SourceIfdValueExpansionStatus::Incomplete
+        && !afinfo2_recognized && entry.tag == 0x0026U && entry.type == 3U) {
+        uint64_t value_bytes = 0U;
+        if (!classic_ifd_entry_value_bytes(entry, &value_bytes)
+            || value_bytes < 16U
+            || value_bytes > options.limits.max_value_bytes) {
+            return expansion;
+        }
+        char sub_ifd_buffer[96];
+        const std::string_view sub_ifd
+            = make_mk_subtable_ifd_token("mk_canon", "afinfo2", 0U,
+                                         std::span<char>(sub_ifd_buffer));
+        return canon_scan_afinfo2_from_source(
+            cfg, value_bytes, sub_ifd, store, options, status_out,
+            context.canon_afinfo2_model, context.canon_afinfo3_present,
+            context.canon_afinfo3_context_known, context);
+    }
+
+    const bool filter_info      = entry.tag == 0x4024U && entry.type == 4U;
     const bool custom_functions = entry.tag == 0x0099U;
-    if (expansion != SourceIfdValueExpansionStatus::Incomplete
-        || !have_value || (!filter_info && !custom_functions)
+    if (expansion != SourceIfdValueExpansionStatus::Incomplete || !have_value
+        || (!filter_info && !custom_functions)
         || (filter_info && entry.count32 > options.limits.max_entries_per_ifd)
         || value.size() < 8U || value.size() > options.limits.max_value_bytes
         || !context.source) {
@@ -4390,7 +4643,8 @@ decode_canon_makernote(const TiffConfig& cfg,
                        std::string_view mk_ifd0, MetaStore& store,
                        const ExifDecodeOptions& options,
                        ExifDecodeResult* status_out,
-                       CanonMakerNoteResiduals* residuals) noexcept
+                       CanonMakerNoteResiduals* residuals,
+                       CanonAfInfo2ModelClass afinfo2_model) noexcept
 {
     if (mk_ifd0.empty()) {
         return false;
@@ -4491,6 +4745,22 @@ decode_canon_makernote(const TiffConfig& cfg,
                                                   std::span<char>(model_buf));
     }
 
+    bool afinfo3_present       = false;
+    bool afinfo3_context_known = maker_note_bytes != 0U && needed >= 4U
+                                 && maker_note_bytes >= needed - 4U;
+    if (afinfo3_context_known) {
+        for (uint32_t i = 0U; i < entry_count; ++i) {
+            const uint64_t entry_off = entries_off + uint64_t(i) * 12U;
+            ClassicIfdEntry entry;
+            if (!read_classic_ifd_entry(mk_cfg, tiff_bytes, entry_off, &entry)) {
+                afinfo3_context_known = false;
+                afinfo3_present       = false;
+                break;
+            }
+            afinfo3_present |= entry.tag == 0x003cU;
+        }
+    }
+
     const BlockId block = store.add_block(BlockInfo {});
     if (block == kInvalidBlockId) {
         return true;
@@ -4574,9 +4844,11 @@ decode_canon_makernote(const TiffConfig& cfg,
             ifd_entry.value_or_off32, auto_value_base, schema_value_base
         };
         const SourceIfdValueExpansionStatus expansion
-            = expand_canon_makernote_value(
-            mk_cfg, ifd_entry, true, value_raw, mk_ifd0, store, options,
-            status_out, &value_context);
+            = expand_canon_makernote_value(mk_cfg, ifd_entry, true, value_raw,
+                                           mk_ifd0, store, options, status_out,
+                                           &value_context, nullptr,
+                                           afinfo2_model, afinfo3_present,
+                                           afinfo3_context_known);
         if (expansion == SourceIfdValueExpansionStatus::Incomplete && residuals) {
             if (residuals->paths_skipped != UINT32_MAX) {
                 ++residuals->paths_skipped;
@@ -4594,11 +4866,12 @@ decode_canon_makernote(const TiffConfig& cfg,
     return true;
 }
 
-ExifDecodeResult decode_canon_cr3_tiff(
-    std::span<const std::byte> bytes, MetaStore& store,
-    std::span<ExifIfdRef> out_ifds,
-    const ExifDecodeOptions& options,
-    CanonMakerNoteResiduals* residuals) noexcept
+ExifDecodeResult
+decode_canon_cr3_tiff(std::span<const std::byte> bytes, MetaStore& store,
+                      std::span<ExifIfdRef> out_ifds,
+                      const ExifDecodeOptions& options,
+                      CanonMakerNoteResiduals* residuals,
+                      CanonAfInfo2ModelClass afinfo2_model) noexcept
 {
     store.constrain_resources(options.limits.max_total_entries,
                               options.limits.max_arena_bytes);
@@ -4627,9 +4900,10 @@ ExifDecodeResult decode_canon_cr3_tiff(
         if (read_tiff_u16(cfg, bytes, 2U, &magic) && magic == 42U
             && read_tiff_u32(cfg, bytes, 4U, &offset) && offset < bytes.size()) {
             ExifDecodeResult result;
-            if (decode_canon_makernote(cfg, bytes, offset, bytes.size() - offset,
-                                       "mk_canon0", store, canon, &result,
-                                       residuals)) {
+            if (decode_canon_makernote(cfg, bytes, offset,
+                                       bytes.size() - offset, "mk_canon0",
+                                       store, canon, &result, residuals,
+                                       afinfo2_model)) {
                 if (store.resource_limit_exceeded()) {
                     update_status(&result, ExifDecodeStatus::LimitExceeded);
                     result.limit_reason = store.arena().limit_exceeded()

@@ -69,9 +69,12 @@ exact four-byte FilterInfo or eight-byte CustomFunctions2 signature reads;
 a matching directory is fetched at its declared
 length. These reads share the caller's scratch and request/byte limits. No
 gap or pixel payload is fetched to bridge metadata locations. Unsupported or
-unreadable alternate paths remain explicit residuals. AFInfo2's memory-only
-search across a declared MakerNote span is not replaced by a file-wide search;
-unresolved layouts still report a residual. Standalone MRW reads PRD/WBG/RIF metadata
+unreadable alternate paths remain explicit residuals. Version 0.8.32 also
+discovers AFInfo2 at two-byte-aligned positions within the declared MakerNote
+span, using caller scratch and I/O limits. At most 4,096 candidates are examined;
+exhausting this independent cap reports `LimitExceeded` and retains a MakerNote
+residual. The scan never widens to the whole source. Unresolved layouts still
+report a residual. Standalone MRW reads PRD/WBG/RIF metadata
 chunks through callbacks and skips unrelated/pixel payloads. Sony SR2-private
 metadata uses bounded decryption scratch; native RAF follows declared private
 TIFF F000 directories without following pixel strip offsets. This is targeted
@@ -83,6 +86,21 @@ The scanner-declared CMT3 payload must fit the caller's payload scratch and
 payload/I/O budgets. All derived offsets remain within that metadata payload;
 the decoder does not extend it into `mdat`. Disabling MakerNote decoding skips
 this expansion without generating a false incomplete-MakerNote diagnostic.
+Version 0.8.32 also shares CNCV compressor-version, CMP1 dimensions/offset and
+CTBO source-locator interpretation with the memory path. CTBO accepts at most
+64 rows and validates known target sizes/types/UUIDs with exact box-header reads
+(at most 32 bytes per target), without reading preview or media bodies. Opaque
+CCTP records and the conservative CR3 embedded-container enrichment diagnostic
+remain explicit residuals.
+
+AFInfo2 geometry and focus/selection masks retain signed 16-bit values and full
+word counts. Model-dependent tail meanings use only evidence from the current
+TIFF decode. Direct CR3 CMT3 decoding uses a unique earlier CMT1 block from that
+source; missing, late or duplicate CMT1 evidence keeps the tail raw. Previous
+images appended to the store do not supply that context. AFInfo3 presence is
+checked before field expansion; its conservative suppression is independent of
+entry order. Unknown models and incomplete directory extents retain ambiguous
+data without assigning selection/primary-point meanings.
 
 Offset candidates are bounded by the supplied source range, which may contain
 image data. A malformed metadata pointer can still address image bytes; the

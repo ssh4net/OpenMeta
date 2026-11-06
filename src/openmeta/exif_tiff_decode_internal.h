@@ -75,6 +75,9 @@ namespace exif_internal {
         RandomAccessReadLimits limits;
         RandomAccessReadWindowOptions window_options;
         ExifRandomAccessDecodeResult* result = nullptr;
+        // Entry offset separating the current top-level TIFF's metadata from
+        // earlier MetaStore content. Private readers leave this invalid.
+        size_t decode_entry_start = static_cast<size_t>(-1);
         // Private directories share the outer max_ifds budget but do not emit
         // public ExifIfdRef slots counted by ifds_needed/ifds_written.
         uint32_t private_ifds_visited = 0U;
@@ -86,10 +89,31 @@ namespace exif_internal {
         Incomplete,
     };
 
+    struct SourceTiffMetadataSpan final {
+        // Both coordinates are relative to SourceTiffReader::range. A value
+        // hook may borrow/read only within this caller-declared metadata span.
+        uint64_t offset = 0U;
+        uint64_t size   = 0U;
+    };
+
+    enum class CanonAfInfo2ModelClass : uint8_t {
+        Unknown,
+        Eos,
+        KnownNonEos,
+    };
+
+    CanonAfInfo2ModelClass classify_canon_afinfo2_model(
+        const MetaStore& store, std::span<const Entry> model_evidence) noexcept;
+
     struct SourceIfdValueContext final {
         SourceTiffReader* source = nullptr;
-        uint64_t value_offset = 0U;
+        uint64_t value_offset    = 0U;
         std::span<const int64_t> alternate_value_bases;
+        SourceTiffMetadataSpan bounded_metadata_span;
+        CanonAfInfo2ModelClass canon_afinfo2_model
+            = CanonAfInfo2ModelClass::Unknown;
+        bool canon_afinfo3_present       = false;
+        bool canon_afinfo3_context_known = false;
     };
 
     using SourceIfdValueExpansionHook = SourceIfdValueExpansionStatus (*)(
@@ -164,13 +188,18 @@ namespace exif_internal {
         const OffsetPolicy& offsets, std::string_view ifd_name,
         MetaStore& store, const ExifDecodeOptions& options,
         ExifDecodeResult* status_out, EntryFlags extra_flags,
-        bool allow_missing_next_ifd_pointer     = false,
-        uint16_t forced_entry_count             = 0U,
-        const TiffConfig* out_of_line_value_cfg = nullptr,
-        bool mark_contextual_names              = true,
-        bool allow_zero_count_unknown_type      = false,
-        SourceIfdValueExpansionHook value_hook  = nullptr,
-        std::span<const int64_t> alternate_value_bases = {}) noexcept;
+        bool allow_missing_next_ifd_pointer            = false,
+        uint16_t forced_entry_count                    = 0U,
+        const TiffConfig* out_of_line_value_cfg        = nullptr,
+        bool mark_contextual_names                     = true,
+        bool allow_zero_count_unknown_type             = false,
+        SourceIfdValueExpansionHook value_hook         = nullptr,
+        std::span<const int64_t> alternate_value_bases = {},
+        SourceTiffMetadataSpan bounded_metadata_span   = {},
+        CanonAfInfo2ModelClass canon_afinfo2_model
+        = CanonAfInfo2ModelClass::Unknown,
+        bool canon_afinfo3_present       = false,
+        bool canon_afinfo3_context_known = false) noexcept;
 
     // Low-level helpers (implemented in exif_tiff_decode.cc).
     bool match_bytes(std::span<const std::byte> bytes, uint64_t offset,
@@ -321,13 +350,17 @@ namespace exif_internal {
                                 std::string_view mk_ifd0, MetaStore& store,
                                 const ExifDecodeOptions& options,
                                 ExifDecodeResult* status_out,
-                                CanonMakerNoteResiduals* residuals = nullptr) noexcept;
+                                CanonMakerNoteResiduals* residuals = nullptr,
+                                CanonAfInfo2ModelClass afinfo2_model
+                                = CanonAfInfo2ModelClass::Unknown) noexcept;
 
-    ExifDecodeResult decode_canon_cr3_tiff(
-        std::span<const std::byte> bytes, MetaStore& store,
-        std::span<ExifIfdRef> out_ifds,
-        const ExifDecodeOptions& options,
-        CanonMakerNoteResiduals* residuals = nullptr) noexcept;
+    ExifDecodeResult
+    decode_canon_cr3_tiff(std::span<const std::byte> bytes, MetaStore& store,
+                          std::span<ExifIfdRef> out_ifds,
+                          const ExifDecodeOptions& options,
+                          CanonMakerNoteResiduals* residuals = nullptr,
+                          CanonAfInfo2ModelClass afinfo2_model
+                          = CanonAfInfo2ModelClass::Unknown) noexcept;
 
     bool decode_fuji_makernote(std::span<const std::byte> tiff_bytes,
                                uint64_t maker_note_off,

@@ -20,11 +20,18 @@ Source entries and captured snapshots remain unchanged. Other source metadata
 keeps its selected transfer policy. Check the preparation result before using
 its bundle; legacy preparation can return a diagnostic bundle on failure.
 
-Supported edits are the leading JPEG `ICC_PROFILE` APP2 chain and primary
-TIFF/BigTIFF/DNG IFD0 tag 34675. The operation preserves image bytes and unrelated
+Supported edits are the leading JPEG `ICC_PROFILE` APP2 chain, primary
+TIFF/BigTIFF/DNG IFD0 tag 34675, and (since 0.8.32) active top-level PNG `iCCP`
+and WebP `ICCP` chunks. Duplicate ICC chunks are all removed. WebP also clears
+the VP8X ICC bit while preserving unrelated flags. PNG removal does not require
+ICC decompression or zlib. The operation preserves image bytes and unrelated
 metadata. It does not remove nested copies, JPEG data after SOS, or DNG
 AsShot/Current profile tags. TIFF editing changes active references; historical,
 unreferenced bytes can remain in the file.
+
+PNG preserves bytes after its first IEND as opaque trailing data. Removal
+checks only active primary carriers; it does not erase historical or nested
+profile bytes. RIFF sizes and WebP chunk padding remain valid.
 
 An absent primary carrier can be a no-op. TIFF callers that allow this use
 `PlanTiffEditOptions::require_updates=false`. Other requested edits and the
@@ -44,8 +51,8 @@ field to their wire format. The package writer and materializer check removal
 against the virtual planned output after validating all chunk ranges and before
 publication or writer callbacks. This also rejects a whole-source-copy plan
 that would retain the ICC carrier. The check reads chunks without materializing
-the whole output or adding a replay allocation. Its JPEG leading-header work
-and TIFF IFD0 scan have a 4,096-item ceiling; excess reports `LimitExceeded`.
+the whole output or adding a replay allocation. Its JPEG leading-header, TIFF IFD0 and PNG/WebP chunk scans
+have a 4,096-item ceiling; excess reports `LimitExceeded`.
 
 JPEG ICC removal uses the existing C2PA invalidation and exact binding paths.
 Cryptographic signing and trust remain host responsibilities. No signing or
@@ -53,8 +60,9 @@ pixel/color-rendering guarantee is inferred from removing a profile.
 
 ## Compatibility
 
-ABI 4 remains unfrozen. Rebuild with matching 0.8.28 headers and binaries for the
-appended request/bundle fields. Source snapshot wire 1 and existing package,
+ABI 4 remains unfrozen. Version 0.8.32 adds target coverage without changing
+public layouts or package wire versions. Rebuild with matching headers and
+binaries; the request/bundle fields were introduced in 0.8.28. Source snapshot wire 1 and existing package,
 patch and ICC serialization contracts are unchanged. The new request flag is
 C++ only; existing Python operations retain their defaults.
 

@@ -5359,7 +5359,10 @@ decode_exif_tiff_contiguous(std::span<const std::byte> tiff_bytes,
                 if (vendor == MakerNoteVendor::Canon
                     && exif_internal::decode_canon_makernote(
                         cfg, tiff_bytes, value_off, value_bytes, mk_ifd0, store,
-                        mn_opts, &sink.result)) {
+                        mn_opts, &sink.result, nullptr,
+                        exif_internal::classify_canon_afinfo2_model(
+                            store,
+                            store.entries().subspan(decode_entry_start)))) {
                     continue;
                 }
 
@@ -5796,7 +5799,10 @@ namespace exif_internal {
         const TiffConfig* out_of_line_value_cfg, bool mark_contextual_names,
         bool allow_zero_count_unknown_type,
         SourceIfdValueExpansionHook value_hook,
-        std::span<const int64_t> alternate_value_bases) noexcept
+        std::span<const int64_t> alternate_value_bases,
+        SourceTiffMetadataSpan bounded_metadata_span,
+        CanonAfInfo2ModelClass canon_afinfo2_model, bool canon_afinfo3_present,
+        bool canon_afinfo3_context_known) noexcept
     {
         if (!source || !source->range || !source->result || cfg.bigtiff
             || ifd_name.empty()) {
@@ -5941,11 +5947,17 @@ namespace exif_internal {
             }
             if (value_hook) {
                 const SourceIfdValueContext context {
-                    source, ref.value_off, alternate_value_bases
+                    source,
+                    ref.value_off,
+                    alternate_value_bases,
+                    bounded_metadata_span,
+                    canon_afinfo2_model,
+                    canon_afinfo3_present,
+                    canon_afinfo3_context_known
                 };
-                const SourceIfdValueExpansionStatus expansion = value_hook(
-                    cfg, ifd_entry, have_value, value_raw, ifd_name, store,
-                    options, status_out, context);
+                const SourceIfdValueExpansionStatus expansion
+                    = value_hook(cfg, ifd_entry, have_value, value_raw,
+                                 ifd_name, store, options, status_out, context);
                 if (expansion == SourceIfdValueExpansionStatus::Incomplete) {
                     record_maker_note_residual(source->result, source,
                                                ref.value_off, ifd_entry.tag);
@@ -6021,6 +6033,10 @@ namespace {
         std::array<int64_t, 4> alternate_value_bases {
             INT64_MIN, INT64_MIN, INT64_MIN, INT64_MIN
         };
+        exif_internal::CanonAfInfo2ModelClass afinfo2_model
+            = exif_internal::CanonAfInfo2ModelClass::Unknown;
+        bool afinfo3_present       = false;
+        bool afinfo3_context_known = false;
         bool plausible             = false;
         bool values_within_payload = false;
     };
@@ -6122,6 +6138,15 @@ namespace {
     {
         SourceCanonLayout choice;
         choice.cfg           = parent_cfg;
+        const std::span<const Entry> all_entries = store.entries();
+        std::span<const Entry> model_evidence;
+        if (source && source->decode_entry_start != static_cast<size_t>(-1)
+            && source->decode_entry_start <= all_entries.size()) {
+            model_evidence = all_entries.subspan(source->decode_entry_start);
+        }
+        choice.afinfo2_model
+            = exif_internal::classify_canon_afinfo2_model(store,
+                                                          model_evidence);
         uint16_t entry_count = 0U;
         uint64_t needed      = 0U;
         if (!source_classic_ifd_plausible(source, choice.cfg, maker_note_off,
@@ -6134,6 +6159,8 @@ namespace {
                 return choice;
             }
         }
+        choice.afinfo3_context_known = needed >= 4U
+                                       && maker_note_bytes >= needed - 4U;
 
         uint64_t min_offset = UINT64_MAX;
         for (uint32_t i = 0U; i < entry_count; ++i) {
@@ -6150,11 +6177,16 @@ namespace {
                 return choice;
             }
             exif_internal::ClassicIfdEntry entry;
-            uint64_t value_bytes = 0U;
             if (!exif_internal::read_classic_ifd_entry(choice.cfg, raw, 0U,
-                                                       &entry)
-                || !exif_internal::classic_ifd_entry_value_bytes(entry,
-                                                                 &value_bytes)) {
+                                                       &entry)) {
+                continue;
+            }
+            if (choice.afinfo3_context_known) {
+                choice.afinfo3_present |= entry.tag == 0x003cU;
+            }
+            uint64_t value_bytes = 0U;
+            if (!exif_internal::classic_ifd_entry_value_bytes(entry,
+                                                              &value_bytes)) {
                 continue;
             }
             if (value_bytes > 4U
@@ -6396,7 +6428,8 @@ namespace {
             if (layout.plausible && layout.values_within_payload
                 && exif_internal::decode_canon_makernote(
                     layout.cfg, maker_note, 0U, maker_note.size(), maker_ifd,
-                    store, mn_options, &result->decode, &residuals)) {
+                    store, mn_options, &result->decode, &residuals,
+                    layout.afinfo2_model)) {
                 uint64_t residual_offset = maker_note_off;
                 if (!checked_add_u64(maker_note_off, residuals.first_offset,
                                      &residual_offset)) {
@@ -6415,7 +6448,11 @@ namespace {
                     maker_ifd, store, mn_options, &result->decode,
                     EntryFlags::None, false, 0U, nullptr, true, false,
                     exif_internal::decode_canon_makernote_value,
-                    layout.alternate_value_bases)) {
+                    layout.alternate_value_bases,
+                    exif_internal::SourceTiffMetadataSpan { maker_note_off,
+                                                            maker_note_bytes },
+                    layout.afinfo2_model, layout.afinfo3_present,
+                    layout.afinfo3_context_known)) {
                 return;
             }
         }
@@ -6868,6 +6905,7 @@ decode_exif_tiff_random_access(
     source.limits         = read_limits;
     source.window_options = scratch.window_options;
     source.result         = &result;
+    source.decode_entry_start = decode_entry_start;
 
     std::span<const std::byte> header;
     if (!exif_internal::source_tiff_view(&source, 0U, 8U, &header)) {

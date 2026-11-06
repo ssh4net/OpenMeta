@@ -1,8 +1,24 @@
 # Metadata Transfer Plan (Draft)
 
+## Bounded Canon parity and PNG/WebP ICC removal (0.8.32)
+
+CNCV/CMP1/CTBO positional interpretation and bounded AFInfo2 discovery share
+the existing metadata lifecycle. AFInfo2 retains signed geometry and complete
+masks with model-aware tail meanings, instead of scalar truncation. CCTP and
+embedded-preview enrichment remain explicitly unqualified. A genuine original alternate-base AFInfo2
+sample remains an evidence gap; synthetic controls are labelled separately.
+
+PNG/WebP explicit primary ICC removal extends the existing edit intent and
+exact package replay. No public layout or wire version changes. Remaining
+carrier families require separate format-specific work; JXL ICC may be owned
+by its codestream. General RDF/MWG synchronization remains the next main-plan
+work area. OIIO/iRAW and C/Rust remain on hold; fuzzy search is lowest priority.
+
+## Custom XMP provider precedence (0.8.29)
+
 Version 0.8.29 adds complete-provider selection for explicitly declared custom
 XMP roots, with per-provider validation and grouped file/snapshot/carrier checks.
-ABI 4 remains unfrozen. General RDF/MWG synchronization and other ICC removal
+ABI 4 remains unfrozen. General RDF/MWG synchronization and further ICC removal
 scopes remain open. See [custom XMP provider precedence](xmp_provider_precedence.md).
 
 ## Primary ICC removal and DC collection merging (0.8.28)

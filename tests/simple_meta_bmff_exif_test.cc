@@ -4,7 +4,10 @@
 
 #include "openmeta/meta_key.h"
 #include "openmeta/meta_store.h"
+#include "openmeta/metadata_transfer.h"
+
 #include "openmeta/xmp_dump.h"
+#include <cstring>
 
 #include <gtest/gtest.h>
 
@@ -474,6 +477,143 @@ namespace {
             count += store.find_all(key).size();
         }
         return count;
+    }
+
+    static std::vector<std::byte>
+    make_cr3_afinfo2_context_fixture(std::string_view model,
+                                     uint32_t cmt1_count,
+                                     bool last_model_after_cmt3 = false)
+    {
+        std::vector<std::byte> model_tiff;
+        if (model.empty()) {
+            model_tiff = make_tiff_ifd0_imagewidth_u32(1000U);
+        } else {
+            append_bytes(&model_tiff, "II");
+            append_u16le(&model_tiff, 42U);
+            append_u32le(&model_tiff, 8U);
+            append_u16le(&model_tiff, 1U);
+            append_u16le(&model_tiff, 0x0110U);
+            append_u16le(&model_tiff, 2U);
+            append_u32le(&model_tiff, static_cast<uint32_t>(model.size() + 1U));
+            append_u32le(&model_tiff, 26U);
+            append_u32le(&model_tiff, 0U);
+            for (char c : model)
+                model_tiff.push_back(static_cast<std::byte>(c));
+            model_tiff.push_back(std::byte { 0U });
+        }
+        const std::array<uint16_t, 8U> header = { 96U,   2U,   9U,    9U,
+                                                  1000U, 800U, 1000U, 800U };
+        std::vector<std::byte> af;
+        for (uint16_t word : header)
+            append_u16le(&af, word);
+        for (uint32_t i = 0U; i < 36U; ++i)
+            append_u16le(&af, 20U);
+        append_u16le(&af, 1U);       // Focus mask.
+        append_u16le(&af, 0x8000U);  // EOS selected mask / non-EOS unknown[0].
+        append_u16le(&af, 0x1234U);  // Non-EOS unknown[1].
+        append_u16le(&af, 7U);       // Non-EOS PrimaryAFPoint.
+        std::vector<std::byte> cmt3;
+        append_bytes(&cmt3, "II");
+        append_u16le(&cmt3, 42U);
+        append_u32le(&cmt3, 8U);
+        append_u16le(&cmt3, 1U);
+        append_u16le(&cmt3, 0x0026U);
+        append_u16le(&cmt3, 3U);
+        append_u32le(&cmt3, 48U);
+        append_u32le(&cmt3, 26U);
+        append_u32le(&cmt3, 0U);
+        cmt3.insert(cmt3.end(), af.begin(), af.end());
+        std::vector<std::byte> ftyp;
+        append_fourcc(&ftyp, fourcc('c', 'r', 'x', ' '));
+        append_u32be(&ftyp, 0U);
+        append_fourcc(&ftyp, fourcc('i', 's', 'o', 'm'));
+        std::vector<std::byte> file;
+        append_bmff_box(&file, fourcc('f', 't', 'y', 'p'), ftyp);
+        for (uint32_t i = 0U; i < cmt1_count; ++i) {
+            if (last_model_after_cmt3 && i + 1U == cmt1_count)
+                continue;
+            append_cr3_canon_record(&file, fourcc('C', 'M', 'T', '1'),
+                                    model_tiff);
+        }
+        append_cr3_canon_record(&file, fourcc('C', 'M', 'T', '3'), cmt3);
+        if (last_model_after_cmt3 && cmt1_count > 0U) {
+            append_cr3_canon_record(&file, fourcc('C', 'M', 'T', '1'),
+                                    model_tiff);
+        }
+        return file;
+    }
+
+    struct Cr3BoundedInput final {
+        std::span<const std::byte> bytes;
+        std::array<uint64_t, 2U> forbidden_begin {};
+        std::array<uint64_t, 2U> forbidden_end {};
+        uint64_t ctbo_payload = UINT64_MAX;
+        bool fail_after_ctbo  = false;
+        bool ctbo_read        = false;
+        bool forbidden_read   = false;
+    };
+
+    static RandomAccessIoResult
+    read_cr3_bounded(void* context, uint64_t offset,
+                     std::span<std::byte> output) noexcept
+    {
+        Cr3BoundedInput& in       = *static_cast<Cr3BoundedInput*>(context);
+        constexpr uint64_t prefix = 37U;
+        if (offset < prefix || offset - prefix > in.bytes.size()
+            || output.size() > in.bytes.size() - (offset - prefix)) {
+            return { RandomAccessIoCode::IoError, 0U };
+        }
+        const uint64_t local = offset - prefix;
+        for (size_t i = 0U; i < in.forbidden_begin.size(); ++i) {
+            if (local < in.forbidden_end[i]
+                && local + output.size() > in.forbidden_begin[i]) {
+                in.forbidden_read = true;
+                return { RandomAccessIoCode::IoError, 0U };
+            }
+        }
+        if (in.ctbo_read && in.fail_after_ctbo) {
+            return { RandomAccessIoCode::IoError, 0U };
+        }
+        if (local == in.ctbo_payload) {
+            in.ctbo_read = true;
+        }
+        std::memcpy(output.data(), in.bytes.data() + local, output.size());
+        return { RandomAccessIoCode::Ok, output.size() };
+    }
+
+    static ReadTransferSourceSnapshotRandomAccessResult
+    read_cr3_positional(const std::vector<std::byte>& bytes,
+                        Cr3BoundedInput* callback, bool decode_makernote = true,
+                        uint32_t max_entries = 200000U,
+                        uint64_t max_arena   = 64ULL * 1024ULL * 1024ULL)
+    {
+        std::array<ContainerBlockRef, 32U> blocks {};
+        std::array<ExifIfdRef, 32U> ifds {};
+        std::array<uint32_t, 32U> indices {};
+        std::array<std::byte, 4096U> payload {}, value {}, window {};
+        ReadTransferSourceSnapshotRandomAccessScratch scratch;
+        scratch.blocks                            = blocks;
+        scratch.ifds                              = ifds;
+        scratch.payload_indices                   = indices;
+        scratch.payload                           = payload;
+        scratch.value                             = value;
+        scratch.read_window                       = window;
+        scratch.window_options.minimum_read_bytes = 0U;
+        const RandomAccessSource source
+            = callback ? make_callback_random_access_source(bytes.size() + 37U,
+                                                            callback,
+                                                            read_cr3_bounded)
+                       : make_memory_random_access_source(bytes);
+        const RandomAccessSourceRange range
+            = make_random_access_source_range(source, callback ? 37U : 0U,
+                                              bytes.size());
+        ReadTransferSourceSnapshotRandomAccessOptions options;
+        options.decode_makernote                     = decode_makernote;
+        options.policy.exif_limits.max_total_entries = max_entries;
+        options.policy.exif_limits.max_arena_bytes   = max_arena;
+        return read_transfer_source_snapshot_random_access(range,
+                                                           ContainerFormat::Cr3,
+                                                           scratch, options);
     }
 
 }  // namespace
@@ -2236,6 +2376,234 @@ TEST(SimpleMetaRead, BmffMetaExifItemFromItemOffsetIdxSize2Decodes)
     ASSERT_EQ(e.value.kind, MetaValueKind::Scalar);
     EXPECT_EQ(e.value.elem_type, MetaElementType::U32);
     EXPECT_EQ(static_cast<uint32_t>(e.value.data.u64), 321U);
+}
+
+TEST(SimpleMetaRead, Cr3KnownBoxesHavePositionalParityWithoutMediaReads)
+{
+    const Cr3CtboFixture ctbo     = make_cr3_ctbo_fixture();
+    const Cr3CtboFixture extended = make_cr3_ctbo_fixture(3U, false, true);
+    std::vector<std::byte> version;
+    append_bytes(&version, "CanonCR3_001/01.09.00/00.00.00");
+    const std::array<std::vector<std::byte>, 4U> files = {
+        make_cr3_canon_record(fourcc('C', 'N', 'C', 'V'), version),
+        make_cr3_cmp1_fixture(),
+        ctbo.file,
+        extended.file,
+    };
+    for (size_t fixture = 0U; fixture < files.size(); ++fixture) {
+        SCOPED_TRACE(fixture);
+        MetaStore reference;
+        (void)read_cr3_ctbo_fixture(files[fixture], reference);
+        for (uint32_t mode = 0U; mode < 3U; ++mode) {
+            SCOPED_TRACE(mode);
+            Cr3BoundedInput input;
+            input.bytes = files[fixture];
+            if (fixture >= 2U) {
+                const Cr3CtboFixture& table = fixture == 2U ? ctbo : extended;
+                for (size_t i = 0U; i < 2U; ++i) {
+                    input.forbidden_begin[i] = table.offsets[i + 1U]
+                                               + (fixture == 2U ? 8U : 16U)
+                                               + (i == 0U ? 16U : 0U);
+                    input.forbidden_end[i] = table.offsets[i + 1U]
+                                             + table.sizes[i + 1U];
+                }
+            }
+            const ReadTransferSourceSnapshotRandomAccessResult result
+                = read_cr3_positional(files[fixture], mode ? &input : nullptr,
+                                      mode != 2U);
+            ASSERT_EQ(result.status, TransferStatus::Ok);
+            EXPECT_FALSE(input.forbidden_read);
+            EXPECT_EQ(result.residual_reasons.maker_note_paths, 0U);
+            size_t compared = 0U;
+            for (const Entry& expected : reference.entries()) {
+                if (expected.key.kind != MetaKeyKind::BmffField)
+                    continue;
+                const auto field_bytes = reference.arena().span(
+                    expected.key.data.bmff_field.field);
+                const std::string_view field(reinterpret_cast<const char*>(
+                                                 field_bytes.data()),
+                                             field_bytes.size());
+                if (!field.starts_with("cr3."))
+                    continue;
+                MetaKeyView key;
+                key.kind                  = MetaKeyKind::BmffField;
+                key.data.bmff_field.field = field;
+                const auto actual         = result.snapshot.store.find_all(key);
+                const auto expected_ids   = reference.find_all(key);
+                if (mode == 2U) {
+                    EXPECT_TRUE(actual.empty());
+                    continue;
+                }
+                ASSERT_EQ(actual.size(), expected_ids.size()) << field;
+                // Each repeated CMP1 has its own block and preserves source order.
+                for (size_t i = 0U; i < actual.size(); ++i) {
+                    const Entry& a = result.snapshot.store.entry(actual[i]);
+                    const Entry& e = reference.entry(expected_ids[i]);
+                    EXPECT_EQ(a.value.kind, e.value.kind);
+                    EXPECT_EQ(a.value.elem_type, e.value.elem_type);
+                    EXPECT_EQ(a.origin.wire_type.code, e.origin.wire_type.code);
+                    EXPECT_EQ(a.origin.wire_count, e.origin.wire_count);
+                    if (e.value.kind == MetaValueKind::Text) {
+                        const auto av = result.snapshot.store.arena().span(
+                            a.value.data.span);
+                        const auto ev = reference.arena().span(
+                            e.value.data.span);
+                        EXPECT_EQ(std::vector<std::byte>(av.begin(), av.end()),
+                                  std::vector<std::byte>(ev.begin(), ev.end()));
+                    } else {
+                        EXPECT_EQ(a.value.data.u64, e.value.data.u64);
+                    }
+                }
+                ++compared;
+            }
+            if (mode != 2U)
+                EXPECT_GT(compared, 0U);
+        }
+    }
+}
+
+TEST(SimpleMetaRead,
+     Cr3CtboPositionalFailureRetainsInputErrorWithoutPartialFields)
+{
+    const Cr3CtboFixture table = make_cr3_ctbo_fixture();
+    Cr3BoundedInput input;
+    input.bytes           = table.file;
+    input.ctbo_payload    = table.ctbo_payload_offset;
+    input.fail_after_ctbo = true;
+    const auto result     = read_cr3_positional(table.file, &input);
+    EXPECT_NE(result.status, TransferStatus::Ok);
+    EXPECT_EQ(result.input.code, RandomAccessReadCode::IoError);
+    EXPECT_TRUE(input.ctbo_read);
+    for (const Entry& e : result.snapshot.store.entries()) {
+        if (e.key.kind != MetaKeyKind::BmffField)
+            continue;
+        const auto bytes = result.snapshot.store.arena().span(
+            e.key.data.bmff_field.field);
+        const std::string_view field(reinterpret_cast<const char*>(bytes.data()),
+                                     bytes.size());
+        EXPECT_FALSE(field.starts_with("cr3.ctbo."));
+    }
+}
+
+TEST(SimpleMetaRead, Cr3PositionalKnownBoxesReportStoreResourceLimits)
+{
+    const std::vector<std::byte> file = make_cr3_cmp1_fixture();
+    for (bool arena_limit : { false, true }) {
+        ReadTransferSourceSnapshotOptions memory_options;
+        memory_options.decode_makernote                     = true;
+        memory_options.policy.exif_limits.max_total_entries = arena_limit
+                                                                  ? 200000U
+                                                                  : 2U;
+        memory_options.policy.exif_limits.max_arena_bytes
+            = arena_limit ? 1U : 64ULL * 1024ULL * 1024ULL;
+        const auto memory = read_transfer_source_snapshot_bytes(file,
+                                                                memory_options);
+        EXPECT_EQ(memory.status, TransferStatus::LimitExceeded);
+        EXPECT_EQ(memory.read.exif.limit_reason,
+                  arena_limit ? ExifLimitReason::MaxArenaBytes
+                              : ExifLimitReason::MaxTotalEntries);
+        Cr3BoundedInput input;
+        input.bytes = file;
+        const auto result
+            = read_cr3_positional(file, &input, true,
+                                  arena_limit ? 200000U : 2U,
+                                  arena_limit ? 1U : 64ULL * 1024ULL * 1024ULL);
+        EXPECT_TRUE(result.input.ok());
+        EXPECT_EQ(result.status, TransferStatus::LimitExceeded);
+        EXPECT_FALSE(result.complete());
+        EXPECT_TRUE(result.snapshot.store.resource_limit_exceeded());
+        EXPECT_LE(result.snapshot.store.entries().size(),
+                  arena_limit ? 0U : 2U);
+    }
+}
+
+TEST(SimpleMetaRead, Cr3AfInfo2ModelBelongsToCurrentPrimaryMetadata)
+{
+    struct Case final {
+        std::string_view model;
+        uint32_t cmt1_count;
+        uint32_t kind;
+        bool last_model_after_cmt3 = false;
+    };
+    const std::array<Case, 7U> cases = { {
+        { "", 0U, 0U },
+        { "Canon EOS R5", 1U, 1U },
+        { "", 1U, 0U },
+        { "Canon EOS R5", 2U, 0U },
+        { "Canon PowerShot G5", 1U, 2U },
+        { "Canon EOS R5", 2U, 0U, true },
+        { "Canon EOS R5", 1U, 0U, true },
+    } };
+    for (const Case& item : cases) {
+        SCOPED_TRACE(item.model);
+        SCOPED_TRACE(item.cmt1_count);
+        const auto file
+            = make_cr3_afinfo2_context_fixture(item.model, item.cmt1_count,
+                                               item.last_model_after_cmt3);
+        for (uint32_t mode = 0U; mode < 3U; ++mode) {
+            SCOPED_TRACE(mode);
+            MetaStore memory;
+            Entry prior;
+            prior.origin.block = memory.add_block(BlockInfo {});
+            prior.key   = make_exif_tag_key(memory.arena(), "ifd0", 0x0110U);
+            prior.value = make_text(memory.arena(), "Canon PowerShot G5",
+                                    TextEncoding::Ascii);
+            ASSERT_NE(memory.add_entry(prior), kInvalidEntryId);
+            ReadTransferSourceSnapshotRandomAccessResult positional;
+            if (mode == 0U) {
+                const auto read = read_cr3_ctbo_fixture(file, memory);
+                ASSERT_EQ(read.scan.status, ScanStatus::Ok);
+            } else {
+                Cr3BoundedInput input;
+                input.bytes = file;
+                positional  = read_cr3_positional(file,
+                                                 mode == 2U ? &input : nullptr);
+                ASSERT_EQ(positional.status, TransferStatus::Ok);
+            }
+            const MetaStore& store = mode == 0U ? memory
+                                                : positional.snapshot.store;
+            ASSERT_EQ(
+                store.find_all(exif_key("mk_canon_afinfo2_0", 0x000cU)).size(),
+                1U);
+            const auto selected = store.find_all(
+                exif_key("mk_canon_afinfo2_0", 0x000dU));
+            const auto primary = store.find_all(
+                exif_key("mk_canon_afinfo2_0", 0x000eU));
+            EXPECT_EQ(selected.size(), item.kind == 1U ? 1U : 0U);
+            EXPECT_EQ(primary.size(), item.kind == 2U ? 1U : 0U);
+            if (!selected.empty()) {
+                const Entry& e = store.entry(selected[0]);
+                EXPECT_EQ(e.origin.wire_type.code, 8U);
+                EXPECT_EQ(e.origin.wire_count, 1U);
+                EXPECT_EQ(e.value.data.i64, -32768);
+            }
+            if (!primary.empty())
+                EXPECT_EQ(store.entry(primary[0]).value.data.u64, 7U);
+            const auto raw = store.find_all(exif_key("mk_canon0", 0x0026U));
+            ASSERT_EQ(raw.size(), 1U);
+            EXPECT_EQ(store.entry(raw[0]).origin.wire_count, 48U);
+        }
+    }
+    // A clipped inventory cannot establish that the observed CMT1 is unique.
+    const auto clipped_file = make_cr3_afinfo2_context_fixture("Canon EOS R5",
+                                                               2U, true);
+    std::array<ContainerBlockRef, 2U> clipped_blocks {};
+    std::array<ExifIfdRef, 8U> clipped_ifds {};
+    std::array<std::byte, 4096U> clipped_payload {};
+    std::array<uint32_t, 8U> clipped_indices {};
+    ExifDecodeOptions clipped_options;
+    clipped_options.decode_makernote = true;
+    MetaStore clipped;
+    const auto clipped_read
+        = simple_meta_read(clipped_file, clipped, clipped_blocks, clipped_ifds,
+                           clipped_payload, clipped_indices, clipped_options,
+                           PayloadOptions {});
+    EXPECT_EQ(clipped_read.scan.status, ScanStatus::OutputTruncated);
+    clipped.finalize();
+    EXPECT_TRUE(
+        clipped.find_all(exif_key("mk_canon_afinfo2_0", 0x000dU)).empty());
+    EXPECT_TRUE(
+        clipped.find_all(exif_key("mk_canon_afinfo2_0", 0x000eU)).empty());
 }
 
 }  // namespace openmeta

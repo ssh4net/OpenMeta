@@ -598,6 +598,60 @@ namespace {
                   (std::vector<std::byte> { std::byte { 0xA5U } }));
     }
 
+    static void patch_webp_size(std::vector<std::byte>* bytes)
+    {
+        const uint32_t size = static_cast<uint32_t>(bytes->size() - 8U);
+        for (uint32_t i = 0U; i < 4U; ++i) {
+            (*bytes)[4U + i] = static_cast<std::byte>((size >> (8U * i))
+                                                      & 0xffU);
+        }
+    }
+
+    static std::vector<std::byte>
+    make_chunk_icc_fixture(TransferTargetFormat target, bool duplicate)
+    {
+        if (target == TransferTargetFormat::Png) {
+            const std::vector<std::byte> base
+                = container_test::make_png_fixture();
+            std::vector<std::byte> bytes(base.begin(), base.begin() + 33U);
+            const std::array<std::byte, 6U> opaque = {
+                std::byte { 'p' }, std::byte { 0 },   std::byte { 0 },
+                std::byte { 'o' }, std::byte { 'l' }, std::byte { 'd' },
+            };
+            container_test::append_png_chunk(&bytes, fourcc('i', 'C', 'C', 'P'),
+                                             opaque);
+            if (duplicate) {
+                container_test::append_png_chunk(&bytes,
+                                                 fourcc('i', 'C', 'C', 'P'),
+                                                 opaque);
+            }
+            bytes.insert(bytes.end(), base.begin() + 33U, base.end());
+            return bytes;
+        }
+        std::vector<std::byte> bytes = container_test::make_webp_fixture();
+        bytes[20U]                   = std::byte { 0x30U };
+        if (duplicate) {
+            const std::vector<std::byte> icc(bytes.begin() + 30U,
+                                             bytes.begin() + 42U);
+            bytes.insert(bytes.begin() + 42U, icc.begin(), icc.end());
+            patch_webp_size(&bytes);
+        }
+        return bytes;
+    }
+
+    static std::vector<std::byte>
+    make_chunk_no_icc_fixture(TransferTargetFormat target)
+    {
+        if (target == TransferTargetFormat::Png) {
+            return container_test::make_png_fixture();
+        }
+        std::vector<std::byte> bytes = make_chunk_icc_fixture(target, false);
+        bytes.erase(bytes.begin() + 30U, bytes.begin() + 42U);
+        bytes[20U] = std::byte { 0x10U };
+        patch_webp_size(&bytes);
+        return bytes;
+    }
+
     static void expect_specialized_package_survives(
         std::span<const std::byte> input, const PreparedTransferBundle& removal,
         TiffFixtureVariant variant = TiffFixtureVariant {})
@@ -723,7 +777,7 @@ TEST(MetadataIccRemoval, RequestOverridesSourceProfileAndDoesNotInferIntent)
     (void)prepare_metadata_for_target(last_tag, request, &last_tag_bundle);
     EXPECT_FALSE(last_tag_bundle.remove_existing_icc);
 
-    request.target_format       = TransferTargetFormat::Png;
+    request.target_format       = TransferTargetFormat::Jxl;
     request.remove_existing_icc = true;
     PreparedTransferBundle unsupported;
     EXPECT_EQ(prepare_metadata_for_target(source, request, &unsupported).status,
@@ -734,10 +788,10 @@ TEST(MetadataIccRemoval, EmptySourceStillPreparesExplicitRemovalForAllTargets)
 {
     MetaStore empty;
     empty.finalize();
-    static constexpr std::array<TransferTargetFormat, 3U> kTargets = {
-        TransferTargetFormat::Jpeg,
-        TransferTargetFormat::Tiff,
-        TransferTargetFormat::Dng,
+    static constexpr std::array<TransferTargetFormat, 5U> kTargets = {
+        TransferTargetFormat::Jpeg, TransferTargetFormat::Tiff,
+        TransferTargetFormat::Dng,  TransferTargetFormat::Png,
+        TransferTargetFormat::Webp,
     };
     for (const TransferTargetFormat target : kTargets) {
         PrepareTransferRequest request;
@@ -1443,6 +1497,248 @@ TEST(MetadataIccRemoval, ConflictsAndNonEditConsumersRejectBeforePublication)
                                    EmitTransferOptions {}, &stable_handoff);
     EXPECT_EQ(stable_result.status, TransferStatus::Unsupported);
     EXPECT_FALSE(stable_handoff.valid());
+}
+
+TEST(MetadataIccRemoval, PngAndWebpRemoveOnlyActiveIccAndReplayExactly)
+{
+    for (TransferTargetFormat target :
+         { TransferTargetFormat::Png, TransferTargetFormat::Webp }) {
+        SCOPED_TRACE(static_cast<unsigned>(target));
+        const PreparedTransferBundle removal  = make_icc_removal_bundle(target);
+        const std::vector<std::byte> expected = make_chunk_no_icc_fixture(
+            target);
+        for (bool duplicate : { false, true }) {
+            const std::vector<std::byte> input
+                = make_chunk_icc_fixture(target, duplicate);
+            ExecutePreparedTransferOptions options;
+            options.edit_requested        = true;
+            options.edit_apply            = true;
+            PreparedTransferBundle bundle = removal;
+            const ExecutePreparedTransferResult result
+                = execute_prepared_transfer(&bundle, input, options);
+            ASSERT_EQ(result.compile.status, TransferStatus::Ok)
+                << result.compile.message;
+            ASSERT_EQ(result.edit_plan_status, TransferStatus::Ok)
+                << result.edit_plan_message;
+            ASSERT_EQ(result.edit_apply.status, TransferStatus::Ok)
+                << result.edit_apply.message;
+            EXPECT_EQ(result.edited_output, expected);
+            PreparedTransferPackageBatch batch;
+            ASSERT_EQ(build_executed_transfer_package_batch(input, bundle,
+                                                            result, &batch)
+                          .status,
+                      TransferStatus::Ok);
+            std::vector<std::byte> encoded;
+            ASSERT_EQ(serialize_prepared_transfer_package_batch(batch, &encoded)
+                          .status,
+                      TransferStatus::Ok);
+            PreparedTransferPackageBatch decoded;
+            ASSERT_EQ(deserialize_prepared_transfer_package_batch(encoded,
+                                                                  &decoded)
+                          .status,
+                      TransferStatus::Ok);
+            PackageReplayCapture capture;
+            PreparedTransferPackageReplayCallbacks callbacks;
+            callbacks.begin_batch = capture_package_begin;
+            callbacks.emit_chunk  = capture_package_chunk;
+            callbacks.end_batch   = capture_package_end;
+            callbacks.user        = &capture;
+            ASSERT_EQ(replay_prepared_transfer_package_batch(decoded, callbacks)
+                          .status,
+                      TransferStatus::Ok);
+            EXPECT_EQ(capture.output, expected);
+            expect_full_copy_package_rejected(input, removal);
+            const PreparedTransferPackagePlan split
+                = make_split_source_copy_plan(
+                    target, input,
+                    target == TransferTargetFormat::Png ? 38U : 34U);
+            CountingTransferWriter forbidden;
+            EXPECT_NE(write_prepared_transfer_package(input, removal, split,
+                                                      forbidden)
+                          .status,
+                      TransferStatus::Ok);
+            EXPECT_EQ(forbidden.calls, 0U);
+        }
+    }
+}
+
+TEST(MetadataIccRemoval, PngAndWebpNoopSuppressionAndPreparedCompanions)
+{
+    MetaStore source;
+    ASSERT_TRUE(make_authored_icc_store(&source));
+    for (TransferTargetFormat target :
+         { TransferTargetFormat::Png, TransferTargetFormat::Webp }) {
+        SCOPED_TRACE(static_cast<unsigned>(target));
+        PrepareTransferRequest request;
+        request.target_format       = target;
+        request.remove_existing_icc = true;
+        request.include_exif_app1   = false;
+        request.include_xmp_app1    = false;
+        request.include_iptc_app13  = false;
+        PreparedTransferBundle bundle;
+        ASSERT_EQ(prepare_metadata_for_target(source, request, &bundle).status,
+                  TransferStatus::Ok);
+        EXPECT_TRUE(bundle.blocks.empty());
+        const std::vector<std::byte> empty = make_chunk_no_icc_fixture(target);
+        ExecutePreparedTransferOptions options;
+        options.edit_requested = true;
+        options.edit_apply     = true;
+        const ExecutePreparedTransferResult noop
+            = execute_prepared_transfer(&bundle, empty, options);
+        ASSERT_EQ(noop.edit_apply.status, TransferStatus::Ok)
+            << noop.edit_apply.message;
+        EXPECT_EQ(noop.edited_output, empty);
+
+        PreparedTransferBlock exif;
+        exif.kind    = TransferBlockKind::Exif;
+        exif.route   = target == TransferTargetFormat::Png ? "png:chunk-exif"
+                                                           : "webp:chunk-exif";
+        exif.payload = { std::byte { 'I' }, std::byte { 'I' }, std::byte { 42 },
+                         std::byte { 0 },   std::byte { 0 },   std::byte { 0 },
+                         std::byte { 0 },   std::byte { 0 } };
+        if (target == TransferTargetFormat::Webp) {
+            exif.payload.push_back(
+                std::byte { 0U });  // Exercise odd prepared chunk padding.
+        }
+        bundle.blocks.push_back(exif);
+        const std::vector<std::byte> input = make_chunk_icc_fixture(target,
+                                                                    false);
+        const ExecutePreparedTransferResult changed
+            = execute_prepared_transfer(&bundle, input, options);
+        ASSERT_EQ(changed.edit_apply.status, TransferStatus::Ok)
+            << changed.edit_apply.message;
+        std::array<ContainerBlockRef, 16> blocks {};
+        const ScanResult scan = target == TransferTargetFormat::Png
+                                    ? scan_png(changed.edited_output, blocks)
+                                    : scan_webp(changed.edited_output, blocks);
+        ASSERT_EQ(scan.status, ScanStatus::Ok);
+        uint32_t icc_count = 0U, exif_count = 0U;
+        for (uint32_t i = 0U; i < scan.written; ++i) {
+            icc_count += blocks[i].kind == ContainerBlockKind::Icc;
+            exif_count += blocks[i].kind == ContainerBlockKind::Exif;
+        }
+        EXPECT_EQ(icc_count, 0U);
+        EXPECT_EQ(exif_count, 1U);
+        CountingTransferWriter writer;
+        options.edit_output_writer = &writer;
+        const ExecutePreparedTransferResult streamed
+            = execute_prepared_transfer(&bundle, input, options);
+        ASSERT_EQ(streamed.edit_apply.status, TransferStatus::Ok)
+            << streamed.edit_apply.message;
+        EXPECT_EQ(writer.output, changed.edited_output);
+
+        PreparedTransferBlock conflict;
+        conflict.kind  = TransferBlockKind::Other;
+        conflict.route = target == TransferTargetFormat::Png
+                             ? "png:chunk-iccp"
+                             : "webp:chunk-iccp";
+        bundle.blocks.push_back(conflict);
+        CountingTransferWriter rejected;
+        options.edit_output_writer = &rejected;
+        EXPECT_NE(execute_prepared_transfer(&bundle, input, options)
+                      .edit_apply.status,
+                  TransferStatus::Ok);
+        EXPECT_EQ(rejected.calls, 0U);
+        PreparedTransferExecutionPlan fresh;
+        EXPECT_EQ(compile_prepared_transfer_execution(
+                      make_icc_removal_bundle(target), {}, &fresh)
+                      .status,
+                  TransferStatus::Unsupported);
+    }
+}
+
+TEST(MetadataIccRemoval, ChunkCarrierFramingAndWebpFlags)
+{
+    const PreparedTransferBundle webp_removal = make_icc_removal_bundle(
+        TransferTargetFormat::Webp);
+    std::vector<std::byte> flag_only = make_chunk_no_icc_fixture(
+        TransferTargetFormat::Webp);
+    flag_only[20U] = std::byte { 0x30U };
+    expect_full_copy_package_rejected(flag_only, webp_removal);
+    ExecutePreparedTransferOptions options;
+    options.edit_requested        = true;
+    options.edit_apply            = true;
+    PreparedTransferBundle bundle = webp_removal;
+    const ExecutePreparedTransferResult repaired
+        = execute_prepared_transfer(&bundle, flag_only, options);
+    ASSERT_EQ(repaired.edit_apply.status, TransferStatus::Ok);
+    EXPECT_EQ(repaired.edited_output,
+              make_chunk_no_icc_fixture(TransferTargetFormat::Webp));
+    for (TransferTargetFormat target :
+         { TransferTargetFormat::Png, TransferTargetFormat::Webp }) {
+        std::vector<std::byte> malformed = make_chunk_icc_fixture(target,
+                                                                  false);
+        const size_t length_offset = target == TransferTargetFormat::Png ? 33U
+                                                                         : 34U;
+        for (size_t i = 0U; i < 4U; ++i)
+            malformed[length_offset + i] = std::byte { 0xff };
+        bundle = make_icc_removal_bundle(target);
+        CountingTransferWriter rejected;
+        options.edit_output_writer = &rejected;
+        const ExecutePreparedTransferResult invalid
+            = execute_prepared_transfer(&bundle, malformed, options);
+        EXPECT_NE(invalid.edit_apply.status, TransferStatus::Ok);
+        EXPECT_EQ(rejected.calls, 0U);
+    }
+}
+
+TEST(MetadataIccRemoval, ChunkPackageScanBoundAndPngTrailingBytes)
+{
+    for (TransferTargetFormat target :
+         { TransferTargetFormat::Png, TransferTargetFormat::Webp }) {
+        const PreparedTransferBundle removal = make_icc_removal_bundle(target);
+        for (uint32_t limit : { 4096U, 4097U }) {
+            SCOPED_TRACE(limit);
+            std::vector<std::byte> bytes = make_chunk_no_icc_fixture(target);
+            if (target == TransferTargetFormat::Png)
+                bytes.resize(bytes.size() - 12U);
+            const uint32_t existing = target == TransferTargetFormat::Png ? 4U
+                                                                          : 3U;
+            for (uint32_t i = existing; i < limit; ++i) {
+                if (target == TransferTargetFormat::Png) {
+                    container_test::append_png_chunk(&bytes,
+                                                     fourcc('f', 'o', 'O', 'b'),
+                                                     {});
+                } else {
+                    container_test::append_webp_chunk(
+                        &bytes, fourcc('F', 'R', 'E', 'E'), {});
+                }
+            }
+            if (target == TransferTargetFormat::Png) {
+                container_test::append_png_chunk(&bytes,
+                                                 fourcc('I', 'E', 'N', 'D'),
+                                                 {});
+            } else {
+                patch_webp_size(&bytes);
+            }
+            const PreparedTransferPackagePlan copy
+                = make_full_source_copy_plan(target, bytes);
+            PreparedTransferPackageBatch batch;
+            EXPECT_EQ(build_prepared_transfer_package_batch(bytes, removal,
+                                                            copy, &batch)
+                          .status,
+                      limit == 4096U ? TransferStatus::Ok
+                                     : TransferStatus::LimitExceeded);
+        }
+    }
+    std::vector<std::byte> trailing       = container_test::make_png_fixture();
+    const std::array<std::byte, 4> opaque = {
+        std::byte { 'i' },
+        std::byte { 'C' },
+        std::byte { 'C' },
+        std::byte { 'P' },
+    };
+    trailing.insert(trailing.end(), opaque.begin(), opaque.end());
+    PreparedTransferBundle removal = make_icc_removal_bundle(
+        TransferTargetFormat::Png);
+    ExecutePreparedTransferOptions options;
+    options.edit_requested = true;
+    options.edit_apply     = true;
+    const ExecutePreparedTransferResult result
+        = execute_prepared_transfer(&removal, trailing, options);
+    ASSERT_EQ(result.edit_apply.status, TransferStatus::Ok)
+        << result.edit_apply.message;
+    EXPECT_EQ(result.edited_output, trailing);
 }
 
 }  // namespace openmeta

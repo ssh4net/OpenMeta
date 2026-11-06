@@ -19,6 +19,16 @@ targets in `tests/fuzz/`.
   - minimal prepared-transfer artifact magic seeds for the
     `openmeta_fuzz_metadata_transfer` harness.
 
+- `exif_tiff_decode/`
+  - `canon_afinfo2_declared_scan.bin`: synthetic Canon MakerNote with invalid
+    primary AFInfo2 bytes and a valid aligned payload inside its declared span.
+  - `cr3_known_box_headers.bin`: synthetic positional CNCV/CTBO metadata with
+    XMP/preview UUID and media headers, sharing finite scratch and I/O limits.
+- `write_lifecycle/`
+  - `icc_png.bin`, `icc_webp.bin`: deterministic selectors for duplicate ICC
+    carrier removal, exact rewrite/replay, no-op reapply and rejected copy plans.
+    The harness varies payload length/content and WebP odd-byte padding.
+
 ## Usage
 
 Use an empty output corpus directory first so seed files stay unchanged:

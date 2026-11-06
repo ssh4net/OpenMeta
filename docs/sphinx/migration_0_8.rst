@@ -195,3 +195,25 @@ output budget as query-backed candidates.
 The two transfer_concept_diagnostics_from_store overloads take final query
 options and return semantic-work/numeric incompleteness flags. Their layouts
 and signatures also require matching rebuilt0.8.30 headers and libraries.
+
+Canon positional parity and PNG/WebP ICC removal in 0.8.32
+----------------------------------------------------------
+
+ABI 4 remains unfrozen. This batch changes no public layout; rebuild with
+matching headers and binaries. Positional AFInfo2 discovery is confined to
+the declared MakerNote span and 4,096 aligned candidates, with caller scratch
+and I/O ceilings. CNCV, CMP1 and CTBO interpretation is shared with memory.
+Remaining CR3 residuals still require inspection. Source locators do not select
+a sensor plane or decode RAW pixels.
+
+``remove_existing_icc`` now supports existing PNG and WebP targets alongside
+JPEG/TIFF/DNG. Omission preserves destination ICC. Removal suppresses source
+ICC and rejects conflicting ICC blocks. Package preflight validates the virtual
+output before publication; WebP also requires the VP8X ICC flag to be clear.
+Fresh emit and payload-only/codec handoffs still reject this edit-only intent.
+
+AFInfo2 geometry retains signed 16-bit types and masks retain full word counts.
+This corrects scalar mask truncation and later-field offsets. Model/record
+context gates selection and primary-point meanings; ambiguous and surplus data
+remain raw. Callers must honor value shape, wire type and count instead of
+assuming a scalar mask. These interpretation corrections stay within ABI 4.

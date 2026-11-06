@@ -222,6 +222,48 @@ namespace {
         return &store.entry(ids[0]);
     }
 
+    static bool copy_i16_array(const MetaStore& store, const Entry& entry,
+                               std::span<int16_t> destination) noexcept
+    {
+        if (entry.value.kind != MetaValueKind::Array
+            || entry.value.elem_type != MetaElementType::I16
+            || entry.value.count > destination.size()) {
+            return false;
+        }
+        const std::span<const std::byte> raw = store.arena().span(
+            entry.value.data.span);
+        const size_t byte_count = static_cast<size_t>(entry.value.count)
+                                  * sizeof(int16_t);
+        if (raw.size() != byte_count) {
+            return false;
+        }
+        if (byte_count != 0U) {
+            std::memcpy(destination.data(), raw.data(), byte_count);
+        }
+        return true;
+    }
+
+    static bool read_i16_array_element(const MetaStore& store,
+                                       const Entry& entry, uint32_t index,
+                                       int16_t* out) noexcept
+    {
+        if (!out || entry.value.kind != MetaValueKind::Array
+            || entry.value.elem_type != MetaElementType::I16
+            || index >= entry.value.count) {
+            return false;
+        }
+        const std::span<const std::byte> raw = store.arena().span(
+            entry.value.data.span);
+        const size_t byte_count = static_cast<size_t>(entry.value.count)
+                                  * sizeof(int16_t);
+        if (raw.size() != byte_count) {
+            return false;
+        }
+        std::memcpy(out, raw.data() + size_t(index) * sizeof(int16_t),
+                    sizeof(int16_t));
+        return true;
+    }
+
     static bool read_u16le_at(std::span<const std::byte> bytes, size_t off,
                               uint16_t* out) noexcept
     {
@@ -494,6 +536,60 @@ namespace {
     }
 
     static std::vector<std::byte>
+    make_test_tiff_with_makernote_and_large_ifd0_value(
+        std::string_view make, std::span<const std::byte> maker_note,
+        uint32_t large_value_bytes)
+    {
+        const uint32_t ifd0_off       = 8U;
+        const uint32_t ifd0_entry_cnt = 3U;
+        const uint32_t ifd0_size      = 2U + ifd0_entry_cnt * 12U + 4U;
+        const uint32_t make_off       = ifd0_off + ifd0_size;
+        const uint32_t make_count     = static_cast<uint32_t>(make.size() + 1U);
+        const uint32_t large_value_off = make_off + make_count;
+        const uint32_t exif_ifd_off    = large_value_off + large_value_bytes;
+        const uint32_t exif_entry_cnt  = 1U;
+        const uint32_t exif_ifd_size   = 2U + exif_entry_cnt * 12U + 4U;
+        const uint32_t maker_note_off  = exif_ifd_off + exif_ifd_size;
+
+        std::vector<std::byte> tiff;
+        append_bytes(&tiff, "II");
+        append_u16le(&tiff, 42U);
+        append_u32le(&tiff, ifd0_off);
+
+        append_u16le(&tiff, static_cast<uint16_t>(ifd0_entry_cnt));
+        append_u16le(&tiff, 0x010FU);
+        append_u16le(&tiff, 2U);
+        append_u32le(&tiff, make_count);
+        append_u32le(&tiff, make_off);
+        append_u16le(&tiff, 0x8769U);
+        append_u16le(&tiff, 4U);
+        append_u32le(&tiff, 1U);
+        append_u32le(&tiff, exif_ifd_off);
+        append_u16le(&tiff, 0xC001U);
+        append_u16le(&tiff, 7U);
+        append_u32le(&tiff, large_value_bytes);
+        append_u32le(&tiff, large_value_off);
+        append_u32le(&tiff, 0U);
+
+        EXPECT_EQ(tiff.size(), make_off);
+        append_bytes(&tiff, make);
+        tiff.push_back(std::byte { 0U });
+        EXPECT_EQ(tiff.size(), large_value_off);
+        tiff.resize(tiff.size() + large_value_bytes, std::byte { 0U });
+        EXPECT_EQ(tiff.size(), exif_ifd_off);
+
+        append_u16le(&tiff, static_cast<uint16_t>(exif_entry_cnt));
+        append_u16le(&tiff, 0x927CU);
+        append_u16le(&tiff, 7U);
+        append_u32le(&tiff, static_cast<uint32_t>(maker_note.size()));
+        append_u32le(&tiff, maker_note_off);
+        append_u32le(&tiff, 0U);
+        EXPECT_EQ(tiff.size(), maker_note_off);
+        tiff.insert(tiff.end(), maker_note.begin(), maker_note.end());
+        return tiff;
+    }
+
+    static std::vector<std::byte>
     make_test_tiff_with_makernote_and_trailing_exif_tag(
         std::string_view make, std::span<const std::byte> maker_note)
     {
@@ -675,6 +771,70 @@ namespace {
         EXPECT_EQ(tiff.size(), maker_note_off);
         tiff.insert(tiff.end(), maker_note.begin(), maker_note.end());
 
+        return tiff;
+    }
+
+    static std::vector<std::byte>
+    make_test_tiff_with_duplicate_models_and_makernote(
+        std::string_view make, std::string_view model_a,
+        std::string_view model_b, std::span<const std::byte> maker_note)
+    {
+        const uint32_t ifd0_off       = 8U;
+        const uint32_t ifd0_entry_cnt = 4U;
+        const uint32_t ifd0_size      = 2U + ifd0_entry_cnt * 12U + 4U;
+        const uint32_t make_off       = ifd0_off + ifd0_size;
+        const uint32_t make_count     = static_cast<uint32_t>(make.size() + 1U);
+        const uint32_t model_a_off    = make_off + make_count;
+        const uint32_t model_a_count  = static_cast<uint32_t>(model_a.size()
+                                                              + 1U);
+        const uint32_t model_b_off    = model_a_off + model_a_count;
+        const uint32_t model_b_count  = static_cast<uint32_t>(model_b.size()
+                                                              + 1U);
+        const uint32_t exif_ifd_off   = model_b_off + model_b_count;
+        const uint32_t maker_note_off = exif_ifd_off + 18U;
+
+        std::vector<std::byte> tiff;
+        append_bytes(&tiff, "II");
+        append_u16le(&tiff, 42U);
+        append_u32le(&tiff, ifd0_off);
+        append_u16le(&tiff, static_cast<uint16_t>(ifd0_entry_cnt));
+        append_u16le(&tiff, 0x010FU);
+        append_u16le(&tiff, 2U);
+        append_u32le(&tiff, make_count);
+        append_u32le(&tiff, make_off);
+        append_u16le(&tiff, 0x0110U);
+        append_u16le(&tiff, 2U);
+        append_u32le(&tiff, model_a_count);
+        append_u32le(&tiff, model_a_off);
+        append_u16le(&tiff, 0x0110U);
+        append_u16le(&tiff, 2U);
+        append_u32le(&tiff, model_b_count);
+        append_u32le(&tiff, model_b_off);
+        append_u16le(&tiff, 0x8769U);
+        append_u16le(&tiff, 4U);
+        append_u32le(&tiff, 1U);
+        append_u32le(&tiff, exif_ifd_off);
+        append_u32le(&tiff, 0U);
+
+        EXPECT_EQ(tiff.size(), make_off);
+        append_bytes(&tiff, make);
+        tiff.push_back(std::byte { 0U });
+        EXPECT_EQ(tiff.size(), model_a_off);
+        append_bytes(&tiff, model_a);
+        tiff.push_back(std::byte { 0U });
+        EXPECT_EQ(tiff.size(), model_b_off);
+        append_bytes(&tiff, model_b);
+        tiff.push_back(std::byte { 0U });
+        EXPECT_EQ(tiff.size(), exif_ifd_off);
+
+        append_u16le(&tiff, 1U);
+        append_u16le(&tiff, 0x927CU);
+        append_u16le(&tiff, 7U);
+        append_u32le(&tiff, static_cast<uint32_t>(maker_note.size()));
+        append_u32le(&tiff, maker_note_off);
+        append_u32le(&tiff, 0U);
+        EXPECT_EQ(tiff.size(), maker_note_off);
+        tiff.insert(tiff.end(), maker_note.begin(), maker_note.end());
         return tiff;
     }
 
@@ -1398,12 +1558,135 @@ namespace {
         return mn;
     }
 
+    static std::vector<std::byte> make_canon_afinfo2_makernote_for_points(
+        uint16_t points, bool eos, uint32_t trailing_words = 0U,
+        uint32_t truncated_words = UINT32_MAX)
+    {
+        const uint32_t n          = points;
+        const uint32_t mask_words = (n + 15U) / 16U;
+        std::vector<std::byte> payload;
+        append_u16le(&payload, 0U);
+        append_u16le(&payload, 2U);
+        append_u16le(&payload, points);
+        append_u16le(&payload, points);
+        append_u16le(&payload, 6000U);
+        append_u16le(&payload, 4000U);
+        append_u16le(&payload, 6000U);
+        append_u16le(&payload, 4000U);
+
+        for (uint32_t i = 0U; i < n; ++i) {
+            const int16_t width = static_cast<int16_t>(-100
+                                                       - int32_t(i % 1000U));
+            append_u16le(&payload, static_cast<uint16_t>(width));
+        }
+        for (uint32_t i = 0U; i < n; ++i) {
+            const int16_t height = static_cast<int16_t>(-200
+                                                        - int32_t(i % 1000U));
+            append_u16le(&payload, static_cast<uint16_t>(height));
+        }
+        for (uint32_t i = 0U; i < n; ++i) {
+            const int16_t x = static_cast<int16_t>(-300 - int32_t(i % 1000U));
+            append_u16le(&payload, static_cast<uint16_t>(x));
+        }
+        for (uint32_t i = 0U; i < n; ++i) {
+            const int16_t y = static_cast<int16_t>(300 + int32_t(i % 1000U));
+            append_u16le(&payload, static_cast<uint16_t>(y));
+        }
+
+        for (uint32_t i = 0U; i < mask_words; ++i) {
+            const int16_t focus = static_cast<int16_t>(-32767 + int32_t(i));
+            append_u16le(&payload, static_cast<uint16_t>(focus));
+        }
+        if (eos) {
+            for (uint32_t i = 0U; i < mask_words; ++i) {
+                const int16_t selected = static_cast<int16_t>(-16383
+                                                              + int32_t(i));
+                append_u16le(&payload, static_cast<uint16_t>(selected));
+            }
+        } else {
+            for (uint32_t i = 0U; i < mask_words + 1U; ++i) {
+                const int16_t unknown = static_cast<int16_t>(-32768
+                                                             + int32_t(i));
+                append_u16le(&payload, static_cast<uint16_t>(unknown));
+            }
+            append_u16le(&payload, 7U);
+        }
+        for (uint32_t i = 0U; i < trailing_words; ++i) {
+            append_u16le(&payload, static_cast<uint16_t>(0xA000U + i));
+        }
+
+        if (truncated_words != UINT32_MAX
+            && uint64_t(truncated_words) * 2U < payload.size()) {
+            payload.resize(static_cast<size_t>(truncated_words) * 2U);
+        }
+        write_u16le_at(&payload, 0U, static_cast<uint16_t>(payload.size()));
+
+        std::vector<std::byte> mn;
+        append_u16le(&mn, 1U);
+        append_u16le(&mn, 0x0026U);
+        append_u16le(&mn, 3U);
+        append_u32le(&mn, static_cast<uint32_t>(payload.size() / 2U));
+        append_u32le(&mn, 18U);
+        append_u32le(&mn, 0U);
+        mn.insert(mn.end(), payload.begin(), payload.end());
+        return mn;
+    }
+
+    static std::vector<std::byte>
+    make_canon_afinfo2_makernote_with_afinfo3_entry(bool afinfo3_first)
+    {
+        const std::vector<std::byte> complete
+            = make_canon_afinfo2_makernote_for_points(31U, false, 1U);
+        const std::span<const std::byte> payload(complete.data() + 18U,
+                                                 complete.size() - 18U);
+        std::vector<std::byte> mn;
+        append_u16le(&mn, 2U);
+        if (afinfo3_first) {
+            append_classic_ifd_entry_le(&mn, 0x003cU, 3U, 1U, 0U);
+        }
+        append_classic_ifd_entry_le(&mn, 0x0026U, 3U,
+                                    static_cast<uint32_t>(payload.size() / 2U),
+                                    30U);
+        if (!afinfo3_first) {
+            append_classic_ifd_entry_le(&mn, 0x003cU, 3U, 1U, 0U);
+        }
+        append_u32le(&mn, 0U);
+        mn.insert(mn.end(), payload.begin(), payload.end());
+        return mn;
+    }
+
     static std::vector<std::byte>
     make_canon_afinfo2_makernote_with_bad_primary_offset()
     {
         std::vector<std::byte> mn = make_canon_afinfo2_makernote();
         write_u32le_at(&mn, 10U, 128U);
         mn.resize(128U + 96U, std::byte { 0 });
+        return mn;
+    }
+
+    static std::vector<std::byte> make_canon_afinfo2_makernote_with_scan_payload(
+        uint32_t payload_offset, uint32_t primary_offset,
+        uint32_t external_offset, bool external_entry_first = false)
+    {
+        const std::vector<std::byte> complete = make_canon_afinfo2_makernote();
+        if (payload_offset < 30U || complete.size() < 18U) {
+            return {};
+        }
+        std::vector<std::byte> mn;
+        append_u16le(&mn, 2U);
+        if (external_entry_first) {
+            append_classic_ifd_entry_le(&mn, 0x7FFEU, 3U, 48U, external_offset);
+        }
+        append_u16le(&mn, 0x0026U);
+        append_u16le(&mn, 3U);
+        append_u32le(&mn, 48U);
+        append_u32le(&mn, primary_offset);
+        if (!external_entry_first) {
+            append_classic_ifd_entry_le(&mn, 0x7FFEU, 3U, 48U, external_offset);
+        }
+        append_u32le(&mn, 0U);
+        mn.resize(payload_offset, std::byte { 0 });
+        mn.insert(mn.end(), complete.begin() + 18U, complete.end());
         return mn;
     }
 
@@ -8405,6 +8688,186 @@ TEST(MakerNoteDecode,
     EXPECT_EQ(find_entry(store, "mk_canon_filterinfo_0", 0x0402U), nullptr);
 }
 
+TEST(MakerNoteDecode, RandomAccessCanonAfInfo2ScansOnlyDeclaredMakerNoteSpan)
+{
+    const std::vector<std::byte> mn
+        = make_canon_afinfo2_makernote_with_scan_payload(32U, 30U, 200U);
+    std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_model("Canon",
+                                                  "Canon EOS 5D Mark II", mn);
+    tiff.resize(tiff.size() + 168U, std::byte { 0 });
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, store);
+    EXPECT_TRUE(result.input.ok());
+    EXPECT_TRUE(result.complete());
+    EXPECT_EQ(result.maker_note_paths_skipped, 0U);
+
+    store.finalize();
+    const std::span<const EntryId> selected_ids = store.find_all(
+        exif_key("mk_canon_afinfo2_0", 0x000dU));
+    ASSERT_EQ(selected_ids.size(), 1U);
+    EXPECT_EQ(store.entry(selected_ids[0]).value.kind, MetaValueKind::Scalar);
+    EXPECT_EQ(store.entry(selected_ids[0]).value.elem_type,
+              MetaElementType::I16);
+    EXPECT_EQ(store.entry(selected_ids[0]).value.data.i64, 4);
+    const std::span<const EntryId> alias_ids = store.find_all(
+        exif_key("mk_canon_afinfo2_0", 0x260dU));
+    ASSERT_EQ(alias_ids.size(), 1U);
+    EXPECT_EQ(store.entry(alias_ids[0]).value.kind, MetaValueKind::Scalar);
+    EXPECT_EQ(store.entry(alias_ids[0]).value.elem_type, MetaElementType::I16);
+    EXPECT_EQ(store.entry(alias_ids[0]).value.data.i64, 4);
+}
+
+TEST(MakerNoteDecode, RandomAccessCanonAfInfo2DoesNotScanPastDeclaredMakerNote)
+{
+    const std::vector<std::byte> canonical = make_canon_afinfo2_makernote();
+    std::vector<std::byte> mn(canonical.begin(), canonical.begin() + 14U);
+    write_u16le_at(&mn, 0U, 2U);
+    write_u32le_at(&mn, 10U, 30U);
+    append_classic_ifd_entry_le(&mn, 0x7FFEU, 3U, 48U, UINT32_MAX);
+    append_u32le(&mn, 0U);
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
+    const uint64_t maker_note_offset = static_cast<uint64_t>(tiff.size()
+                                                             - mn.size());
+    tiff.resize(tiff.size() + 96U, std::byte { 0 });
+    tiff.insert(tiff.end(), canonical.begin() + 18U, canonical.end());
+    bool touched_after_primary = false;
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result = decode_makernote_callback(
+        tiff, store, RandomAccessReadLimits {}, 4096U, 64U, 0U,
+        maker_note_offset + 30U + 96U, &touched_after_primary);
+    EXPECT_TRUE(result.input.ok());
+    EXPECT_FALSE(touched_after_primary);
+    EXPECT_FALSE(result.complete());
+    EXPECT_EQ(result.maker_note_paths_skipped, 1U);
+    EXPECT_TRUE(result.maker_note_path_location_known);
+    EXPECT_EQ(result.maker_note_path_tag, 0x0026U);
+
+    store.finalize();
+    EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x0000U), nullptr);
+    EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x2600U), nullptr);
+}
+
+TEST(MakerNoteDecode, RandomAccessCanonAfInfo2ScanWorkBudgetIsFinite)
+{
+    constexpr uint32_t kPayloadOffset = 8192U;
+    constexpr uint32_t kPayloadBytes  = 96U;
+    const std::vector<std::byte> mn
+        = make_canon_afinfo2_makernote_with_scan_payload(
+            kPayloadOffset, 30U, kPayloadOffset + kPayloadBytes + 212U);
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
+    tiff.resize(tiff.size() + 308U, std::byte { 0 });
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, store, RandomAccessReadLimits {},
+                                    10000U, 64U, 64U);
+    EXPECT_TRUE(result.input.ok());
+    EXPECT_FALSE(result.complete());
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::LimitExceeded);
+    EXPECT_EQ(result.maker_note_paths_skipped, 1U);
+
+    store.finalize();
+    EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x0000U), nullptr);
+    EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x2600U), nullptr);
+}
+
+TEST(MakerNoteDecode, RandomAccessCanonAfInfo2ScanReadLimitKeepsResidual)
+{
+    const std::vector<std::byte> mn
+        = make_canon_afinfo2_makernote_with_scan_payload(32U, 30U, 200U, true);
+    std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_model("Canon",
+                                                  "Canon EOS 5D Mark II", mn);
+    tiff.resize(tiff.size() + 168U, std::byte { 0 });
+    const uint64_t maker_note_offset = static_cast<uint64_t>(tiff.size() - 168U
+                                                             - mn.size());
+
+    MetaStore baseline_store;
+    const ExifRandomAccessDecodeResult baseline
+        = decode_makernote_callback(tiff, baseline_store);
+    ASSERT_TRUE(baseline.input.ok());
+    ASSERT_TRUE(baseline.complete());
+    ASSERT_GT(baseline.input.bytes_requested, 0U);
+
+    RandomAccessReadLimits limits;
+    limits.max_total_bytes = baseline.input.bytes_requested - 1U;
+    MetaStore limited_store;
+    const ExifRandomAccessDecodeResult limited
+        = decode_makernote_callback(tiff, limited_store, limits);
+    EXPECT_EQ(limited.input.code, RandomAccessReadCode::ByteLimitExceeded);
+    EXPECT_FALSE(limited.input.ok());
+    EXPECT_EQ(limited.input.failure_offset, maker_note_offset + 32U);
+    EXPECT_EQ(limited.input.failure_request_bytes, 96U);
+    EXPECT_EQ(limited.decode.status, ExifDecodeStatus::LimitExceeded);
+    EXPECT_FALSE(limited.complete());
+    EXPECT_EQ(limited.maker_note_paths_skipped, 1U);
+    EXPECT_TRUE(limited.maker_note_path_location_known);
+    EXPECT_EQ(limited.maker_note_path_offset, maker_note_offset + 30U);
+    EXPECT_EQ(limited.maker_note_path_tag, 0x0026U);
+
+    limited_store.finalize();
+    EXPECT_EQ(find_entry(limited_store, "mk_canon_afinfo2_0", 0x000dU),
+              nullptr);
+    EXPECT_EQ(find_entry(limited_store, "mk_canon_afinfo2_0", 0x260dU),
+              nullptr);
+}
+
+TEST(MakerNoteDecode,
+     RandomAccessCanonAfInfo2ScanStopsAfterEarlierScratchExhaustion)
+{
+    constexpr uint32_t kLargeIfd0ValueBytes = 512U;
+    const std::vector<std::byte> mn
+        = make_canon_afinfo2_makernote_with_scan_payload(32U, 30U, 200U);
+    std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_large_ifd0_value(
+            "Canon", mn, kLargeIfd0ValueBytes);
+    tiff.resize(tiff.size() + 168U, std::byte { 0 });
+
+    const std::vector<std::byte> valid_primary_mn
+        = make_canon_afinfo2_makernote_with_scan_payload(32U, 32U, 200U);
+    std::vector<std::byte> valid_primary_tiff
+        = make_test_tiff_with_makernote_and_large_ifd0_value(
+            "Canon", valid_primary_mn, kLargeIfd0ValueBytes);
+    valid_primary_tiff.resize(valid_primary_tiff.size() + 168U,
+                              std::byte { 0 });
+
+    MetaStore control_store;
+    const ExifRandomAccessDecodeResult control
+        = decode_makernote_callback(valid_primary_tiff, control_store, {}, 256U,
+                                    64U, 0U);
+    ASSERT_TRUE(control.input.ok());
+    ASSERT_EQ(control.value_scratch_needed, kLargeIfd0ValueBytes);
+    ASSERT_EQ(control.maker_note_paths_skipped, 0U);
+    ASSERT_GT(control.input.requests_issued, 0U);
+    control_store.finalize();
+    ASSERT_NE(find_entry(control_store, "mk_canon_afinfo2_0", 0x000cU),
+              nullptr);
+
+    RandomAccessReadLimits limits;
+    limits.max_requests = control.input.requests_issued;
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback(tiff, store, limits, 256U, 64U, 0U);
+    EXPECT_TRUE(result.input.ok());
+    EXPECT_EQ(result.input.requests_issued, control.input.requests_issued);
+    EXPECT_EQ(result.value_scratch_needed, kLargeIfd0ValueBytes);
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::OutputTruncated);
+    EXPECT_FALSE(result.complete());
+    EXPECT_EQ(result.maker_note_paths_skipped, 1U);
+    EXPECT_TRUE(result.maker_note_path_location_known);
+    EXPECT_EQ(result.maker_note_path_tag, 0x0026U);
+    EXPECT_EQ(result.maker_note_path_offset,
+              static_cast<uint64_t>(tiff.size() - 168U - mn.size() + 30U));
+
+    store.finalize();
+    EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x0000U), nullptr);
+    EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x2600U), nullptr);
+}
+
 
 TEST(MakerNoteDecode, DecodesCanonCustomFunctions2IntoDerivedIfd)
 {
@@ -9941,7 +10404,9 @@ TEST(MakerNoteDecode, DecodesCanonAfInfo2IntoDerivedIfd)
 {
     std::vector<std::byte> mn         = make_canon_afinfo2_makernote();
     const std::string_view make       = "Canon";
-    const std::vector<std::byte> tiff = make_test_tiff_with_makernote(make, mn);
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_model(make, "Canon PowerShot G5",
+                                                  mn);
 
     MetaStore store;
     std::array<ExifIfdRef, 8> ifds {};
@@ -9977,7 +10442,7 @@ TEST(MakerNoteDecode, DecodesCanonAfInfo2IntoDerivedIfd)
         ASSERT_EQ(ids.size(), 1U);
         const Entry& e = store.entry(ids[0]);
         EXPECT_EQ(e.value.kind, MetaValueKind::Array);
-        EXPECT_EQ(e.value.elem_type, MetaElementType::U16);
+        EXPECT_EQ(e.value.elem_type, MetaElementType::I16);
         EXPECT_EQ(e.value.count, 9U);
         EXPECT_TRUE(any(e.flags, EntryFlags::Derived));
     }
@@ -10001,14 +10466,408 @@ TEST(MakerNoteDecode, DecodesCanonAfInfo2IntoDerivedIfd)
         EXPECT_EQ(e.value.count, 9U);
         EXPECT_TRUE(any(e.flags, EntryFlags::Derived));
     }
+    {
+        const Entry* unknown_d = find_entry(store, "mk_canon_afinfo2unknown_0",
+                                            0x000dU);
+        ASSERT_NE(unknown_d, nullptr);
+        EXPECT_EQ(unknown_d->value.kind, MetaValueKind::Array);
+        EXPECT_EQ(unknown_d->value.elem_type, MetaElementType::I16);
+        EXPECT_EQ(unknown_d->value.count, 2U);
+        EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x000dU), nullptr);
+        EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x260dU), nullptr);
+        EXPECT_NE(exif_entry_name(store, *unknown_d,
+                                  ExifTagNamePolicy::ExifToolCompat),
+                  std::string_view("AFPointsSelected"));
+    }
+    {
+        const Entry* primary = find_entry(store, "mk_canon_afinfo2_0", 0x000eU);
+        ASSERT_NE(primary, nullptr);
+        EXPECT_EQ(primary->value.kind, MetaValueKind::Scalar);
+        EXPECT_EQ(primary->value.elem_type, MetaElementType::U16);
+        EXPECT_EQ(primary->value.data.u64, 0U);
+    }
+}
+
+TEST(MakerNoteDecode, CanonAfInfo2ModelClassificationIsScopedPerTiffAppend)
+{
+    const std::vector<std::byte> mn = make_canon_afinfo2_makernote();
+    const std::vector<std::byte> eos_tiff
+        = make_test_tiff_with_makernote_and_model("Canon",
+                                                  "Canon EOS 5D Mark II", mn);
+    const std::vector<std::byte> no_model_tiff
+        = make_test_tiff_with_makernote("Canon", mn);
+    const std::vector<std::byte> powershot_tiff
+        = make_test_tiff_with_makernote_and_model("Canon", "Canon PowerShot G5",
+                                                  mn);
+
+    MetaStore store;
+    std::array<ExifIfdRef, 8> ifds {};
+    ExifDecodeOptions options;
+    options.decode_makernote          = true;
+    const ExifDecodeResult eos_result = decode_exif_tiff(eos_tiff, store, ifds,
+                                                         options);
+    ASSERT_EQ(eos_result.status, ExifDecodeStatus::Ok);
+    const ExifDecodeResult no_model_result
+        = decode_exif_tiff(no_model_tiff, store, ifds, options);
+    ASSERT_EQ(no_model_result.status, ExifDecodeStatus::Ok);
+    const ExifDecodeResult powershot_result
+        = decode_exif_tiff(powershot_tiff, store, ifds, options);
+    ASSERT_EQ(powershot_result.status, ExifDecodeStatus::Ok);
+
+    store.finalize();
+    EXPECT_EQ(store.find_all(exif_key("mk_canon_afinfo2_0", 0x000dU)).size(),
+              1U);
+    EXPECT_EQ(store.find_all(exif_key("mk_canon_afinfo2_0", 0x000eU)).size(),
+              1U);
+    EXPECT_EQ(
+        store.find_all(exif_key("mk_canon_afinfo2unknown_0", 0x000dU)).size(),
+        1U);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_eos
+        = decode_makernote_callback(eos_tiff, callback_store);
+    ASSERT_TRUE(callback_eos.input.ok());
+    ASSERT_TRUE(callback_eos.complete());
+    const ExifRandomAccessDecodeResult callback_no_model
+        = decode_makernote_callback(no_model_tiff, callback_store);
+    ASSERT_TRUE(callback_no_model.input.ok());
+    ASSERT_TRUE(callback_no_model.complete());
+    const ExifRandomAccessDecodeResult callback_powershot
+        = decode_makernote_callback(powershot_tiff, callback_store);
+    ASSERT_TRUE(callback_powershot.input.ok());
+    ASSERT_TRUE(callback_powershot.complete());
+
+    callback_store.finalize();
+    EXPECT_EQ(
+        callback_store.find_all(exif_key("mk_canon_afinfo2_0", 0x000dU)).size(),
+        1U);
+    EXPECT_EQ(
+        callback_store.find_all(exif_key("mk_canon_afinfo2_0", 0x000eU)).size(),
+        1U);
+    EXPECT_EQ(callback_store
+                  .find_all(exif_key("mk_canon_afinfo2unknown_0", 0x000dU))
+                  .size(),
+              1U);
+}
+
+TEST(MakerNoteDecode, CanonAfInfo2UsesModelSpecificMultwordLayouts)
+{
+    const std::vector<std::byte> g5_mn
+        = make_canon_afinfo2_makernote_for_points(31U, false, 1U);
+    const std::vector<std::byte> g5_tiff
+        = make_test_tiff_with_makernote_and_model("Canon", "Canon PowerShot G5",
+                                                  g5_mn);
+    MetaStore g5_store;
+    std::array<ExifIfdRef, 8> g5_ifds {};
+    ExifDecodeOptions options;
+    options.decode_makernote         = true;
+    const ExifDecodeResult g5_result = decode_exif_tiff(g5_tiff, g5_store,
+                                                        g5_ifds, options);
+    ASSERT_EQ(g5_result.status, ExifDecodeStatus::Ok);
+    g5_store.finalize();
+
+    const uint16_t geometry_tags[4] = { 0x0008U, 0x0009U, 0x000aU, 0x000bU };
+    for (uint32_t i = 0U; i < 4U; ++i) {
+        const Entry* geometry = find_entry(g5_store, "mk_canon_afinfo2_0",
+                                           geometry_tags[i]);
+        ASSERT_NE(geometry, nullptr);
+        EXPECT_EQ(geometry->value.kind, MetaValueKind::Array);
+        EXPECT_EQ(geometry->value.elem_type, MetaElementType::I16);
+        EXPECT_EQ(geometry->value.count, 31U);
+    }
+    const int32_t geometry_starts[4] = { -100, -200, -300, 300 };
+    const int32_t geometry_steps[4]  = { -1, -1, -1, 1 };
+    for (uint32_t array_index = 0U; array_index < 4U; ++array_index) {
+        const Entry* geometry = find_entry(g5_store, "mk_canon_afinfo2_0",
+                                           geometry_tags[array_index]);
+        ASSERT_NE(geometry, nullptr);
+        for (uint32_t point = 0U; point < 31U; ++point) {
+            int16_t actual = 0;
+            ASSERT_TRUE(
+                read_i16_array_element(g5_store, *geometry, point, &actual));
+            EXPECT_EQ(actual, geometry_starts[array_index]
+                                  + geometry_steps[array_index]
+                                        * static_cast<int32_t>(point));
+        }
+    }
+    int16_t width_first = 0;
+    int16_t width_last  = 0;
+    ASSERT_TRUE(read_i16_array_element(
+        g5_store, *find_entry(g5_store, "mk_canon_afinfo2_0", 0x0008U), 0U,
+        &width_first));
+    ASSERT_TRUE(read_i16_array_element(
+        g5_store, *find_entry(g5_store, "mk_canon_afinfo2_0", 0x0008U), 30U,
+        &width_last));
+    EXPECT_EQ(width_first, -100);
+    EXPECT_EQ(width_last, -130);
+
+    const Entry* g5_focus = find_entry(g5_store, "mk_canon_afinfo2_0", 0x000cU);
+    const Entry* g5_unknown = find_entry(g5_store, "mk_canon_afinfo2unknown_0",
+                                         0x000dU);
+    ASSERT_NE(g5_focus, nullptr);
+    ASSERT_NE(g5_unknown, nullptr);
+    EXPECT_EQ(g5_focus->value.elem_type, MetaElementType::I16);
+    EXPECT_EQ(g5_focus->value.count, 2U);
+    EXPECT_EQ(g5_unknown->value.elem_type, MetaElementType::I16);
+    EXPECT_EQ(g5_unknown->value.count, 3U);
+    std::array<int16_t, 66U> mask_words {};
+    ASSERT_TRUE(copy_i16_array(g5_store, *g5_focus, mask_words));
+    for (uint32_t i = 0U; i < 2U; ++i) {
+        EXPECT_EQ(mask_words[i], -32767 + static_cast<int32_t>(i));
+    }
+    ASSERT_TRUE(copy_i16_array(g5_store, *g5_unknown, mask_words));
+    for (uint32_t i = 0U; i < 3U; ++i) {
+        EXPECT_EQ(mask_words[i], -32768 + static_cast<int32_t>(i));
+    }
+    const Entry* g5_primary = find_entry(g5_store, "mk_canon_afinfo2_0",
+                                         0x000eU);
+    ASSERT_NE(g5_primary, nullptr);
+    EXPECT_EQ(g5_primary->value.kind, MetaValueKind::Scalar);
+    EXPECT_EQ(g5_primary->value.elem_type, MetaElementType::U16);
+    EXPECT_EQ(g5_primary->value.data.u64, 7U);
+    EXPECT_EQ(find_entry(g5_store, "mk_canon_afinfo2_0", 0x000dU), nullptr);
+    EXPECT_EQ(find_entry(g5_store, "mk_canon_afinfo2_0", 0x260dU), nullptr);
+
+    MetaStore g5_callback_store;
+    const ExifRandomAccessDecodeResult g5_callback
+        = decode_makernote_callback(g5_tiff, g5_callback_store);
+    ASSERT_TRUE(g5_callback.input.ok());
+    ASSERT_TRUE(g5_callback.complete());
+    g5_callback_store.finalize();
+    const Entry* callback_focus = find_entry(g5_callback_store,
+                                             "mk_canon_afinfo2_0", 0x000cU);
+    const Entry* callback_unknown
+        = find_entry(g5_callback_store, "mk_canon_afinfo2unknown_0", 0x000dU);
+    ASSERT_NE(callback_focus, nullptr);
+    ASSERT_NE(callback_unknown, nullptr);
+    EXPECT_EQ(callback_focus->value.elem_type, MetaElementType::I16);
+    EXPECT_EQ(callback_focus->value.count, 2U);
+    EXPECT_EQ(callback_unknown->value.elem_type, MetaElementType::I16);
+    EXPECT_EQ(callback_unknown->value.count, 3U);
+    ASSERT_TRUE(copy_i16_array(g5_callback_store, *callback_focus, mask_words));
+    EXPECT_EQ(mask_words[0], -32767);
+    EXPECT_EQ(mask_words[1], -32766);
+    ASSERT_TRUE(
+        copy_i16_array(g5_callback_store, *callback_unknown, mask_words));
+    EXPECT_EQ(mask_words[0], -32768);
+    EXPECT_EQ(mask_words[2], -32766);
+
+    const std::vector<std::byte> eos63_mn
+        = make_canon_afinfo2_makernote_for_points(63U, true, 5U);
+    const std::vector<std::byte> eos63_tiff
+        = make_test_tiff_with_makernote_and_model("Canon",
+                                                  "Canon EOS 5D Mark IV",
+                                                  eos63_mn);
+    MetaStore eos63_store;
+    std::array<ExifIfdRef, 8> eos63_ifds {};
+    const ExifDecodeResult eos63_result
+        = decode_exif_tiff(eos63_tiff, eos63_store, eos63_ifds, options);
+    ASSERT_EQ(eos63_result.status, ExifDecodeStatus::Ok);
+    eos63_store.finalize();
+    for (uint32_t i = 0U; i < 4U; ++i) {
+        const Entry* geometry = find_entry(eos63_store, "mk_canon_afinfo2_0",
+                                           geometry_tags[i]);
+        ASSERT_NE(geometry, nullptr);
+        EXPECT_EQ(geometry->value.elem_type, MetaElementType::I16);
+        EXPECT_EQ(geometry->value.count, 63U);
+        for (uint32_t point = 0U; point < 63U; ++point) {
+            int16_t actual = 0;
+            ASSERT_TRUE(
+                read_i16_array_element(eos63_store, *geometry, point, &actual));
+            EXPECT_EQ(actual,
+                      geometry_starts[i]
+                          + geometry_steps[i] * static_cast<int32_t>(point));
+        }
+    }
+    const Entry* eos63_focus    = find_entry(eos63_store, "mk_canon_afinfo2_0",
+                                             0x000cU);
+    const Entry* eos63_selected = find_entry(eos63_store, "mk_canon_afinfo2_0",
+                                             0x000dU);
+    ASSERT_NE(eos63_focus, nullptr);
+    ASSERT_NE(eos63_selected, nullptr);
+    EXPECT_EQ(eos63_focus->value.elem_type, MetaElementType::I16);
+    EXPECT_EQ(eos63_focus->value.count, 4U);
+    EXPECT_EQ(eos63_selected->value.elem_type, MetaElementType::I16);
+    EXPECT_EQ(eos63_selected->value.count, 4U);
+    ASSERT_TRUE(copy_i16_array(eos63_store, *eos63_focus, mask_words));
+    for (uint32_t i = 0U; i < 4U; ++i) {
+        EXPECT_EQ(mask_words[i], -32767 + static_cast<int32_t>(i));
+    }
+    ASSERT_TRUE(copy_i16_array(eos63_store, *eos63_selected, mask_words));
+    for (uint32_t i = 0U; i < 4U; ++i) {
+        EXPECT_EQ(mask_words[i], -16383 + static_cast<int32_t>(i));
+    }
+    EXPECT_EQ(find_entry(eos63_store, "mk_canon_afinfo2_0", 0x000eU), nullptr);
+    EXPECT_EQ(find_entry(eos63_store, "mk_canon_afinfo2_0", 0x260eU), nullptr);
+
+    const std::vector<std::byte> r5_mn
+        = make_canon_afinfo2_makernote_for_points(1053U, true, 67U);
+    const std::vector<std::byte> r5_tiff
+        = make_test_tiff_with_makernote_and_model("Canon", "Canon EOS R5",
+                                                  r5_mn);
+    MetaStore r5_store;
+    std::array<ExifIfdRef, 8> r5_ifds {};
+    const ExifDecodeResult r5_result = decode_exif_tiff(r5_tiff, r5_store,
+                                                        r5_ifds, options);
+    ASSERT_EQ(r5_result.status, ExifDecodeStatus::Ok);
+    r5_store.finalize();
+    for (uint32_t i = 0U; i < 4U; ++i) {
+        const Entry* geometry = find_entry(r5_store, "mk_canon_afinfo2_0",
+                                           geometry_tags[i]);
+        ASSERT_NE(geometry, nullptr);
+        EXPECT_EQ(geometry->value.elem_type, MetaElementType::I16);
+        EXPECT_EQ(geometry->value.count, 1053U);
+        for (uint32_t point = 0U; point < 1053U; ++point) {
+            int16_t actual = 0;
+            ASSERT_TRUE(
+                read_i16_array_element(r5_store, *geometry, point, &actual));
+            const uint32_t pattern_index = point % 1000U;
+            EXPECT_EQ(actual, geometry_starts[i]
+                                  + geometry_steps[i]
+                                        * static_cast<int32_t>(pattern_index));
+        }
+    }
+    int16_t r5_width_last = 0;
+    ASSERT_TRUE(read_i16_array_element(
+        r5_store, *find_entry(r5_store, "mk_canon_afinfo2_0", 0x0008U), 1052U,
+        &r5_width_last));
+    EXPECT_EQ(r5_width_last, -152);
+    const Entry* r5_focus = find_entry(r5_store, "mk_canon_afinfo2_0", 0x000cU);
+    const Entry* r5_selected = find_entry(r5_store, "mk_canon_afinfo2_0",
+                                          0x000dU);
+    ASSERT_NE(r5_focus, nullptr);
+    ASSERT_NE(r5_selected, nullptr);
+    EXPECT_EQ(r5_focus->value.elem_type, MetaElementType::I16);
+    EXPECT_EQ(r5_focus->value.count, 66U);
+    EXPECT_EQ(r5_selected->value.elem_type, MetaElementType::I16);
+    EXPECT_EQ(r5_selected->value.count, 66U);
+    ASSERT_TRUE(copy_i16_array(r5_store, *r5_focus, mask_words));
+    for (uint32_t i = 0U; i < 66U; ++i) {
+        EXPECT_EQ(mask_words[i], -32767 + static_cast<int32_t>(i));
+    }
+    ASSERT_TRUE(copy_i16_array(r5_store, *r5_selected, mask_words));
+    for (uint32_t i = 0U; i < 66U; ++i) {
+        EXPECT_EQ(mask_words[i], -16383 + static_cast<int32_t>(i));
+    }
+    EXPECT_EQ(find_entry(r5_store, "mk_canon_afinfo2_0", 0x000eU), nullptr);
+
+    const Entry* r5_parent = find_entry(r5_store, "mk_canon0", 0x0026U);
+    ASSERT_NE(r5_parent, nullptr);
+    EXPECT_EQ(r5_parent->value.kind, MetaValueKind::Array);
+    EXPECT_EQ(r5_parent->value.elem_type, MetaElementType::U16);
+    EXPECT_EQ(r5_parent->value.count, 4419U);
+}
+
+TEST(MakerNoteDecode, CanonAfInfo2TruncatedMaskDoesNotEmitPartialArray)
+{
+    const std::vector<std::byte> mn
+        = make_canon_afinfo2_makernote_for_points(31U, true, 0U, 135U);
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_model("Canon",
+                                                  "Canon EOS 5D Mark IV", mn);
+    MetaStore store;
+    std::array<ExifIfdRef, 8> ifds {};
+    ExifDecodeOptions options;
+    options.decode_makernote      = true;
+    const ExifDecodeResult result = decode_exif_tiff(tiff, store, ifds,
+                                                     options);
+    EXPECT_EQ(result.status, ExifDecodeStatus::Ok);
+    store.finalize();
+
+    const Entry* focus = find_entry(store, "mk_canon_afinfo2_0", 0x000cU);
+    ASSERT_NE(focus, nullptr);
+    EXPECT_EQ(focus->value.elem_type, MetaElementType::I16);
+    EXPECT_EQ(focus->value.count, 2U);
+    EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x000dU), nullptr);
+    EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x260dU), nullptr);
+
+    MetaStore callback_store;
+    const auto callback = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback.input.ok());
+    EXPECT_FALSE(callback.complete());
+    EXPECT_EQ(callback.maker_note_paths_skipped, 1U);
+    EXPECT_EQ(callback.maker_note_path_tag, 0x0026U);
+    callback_store.finalize();
+    EXPECT_EQ(
+        callback_store.find_all(exif_key("mk_canon_afinfo2_0", 0x000cU)).size(),
+        1U);
+    EXPECT_EQ(find_entry(callback_store, "mk_canon_afinfo2_0", 0x000dU),
+              nullptr);
+    EXPECT_EQ(find_entry(callback_store, "mk_canon_afinfo2_0", 0x260dU),
+              nullptr);
+}
+
+TEST(MakerNoteDecode, CanonAfInfo2TreatsMultipleModelEvidenceAsUnknown)
+{
+    const std::vector<std::byte> mn
+        = make_canon_afinfo2_makernote_for_points(31U, false, 1U);
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_duplicate_models_and_makernote(
+            "Canon", "Canon EOS 5D Mark II", "Canon PowerShot G5", mn);
+    MetaStore store;
+    std::array<ExifIfdRef, 8> ifds {};
+    ExifDecodeOptions options;
+    options.decode_makernote      = true;
+    const ExifDecodeResult result = decode_exif_tiff(tiff, store, ifds,
+                                                     options);
+    EXPECT_EQ(result.status, ExifDecodeStatus::Ok);
+    store.finalize();
+
+    EXPECT_NE(find_entry(store, "mk_canon_afinfo2_0", 0x000cU), nullptr);
+    EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x000dU), nullptr);
+    EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x000eU), nullptr);
+    EXPECT_EQ(find_entry(store, "mk_canon_afinfo2unknown_0", 0x000dU), nullptr);
+}
+
+TEST(MakerNoteDecode,
+     CanonAfInfo2ConservativelySuppressesPrimaryWhenAfInfo3IsPresent)
+{
+    for (uint32_t afinfo3_first = 0U; afinfo3_first < 2U; ++afinfo3_first) {
+        const std::vector<std::byte> mn
+            = make_canon_afinfo2_makernote_with_afinfo3_entry(afinfo3_first
+                                                              != 0U);
+        const std::vector<std::byte> tiff
+            = make_test_tiff_with_makernote_and_model("Canon",
+                                                      "Canon PowerShot G5", mn);
+        MetaStore store;
+        std::array<ExifIfdRef, 8> ifds {};
+        ExifDecodeOptions options;
+        options.decode_makernote      = true;
+        const ExifDecodeResult result = decode_exif_tiff(tiff, store, ifds,
+                                                         options);
+        ASSERT_EQ(result.status, ExifDecodeStatus::Ok);
+        store.finalize();
+        EXPECT_NE(find_entry(store, "mk_canon_afinfo2unknown_0", 0x000dU),
+                  nullptr);
+        EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x000eU), nullptr);
+        EXPECT_EQ(find_entry(store, "mk_canon_afinfo2_0", 0x260eU), nullptr);
+    }
+
+    const std::vector<std::byte> mn
+        = make_canon_afinfo2_makernote_with_afinfo3_entry(false);
+    std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_model("Canon", "Canon PowerShot G5",
+                                                  mn);
+    ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 30U));
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback
+        = decode_makernote_callback(tiff, callback_store);
+    EXPECT_TRUE(callback.input.ok());
+    EXPECT_TRUE(callback.complete());
+    callback_store.finalize();
+    EXPECT_NE(find_entry(callback_store, "mk_canon_afinfo2unknown_0", 0x000dU),
+              nullptr);
+    EXPECT_EQ(find_entry(callback_store, "mk_canon_afinfo2_0", 0x000eU),
+              nullptr);
 }
 
 TEST(MakerNoteDecode, DecodesCanonAfInfo2FromScannedFallback)
 {
     const std::vector<std::byte> mn
         = make_canon_afinfo2_makernote_with_bad_primary_offset();
-    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon",
-                                                                      mn);
+    const std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote_and_model("Canon",
+                                                  "Canon EOS 5D Mark II", mn);
 
     MetaStore store;
     std::array<ExifIfdRef, 8> ifds {};
@@ -10023,8 +10882,8 @@ TEST(MakerNoteDecode, DecodesCanonAfInfo2FromScannedFallback)
     ASSERT_EQ(ids.size(), 1U);
     const Entry& e = store.entry(ids[0]);
     EXPECT_EQ(e.value.kind, MetaValueKind::Scalar);
-    EXPECT_EQ(e.value.elem_type, MetaElementType::U16);
-    EXPECT_EQ(e.value.data.u64, 4U);
+    EXPECT_EQ(e.value.elem_type, MetaElementType::I16);
+    EXPECT_EQ(e.value.data.i64, 4);
     EXPECT_TRUE(any(e.flags, EntryFlags::Derived));
     EXPECT_EQ(exif_entry_name(store, e, ExifTagNamePolicy::ExifToolCompat),
               std::string_view("AFPointsSelected"));

@@ -54,8 +54,21 @@ outer-TIFF-relative values retain their contiguous behavior.
 
 Version 0.8.30 shares Canon's existing derived-table dispatch between memory
 and callback inputs, including individually fetched values outside the declared
-MakerNote span. Alternate binary directories outside a fetched value remain
-explicit residuals. Standalone MRW callbacks read PRD/WBG/RIF chunks and skip
+MakerNote span. Version 0.8.31 adds at most four checked alternate locations
+for FilterInfo/CustomFunctions2, consuming each declared payload through caller
+scratch and I/O limits. Version 0.8.32 adds AFInfo2 discovery within the declared
+MakerNote span, with at most 4,096 two-byte-aligned candidates. Cap exhaustion
+reports ``LimitExceeded`` and a MakerNote residual. The scan never widens to
+the whole source. Positional CMT3 decoding stays inside its extracted metadata
+payload. CNCV, CMP1 and CTBO now share the memory-path interpretation. CTBO
+accepts at most 64 rows and validates known target sizes/types/UUIDs with exact
+box-header reads (at most 32 bytes per target), without preview or media bodies.
+Opaque CCTP and conservative CR3 embedded-container enrichment remain residuals.
+AFInfo2 retains signed geometry and complete focus/selection masks. Tail names
+use current-decode Model evidence. Direct CMT3 uses a unique earlier CMT1 from
+the same source; missing, late or duplicate CMT1 keeps the tail raw. Prior store
+contents supply no Model context. AFInfo3 suppression is conservative and
+independent of entry order; ambiguous Model/directory evidence keeps data raw. Standalone MRW callbacks read PRD/WBG/RIF chunks and skip
 unrelated/pixel payloads. Sony SR2-private metadata uses bounded decryption
 scratch; native RAF follows private TIFF F000 edges without following pixel
 strip offsets. This is targeted metadata support, not universal layout parity.

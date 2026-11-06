@@ -252,34 +252,43 @@ namespace {
         uint64_t box_size = 0U;
     };
 
-    static bool cr3_ctbo_target_matches(std::span<const std::byte> file_bytes,
-                                        const Cr3CtboRow& row) noexcept
+    static bool
+    cr3_ctbo_target_matches(const RandomAccessSourceRange& source,
+                            const Cr3CtboRow& row, RandomAccessReadState* input,
+                            const RandomAccessReadLimits& limits) noexcept
     {
-        const uint64_t file_size = static_cast<uint64_t>(file_bytes.size());
+        const uint64_t file_size = source.size;
         if (row.offset > file_size || row.box_size > file_size - row.offset
             || row.box_size < 8U) {
             return false;
         }
 
-        uint32_t declared_size32 = 0U;
-        uint32_t box_type        = 0U;
-        if (!read_u32be(file_bytes, row.offset, &declared_size32)
-            || !read_u32be(file_bytes, row.offset + 4U, &box_type)) {
+        std::array<std::byte, 32U> header {};
+        if (random_access_read_exact(source, row.offset,
+                                     std::span<std::byte>(header).first(8U),
+                                     input, limits)
+            != RandomAccessReadCode::Ok) {
             return false;
         }
-
-        uint64_t declared_size = 0U;
+        uint32_t declared_size32 = 0U;
+        uint32_t box_type        = 0U;
+        (void)read_u32be(header, 0U, &declared_size32);
+        (void)read_u32be(header, 4U, &box_type);
+        uint64_t declared_size = declared_size32;
         uint64_t header_size   = 8U;
         if (declared_size32 == 0U) {
             return false;
         } else if (declared_size32 == 1U) {
             header_size = 16U;
             if (row.box_size < header_size
-                || !read_u64be(file_bytes, row.offset + 8U, &declared_size)) {
+                || random_access_read_exact(
+                       source, row.offset + 8U,
+                       std::span<std::byte>(header).subspan(8U, 8U), input,
+                       limits)
+                       != RandomAccessReadCode::Ok
+                || !read_u64be(header, 8U, &declared_size)) {
                 return false;
             }
-        } else {
-            declared_size = declared_size32;
         }
         if (declared_size != row.box_size || declared_size < header_size) {
             return false;
@@ -312,10 +321,16 @@ namespace {
         const std::array<std::byte, 16U>* expected_uuid = row.id == 1U
                                                               ? &kXmpUuid
                                                               : &kPreviewUuid;
-        const size_t uuid_offset = static_cast<size_t>(row.offset
-                                                       + header_size);
+        if (random_access_read_exact(source, row.offset + header_size,
+                                     std::span<std::byte>(header).subspan(
+                                         static_cast<size_t>(header_size), 16U),
+                                     input, limits)
+            != RandomAccessReadCode::Ok) {
+            return false;
+        }
+        const size_t uuid_offset = static_cast<size_t>(header_size);
         for (size_t i = 0U; i < expected_uuid->size(); ++i) {
-            if (file_bytes[uuid_offset + i] != (*expected_uuid)[i]) {
+            if (header[uuid_offset + i] != (*expected_uuid)[i]) {
                 return false;
             }
         }
@@ -411,9 +426,10 @@ namespace {
         return store.add_entry(offset_entry) != kInvalidEntryId;
     }
 
-    static bool decode_cr3_ctbo(std::span<const std::byte> file_bytes,
+    static bool decode_cr3_ctbo(const RandomAccessSourceRange& source,
                                 std::span<const std::byte> payload,
-                                MetaStore& store) noexcept
+                                MetaStore& store, RandomAccessReadState* input,
+                                const RandomAccessReadLimits& limits) noexcept
     {
         static constexpr uint32_t kMaxRows = 64U;
         if (payload.size() < 4U) {
@@ -445,7 +461,7 @@ namespace {
                 }
                 seen_known_ids[known_slot] = true;
                 if (row.box_size != 0U) {
-                    if (!cr3_ctbo_target_matches(file_bytes, row)) {
+                    if (!cr3_ctbo_target_matches(source, row, input, limits)) {
                         return false;
                     }
                     has_semantic_rows = true;
@@ -1262,6 +1278,27 @@ namespace {
 
 }  // namespace
 
+bool
+bmff_internal::decode_cr3_metadata_block(
+    const RandomAccessSourceRange& source, const ContainerBlockRef& block,
+    std::span<const std::byte> payload, MetaStore& store,
+    RandomAccessReadState* input, const RandomAccessReadLimits& limits) noexcept
+{
+    if (block.format != ContainerFormat::Cr3
+        || block.kind != ContainerBlockKind::MakerNote) {
+        return false;
+    }
+    switch (block.id) {
+    case fourcc('C', 'N', 'C', 'V'):
+        return decode_cr3_compressor_version(payload, store);
+    case fourcc('C', 'M', 'P', '1'):
+        return decode_cr3_cmp1(payload, block, store);
+    case fourcc('C', 'T', 'B', 'O'):
+        return decode_cr3_ctbo(source, payload, store, input, limits);
+    default: return false;
+    }
+}
+
 SimpleMetaResult
 simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
                  std::span<ContainerBlockRef> out_blocks,
@@ -1274,7 +1311,9 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
                               options.max_arena_bytes);
     if (store.resource_limit_exceeded()) {
         result.exif.status       = ExifDecodeStatus::LimitExceeded;
-        result.exif.limit_reason = ExifLimitReason::MaxArenaBytes;
+        result.exif.limit_reason = store.arena().limit_exceeded()
+                                       ? ExifLimitReason::MaxArenaBytes
+                                       : ExifLimitReason::MaxTotalEntries;
         result.exr.status        = ExrDecodeStatus::LimitExceeded;
         result.jumbf.status      = JumbfDecodeStatus::LimitExceeded;
         result.xmp.status        = XmpDecodeStatus::LimitExceeded;
@@ -1343,6 +1382,17 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
     const std::span<const ContainerBlockRef> blocks_view(out_blocks.data(),
                                                          static_cast<size_t>(
                                                              blocks_written));
+    exif_internal::CanonAfInfo2ModelClass cr3_model
+        = exif_internal::CanonAfInfo2ModelClass::Unknown;
+    uint32_t cr3_cmt1_blocks = 0U;
+    for (const ContainerBlockRef& block : blocks_view) {
+        if (block.format == ContainerFormat::Cr3
+            && block.kind == ContainerBlockKind::Exif
+            && block.id == fourcc('C', 'M', 'T', '1')
+            && (block.part_count <= 1U || block.part_index == 0U)) {
+            ++cr3_cmt1_blocks;
+        }
+    }
     for (uint32_t i = 0; i < blocks_written; ++i) {
         const ContainerBlockRef& block = out_blocks[i];
         if (block.part_count > 1U && block.part_index != 0U) {
@@ -1450,8 +1500,10 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
                           ? out_ifds.subspan(ifd_write_pos)
                           : std::span<ExifIfdRef> {};
                 const ExifDecodeResult one
-                    = exif_internal::decode_canon_cr3_tiff(
-                        block_bytes, store, remaining, options.exif);
+                    = exif_internal::decode_canon_cr3_tiff(block_bytes, store,
+                                                           remaining,
+                                                           options.exif,
+                                                           nullptr, cr3_model);
                 merge_exif_status(&exif.status, one.status);
                 exif.entries_decoded += one.entries_decoded;
                 exif.ifds_needed += one.ifds_needed;
@@ -1471,6 +1523,17 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
             const ExifDecodeResult one
                 = decode_exif_tiff(block_bytes, store, ifd_slice, options.exif);
             const size_t entry_end = store.entries().size();
+            if (block.format == ContainerFormat::Cr3
+                && block.id == fourcc('C', 'M', 'T', '1')) {
+                cr3_model
+                    = cr3_cmt1_blocks == 1U
+                              && result.scan.status == ScanStatus::Ok
+                          ? exif_internal::classify_canon_afinfo2_model(
+                                store,
+                                store.entries().subspan(entry_start,
+                                                        entry_end - entry_start))
+                          : exif_internal::CanonAfInfo2ModelClass::Unknown;
+            }
             merge_exif_status(&exif.status, one.status);
             exif.ifds_needed += one.ifds_needed;
             exif.entries_decoded += one.entries_decoded;
@@ -1690,22 +1753,16 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
                 continue;
             }
 
-            if (block.format == ContainerFormat::Cr3
-                && block.id == fourcc('C', 'N', 'C', 'V')) {
-                (void)decode_cr3_compressor_version(block_bytes, store);
-                continue;
-            }
-
-            if (block.format == ContainerFormat::Cr3
-                && block.id == fourcc('C', 'T', 'B', 'O')) {
-                (void)decode_cr3_ctbo(file_bytes, block_bytes, store);
-                continue;
-            }
-
-            if (block.format == ContainerFormat::Cr3
-                && block.id == fourcc('C', 'M', 'P', '1')
-                && block.aux_u32 == 0x00010001U) {
-                (void)decode_cr3_cmp1(block_bytes, block, store);
+            if (block.format == ContainerFormat::Cr3) {
+                store.constrain_resources(options.exif.limits.max_total_entries,
+                                          options.exif.limits.max_arena_bytes);
+                RandomAccessReadState input;
+                const RandomAccessSourceRange source
+                    = make_random_access_source_range(
+                        make_memory_random_access_source(file_bytes));
+                (void)bmff_internal::decode_cr3_metadata_block(source, block,
+                                                               block_bytes,
+                                                               store, &input);
                 continue;
             }
 
@@ -1873,7 +1930,9 @@ simple_meta_read(std::span<const std::byte> file_bytes, MetaStore& store,
 
     if (store.resource_limit_exceeded()) {
         exif.status       = ExifDecodeStatus::LimitExceeded;
-        exif.limit_reason = ExifLimitReason::MaxArenaBytes;
+        exif.limit_reason = store.arena().limit_exceeded()
+                                ? ExifLimitReason::MaxArenaBytes
+                                : ExifLimitReason::MaxTotalEntries;
         exr.status        = ExrDecodeStatus::LimitExceeded;
         jumbf.status      = JumbfDecodeStatus::LimitExceeded;
         xmp.status        = XmpDecodeStatus::LimitExceeded;

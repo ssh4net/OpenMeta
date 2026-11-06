@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "../../src/openmeta/exif_tiff_decode_internal.h"
+#include "../../src/openmeta/mrw_decode_internal.h"
+#include "../../src/openmeta/raf_decode_internal.h"
 #include "openmeta/exif_tiff_decode.h"
 #include "openmeta/metadata_query.h"
-#include "../../src/openmeta/raf_decode_internal.h"
-#include "../../src/openmeta/mrw_decode_internal.h"
-#include "../../src/openmeta/exif_tiff_decode_internal.h"
+#include "openmeta/metadata_transfer.h"
 #include <cstring>
 
 #include <array>
@@ -78,6 +79,30 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
         exif_internal::CanonMakerNoteResiduals residuals;
         (void)exif_internal::decode_canon_cr3_tiff(bytes, canon, {}, options,
                                                  &residuals);
+    }
+    if (bytes.size() >= 12U && bytes[4U] == std::byte { 'f' }
+        && bytes[5U] == std::byte { 't' } && bytes[6U] == std::byte { 'y' }
+        && bytes[7U] == std::byte { 'p' }) {
+        std::array<ContainerBlockRef, 64U> blocks {};
+        std::array<uint32_t, 64U> indices {};
+        std::array<std::byte, 65536U> payload {};
+        ReadTransferSourceSnapshotRandomAccessScratch snapshot_scratch;
+        snapshot_scratch.blocks                            = blocks;
+        snapshot_scratch.ifds                              = ifds;
+        snapshot_scratch.payload_indices                   = indices;
+        snapshot_scratch.read_window                       = window;
+        snapshot_scratch.payload                           = payload;
+        snapshot_scratch.value                             = values;
+        snapshot_scratch.window_options.minimum_read_bytes = 0U;
+        ReadTransferSourceSnapshotRandomAccessOptions snapshot_options;
+        snapshot_options.decode_makernote   = true;
+        snapshot_options.decompress         = false;
+        snapshot_options.policy.exif_limits = options.limits;
+        (void)read_transfer_source_snapshot_random_access(range,
+                                                          ContainerFormat::Cr3,
+                                                          snapshot_scratch,
+                                                          snapshot_options,
+                                                          reads);
     }
     if (raf_internal::looks_like_raf(bytes)) {
         MetaStore native;

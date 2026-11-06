@@ -215,3 +215,28 @@ values and completeness but do not produce normalized origin/size/rectangle
 fields. MaskedAreas still accepts multiple four-value rectangles. A Complete
 numeric result describes the returned numbers; callers must also check has_rect
 before consuming normalized geometry.
+
+Canon positional parity and PNG/WebP ICC removal in 0.8.32
+--------------------------------------------------------
+
+ABI 4 remains unfrozen; this batch changes no public layout. Rebuild consumers
+with matching headers and binaries. Positional Canon AFInfo2 discovery is
+limited to the declared MakerNote span and 4,096 two-byte-aligned candidates.
+The existing scratch and source I/O ceilings remain in effect. CNCV, CMP1 and
+CTBO use shared metadata parsers in memory and positional snapshots. Remaining
+CR3 residuals must still be checked; source-locator interpretation does not
+select a sensor plane or decode RAW pixels.
+
+`remove_existing_icc` now supports existing PNG and WebP targets in addition
+to JPEG/TIFF/DNG. Omission still preserves destination ICC. Removal suppresses
+source ICC and rejects conflicting ICC blocks, including manually constructed
+empty blocks. PNG/WebP package preflight checks the virtual output before
+publication; WebP also requires the VP8X ICC flag to be clear. Fresh emission
+and payload-only/codec handoffs still reject this edit-only intent.
+
+AFInfo2 geometry arrays now retain signed 16-bit types, and focus/selection
+masks retain their full word counts. This corrects the previous scalar mask
+truncation and later-field offsets. Selection and primary-point meanings depend
+on known model/record context; ambiguous and surplus data remain raw. Callers
+that assumed one scalar for a multiword mask must use the reported value shape,
+wire type and count. These are metadata interpretation corrections within ABI 4.
