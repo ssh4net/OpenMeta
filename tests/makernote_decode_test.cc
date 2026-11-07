@@ -8673,19 +8673,35 @@ TEST(MakerNoteDecode,
     mn.insert(mn.begin() + 18U, 6U, std::byte { 0 });
     write_u32le_at(&mn, 10U, 24U);
     write_u32le_at(&mn, 24U, 44U);
-    std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
-    ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
-    MetaStore store;
-    const ExifRandomAccessDecodeResult result
-        = decode_makernote_callback(tiff, store, {}, 0U, 64U, 0U);
-    EXPECT_TRUE(result.input.ok());
-    EXPECT_FALSE(result.complete());
-    EXPECT_EQ(result.maker_note_paths_skipped, 1U);
-    EXPECT_TRUE(result.maker_note_path_location_known);
-    EXPECT_EQ(result.maker_note_path_offset, 24U);
-    EXPECT_EQ(result.maker_note_path_tag, 0x4024U);
-    store.finalize();
-    EXPECT_EQ(find_entry(store, "mk_canon_filterinfo_0", 0x0402U), nullptr);
+    for (bool separate_directory : { false, true }) {
+        SCOPED_TRACE(separate_directory);
+        std::vector<std::byte> tiff = make_test_tiff_with_makernote("Canon", mn);
+        ASSERT_TRUE(patch_makernote_count_in_tiff(&tiff, 18U));
+        const size_t original_note_off = tiff.size() - mn.size();
+        uint64_t expected_offset = original_note_off + 24U;
+        if (separate_directory) {
+            // Keep the original absolute-fallback assertion in a layout where
+            // [24, 72) does not intersect the MakerNote directory. The original
+            // layout starts its IFD at 62, so that same candidate overlaps it
+            // and must now be rejected in favor of the relative address 86.
+            ASSERT_EQ(original_note_off, 62U);
+            tiff.insert(tiff.begin() + original_note_off,
+                        128U - original_note_off, std::byte { 0 });
+            write_u32le_at(&tiff, 54U, 128U);
+            expected_offset = 24U;
+        }
+        MetaStore store;
+        const ExifRandomAccessDecodeResult result
+            = decode_makernote_callback(tiff, store, {}, 0U, 64U, 0U);
+        EXPECT_TRUE(result.input.ok());
+        EXPECT_FALSE(result.complete());
+        EXPECT_EQ(result.maker_note_paths_skipped, 1U);
+        EXPECT_TRUE(result.maker_note_path_location_known);
+        EXPECT_EQ(result.maker_note_path_offset, expected_offset);
+        EXPECT_EQ(result.maker_note_path_tag, 0x4024U);
+        store.finalize();
+        EXPECT_EQ(find_entry(store, "mk_canon_filterinfo_0", 0x0402U), nullptr);
+    }
 }
 
 TEST(MakerNoteDecode, RandomAccessCanonAfInfo2ScansOnlyDeclaredMakerNoteSpan)
@@ -15957,8 +15973,19 @@ TEST(MakerNoteDecode, DecodesPentaxBinarySubdirectories)
 {
     const std::vector<std::byte> mn
         = make_pentax_makernote_with_binary_subdirs();
-    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("PENTAX",
-                                                                      mn);
+    std::vector<std::byte> tiff = make_test_tiff_with_makernote("PENTAX", mn);
+    // This builder assembles its payload locally. Native AOC offsets on the
+    // wire use the containing TIFF origin, so relocate the two external blobs
+    // when embedding it. The payload bytes and assertions remain unchanged.
+    const size_t note_off = tiff.size() - mn.size();
+    ASSERT_LE(note_off, UINT32_MAX);
+    for (size_t index : { 2U, 3U }) {
+        const size_t field_off = note_off + 8U + index * 12U + 8U;
+        uint32_t local_off     = 0U;
+        ASSERT_TRUE(read_u32le_at(tiff, field_off, &local_off));
+        write_u32le_at(&tiff, field_off,
+                       static_cast<uint32_t>(note_off) + local_off);
+    }
 
     MetaStore store;
     std::array<ExifIfdRef, 8> ifds {};

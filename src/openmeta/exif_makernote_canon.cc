@@ -160,6 +160,8 @@ static std::string_view
 canon_find_model_text_in_main_ifd(const TiffConfig& mk_cfg,
                                   std::span<const std::byte> tiff_bytes,
                                   uint64_t entries_off, uint16_t entry_count,
+                                  uint64_t maker_note_off,
+                                  uint64_t maker_note_ifd_bytes,
                                   const MakerNoteLayout& layout,
                                   std::span<char> buf) noexcept
 {
@@ -179,7 +181,11 @@ canon_find_model_text_in_main_ifd(const TiffConfig& mk_cfg,
                                            nullptr)) {
             return {};
         }
-        if (ref.value_off + ref.value_bytes > tiff_bytes.size()) {
+        if ((!ref.inline_value
+             && canon_value_overlaps_ifd(ref.value_off, ref.value_bytes,
+                                         maker_note_off, maker_note_ifd_bytes))
+            || ref.value_off > tiff_bytes.size()
+            || ref.value_bytes > tiff_bytes.size() - ref.value_off) {
             return {};
         }
         return canon_copy_ascii_bytes(
@@ -1437,6 +1443,50 @@ canon_dir_bytes(uint16_t entry_count, uint64_t* out) noexcept
     return true;
 }
 
+static bool
+canon_value_base_overlaps_ifd(
+    const TiffConfig& cfg, std::span<const std::byte> tiff_bytes,
+    uint64_t maker_note_off, uint64_t maker_note_ifd_bytes,
+    uint16_t entry_count, const ExifDecodeLimits& limits, int64_t base) noexcept
+{
+    if (maker_note_ifd_bytes == 0U || entry_count == 0U) {
+        return false;
+    }
+
+    const uint64_t entries_off = maker_note_off + 2ULL;
+    for (uint32_t i = 0U; i < entry_count; ++i) {
+        const uint64_t eoff     = entries_off + uint64_t(i) * 12ULL;
+        uint16_t type           = 0U;
+        uint32_t count32        = 0U;
+        uint32_t value_or_off32 = 0U;
+        if (!read_tiff_u16(cfg, tiff_bytes, eoff + 2U, &type)
+            || !read_tiff_u32(cfg, tiff_bytes, eoff + 4U, &count32)
+            || !read_tiff_u32(cfg, tiff_bytes, eoff + 8U, &value_or_off32)) {
+            break;
+        }
+
+        const uint64_t unit  = tiff_type_size(type);
+        const uint64_t count = count32;
+        if (unit == 0U || count == 0U || count > (UINT64_MAX / unit)) {
+            continue;
+        }
+        const uint64_t value_bytes = count * unit;
+        if (value_bytes <= 4U || value_bytes > limits.max_value_bytes) {
+            continue;
+        }
+
+        uint64_t value_off = 0U;
+        if (!canon_add_base_and_off32(base, value_or_off32, &value_off)) {
+            continue;
+        }
+        if (canon_value_overlaps_ifd(value_off, value_bytes, maker_note_off,
+                                     maker_note_ifd_bytes)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 
 static bool
 canon_should_emit_unknown_table_tags(std::string_view ifd_name) noexcept
@@ -1574,15 +1624,76 @@ canon_u32_binary_dir_signature_matches(std::span<const std::byte> tiff_bytes,
 }
 
 static uint64_t
-canon_choose_custom_functions2_offset(std::span<const std::byte> tiff_bytes,
-                                      uint32_t value_or_off32,
-                                      uint64_t default_abs_value_off,
-                                      uint64_t value_bytes,
-                                      uint64_t maker_note_off,
-                                      int64_t auto_value_base,
-                                      int64_t schema_value_base) noexcept
+canon_choose_custom_functions2_offset(
+    std::span<const std::byte> tiff_bytes, uint32_t value_or_off32,
+    uint64_t default_abs_value_off, uint64_t value_bytes,
+    uint64_t maker_note_off, uint64_t maker_note_ifd_bytes,
+    int64_t auto_value_base, int64_t schema_value_base) noexcept
 {
-    if (canon_custom_functions2_signature_matches(tiff_bytes,
+    if (!canon_value_overlaps_ifd(default_abs_value_off, value_bytes,
+                                  maker_note_off, maker_note_ifd_bytes)
+        && canon_custom_functions2_signature_matches(tiff_bytes,
+                                                     default_abs_value_off,
+                                                     value_bytes)) {
+        return default_abs_value_off;
+    }
+
+    uint64_t abs_value_off = 0;
+    if (auto_value_base != INT64_MIN
+        && canon_add_special_base_and_off32(auto_value_base, value_or_off32,
+                                            &abs_value_off)
+        && abs_value_off != default_abs_value_off
+        && !canon_value_overlaps_ifd(abs_value_off, value_bytes, maker_note_off,
+                                     maker_note_ifd_bytes)
+        && canon_custom_functions2_signature_matches(tiff_bytes, abs_value_off,
+                                                     value_bytes)) {
+        return abs_value_off;
+    }
+
+    if (schema_value_base != INT64_MIN
+        && canon_add_special_base_and_off32(schema_value_base, value_or_off32,
+                                            &abs_value_off)
+        && abs_value_off != default_abs_value_off
+        && !canon_value_overlaps_ifd(abs_value_off, value_bytes, maker_note_off,
+                                     maker_note_ifd_bytes)
+        && canon_custom_functions2_signature_matches(tiff_bytes, abs_value_off,
+                                                     value_bytes)) {
+        return abs_value_off;
+    }
+
+    if (maker_note_off <= uint64_t(INT64_MAX)
+        && canon_add_special_base_and_off32(static_cast<int64_t>(maker_note_off),
+                                            value_or_off32, &abs_value_off)
+        && abs_value_off != default_abs_value_off
+        && !canon_value_overlaps_ifd(abs_value_off, value_bytes, maker_note_off,
+                                     maker_note_ifd_bytes)
+        && canon_custom_functions2_signature_matches(tiff_bytes, abs_value_off,
+                                                     value_bytes)) {
+        return abs_value_off;
+    }
+
+    if (canon_add_special_base_and_off32(0, value_or_off32, &abs_value_off)
+        && abs_value_off != default_abs_value_off
+        && !canon_value_overlaps_ifd(abs_value_off, value_bytes, maker_note_off,
+                                     maker_note_ifd_bytes)
+        && canon_custom_functions2_signature_matches(tiff_bytes, abs_value_off,
+                                                     value_bytes)) {
+        return abs_value_off;
+    }
+
+    return default_abs_value_off;
+}
+
+static uint64_t
+canon_choose_u32_binary_dir_offset(
+    std::span<const std::byte> tiff_bytes, uint32_t value_or_off32,
+    uint64_t default_abs_value_off, uint64_t value_bytes,
+    uint64_t maker_note_off, uint64_t maker_note_ifd_bytes,
+    int64_t auto_value_base, int64_t schema_value_base) noexcept
+{
+    if (!canon_value_overlaps_ifd(default_abs_value_off, value_bytes,
+                                  maker_note_off, maker_note_ifd_bytes)
+        && canon_u32_binary_dir_signature_matches(tiff_bytes,
                                                   default_abs_value_off,
                                                   value_bytes)) {
         return default_abs_value_off;
@@ -1593,59 +1704,8 @@ canon_choose_custom_functions2_offset(std::span<const std::byte> tiff_bytes,
         && canon_add_special_base_and_off32(auto_value_base, value_or_off32,
                                             &abs_value_off)
         && abs_value_off != default_abs_value_off
-        && canon_custom_functions2_signature_matches(tiff_bytes, abs_value_off,
-                                                     value_bytes)) {
-        return abs_value_off;
-    }
-
-    if (schema_value_base != INT64_MIN
-        && canon_add_special_base_and_off32(schema_value_base, value_or_off32,
-                                            &abs_value_off)
-        && abs_value_off != default_abs_value_off
-        && canon_custom_functions2_signature_matches(tiff_bytes, abs_value_off,
-                                                     value_bytes)) {
-        return abs_value_off;
-    }
-
-    if (maker_note_off <= uint64_t(INT64_MAX)
-        && canon_add_special_base_and_off32(static_cast<int64_t>(maker_note_off),
-                                            value_or_off32, &abs_value_off)
-        && abs_value_off != default_abs_value_off
-        && canon_custom_functions2_signature_matches(tiff_bytes, abs_value_off,
-                                                     value_bytes)) {
-        return abs_value_off;
-    }
-
-    if (canon_add_special_base_and_off32(0, value_or_off32, &abs_value_off)
-        && abs_value_off != default_abs_value_off
-        && canon_custom_functions2_signature_matches(tiff_bytes, abs_value_off,
-                                                     value_bytes)) {
-        return abs_value_off;
-    }
-
-    return default_abs_value_off;
-}
-
-static uint64_t
-canon_choose_u32_binary_dir_offset(std::span<const std::byte> tiff_bytes,
-                                   uint32_t value_or_off32,
-                                   uint64_t default_abs_value_off,
-                                   uint64_t value_bytes,
-                                   uint64_t maker_note_off,
-                                   int64_t auto_value_base,
-                                   int64_t schema_value_base) noexcept
-{
-    if (canon_u32_binary_dir_signature_matches(tiff_bytes,
-                                               default_abs_value_off,
-                                               value_bytes)) {
-        return default_abs_value_off;
-    }
-
-    uint64_t abs_value_off = 0;
-    if (auto_value_base != INT64_MIN
-        && canon_add_special_base_and_off32(auto_value_base, value_or_off32,
-                                            &abs_value_off)
-        && abs_value_off != default_abs_value_off
+        && !canon_value_overlaps_ifd(abs_value_off, value_bytes, maker_note_off,
+                                     maker_note_ifd_bytes)
         && canon_u32_binary_dir_signature_matches(tiff_bytes, abs_value_off,
                                                   value_bytes)) {
         return abs_value_off;
@@ -1655,6 +1715,8 @@ canon_choose_u32_binary_dir_offset(std::span<const std::byte> tiff_bytes,
         && canon_add_special_base_and_off32(schema_value_base, value_or_off32,
                                             &abs_value_off)
         && abs_value_off != default_abs_value_off
+        && !canon_value_overlaps_ifd(abs_value_off, value_bytes, maker_note_off,
+                                     maker_note_ifd_bytes)
         && canon_u32_binary_dir_signature_matches(tiff_bytes, abs_value_off,
                                                   value_bytes)) {
         return abs_value_off;
@@ -1664,6 +1726,8 @@ canon_choose_u32_binary_dir_offset(std::span<const std::byte> tiff_bytes,
         && canon_add_special_base_and_off32(static_cast<int64_t>(maker_note_off),
                                             value_or_off32, &abs_value_off)
         && abs_value_off != default_abs_value_off
+        && !canon_value_overlaps_ifd(abs_value_off, value_bytes, maker_note_off,
+                                     maker_note_ifd_bytes)
         && canon_u32_binary_dir_signature_matches(tiff_bytes, abs_value_off,
                                                   value_bytes)) {
         return abs_value_off;
@@ -1671,6 +1735,8 @@ canon_choose_u32_binary_dir_offset(std::span<const std::byte> tiff_bytes,
 
     if (canon_add_special_base_and_off32(0, value_or_off32, &abs_value_off)
         && abs_value_off != default_abs_value_off
+        && !canon_value_overlaps_ifd(abs_value_off, value_bytes, maker_note_off,
+                                     maker_note_ifd_bytes)
         && canon_u32_binary_dir_signature_matches(tiff_bytes, abs_value_off,
                                                   value_bytes)) {
         return abs_value_off;
@@ -1865,25 +1931,47 @@ guess_canon_value_base(const TiffConfig& cfg,
     cands[2].base = (base_auto != INT64_MIN) ? base_auto : base_abs;
     cands[3].base = (base_schema != INT64_MIN) ? base_schema : base_abs;
 
+    const bool cand_enabled[4]      = { true, true, base_auto != INT64_MIN,
+                                        base_schema != INT64_MIN };
+    const bool cand_overlaps_ifd[4] = {
+        canon_value_base_overlaps_ifd(cfg, tiff_bytes, maker_note_off,
+                                      ifd_needed_bytes, entry_count, limits,
+                                      cands[0].base),
+        canon_value_base_overlaps_ifd(cfg, tiff_bytes, maker_note_off,
+                                      ifd_needed_bytes, entry_count, limits,
+                                      cands[1].base),
+        base_auto != INT64_MIN
+            && canon_value_base_overlaps_ifd(cfg, tiff_bytes, maker_note_off,
+                                             ifd_needed_bytes, entry_count,
+                                             limits, cands[2].base),
+        base_schema != INT64_MIN
+            && canon_value_base_overlaps_ifd(cfg, tiff_bytes, maker_note_off,
+                                             ifd_needed_bytes, entry_count,
+                                             limits, cands[3].base),
+    };
+
     uint32_t sig_scores[4] {};
-    sig_scores[0] = score_signature_base(base_abs);
-    sig_scores[1] = score_signature_base(base_mn);
-    if (base_auto != INT64_MIN) {
+    if (!cand_overlaps_ifd[0]) {
+        sig_scores[0] = score_signature_base(base_abs);
+    }
+    if (!cand_overlaps_ifd[1]) {
+        sig_scores[1] = score_signature_base(base_mn);
+    }
+    if (cand_enabled[2] && !cand_overlaps_ifd[2]) {
         sig_scores[2] = score_signature_base(base_auto);
     }
-    if (base_schema != INT64_MIN) {
+    if (cand_enabled[3] && !cand_overlaps_ifd[3]) {
         sig_scores[3] = score_signature_base(base_schema);
     }
 
-    uint32_t best_sig     = sig_scores[0];
-    size_t best_sig_index = 0;
+    uint32_t best_sig     = 0U;
+    size_t best_sig_index = 4U;
     bool sig_tied         = false;
-    for (size_t i = 1; i < 4; ++i) {
-        if ((i == 2 && base_auto == INT64_MIN)
-            || (i == 3 && base_schema == INT64_MIN)) {
+    for (size_t i = 0U; i < 4U; ++i) {
+        if (!cand_enabled[i] || cand_overlaps_ifd[i]) {
             continue;
         }
-        if (sig_scores[i] > best_sig) {
+        if (best_sig_index == 4U || sig_scores[i] > best_sig) {
             best_sig       = sig_scores[i];
             best_sig_index = i;
             sig_tied       = false;
@@ -1892,16 +1980,13 @@ guess_canon_value_base(const TiffConfig& cfg,
         }
     }
 
-    if (best_sig != 0U && !sig_tied) {
+    if (best_sig != 0U && !sig_tied && best_sig_index < 4U) {
         return cands[best_sig_index].base;
     }
 
     for (size_t c = 0; c < 4; ++c) {
         Candidate& cand = cands[c];
-        if (c == 2 && base_auto == INT64_MIN) {
-            continue;
-        }
-        if (c == 3 && base_schema == INT64_MIN) {
+        if (!cand_enabled[c] || cand_overlaps_ifd[c]) {
             continue;
         }
 
@@ -1975,17 +2060,21 @@ guess_canon_value_base(const TiffConfig& cfg,
         }
     }
 
-    Candidate best = cands[0];
-    for (size_t i = 1; i < 4; ++i) {
-        const Candidate cand = cands[i];
-        if (i == 2 && base_auto == INT64_MIN) {
+    Candidate best {};
+    size_t best_index = 4U;
+    for (size_t i = 0; i < 4; ++i) {
+        if (!cand_enabled[i] || cand_overlaps_ifd[i]) {
             continue;
         }
-        if (i == 3 && base_schema == INT64_MIN) {
+        const Candidate cand = cands[i];
+        if (best_index == 4U) {
+            best       = cand;
+            best_index = i;
             continue;
         }
         if (cand.score > best.score) {
             best = cand;
+            best_index = i;
             continue;
         }
         if (cand.score < best.score) {
@@ -1993,8 +2082,12 @@ guess_canon_value_base(const TiffConfig& cfg,
         }
         if (cand.in_mn > best.in_mn) {
             best = cand;
+            best_index = i;
             continue;
         }
+    }
+    if (best_index == 4U) {
+        best = cands[0];
     }
 
     // A short declared MakerNote byte count can stop at the end of the IFD,
@@ -2002,10 +2095,9 @@ guess_canon_value_base(const TiffConfig& cfg,
     // MakerNote-relative base. In this exact-boundary case, prefer that base
     // over an equally plausible prefix address. Adjusted-base and in-payload
     // evidence above still wins.
-    if (best.base == base_abs && cands[1].score != 0U
-        && cands[1].score == cands[0].score
-        && cands[1].in_mn == cands[0].in_mn
-        && min_off32 == ifd_needed_bytes) {
+    if (!cand_overlaps_ifd[0] && best.base == base_abs && !cand_overlaps_ifd[1]
+        && cands[1].score != 0U && cands[1].score == cands[0].score
+        && cands[1].in_mn == cands[0].in_mn && min_off32 == ifd_needed_bytes) {
         return cands[1].base;
     }
 
@@ -3022,15 +3114,13 @@ canon_afinfo2_payload_looks_valid(const TiffConfig& cfg,
 }
 
 static bool
-canon_find_afinfo2_payload(const TiffConfig& cfg,
-                           std::span<const std::byte> tiff_bytes,
-                           uint64_t maker_note_off,
-                           uint64_t maker_note_span_bytes, uint64_t value_bytes,
-                           uint64_t default_value_off,
-                           const ExifDecodeLimits& limits,
-                           CanonAfInfo2ModelClass model_class,
-                           bool afinfo3_present, bool afinfo3_context_known,
-                           uint64_t* out_value_off) noexcept
+canon_find_afinfo2_payload(
+    const TiffConfig& cfg, std::span<const std::byte> tiff_bytes,
+    uint64_t maker_note_off, uint64_t maker_note_ifd_bytes,
+    uint64_t maker_note_span_bytes, uint64_t value_bytes,
+    uint64_t default_value_off, const ExifDecodeLimits& limits,
+    CanonAfInfo2ModelClass model_class, bool afinfo3_present,
+    bool afinfo3_context_known, uint64_t* out_value_off) noexcept
 {
     if (!out_value_off || maker_note_off > tiff_bytes.size()) {
         return false;
@@ -3048,6 +3138,10 @@ canon_find_afinfo2_payload(const TiffConfig& cfg,
     const uint64_t last = maker_note_off + (span_bytes - value_bytes);
     for (uint64_t off = maker_note_off; off <= last; off += 2U) {
         if (off == default_value_off) {
+            continue;
+        }
+        if (canon_value_overlaps_ifd(off, value_bytes, maker_note_off,
+                                     maker_note_ifd_bytes)) {
             continue;
         }
         if (canon_afinfo2_payload_looks_valid(cfg, tiff_bytes, off, value_bytes,
@@ -3366,6 +3460,11 @@ canon_scan_afinfo2_from_source(const TiffConfig& cfg, uint64_t value_bytes,
         }
         absolute_candidate_offset = metadata_span.offset + candidate_offset;
         if (absolute_candidate_offset == context.value_offset) {
+            continue;
+        }
+        if (canon_value_overlaps_ifd(absolute_candidate_offset, value_bytes,
+                                     context.excluded_value_span.offset,
+                                     context.excluded_value_span.size)) {
             continue;
         }
 
@@ -4037,6 +4136,7 @@ struct CanonMakerNoteValueContext final {
     std::span<const std::byte> tiff_bytes;
     uint64_t abs_value_off = 0U;
     uint64_t maker_note_off = 0U;
+    uint64_t maker_note_ifd_bytes  = 0U;
     uint64_t maker_note_span_bytes = 0U;
     uint32_t value_or_off32 = 0U;
     int64_t auto_value_base = INT64_MIN;
@@ -4210,7 +4310,8 @@ expand_canon_makernote_value(
             custom_off = canon_choose_custom_functions2_offset(
                 tiff_bytes, context->value_or_off32, abs_value_off,
                 value.size(), context->maker_note_off,
-                context->auto_value_base, context->schema_value_base);
+                context->maker_note_ifd_bytes, context->auto_value_base,
+                context->schema_value_base);
         }
         char canoncustom_ifd_buffer[96];
         const std::string_view canoncustom_ifd = make_mk_subtable_ifd_token(
@@ -4328,7 +4429,7 @@ expand_canon_makernote_value(
                     filterinfo_off = canon_choose_u32_binary_dir_offset(
                         tiff_bytes, context->value_or_off32, abs_value_off,
                         value.size(), context->maker_note_off,
-                        context->auto_value_base,
+                        context->maker_note_ifd_bytes, context->auto_value_base,
                         context->schema_value_base);
                 }
                 binary_directory_decoded = decode_canon_u32_bin_dir(
@@ -4413,6 +4514,7 @@ expand_canon_makernote_value(
             uint64_t alternate_off = 0U;
             if (canon_find_afinfo2_payload(
                     cfg, tiff_bytes, context->maker_note_off,
+                    context->maker_note_ifd_bytes,
                     context->maker_note_span_bytes, value.size(), abs_value_off,
                     options.limits, model_class, afinfo3_present,
                     afinfo3_context_known, &alternate_off)) {
@@ -4576,6 +4678,9 @@ decode_canon_makernote_value(const TiffConfig& cfg,
             || !canon_add_special_base_and_off32(base, entry.value_or_off32,
                                                  &offset)
             || offset == context.value_offset
+            || canon_value_overlaps_ifd(offset, value_bytes,
+                                        context.excluded_value_span.offset,
+                                        context.excluded_value_span.size)
             || !source_tiff_contains(*context.source, offset, value_bytes)) {
             continue;
         }
@@ -4741,6 +4846,7 @@ decode_canon_makernote(const TiffConfig& cfg,
     if (model.empty()) {
         model = canon_find_model_text_in_main_ifd(mk_cfg, tiff_bytes,
                                                   entries_off, entry_count,
+                                                  maker_note_off, needed,
                                                   layout,
                                                   std::span<char>(model_buf));
     }
@@ -4793,9 +4899,14 @@ decode_canon_makernote(const TiffConfig& cfg,
             continue;
         }
 
+        const bool structural_overlap
+            = !ref.inline_value
+              && canon_value_overlaps_ifd(ref.value_off, value_bytes,
+                                          maker_note_off, needed);
         const uint64_t abs_value_off = ref.value_off;
-
-        if (abs_value_off + value_bytes > tiff_bytes.size()) {
+        if (!structural_overlap
+            && (abs_value_off > tiff_bytes.size()
+                || value_bytes > tiff_bytes.size() - abs_value_off)) {
             if (status_out) {
                 update_status(status_out, ExifDecodeStatus::Malformed);
             }
@@ -4807,6 +4918,23 @@ decode_canon_makernote(const TiffConfig& cfg,
                    > options.limits.max_total_entries) {
             update_status(status_out, ExifDecodeStatus::LimitExceeded);
             return true;
+        }
+
+        if (structural_overlap) {
+            Entry entry;
+            entry.key          = make_exif_tag_key(store.arena(), mk_ifd0, tag);
+            entry.origin.block = block;
+            entry.origin.order_in_block = i;
+            entry.origin.wire_type      = WireType { WireFamily::Tiff, type };
+            entry.origin.wire_count     = static_cast<uint32_t>(count);
+            entry.flags |= EntryFlags::Unreadable;
+            canon_maybe_mark_contextual_name(model, mk_ifd0, tag, &entry);
+            (void)store.add_entry(entry);
+            if (status_out) {
+                update_status(status_out, ExifDecodeStatus::Malformed);
+                status_out->entries_decoded += 1U;
+            }
+            continue;
         }
 
         Entry entry;
@@ -4840,8 +4968,9 @@ decode_canon_makernote(const TiffConfig& cfg,
             = tiff_bytes.subspan(static_cast<size_t>(abs_value_off),
                                  static_cast<size_t>(value_bytes));
         const CanonMakerNoteValueContext value_context {
-            tiff_bytes, abs_value_off, maker_note_off, maker_note_span_bytes,
-            ifd_entry.value_or_off32, auto_value_base, schema_value_base
+            tiff_bytes,      abs_value_off,         maker_note_off,
+            needed,          maker_note_span_bytes, ifd_entry.value_or_off32,
+            auto_value_base, schema_value_base
         };
         const SourceIfdValueExpansionStatus expansion
             = expand_canon_makernote_value(mk_cfg, ifd_entry, true, value_raw,

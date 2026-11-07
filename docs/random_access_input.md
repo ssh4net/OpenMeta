@@ -80,6 +80,22 @@ metadata uses bounded decryption scratch; native RAF follows declared private
 TIFF F000 directories without following pixel strip offsets. This is targeted
 metadata support, not universal private-layout parity.
 
+Native Pentax `AOC` notes carried by TIFF tag `0x927c` resolve out-of-line
+values from the containing TIFF origin; inline values retain the note's byte
+order and directory position. Callback reads use that TIFF range, including
+values outside the declared note, and consume each borrowed view before the
+scratch is reused. The separate `PENTAX` header, old type 2 notes, RICOH notes
+and DNG private blocks keep their existing offset rules. The native AOC rule is
+the supplied maintenance contract, supported here by synthetic regressions;
+this correction does not qualify an original-camera corpus.
+
+Canon base selection excludes value candidates that overlap the current
+MakerNote IFD's count, entries or next-IFD pointer. An in-range directory is
+not evidence of a value table. Other signature and base-selection rules remain
+in effect, including the existing deterministic fallback when two non-directory
+tables remain plausible. This resolves the owned external-relative
+CameraSettings fixture; it does not resolve general Canon offset ambiguity.
+
 For CR3, positional snapshots also decode the direct Canon root directory in
 `CMT3` TIFF metadata with the same Canon expansion helper as memory input.
 The scanner-declared CMT3 payload must fit the caller's payload scratch and

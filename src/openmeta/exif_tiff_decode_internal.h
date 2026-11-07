@@ -41,6 +41,19 @@ namespace exif_internal {
         uint32_t value_or_off32 = 0;
     };
 
+    // A value table cannot occupy the count, entries, or next-IFD pointer of
+    // its own directory. Subtraction avoids overflowing either interval end.
+    constexpr bool canon_value_overlaps_ifd(uint64_t value_off,
+                                            uint64_t value_bytes,
+                                            uint64_t maker_note_off,
+                                            uint64_t ifd_bytes) noexcept
+    {
+        return value_bytes != 0U && ifd_bytes != 0U
+               && (value_off >= maker_note_off
+                       ? value_off - maker_note_off < ifd_bytes
+                       : maker_note_off - value_off < value_bytes);
+    }
+
     struct OffsetPolicy final {
         // For classic TIFF IFD entries, out-of-line values use an offset field
         // that is interpreted relative to a base. Most TIFF/EXIF uses base=0
@@ -52,6 +65,11 @@ namespace exif_internal {
         // `out_of_line_base_i64` + off32 with overflow and negative checks.
         bool out_of_line_base_is_signed = false;
         int64_t out_of_line_base_i64    = 0;
+
+        // Optional structural bytes that must not be decoded as a value.
+        // Canon uses this for its own IFD; zero size preserves other layouts.
+        uint64_t out_of_line_excluded_begin = 0U;
+        uint64_t out_of_line_excluded_size  = 0U;
     };
 
     struct MakerNoteLayout final {
@@ -114,6 +132,7 @@ namespace exif_internal {
             = CanonAfInfo2ModelClass::Unknown;
         bool canon_afinfo3_present       = false;
         bool canon_afinfo3_context_known = false;
+        SourceTiffMetadataSpan excluded_value_span;
     };
 
     using SourceIfdValueExpansionHook = SourceIfdValueExpansionStatus (*)(
@@ -295,10 +314,14 @@ namespace exif_internal {
         const ExifDecodeOptions& options,
         ExifDecodeResult* status_out) noexcept;
 
+    // Supply containing_tiff/source only for ordinary MakerNote tag 0x927c.
     bool decode_pentax_makernote(std::span<const std::byte> maker_note_bytes,
                                  std::string_view mk_ifd0, MetaStore& store,
                                  const ExifDecodeOptions& options,
-                                 ExifDecodeResult* status_out) noexcept;
+                                 ExifDecodeResult* status_out,
+                                 std::span<const std::byte> containing_tiff = {},
+                                 uint64_t maker_note_off  = 0U,
+                                 SourceTiffReader* source = nullptr) noexcept;
 
     bool decode_casio_makernote(const TiffConfig& parent_cfg,
                                 std::span<const std::byte> tiff_bytes,

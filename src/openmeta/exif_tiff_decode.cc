@@ -5321,9 +5321,9 @@ decode_exif_tiff_contiguous(std::span<const std::byte> tiff_bytes,
                 // Pentax MakerNote: "AOC\0" header + endianness marker +
                 // u16 entry count at +6, then classic IFD entries at +8.
                 if (vendor == MakerNoteVendor::Pentax
-                    && exif_internal::decode_pentax_makernote(mn, mk_ifd0,
-                                                              store, mn_opts,
-                                                              &sink.result)) {
+                    && exif_internal::decode_pentax_makernote(
+                        mn, mk_ifd0, store, mn_opts, &sink.result, tiff_bytes,
+                        value_off)) {
                     continue;
                 }
 
@@ -5877,12 +5877,18 @@ namespace exif_internal {
             std::span<const std::byte> value_raw;
             bool have_value       = false;
             bool unreadable_value = false;
+            const bool structural_overlap
+                = !ref.inline_value
+                  && canon_value_overlaps_ifd(ref.value_off, ref.value_bytes,
+                                              offsets.out_of_line_excluded_begin,
+                                              offsets.out_of_line_excluded_size);
             if (ref.inline_value) {
                 value_raw  = entry_raw.subspan(8U, static_cast<size_t>(
                                                       ref.value_bytes));
                 have_value = true;
-            } else if (!source_tiff_contains(*source, ref.value_off,
-                                             ref.value_bytes)) {
+            } else if (structural_overlap
+                       || !source_tiff_contains(*source, ref.value_off,
+                                                ref.value_bytes)) {
                 update_status(status_out, ExifDecodeStatus::Malformed);
                 unreadable_value = true;
             } else if (ref.value_bytes <= options.limits.max_value_bytes) {
@@ -5953,7 +5959,9 @@ namespace exif_internal {
                     bounded_metadata_span,
                     canon_afinfo2_model,
                     canon_afinfo3_present,
-                    canon_afinfo3_context_known
+                    canon_afinfo3_context_known,
+                    { offsets.out_of_line_excluded_begin,
+                      offsets.out_of_line_excluded_size }
                 };
                 const SourceIfdValueExpansionStatus expansion
                     = value_hook(cfg, ifd_entry, have_value, value_raw,
@@ -6066,7 +6074,7 @@ namespace {
         SourceTiffReader* source, const TiffConfig& cfg,
         uint64_t maker_note_off, uint64_t maker_note_bytes,
         uint16_t entry_count, uint64_t ifd_needed, const int64_t (&bases)[4],
-        const bool (&enabled)[4], const ExifDecodeLimits& limits,
+        bool (&enabled)[4], const ExifDecodeLimits& limits,
         uint32_t (&scores)[4], bool (&all_in_payload)[4]) noexcept
     {
         bool all_in[4] { true, true, true, true };
@@ -6101,9 +6109,21 @@ namespace {
                 }
                 uint64_t value_off = 0U;
                 if (!source_add_signed_base(bases[candidate],
-                                            entry.value_or_off32, &value_off)
-                    || !exif_internal::source_tiff_contains(*source, value_off,
-                                                            value_bytes)) {
+                                            entry.value_or_off32, &value_off)) {
+                    all_in[candidate] = false;
+                    continue;
+                }
+                if (exif_internal::canon_value_overlaps_ifd(
+                        value_off, value_bytes, maker_note_off, ifd_needed)) {
+                    // One base applies to every entry. A positive score from
+                    // another entry must not rescue a directory address.
+                    enabled[candidate] = false;
+                    all_in[candidate]  = false;
+                    scores[candidate]  = 0U;
+                    continue;
+                }
+                if (!exif_internal::source_tiff_contains(*source, value_off,
+                                                         value_bytes)) {
                     all_in[candidate] = false;
                     continue;
                 }
@@ -6260,6 +6280,8 @@ namespace {
 
         choice.offsets.out_of_line_base_is_signed = true;
         choice.offsets.out_of_line_base_i64       = candidates[best_index];
+        choice.offsets.out_of_line_excluded_begin = maker_note_off;
+        choice.offsets.out_of_line_excluded_size  = needed;
         choice.alternate_value_bases = {
             enabled[2] ? candidates[2] : INT64_MIN,
             enabled[3] ? candidates[3] : INT64_MIN,
@@ -6724,7 +6746,8 @@ namespace {
         if (vendor == MakerNoteVendor::Pentax
             && exif_internal::decode_pentax_makernote(maker_note, maker_ifd,
                                                       store, mn_options,
-                                                      &result->decode)) {
+                                                      &result->decode, {},
+                                                      maker_note_off, source)) {
             return;
         }
         if (vendor == MakerNoteVendor::Hp

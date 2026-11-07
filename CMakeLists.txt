@@ -1055,6 +1055,8 @@ if(OPENMETA_BUILD_TESTS)
     tests/interop_import_test.cc
     tests/dji_app4_decode_test.cc
     tests/makernote_decode_test.cc
+    tests/aoc_offset_regression_test.cc
+    tests/canon_table_resolution_test.cc
     tests/nikon_raw_gap_test.cc
     tests/nikon_capture_decode_test.cc
     tests/metadata_capabilities_test.cc

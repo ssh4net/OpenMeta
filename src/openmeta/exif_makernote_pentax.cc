@@ -837,7 +837,10 @@ bool
 decode_pentax_makernote(std::span<const std::byte> maker_note_bytes,
                         std::string_view mk_ifd0, MetaStore& store,
                         const ExifDecodeOptions& options,
-                        ExifDecodeResult* status_out) noexcept
+                        ExifDecodeResult* status_out,
+                        std::span<const std::byte> containing_tiff,
+                        uint64_t maker_note_off,
+                        SourceTiffReader* source) noexcept
 {
     if (maker_note_bytes.size() < 16) {
         return false;
@@ -981,6 +984,19 @@ decode_pentax_makernote(std::span<const std::byte> maker_note_bytes,
         return false;
     }
 
+    // Only native AOC under the ordinary MakerNote tag uses the containing
+    // TIFF origin. Private blocks and old type-2 layouts retain their rules.
+    const bool native_aoc = !use_type2 && (source || !containing_tiff.empty());
+    if (native_aoc && source
+        && !source_tiff_contains(*source, maker_note_off,
+                                 maker_note_bytes.size())) {
+        return false;
+    }
+    // source_tiff_value may reuse the storage backing maker_note_bytes.
+    const uint8_t model_byte_0064 = maker_note_bytes.size() > 0x64U
+                                        ? u8(maker_note_bytes[0x64U])
+                                        : 0U;
+
     const BlockId block = store.add_block(BlockInfo {});
     if (block == kInvalidBlockId) {
         return false;
@@ -989,17 +1005,30 @@ decode_pentax_makernote(std::span<const std::byte> maker_note_bytes,
     for (uint32_t i = 0; i < entry_count; ++i) {
         const uint64_t eoff = entries_off + uint64_t(i) * 12ULL;
 
+        std::span<const std::byte> entry_bytes = maker_note_bytes;
+        uint64_t entry_off                     = eoff;
+        if (native_aoc && source) {
+            // Re-read the directory after every value: both scratch and the
+            // read window can have been overwritten by the preceding read.
+            if (maker_note_off > UINT64_MAX - eoff
+                || !source_tiff_view(source, maker_note_off + eoff, 12U,
+                                     &entry_bytes)) {
+                return true;
+            }
+            entry_off = 0U;
+        }
+
         uint16_t tag  = 0;
         uint16_t type = 0;
-        if (!read_tiff_u16(cfg, maker_note_bytes, eoff + 0, &tag)
-            || !read_tiff_u16(cfg, maker_note_bytes, eoff + 2, &type)) {
+        if (!read_tiff_u16(cfg, entry_bytes, entry_off + 0, &tag)
+            || !read_tiff_u16(cfg, entry_bytes, entry_off + 2, &type)) {
             return true;
         }
 
         uint32_t count32        = 0;
         uint32_t value_or_off32 = 0;
-        if (!read_tiff_u32(cfg, maker_note_bytes, eoff + 4, &count32)
-            || !read_tiff_u32(cfg, maker_note_bytes, eoff + 8,
+        if (!read_tiff_u32(cfg, entry_bytes, entry_off + 4, &count32)
+            || !read_tiff_u32(cfg, entry_bytes, entry_off + 8,
                               &value_or_off32)) {
             return true;
         }
@@ -1015,7 +1044,7 @@ decode_pentax_makernote(std::span<const std::byte> maker_note_bytes,
         const uint64_t value_bytes = count * unit;
 
         const uint64_t inline_cap      = 4;
-        const uint64_t value_field_off = eoff + 8;
+        const uint64_t value_field_off = entry_off + 8;
         const uint64_t value_off = (value_bytes <= inline_cap) ? value_field_off
                                                                : value_or_off32;
 
@@ -1038,16 +1067,32 @@ decode_pentax_makernote(std::span<const std::byte> maker_note_bytes,
                 update_status(status_out, ExifDecodeStatus::LimitExceeded);
             }
             entry.flags |= EntryFlags::Truncated;
-        } else if (value_off + value_bytes > maker_note_bytes.size()) {
-            if (status_out) {
-                update_status(status_out, ExifDecodeStatus::Malformed);
-            }
-            entry.flags |= EntryFlags::Unreadable;
         } else {
-            entry.value = decode_tiff_value(cfg, maker_note_bytes, type, count,
-                                            value_off, value_bytes,
-                                            store.arena(), options.limits,
-                                            status_out);
+            std::span<const std::byte> value_data
+                = native_aoc && value_bytes > inline_cap ? containing_tiff
+                                                         : entry_bytes;
+            uint64_t decode_off = value_off;
+            bool have_value     = true;
+            if (native_aoc && source) {
+                const uint64_t source_off = value_bytes > inline_cap
+                                                ? value_or_off32
+                                                : maker_note_off + eoff + 8U;
+                have_value = source_tiff_value(source, source_off, value_bytes,
+                                               &value_data);
+                decode_off = 0U;
+            } else if (value_off > value_data.size()
+                       || value_bytes > value_data.size() - value_off) {
+                update_status(status_out, ExifDecodeStatus::Malformed);
+                have_value = false;
+            }
+            if (!have_value) {
+                entry.flags |= EntryFlags::Unreadable;
+            } else {
+                entry.value = decode_tiff_value(cfg, value_data, type, count,
+                                                decode_off, value_bytes,
+                                                store.arena(), options.limits,
+                                                status_out);
+            }
         }
 
         if (pentax_main_0062_placeholder && tag == 0x0062U) {
@@ -1099,10 +1144,7 @@ decode_pentax_makernote(std::span<const std::byte> maker_note_bytes,
             std::string_view model;
             if (ctx.find_first_text("ifd0", 0x0110, &model)
                 && model.find("NB1000") != std::string_view::npos) {
-                MetaValue v = make_u8(0);
-                if (maker_note_bytes.size() > 0x64U) {
-                    v = make_u8(u8(maker_note_bytes[0x64]));
-                }
+                MetaValue v         = make_u8(model_byte_0064);
                 tags_out[out_count] = 0x0064;
                 vals_out[out_count] = v;
                 out_count += 1;
