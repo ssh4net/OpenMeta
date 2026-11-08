@@ -54,6 +54,13 @@ namespace exif_internal {
                        : maker_note_off - value_off < value_bytes);
     }
 
+    bool canon_recover_ifd_extent(const TiffConfig& cfg,
+                                  std::span<const std::byte> maker_note,
+                                  uint64_t maker_note_off,
+                                  uint16_t declared_count,
+                                  uint16_t* effective_count,
+                                  uint64_t* ifd_bytes) noexcept;
+
     struct OffsetPolicy final {
         // For classic TIFF IFD entries, out-of-line values use an offset field
         // that is interpreted relative to a base. Most TIFF/EXIF uses base=0
@@ -366,16 +373,14 @@ namespace exif_internal {
         bool location_known = false;
     };
 
-    bool decode_canon_makernote(const TiffConfig& parent_cfg,
-                                std::span<const std::byte> tiff_bytes,
-                                uint64_t maker_note_off,
-                                uint64_t maker_note_bytes,
-                                std::string_view mk_ifd0, MetaStore& store,
-                                const ExifDecodeOptions& options,
-                                ExifDecodeResult* status_out,
-                                CanonMakerNoteResiduals* residuals = nullptr,
-                                CanonAfInfo2ModelClass afinfo2_model
-                                = CanonAfInfo2ModelClass::Unknown) noexcept;
+    bool decode_canon_makernote(
+        const TiffConfig& parent_cfg, std::span<const std::byte> tiff_bytes,
+        uint64_t maker_note_off, uint64_t maker_note_bytes,
+        std::string_view mk_ifd0, MetaStore& store,
+        const ExifDecodeOptions& options, ExifDecodeResult* status_out,
+        CanonMakerNoteResiduals* residuals   = nullptr,
+        CanonAfInfo2ModelClass afinfo2_model = CanonAfInfo2ModelClass::Unknown,
+        const int64_t* selected_value_base   = nullptr) noexcept;
 
     ExifDecodeResult
     decode_canon_cr3_tiff(std::span<const std::byte> bytes, MetaStore& store,

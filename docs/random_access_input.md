@@ -96,6 +96,15 @@ in effect, including the existing deterministic fallback when two non-directory
 tables remain plausible. This resolves the owned external-relative
 CameraSettings fixture; it does not resolve general Canon offset ambiguity.
 
+Canon directory extent recovery handles one extra counted row only when that
+row starts with a zero next-IFD pointer and a unique preceding SHORT
+CameraSettings entry points exactly to the corrected directory end. The complete
+declared directory and self-sized table must fit the note, and preceding TIFF
+types must be supported. Other shapes retain the existing exclusion and
+fallback rules. Recovery changes interpretation only; source bytes are retained.
+The callback decoder preserves its selected signed value base when using a
+bounded local MakerNote slice; it does not guess a new base after rebasing.
+
 For CR3, positional snapshots also decode the direct Canon root directory in
 `CMT3` TIFF metadata with the same Canon expansion helper as memory input.
 The scanner-declared CMT3 payload must fit the caller's payload scratch and

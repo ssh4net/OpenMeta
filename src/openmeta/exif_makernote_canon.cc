@@ -1443,6 +1443,96 @@ canon_dir_bytes(uint16_t entry_count, uint64_t* out) noexcept
     return true;
 }
 
+bool
+canon_recover_ifd_extent(const TiffConfig& cfg,
+                         std::span<const std::byte> maker_note,
+                         uint64_t maker_note_off, uint16_t declared_count,
+                         uint16_t* effective_count,
+                         uint64_t* ifd_bytes) noexcept
+{
+    if (effective_count == nullptr || ifd_bytes == nullptr
+        || declared_count < 2U) {
+        return false;
+    }
+
+    uint64_t declared_ifd_bytes = 0U;
+    if (!canon_dir_bytes(declared_count, &declared_ifd_bytes)
+        || declared_ifd_bytes > maker_note.size()) {
+        return false;
+    }
+
+    uint16_t note_entry_count = 0U;
+    if (!read_tiff_u16(cfg, maker_note, 0U, &note_entry_count)
+        || note_entry_count != declared_count) {
+        return false;
+    }
+
+    const uint16_t candidate_count = static_cast<uint16_t>(declared_count - 1U);
+    uint64_t candidate_ifd_bytes   = 0U;
+    if (!canon_dir_bytes(candidate_count, &candidate_ifd_bytes)
+        || candidate_ifd_bytes < 4U
+        || candidate_ifd_bytes > maker_note.size()) {
+        return false;
+    }
+
+    const uint64_t trailing_row_start = candidate_ifd_bytes - 4U;
+    for (uint64_t i = 0U; i < 4U; ++i) {
+        if (maker_note[static_cast<size_t>(trailing_row_start + i)]
+            != std::byte { 0 }) {
+            return false;
+        }
+    }
+
+    uint32_t camera_settings_entries = 0U;
+    bool camera_settings_valid       = false;
+    for (uint32_t i = 0U; i < candidate_count; ++i) {
+        const uint64_t entry_off = 2U + uint64_t(i) * 12U;
+        ClassicIfdEntry entry;
+        if (!read_classic_ifd_entry(cfg, maker_note, entry_off, &entry)
+            || tiff_type_size(entry.type) == 0U) {
+            return false;
+        }
+        if (entry.tag != 0x0001U) {
+            continue;
+        }
+
+        camera_settings_entries += 1U;
+        if (camera_settings_entries != 1U || entry.type != 3U
+            || entry.count32 <= 2U) {
+            return false;
+        }
+
+        const uint64_t payload_bytes = uint64_t(entry.count32) * 2U;
+        if (payload_bytes > UINT16_MAX
+            || maker_note_off > (UINT64_MAX - candidate_ifd_bytes)) {
+            return false;
+        }
+        const uint64_t expected_payload_off = maker_note_off
+                                              + candidate_ifd_bytes;
+        if (uint64_t(entry.value_or_off32) != expected_payload_off
+            || candidate_ifd_bytes > maker_note.size()
+            || payload_bytes > (maker_note.size() - candidate_ifd_bytes)) {
+            return false;
+        }
+
+        uint16_t encoded_payload_bytes = 0U;
+        if (!read_tiff_u16(cfg, maker_note, candidate_ifd_bytes,
+                           &encoded_payload_bytes)
+            || uint64_t(encoded_payload_bytes) != payload_bytes) {
+            return false;
+        }
+        camera_settings_valid = true;
+    }
+
+    if (camera_settings_entries != 1U || !camera_settings_valid) {
+        return false;
+    }
+
+    *effective_count = candidate_count;
+    *ifd_bytes       = candidate_ifd_bytes;
+    return true;
+}
+
 static bool
 canon_value_base_overlaps_ifd(
     const TiffConfig& cfg, std::span<const std::byte> tiff_bytes,
@@ -4749,7 +4839,8 @@ decode_canon_makernote(const TiffConfig& cfg,
                        const ExifDecodeOptions& options,
                        ExifDecodeResult* status_out,
                        CanonMakerNoteResiduals* residuals,
-                       CanonAfInfo2ModelClass afinfo2_model) noexcept
+                       CanonAfInfo2ModelClass afinfo2_model,
+                       const int64_t* selected_value_base) noexcept
 {
     if (mk_ifd0.empty()) {
         return false;
@@ -4808,6 +4899,18 @@ decode_canon_makernote(const TiffConfig& cfg,
         return false;
     }
 
+    const std::span<const std::byte> maker_note
+        = tiff_bytes.subspan(static_cast<size_t>(maker_note_off),
+                             static_cast<size_t>(maker_note_bytes));
+    uint16_t effective_entry_count = entry_count;
+    uint64_t effective_ifd_bytes   = needed;
+    if (canon_recover_ifd_extent(mk_cfg, maker_note, maker_note_off,
+                                 entry_count, &effective_entry_count,
+                                 &effective_ifd_bytes)) {
+        entry_count = effective_entry_count;
+        needed      = effective_ifd_bytes;
+    }
+
     const uint64_t entries_off = maker_note_off + 2ULL;
 
     // Some Canon MakerNotes are stored as a truncated directory (count too
@@ -4827,9 +4930,13 @@ decode_canon_makernote(const TiffConfig& cfg,
     const bool have_offset_schema = ctx.find_first_i32("exififd", 0xea1d,
                                                        &offset_schema);
 
-    const int64_t value_base = guess_canon_value_base(
-        mk_cfg, tiff_bytes, maker_note_off, maker_note_span_bytes, entry_count,
-        needed, options.limits, have_offset_schema, offset_schema);
+    const int64_t value_base
+        = selected_value_base
+              ? *selected_value_base
+              : guess_canon_value_base(mk_cfg, tiff_bytes, maker_note_off,
+                                       maker_note_span_bytes, entry_count,
+                                       needed, options.limits,
+                                       have_offset_schema, offset_schema);
     const int64_t auto_value_base
         = canon_compute_auto_value_base(mk_cfg, tiff_bytes, maker_note_off,
                                         entry_count, needed, options.limits);

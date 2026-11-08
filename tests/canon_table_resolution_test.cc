@@ -435,6 +435,44 @@ namespace {
     }
 
     TEST(CanonTableResolution,
+         CallbackKeepsAbsoluteBaseWhenBothTablesFitDeclaredNote)
+    {
+        const CameraSettings absolute = make_sequential_camera_settings(1000U);
+        const CameraSettings relative = make_sequential_camera_settings(2000U);
+        constexpr bool endian_cases[][2] = {
+            { true, true },
+            { false, false },
+            { true, false },
+            { false, true },
+        };
+        for (const auto& endian_case : endian_cases) {
+            // Both candidates fit the note. Its 12-byte value-area gap must
+            // survive slicing the note away from its parent TIFF origin.
+            const std::vector<std::byte> tiff
+                = make_canon_tiff(endian_case[0], endian_case[1], 158U, 350U,
+                                  158U, absolute, 286U, relative);
+            ExifDecodeOptions options;
+            options.decode_makernote = true;
+            MetaStore contiguous_store;
+            const ExifDecodeResult result
+                = decode_exif_tiff(tiff, contiguous_store, {}, options);
+            EXPECT_EQ(result.status, ExifDecodeStatus::Ok);
+            contiguous_store.finalize();
+            expect_canon_camera_settings(contiguous_store, absolute);
+
+            MetaStore callback_store;
+            uint32_t calls = 0U;
+            const ExifRandomAccessDecodeResult callback
+                = decode_with_callback(tiff, callback_store, &calls);
+            EXPECT_TRUE(callback.complete());
+            EXPECT_EQ(callback.decode.status, ExifDecodeStatus::Ok);
+            EXPECT_GT(calls, 0U);
+            callback_store.finalize();
+            expect_canon_camera_settings(callback_store, absolute);
+        }
+    }
+
+    TEST(CanonTableResolution,
          AbsoluteCameraSettingsCandidateWinsWithMakerNotePayloadEvidence)
     {
         const CameraSettings absolute = make_sequential_camera_settings(1000U);

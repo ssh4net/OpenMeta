@@ -6045,8 +6045,10 @@ namespace {
             = exif_internal::CanonAfInfo2ModelClass::Unknown;
         bool afinfo3_present       = false;
         bool afinfo3_context_known = false;
-        bool plausible             = false;
-        bool values_within_payload = false;
+        bool plausible                 = false;
+        bool values_within_payload     = false;
+        uint16_t effective_entry_count = 0U;
+        bool recovered_ifd_extent      = false;
     };
 
 
@@ -6154,7 +6156,8 @@ namespace {
     static SourceCanonLayout select_source_canon_layout(
         SourceTiffReader* source, const TiffConfig& parent_cfg,
         uint64_t maker_note_off, uint64_t maker_note_bytes,
-        const MetaStore& store, const ExifDecodeOptions& options) noexcept
+        std::span<const std::byte> maker_note, const MetaStore& store,
+        const ExifDecodeOptions& options) noexcept
     {
         SourceCanonLayout choice;
         choice.cfg           = parent_cfg;
@@ -6179,6 +6182,13 @@ namespace {
                 return choice;
             }
         }
+        if (maker_note.size() == maker_note_bytes) {
+            choice.recovered_ifd_extent
+                = exif_internal::canon_recover_ifd_extent(
+                    choice.cfg, maker_note, maker_note_off, entry_count,
+                    &entry_count, &needed);
+        }
+        choice.effective_entry_count = entry_count;
         choice.afinfo3_context_known = needed >= 4U
                                        && maker_note_bytes >= needed - 4U;
 
@@ -6445,13 +6455,27 @@ namespace {
         if (vendor == MakerNoteVendor::Canon && source) {
             const SourceCanonLayout layout
                 = select_source_canon_layout(source, cfg, maker_note_off,
-                                             maker_note_bytes, store, options);
+                                             maker_note_bytes, maker_note,
+                                             store, options);
             exif_internal::CanonMakerNoteResiduals residuals;
+            int64_t local_value_base = 0;
+            bool local_base_valid    = false;
+            if (maker_note_off <= static_cast<uint64_t>(INT64_MAX)) {
+                const int64_t origin   = static_cast<int64_t>(maker_note_off);
+                const int64_t selected = layout.offsets.out_of_line_base_i64;
+                if (selected >= INT64_MIN + origin) {
+                    local_value_base = selected - origin;
+                    local_base_valid = true;
+                }
+            }
+            // Repaired directories retain their parent TIFF origin and forced
+            // count through the source reader instead of the local slice path.
             if (layout.plausible && layout.values_within_payload
+                && local_base_valid && !layout.recovered_ifd_extent
                 && exif_internal::decode_canon_makernote(
                     layout.cfg, maker_note, 0U, maker_note.size(), maker_ifd,
                     store, mn_options, &result->decode, &residuals,
-                    layout.afinfo2_model)) {
+                    layout.afinfo2_model, &local_value_base)) {
                 uint64_t residual_offset = maker_note_off;
                 if (!checked_add_u64(maker_note_off, residuals.first_offset,
                                      &residual_offset)) {
@@ -6468,7 +6492,10 @@ namespace {
                 && exif_internal::decode_classic_ifd_from_source(
                     source, layout.cfg, maker_note_off, layout.offsets,
                     maker_ifd, store, mn_options, &result->decode,
-                    EntryFlags::None, false, 0U, nullptr, true, false,
+                    EntryFlags::None, false,
+                    layout.recovered_ifd_extent ? layout.effective_entry_count
+                                                : uint16_t { 0U },
+                    nullptr, true, false,
                     exif_internal::decode_canon_makernote_value,
                     layout.alternate_value_bases,
                     exif_internal::SourceTiffMetadataSpan { maker_note_off,
