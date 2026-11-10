@@ -234,11 +234,12 @@ namespace {
             return;
         }
 
-        const ByteArena& arena               = store.arena();
-        const std::span<const Entry> entries = store.entries();
+        const ByteArena& arena       = store.arena();
+        const size_t entry_count     = store.entries().size();
 
-        for (size_t i = 0; i < entries.size(); ++i) {
-            const Entry& e = entries[i];
+        for (size_t i = 0; i < entry_count; ++i) {
+            // Emitting PictureWizard entries can reallocate the entry vector.
+            const Entry& e = store.entry(static_cast<EntryId>(i));
             if (e.key.kind != MetaKeyKind::ExifTag) {
                 continue;
             }

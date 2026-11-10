@@ -1037,6 +1037,46 @@ TEST(ExifTiffDecode, RandomAccessCallbackMatchesSpanThroughSourceSubrange)
               "2024:01:01 00:00:00");
 }
 
+TEST(ExifTiffDecode, CallbackRequiresSeparateValueScratchEvenWithLargeWindow)
+{
+    const std::vector<std::byte> tiff = make_test_tiff_le();
+    TiffCallbackState callback { tiff };
+    const RandomAccessSource source = make_callback_random_access_source(
+        tiff.size(), &callback, tiff_read_at);
+    std::array<std::byte, 128> window {};
+    std::array<std::byte, 8> value {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window = window;
+    scratch.value = value;
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result = decode_exif_tiff_random_access(
+        make_random_access_source_range(source), store, {}, scratch,
+        ExifDecodeOptions {});
+    EXPECT_TRUE(result.input.ok());
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::OutputTruncated);
+    EXPECT_EQ(result.value_scratch_needed, 20U);
+    EXPECT_FALSE(result.complete());
+}
+
+TEST(ExifTiffDecode, CallbackRejectsOverlappingScratchBuffers)
+{
+    const std::vector<std::byte> tiff = make_test_tiff_le();
+    TiffCallbackState callback { tiff };
+    const RandomAccessSource source = make_callback_random_access_source(
+        tiff.size(), &callback, tiff_read_at);
+    std::array<std::byte, 128> storage {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window = std::span<std::byte>(storage).first(64U);
+    scratch.value = std::span<std::byte>(storage).subspan(32U);
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result = decode_exif_tiff_random_access(
+        make_random_access_source_range(source), store, {}, scratch,
+        ExifDecodeOptions {});
+    EXPECT_EQ(result.input.code, RandomAccessReadCode::InvalidArgument);
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::Malformed);
+    EXPECT_EQ(callback.calls, 0U);
+}
+
 
 TEST(ExifTiffDecode, MinoltaMakerNoteValuesUseParentTiffOffsetBase)
 {
@@ -1075,6 +1115,27 @@ TEST(ExifTiffDecode, MinoltaMakerNoteValuesUseParentTiffOffsetBase)
     EXPECT_LT(callback.max_request, tiff.size());
     callback_store.finalize();
     expect_minolta_parent_tiff_values(callback_store);
+}
+
+TEST(ExifTiffDecode, CallbackReportsNestedMakerNoteScratchRequirement)
+{
+    const std::vector<std::byte> tiff = make_minolta_parent_tiff(160U);
+    TiffCallbackState callback { tiff };
+    const RandomAccessSource source = make_callback_random_access_source(
+        tiff.size(), &callback, tiff_read_at);
+    std::array<std::byte, 64> window {};
+    std::array<std::byte, 66> value {};
+    ExifRandomAccessScratch scratch;
+    scratch.read_window = window;
+    scratch.value = value;
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result = decode_exif_tiff_random_access(
+        make_random_access_source_range(source), store, {}, scratch, options);
+    EXPECT_TRUE(result.input.ok());
+    EXPECT_FALSE(result.complete());
+    EXPECT_GT(result.value_scratch_needed, value.size());
 }
 
 

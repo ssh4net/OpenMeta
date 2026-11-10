@@ -162,7 +162,9 @@ namespace {
                               size_t read_window_capacity = 64U,
                               uint64_t minimum_read_bytes = 64U,
                               uint64_t forbidden_begin = UINT64_MAX,
-                              bool* touched_forbidden_out = nullptr) noexcept
+                              bool* touched_forbidden_out = nullptr,
+                              std::byte scratch_initial_value
+                              = std::byte { 0 }) noexcept
     {
         MakerNoteCallbackState state;
         state.bytes = tiff;
@@ -172,6 +174,8 @@ namespace {
                                                  maker_note_read_at);
         std::array<std::byte, 4096> read_window_storage {};
         std::array<std::byte, 16384> value_scratch {};
+        read_window_storage.fill(scratch_initial_value);
+        value_scratch.fill(scratch_initial_value);
         ExifRandomAccessScratch scratch;
         scratch.read_window = std::span<std::byte>(read_window_storage).first(
             read_window_capacity);
@@ -188,6 +192,19 @@ namespace {
             *touched_forbidden_out = state.touched_forbidden;
         }
         return result;
+    }
+
+    static ExifRandomAccessDecodeResult
+    decode_makernote_callback_with_poisoned_scratch(
+        std::span<const std::byte> tiff, MetaStore& store,
+        size_t value_capacity = 4096U,
+        size_t read_window_capacity = 16U,
+        uint64_t minimum_read_bytes = 16U) noexcept
+    {
+        return decode_makernote_callback(
+            tiff, store, RandomAccessReadLimits {}, value_capacity,
+            read_window_capacity, minimum_read_bytes, UINT64_MAX, nullptr,
+            std::byte { 0xA5 });
     }
 
     static uint8_t sony_encipher_byte(uint8_t b) noexcept
@@ -2381,6 +2398,19 @@ namespace {
         return mn;
     }
 
+    static std::vector<std::byte>
+    make_kodak_tiff_header_fallback_makernote()
+    {
+        std::vector<std::byte> mn;
+        append_bytes(&mn, "II");
+        append_u16le(&mn, 42U);
+        append_u32le(&mn, 8U);
+        append_u16le(&mn, 1U);
+        append_classic_ifd_entry_le(&mn, 0x0104U, 3U, 1U, 9U);
+        append_u32le(&mn, 0U);
+        return mn;
+    }
+
     static std::vector<std::byte> make_kodak_absolute_ifd_makernote()
     {
         std::vector<std::byte> mn;
@@ -2596,6 +2626,21 @@ namespace {
         mn.push_back(std::byte { 2 });
         mn.push_back(std::byte { 0 });
 
+        return mn;
+    }
+
+    static std::vector<std::byte>
+    make_nikon_v1_makernote_with_large_external_value()
+    {
+        std::vector<std::byte> mn;
+        append_bytes(&mn, std::string_view("Nikon\0", 6U));
+        append_u16le(&mn, 1U);
+        append_bytes(&mn, "II");
+        append_u16le(&mn, 42U);
+        append_u32le(&mn, 8U);
+        append_u16le(&mn, 1U);
+        append_classic_ifd_entry_le(&mn, 0x0001U, 1U, 128U, 512U);
+        append_u32le(&mn, 0U);
         return mn;
     }
 
@@ -4815,6 +4860,31 @@ namespace {
         append_u16le(&mn, 44);
         append_u16le(&mn, 55);
         EXPECT_EQ(mn.size(), 28U);
+        return mn;
+    }
+
+    static std::vector<std::byte>
+    make_samsung_type2_makernote_with_duplicate_picturewizard()
+    {
+        std::vector<std::byte> mn;
+        append_u16le(&mn, 3);  // entry count
+
+        // The two PictureWizard values are followed by another directory
+        // entry. Their derived entries grow MetaStore while this directory is
+        // still being scanned.
+        append_classic_ifd_entry_le(&mn, 0x0021, 7, 10, 42);
+        append_classic_ifd_entry_le(&mn, 0x0021, 7, 10, 52);
+        append_classic_ifd_entry_le(&mn, 0xA003, 3, 1, 0xBEEF);
+        append_u32le(&mn, 0);  // next IFD
+        EXPECT_EQ(mn.size(), 42U);
+
+        for (uint16_t value = 1; value <= 5; ++value) {
+            append_u16le(&mn, value);
+        }
+        for (uint16_t value = 11; value <= 55; value += 11) {
+            append_u16le(&mn, value);
+        }
+        EXPECT_EQ(mn.size(), 62U);
         return mn;
     }
 
@@ -7415,7 +7485,9 @@ TEST(MakerNoteDecode, SonyCameraSettingsUseExactLayoutsAndNativeTypes)
         ASSERT_EQ(span_result.status, ExifDecodeStatus::Ok);
         MetaStore callback_store;
         const ExifRandomAccessDecodeResult callback_result
-            = decode_makernote_callback(tiff, callback_store);
+            = decode_makernote_callback(
+                tiff, callback_store, RandomAccessReadLimits {},
+                mn.size() + raw.size());
         EXPECT_TRUE(callback_result.complete());
         EXPECT_EQ(callback_result.decode.status, span_result.status);
         EXPECT_EQ(callback_result.decode.entries_decoded,
@@ -8495,7 +8567,9 @@ TEST(MakerNoteDecode, RandomAccessCanonCameraInfoHonorsValueScratchLimit)
                                    128U);
     EXPECT_TRUE(result.input.ok());
     EXPECT_EQ(result.decode.status, ExifDecodeStatus::OutputTruncated);
-    EXPECT_EQ(result.value_scratch_needed, 0x025bU + 0x00deU);
+    const uint64_t required_scratch
+        = 18U + static_cast<uint64_t>(mn.size() - 18U);
+    EXPECT_EQ(result.value_scratch_needed, required_scratch);
     EXPECT_EQ(result.maker_note_paths_skipped, 1U);
     EXPECT_TRUE(result.maker_note_path_location_known);
     EXPECT_EQ(result.maker_note_path_tag, 0x000dU);
@@ -8518,9 +8592,10 @@ TEST(MakerNoteDecode, RandomAccessCanonValueRefillStopsAtValueEnd)
 
     bool touched_pixel_tail = false;
     MetaStore store;
+    constexpr size_t kValueScratchBytes = 18U + 48U;
     const ExifRandomAccessDecodeResult result = decode_makernote_callback(
-        tiff, store, RandomAccessReadLimits {}, 4U, 128U, 64U, value_end,
-        &touched_pixel_tail);
+        tiff, store, RandomAccessReadLimits {}, kValueScratchBytes, 128U, 64U,
+        value_end, &touched_pixel_tail);
     EXPECT_TRUE(result.input.ok());
     EXPECT_TRUE(result.complete());
     EXPECT_EQ(result.decode.status, ExifDecodeStatus::Ok);
@@ -8623,8 +8698,10 @@ TEST(MakerNoteDecode,
     tiff.resize(tiff.size() + 128U, std::byte { 0xff });
     bool touched_pixels = false;
     MetaStore store;
+    constexpr size_t kRequiredScratch = 18U + 48U;
     const ExifRandomAccessDecodeResult baseline = decode_makernote_callback(
-        tiff, store, {}, 0U, 64U, 0U, pixel_start, &touched_pixels);
+        tiff, store, {}, kRequiredScratch, 64U, 0U, pixel_start,
+        &touched_pixels);
     EXPECT_TRUE(baseline.complete());
     EXPECT_FALSE(touched_pixels);
     EXPECT_EQ(baseline.value_scratch_needed, 0U);
@@ -8633,9 +8710,9 @@ TEST(MakerNoteDecode,
 
     MetaStore limited_store;
     const ExifRandomAccessDecodeResult limited = decode_makernote_callback(
-        tiff, limited_store, {}, 0U, 24U, 0U);
+        tiff, limited_store, {}, 18U, 24U, 0U);
     EXPECT_FALSE(limited.complete());
-    EXPECT_EQ(limited.value_scratch_needed, 48U);
+    EXPECT_EQ(limited.value_scratch_needed, kRequiredScratch);
     EXPECT_EQ(limited.maker_note_paths_skipped, 1U);
 
     ASSERT_GT(baseline.input.requests_issued, 1U);
@@ -8643,7 +8720,7 @@ TEST(MakerNoteDecode,
     limits.max_requests = baseline.input.requests_issued - 1U;
     MetaStore request_store;
     const ExifRandomAccessDecodeResult requests = decode_makernote_callback(
-        tiff, request_store, limits, 0U, 64U, 0U);
+        tiff, request_store, limits, kRequiredScratch, 64U, 0U);
     EXPECT_EQ(requests.input.code, RandomAccessReadCode::RequestLimitExceeded);
     EXPECT_LE(requests.input.requests_issued, limits.max_requests);
 
@@ -8651,15 +8728,15 @@ TEST(MakerNoteDecode,
     limits.max_total_bytes = baseline.input.bytes_requested - 1U;
     MetaStore byte_store;
     const ExifRandomAccessDecodeResult bytes = decode_makernote_callback(
-        tiff, byte_store, limits, 0U, 64U, 0U);
+        tiff, byte_store, limits, kRequiredScratch, 64U, 0U);
     EXPECT_EQ(bytes.input.code, RandomAccessReadCode::ByteLimitExceeded);
     EXPECT_LE(bytes.input.bytes_requested, limits.max_total_bytes);
 
     MetaStore denied_store;
     bool touched_denied = false;
     const ExifRandomAccessDecodeResult denied = decode_makernote_callback(
-        tiff, denied_store, {}, 0U, 64U, 0U, pixel_start - 48U,
-        &touched_denied);
+        tiff, denied_store, {}, kRequiredScratch, 64U, 0U,
+        pixel_start - 48U, &touched_denied);
     EXPECT_TRUE(touched_denied);
     EXPECT_EQ(denied.input.code, RandomAccessReadCode::IoError);
     EXPECT_FALSE(denied.complete());
@@ -8692,7 +8769,8 @@ TEST(MakerNoteDecode,
         }
         MetaStore store;
         const ExifRandomAccessDecodeResult result
-            = decode_makernote_callback(tiff, store, {}, 0U, 64U, 0U);
+            = decode_makernote_callback(tiff, store, {}, 18U + 48U, 64U,
+                                        0U);
         EXPECT_TRUE(result.input.ok());
         EXPECT_FALSE(result.complete());
         EXPECT_EQ(result.maker_note_paths_skipped, 1U);
@@ -8928,8 +9006,10 @@ TEST(MakerNoteDecode,
         tiff.resize(tiff.size() + 128U, std::byte { 0xff });
         bool touched_pixels = false;
         MetaStore store;
+        constexpr size_t kRequiredScratch = 18U + 32U;
         const ExifRandomAccessDecodeResult result = decode_makernote_callback(
-            tiff, store, {}, 0U, 64U, 0U, pixel_start, &touched_pixels);
+            tiff, store, {}, kRequiredScratch, 64U, 0U, pixel_start,
+            &touched_pixels);
         EXPECT_TRUE(result.input.ok());
         EXPECT_FALSE(touched_pixels);
         EXPECT_EQ(result.complete(), variant == 0U);
@@ -12590,6 +12670,47 @@ TEST(MakerNoteDecode, RandomAccessCallbackMatchesKodakKdkMakerNote)
 }
 
 
+TEST(MakerNoteDecode, RandomAccessKodakFallbackSurvivesPoisonedWindowRefills)
+{
+    const std::vector<std::byte> mn
+        = make_kodak_tiff_header_fallback_makernote();
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("KODAK",
+                                                                      mn);
+
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    const ExifDecodeResult span_result
+        = decode_exif_tiff(tiff, span_store, {}, options);
+
+    MetaStore callback_store;
+    const ExifRandomAccessDecodeResult callback_result
+        = decode_makernote_callback_with_poisoned_scratch(
+            tiff, callback_store, 256U, 16U, 16U);
+    EXPECT_TRUE(callback_result.complete());
+    EXPECT_GT(callback_result.input.requests_issued, 1U);
+    EXPECT_EQ(callback_result.decode.status, span_result.status);
+    EXPECT_EQ(callback_result.decode.entries_decoded,
+              span_result.entries_decoded);
+
+    span_store.finalize();
+    callback_store.finalize();
+    const std::span<const EntryId> span_ids = span_store.find_all(
+        exif_key("mk_kodak_type8_0", 0x0104U));
+    const std::span<const EntryId> callback_ids = callback_store.find_all(
+        exif_key("mk_kodak_type8_0", 0x0104U));
+    ASSERT_EQ(span_ids.size(), 1U);
+    ASSERT_EQ(callback_ids.size(), 1U);
+    const Entry& span_entry = span_store.entry(span_ids[0]);
+    const Entry& callback_entry = callback_store.entry(callback_ids[0]);
+    EXPECT_EQ(span_entry.value.kind, MetaValueKind::Scalar);
+    EXPECT_EQ(callback_entry.value.kind, span_entry.value.kind);
+    EXPECT_EQ(callback_entry.value.elem_type, span_entry.value.elem_type);
+    EXPECT_EQ(callback_entry.value.data.u64, 9U);
+    EXPECT_EQ(callback_entry.value.data.u64, span_entry.value.data.u64);
+}
+
+
 TEST(MakerNoteDecode, RandomAccessDecodesKodakOuterTiffValue)
 {
     std::vector<std::byte> mn;
@@ -12708,13 +12829,22 @@ TEST(MakerNoteDecode, RandomAccessKodakOuterValueReportsScratchRequirement)
     tiff.insert(tiff.end(), kPayloadBytes, std::byte { 0x5AU });
     write_u32le_at(&tiff, maker_note_off + 2U + 3U * 12U + 8U, value_off);
 
+    const uint64_t required_scratch
+        = static_cast<uint64_t>(mn.size()) + kPayloadBytes;
     MetaStore store;
     const ExifRandomAccessDecodeResult result
         = decode_makernote_callback(tiff, store);
     EXPECT_TRUE(result.input.ok());
-    EXPECT_EQ(result.value_scratch_needed, kPayloadBytes);
+    EXPECT_EQ(result.value_scratch_needed, required_scratch);
     EXPECT_EQ(result.nested_payloads_skipped, 0U);
     EXPECT_FALSE(result.complete());
+
+    MetaStore retry_store;
+    const ExifRandomAccessDecodeResult retry
+        = decode_makernote_callback(tiff, retry_store, {},
+                                    static_cast<size_t>(required_scratch));
+    EXPECT_TRUE(retry.complete());
+    EXPECT_EQ(retry.value_scratch_needed, 0U);
 }
 
 
@@ -12909,17 +13039,79 @@ TEST(MakerNoteDecode, RandomAccessDecodesNikonEmbeddedTiff)
     const std::vector<std::byte> tiff = make_test_tiff_with_makernote("Nikon",
                                                                       mn);
 
+    MetaStore span_store;
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    const ExifDecodeResult span_result
+        = decode_exif_tiff(tiff, span_store, {}, options);
+
     MetaStore store;
     const ExifRandomAccessDecodeResult result
-        = decode_makernote_callback(tiff, store);
+        = decode_makernote_callback_with_poisoned_scratch(
+            tiff, store, 256U, 16U, 16U);
     EXPECT_TRUE(result.complete());
-    EXPECT_EQ(result.decode.status, ExifDecodeStatus::Ok);
+    EXPECT_GT(result.input.requests_issued, 1U);
+    EXPECT_EQ(result.decode.status, span_result.status);
+    EXPECT_EQ(result.decode.entries_decoded, span_result.entries_decoded);
 
+    span_store.finalize();
     store.finalize();
+    const std::span<const EntryId> span_value_ids = span_store.find_all(
+        exif_key("mk_nikon0", 0x0001U));
+    ASSERT_EQ(span_value_ids.size(), 1U);
+    EXPECT_EQ(span_store.entry(span_value_ids[0]).value.data.u64,
+              0x01020304U);
+
+    const std::span<const EntryId> value_ids = store.find_all(
+        exif_key("mk_nikon0", 0x0001U));
+    ASSERT_EQ(value_ids.size(), 1U);
+    EXPECT_EQ(store.entry(value_ids[0]).value.data.u64,
+              span_store.entry(span_value_ids[0]).value.data.u64);
+
+    const std::span<const EntryId> span_ids = span_store.find_all(
+        exif_key("mk_nikon0", 0x001FU));
+    ASSERT_EQ(span_ids.size(), 1U);
     const std::span<const EntryId> ids = store.find_all(
-        exif_key("mk_nikon0", 0x001F));
+        exif_key("mk_nikon0", 0x001FU));
     ASSERT_EQ(ids.size(), 1U);
-    EXPECT_EQ(store.entry(ids[0]).value.kind, MetaValueKind::Bytes);
+    ASSERT_EQ(store.entry(ids[0]).value.kind, MetaValueKind::Bytes);
+    ASSERT_EQ(span_store.entry(span_ids[0]).value.kind, MetaValueKind::Bytes);
+    const std::span<const std::byte> span_raw = span_store.arena().span(
+        span_store.entry(span_ids[0]).value.data.span);
+    const std::span<const std::byte> callback_raw = store.arena().span(
+        store.entry(ids[0]).value.data.span);
+    ASSERT_EQ(callback_raw.size(), span_raw.size());
+    EXPECT_TRUE(std::equal(callback_raw.begin(), callback_raw.end(),
+                           span_raw.begin()));
+}
+
+
+TEST(MakerNoteDecode, RandomAccessNikonNestedValueReportsScratchRequirement)
+{
+    static constexpr uint32_t kNestedValueOffset = 512U;
+    static constexpr uint32_t kNestedValueBytes  = 128U;
+    const std::vector<std::byte> mn
+        = make_nikon_v1_makernote_with_large_external_value();
+    std::vector<std::byte> tiff
+        = make_test_tiff_with_makernote("Nikon", mn);
+    const size_t maker_note_off = tiff.size() - mn.size();
+    const size_t nested_value_off = maker_note_off + 8U
+                                   + kNestedValueOffset;
+    if (tiff.size() < nested_value_off + kNestedValueBytes) {
+        tiff.resize(nested_value_off + kNestedValueBytes,
+                    std::byte { 0x37 });
+    }
+    const uint64_t required_scratch
+        = static_cast<uint64_t>(mn.size()) + kNestedValueBytes;
+
+    MetaStore store;
+    const ExifRandomAccessDecodeResult result
+        = decode_makernote_callback_with_poisoned_scratch(
+            tiff, store, 64U, 16U, 16U);
+    EXPECT_TRUE(result.input.ok());
+    EXPECT_EQ(result.value_scratch_needed, required_scratch);
+    EXPECT_EQ(result.decode.status, ExifDecodeStatus::OutputTruncated);
+    EXPECT_FALSE(result.complete());
 }
 
 TEST(MakerNoteDecode, RandomAccessNikonRecursionHonorsAggregateReadBudgets)
@@ -15120,16 +15312,24 @@ TEST(MakerNoteDecode, RandomAccessMatchesFlirClassicIfd)
 
     MetaStore callback_store;
     const ExifRandomAccessDecodeResult callback_result
-        = decode_makernote_callback(tiff, callback_store);
+        = decode_makernote_callback_with_poisoned_scratch(
+            tiff, callback_store, 256U, 16U, 16U);
     EXPECT_TRUE(callback_result.complete());
+    EXPECT_GT(callback_result.input.requests_issued, 1U);
     EXPECT_EQ(callback_result.decode.status, span_result.status);
     EXPECT_EQ(callback_result.decode.entries_decoded,
               span_result.entries_decoded);
 
+    span_store.finalize();
     callback_store.finalize();
+    const std::span<const EntryId> span_ids = span_store.find_all(
+        exif_key("mk_flir0", 0x0001));
     const std::span<const EntryId> ids = callback_store.find_all(
         exif_key("mk_flir0", 0x0001));
+    ASSERT_EQ(span_ids.size(), 1U);
     ASSERT_EQ(ids.size(), 1U);
+    EXPECT_EQ(span_store.entry(span_ids[0]).value.data.u64,
+              callback_store.entry(ids[0]).value.data.u64);
     EXPECT_EQ(callback_store.entry(ids[0]).value.data.u64, 99U);
 }
 
@@ -16399,6 +16599,47 @@ TEST(MakerNoteDecode, DecodesSamsungType2PictureWizard)
         EXPECT_EQ(exif_entry_name(store, e, ExifTagNamePolicy::ExifToolCompat),
                   std::string_view("Samsung_Type2_0x0004"));
     }
+}
+
+TEST(MakerNoteDecode, DecodesEverySamsungType2PictureWizardEntry)
+{
+    const std::vector<std::byte> mn
+        = make_samsung_type2_makernote_with_duplicate_picturewizard();
+    const std::vector<std::byte> tiff = make_test_tiff_with_makernote("SAMSUNG",
+                                                                      mn);
+
+    MetaStore store;
+    std::array<ExifIfdRef, 8> ifds {};
+    ExifDecodeOptions options;
+    options.decode_makernote = true;
+    const ExifDecodeResult result = decode_exif_tiff(tiff, store, ifds, options);
+    EXPECT_EQ(result.status, ExifDecodeStatus::Ok);
+
+    store.finalize();
+    const std::span<const EntryId> first_values = store.find_all(
+        exif_key("mk_samsung_picturewizard_0", 0x0000));
+    ASSERT_EQ(first_values.size(), 2U);
+    std::array<uint64_t, 2> first_numbers {
+        store.entry(first_values[0]).value.data.u64,
+        store.entry(first_values[1]).value.data.u64,
+    };
+    std::sort(first_numbers.begin(), first_numbers.end());
+    EXPECT_EQ(first_numbers, (std::array<uint64_t, 2> { 1U, 11U }));
+
+    const std::span<const EntryId> last_values = store.find_all(
+        exif_key("mk_samsung_picturewizard_0", 0x0004));
+    ASSERT_EQ(last_values.size(), 2U);
+    std::array<uint64_t, 2> last_numbers {
+        store.entry(last_values[0]).value.data.u64,
+        store.entry(last_values[1]).value.data.u64,
+    };
+    std::sort(last_numbers.begin(), last_numbers.end());
+    EXPECT_EQ(last_numbers, (std::array<uint64_t, 2> { 5U, 55U }));
+
+    const std::span<const EntryId> trailing = store.find_all(
+        exif_key("mk_samsung_type2_0", 0xA003));
+    ASSERT_EQ(trailing.size(), 1U);
+    EXPECT_EQ(store.entry(trailing[0]).value.data.u64, 0xBEEFU);
 }
 
 TEST(MakerNoteDecode, RandomAccessDecodesSamsungType2PictureWizard)

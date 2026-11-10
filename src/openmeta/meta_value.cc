@@ -2,7 +2,9 @@
 
 #include "openmeta/meta_value.h"
 
+#include <cstdint>
 #include <cstring>
+#include <limits>
 
 namespace openmeta {
 
@@ -166,6 +168,58 @@ checked_mul_size(size_t a, size_t b, size_t* out) noexcept
     }
     *out = a * b;
     return true;
+}
+
+
+static bool
+arena_input_alias(const ByteArena& arena, const void* data, size_t size,
+                  bool* aliases, size_t* offset) noexcept
+{
+    if (!aliases || !offset) {
+        return false;
+    }
+    *aliases = false;
+    *offset  = 0U;
+    if (size == 0U) {
+        return true;
+    }
+    if (!data) {
+        return false;
+    }
+
+    const std::span<const std::byte> bytes = arena.bytes();
+    if (bytes.empty()) {
+        return true;
+    }
+
+    const std::uintptr_t arena_begin
+        = reinterpret_cast<std::uintptr_t>(bytes.data());
+    const std::uintptr_t source_begin
+        = reinterpret_cast<std::uintptr_t>(data);
+    const std::uintmax_t source_end_room
+        = static_cast<std::uintmax_t>(
+            std::numeric_limits<std::uintptr_t>::max() - source_begin);
+    if (static_cast<std::uintmax_t>(size) > source_end_room) {
+        return false;
+    }
+
+    if (source_begin >= arena_begin) {
+        const std::uintptr_t distance = source_begin - arena_begin;
+        if (static_cast<std::uintmax_t>(distance)
+            <= static_cast<std::uintmax_t>(bytes.size())) {
+            const size_t source_offset = static_cast<size_t>(distance);
+            if (size > bytes.size() - source_offset) {
+                return false;
+            }
+            *aliases = true;
+            *offset  = source_offset;
+        }
+        return true;
+    }
+
+    const std::uintptr_t distance = arena_begin - source_begin;
+    return static_cast<std::uintmax_t>(size)
+           <= static_cast<std::uintmax_t>(distance);
 }
 
 MetaValue
@@ -385,6 +439,13 @@ make_array_copy(ByteArena& arena, MetaElementType elem_type, const void* data,
         return MetaValue {};
     }
 
+    bool aliases_arena = false;
+    size_t source_offset = 0U;
+    if (!arena_input_alias(arena, data, size_bytes, &aliases_arena,
+                           &source_offset)) {
+        return MetaValue {};
+    }
+
     const ByteSpan span = arena.allocate(static_cast<uint32_t>(size_bytes),
                                          static_cast<uint32_t>(alignment));
     if (size_bytes != 0U && span.size != static_cast<uint32_t>(size_bytes)) {
@@ -397,7 +458,11 @@ make_array_copy(ByteArena& arena, MetaElementType elem_type, const void* data,
     v.count                        = static_cast<uint32_t>(count);
     const std::span<std::byte> dst = arena.span_mut(span);
     if (!dst.empty() && size_bytes > 0U) {
-        std::memcpy(dst.data(), data, size_bytes);
+        const void* const source
+            = aliases_arena
+                  ? static_cast<const void*>(arena.bytes().data() + source_offset)
+                  : data;
+        std::memcpy(dst.data(), source, size_bytes);
     }
     v.data.span = span;
     return v;

@@ -247,11 +247,13 @@ openmeta::ExifRandomAccessDecodeResult result =
 ```
 
 `read_window` must hold 20 bytes for BigTIFF entries. Larger windows batch
-adjacent structural reads. `value` must hold the largest metadata value that
-the caller wants decoded and, when GeoTIFF is enabled, the combined GeoTIFF key,
-double, and ASCII parameter payloads. If it is too small,
-`value_scratch_needed` reports the required byte count; OpenMeta does not
-allocate a replacement.
+adjacent structural reads. It must not overlap `value`. The value buffer must
+hold the largest metadata value requested and, when GeoTIFF is enabled, the
+combined GeoTIFF key, double, and ASCII parameter payloads. Nested MakerNote
+reads may additionally require space while the parent MakerNote remains in the
+buffer. If it is too small, `value_scratch_needed` reports the largest total
+capacity observed so far; a retry may reveal a larger requirement. OpenMeta
+does not allocate a replacement.
 
 ## Container Scan Example
 

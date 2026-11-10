@@ -14,6 +14,7 @@
 #include "metadata_structured_fields_internal.h"
 
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <string_view>
 #include <vector>
@@ -5735,6 +5736,20 @@ namespace exif_internal {
     }
 
 
+    void record_source_value_scratch_needed(SourceTiffReader* source,
+                                            uint64_t size) noexcept
+    {
+        if (!source || !source->result || size == 0U) {
+            return;
+        }
+        const uint64_t reserved = source->value_scratch_reserved;
+        const uint64_t total = size > UINT64_MAX - reserved
+                                   ? UINT64_MAX : size + reserved;
+        if (total > source->result->value_scratch_needed) {
+            source->result->value_scratch_needed = total;
+        }
+    }
+
     bool source_tiff_value(SourceTiffReader* source, uint64_t offset,
                            uint64_t size,
                            std::span<const std::byte>* out) noexcept
@@ -5746,22 +5761,7 @@ namespace exif_internal {
             return source_tiff_view(source, offset, size, out);
         }
         if (size > static_cast<uint64_t>(source->value_scratch.size())) {
-            if (size <= static_cast<uint64_t>(source->window.storage.size())) {
-                RandomAccessReadWindowOptions value_options;
-                value_options.minimum_read_bytes = 0U;
-                const RandomAccessViewResult view = random_access_read_view(
-                    *source->range, offset, size, &source->window,
-                    &source->result->input, source->limits, value_options);
-                if (!view.ok()) {
-                    map_source_failure(source);
-                    return false;
-                }
-                *out = view.bytes;
-                return true;
-            }
-            if (size > source->result->value_scratch_needed) {
-                source->result->value_scratch_needed = size;
-            }
+            record_source_value_scratch_needed(source, size);
             update_status(&source->result->decode,
                           ExifDecodeStatus::OutputTruncated);
             return false;
@@ -6342,10 +6342,8 @@ namespace {
                 = nested.decode.limit_ifd_offset;
             source->result->decode.limit_tag = nested.decode.limit_tag;
         }
-        if (nested.value_scratch_needed
-            > source->result->value_scratch_needed) {
-            source->result->value_scratch_needed = nested.value_scratch_needed;
-        }
+        exif_internal::record_source_value_scratch_needed(
+            source, nested.value_scratch_needed);
         if (nested.nested_payloads_skipped
             > UINT32_MAX - source->result->nested_payloads_skipped) {
             source->result->nested_payloads_skipped = UINT32_MAX;
@@ -6865,9 +6863,7 @@ namespace {
             }
         }
         if (total > static_cast<uint64_t>(source->value_scratch.size())) {
-            if (total > source->result->value_scratch_needed) {
-                source->result->value_scratch_needed = total;
-            }
+            exif_internal::record_source_value_scratch_needed(source, total);
             update_status(&source->result->decode,
                           ExifDecodeStatus::OutputTruncated);
             return;
@@ -6928,6 +6924,21 @@ decode_exif_tiff_random_access(
         result.decode = decode_exif_tiff_contiguous(bytes, store, out_ifds,
                                                     options);
         return result;
+    }
+
+    if (!scratch.read_window.empty() && !scratch.value.empty()) {
+        const std::uintptr_t window = reinterpret_cast<std::uintptr_t>(
+            scratch.read_window.data());
+        const std::uintptr_t value = reinterpret_cast<std::uintptr_t>(
+            scratch.value.data());
+        const bool overlap = window <= value
+                                 ? value - window < scratch.read_window.size()
+                                 : window - value < scratch.value.size();
+        if (overlap) {
+            result.input.code = RandomAccessReadCode::InvalidArgument;
+            result.decode.status = ExifDecodeStatus::Malformed;
+            return result;
+        }
     }
 
     IfdSink sink;
@@ -7200,13 +7211,18 @@ decode_exif_tiff_random_access(
             const uint64_t inline_capacity = cfg.bigtiff ? 8U : 4U;
             const bool inline_value        = value_bytes <= inline_capacity;
             uint64_t value_offset          = value_or_offset;
+            std::array<std::byte, 8> inline_storage {};
             std::span<const std::byte> value_raw;
             bool have_value = false;
             if (inline_value) {
                 value_offset = entry_offset + value_field_local;
-                value_raw
-                    = entry_raw.subspan(static_cast<size_t>(value_field_local),
-                                        static_cast<size_t>(value_bytes));
+                const auto inline_bytes = entry_raw.subspan(
+                    static_cast<size_t>(value_field_local),
+                    static_cast<size_t>(value_bytes));
+                std::memcpy(inline_storage.data(), inline_bytes.data(),
+                            inline_bytes.size());
+                value_raw = std::span<const std::byte>(inline_storage).first(
+                    static_cast<size_t>(value_bytes));
                 have_value = true;
             } else if (!range_contains_bytes(tiff, value_offset, value_bytes)) {
                 update_status(&result.decode, ExifDecodeStatus::Malformed);
@@ -7341,8 +7357,17 @@ decode_exif_tiff_random_access(
 
             if (have_value && options.decode_makernote && tag == 0x927CU
                 && value_bytes != 0U) {
+                // Keep the MakerNote stable while nested decoders use value
+                // scratch for their own reads. Inline values are stack-backed.
+                const auto original_scratch = source.value_scratch;
+                const uint64_t original_reserved = source.value_scratch_reserved;
+                const size_t reserved = inline_value ? 0U : value_raw.size();
+                source.value_scratch = original_scratch.subspan(reserved);
+                source.value_scratch_reserved += reserved;
                 decode_source_makernote(&source, cfg, value_offset, value_bytes,
                                         value_raw, store, options, &result);
+                source.value_scratch = original_scratch;
+                source.value_scratch_reserved = original_reserved;
             } else if (!have_value && options.decode_makernote
                        && (tag == 0x927CU || tag == 0xC634U)
                        && value_bytes != 0U

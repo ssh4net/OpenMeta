@@ -3,7 +3,13 @@
 #include "openmeta/meta_edit.h"
 #include "../src/python/src/array_bytes.h"
 
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <gtest/gtest.h>
+#include <string>
+#include <string_view>
 
 namespace openmeta {
 
@@ -27,6 +33,133 @@ TEST(MetaStoreTest, PythonArrayAccessHandlesUnalignedArenaBytes)
     MetaValue malformed = value;
     malformed.count = 3U;
     EXPECT_EQ(python_detail::array_span<uint32_t>(arena, malformed).size(), 0U);
+}
+
+
+static std::string_view
+arena_string_view(const ByteArena& arena, ByteSpan span) noexcept
+{
+    const std::span<const std::byte> bytes = arena.span(span);
+    return std::string_view(reinterpret_cast<const char*>(bytes.data()),
+                            bytes.size());
+}
+
+
+TEST(MetaKey, XmpPropertyCopiesSameArenaArgumentsAcrossGrowth)
+{
+    ByteArena arena;
+    arena.reserve(64U);
+
+    const ByteSpan schema_span = arena.append_string("ns");
+    const ByteSpan path_span   = arena.append_string("Camera/Model");
+    const std::string padding(64U - arena.bytes().size(), '_');
+    arena.append_string(padding);
+    ASSERT_EQ(arena.bytes().size(), 64U);
+
+    unsigned moves = 0U;
+    for (size_t i = 0; i < 16384U && moves < 3U; ++i) {
+        const std::byte* const before = arena.bytes().data();
+        const std::string_view schema = arena_string_view(arena, schema_span);
+        const std::string_view path = arena_string_view(arena, path_span);
+        const MetaKey key = make_xmp_property_key(arena, schema, path);
+        moves += arena.bytes().data() != before ? 1U : 0U;
+        EXPECT_EQ(key.kind, MetaKeyKind::XmpProperty);
+        EXPECT_EQ(arena_string_view(arena, key.data.xmp_property.schema_ns), "ns");
+        EXPECT_EQ(arena_string_view(arena, key.data.xmp_property.property_path),
+                  "Camera/Model");
+    }
+    EXPECT_EQ(moves, 3U);
+}
+
+
+TEST(MetaKey, PngTextCopiesSameArenaArgumentsAcrossGrowth)
+{
+    ByteArena arena;
+    arena.reserve(64U);
+
+    const ByteSpan keyword_span = arena.append_string("keyword");
+    const ByteSpan field_span   = arena.append_string("value");
+    const std::string padding(64U - arena.bytes().size(), '_');
+    arena.append_string(padding);
+    ASSERT_EQ(arena.bytes().size(), 64U);
+
+    unsigned moves = 0U;
+    for (size_t i = 0; i < 16384U && moves < 3U; ++i) {
+        const std::byte* const before = arena.bytes().data();
+        const std::string_view keyword = arena_string_view(arena, keyword_span);
+        const std::string_view field = arena_string_view(arena, field_span);
+        const MetaKey key = make_png_text_key(arena, keyword, field);
+        moves += arena.bytes().data() != before ? 1U : 0U;
+        EXPECT_EQ(key.kind, MetaKeyKind::PngText);
+        EXPECT_EQ(arena_string_view(arena, key.data.png_text.keyword), "keyword");
+        EXPECT_EQ(arena_string_view(arena, key.data.png_text.field), "value");
+    }
+    EXPECT_EQ(moves, 3U);
+}
+
+
+TEST(MetaValue, MakeU16ArrayCopiesSameArenaSpanAcrossGrowth)
+{
+    ByteArena arena;
+    arena.reserve(16U);
+
+    const std::array<uint16_t, 2> expected = { 0x1234U, 0xABCDU };
+    const ByteSpan source_span
+        = arena.allocate(static_cast<uint32_t>(sizeof(expected)),
+                         static_cast<uint32_t>(alignof(uint16_t)));
+    ASSERT_EQ(source_span.size, sizeof(expected));
+    std::memcpy(arena.span_mut(source_span).data(), expected.data(),
+                sizeof(expected));
+    const std::array<std::byte, 12> padding {};
+    arena.append(padding);
+    ASSERT_EQ(arena.bytes().size(), 16U);
+
+    bool moved = false;
+    for (size_t i = 0; i < 16384U && !moved; ++i) {
+        const std::byte* const before = arena.bytes().data();
+        const std::span<const std::byte> source_bytes = arena.span(source_span);
+        const auto* const source_values
+            = reinterpret_cast<const uint16_t*>(source_bytes.data());
+        const MetaValue value = make_u16_array(
+            arena, std::span<const uint16_t>(source_values, expected.size()));
+        moved = arena.bytes().data() != before;
+        ASSERT_EQ(value.kind, MetaValueKind::Array);
+        EXPECT_EQ(value.elem_type, MetaElementType::U16);
+        EXPECT_EQ(value.count, expected.size());
+        const std::span<const std::byte> copied_bytes = arena.span(value.data.span);
+        ASSERT_EQ(copied_bytes.size(), sizeof(expected));
+        std::array<uint16_t, 2> actual {};
+        std::memcpy(actual.data(), copied_bytes.data(), sizeof(actual));
+        EXPECT_EQ(actual, expected);
+    }
+    EXPECT_TRUE(moved);
+}
+
+
+TEST(MetaValue, MakeU16ArrayRejectsSameArenaAliasAtAllocationLimit)
+{
+    ByteArena arena;
+    const std::array<uint16_t, 2> expected = { 0x1234U, 0xABCDU };
+    const ByteSpan source_span
+        = arena.allocate(static_cast<uint32_t>(sizeof(expected)),
+                         static_cast<uint32_t>(alignof(uint16_t)));
+    ASSERT_EQ(source_span.size, sizeof(expected));
+    std::memcpy(arena.span_mut(source_span).data(), expected.data(),
+                sizeof(expected));
+    arena.constrain_max_size(sizeof(expected));
+
+    const std::span<const std::byte> source_bytes = arena.span(source_span);
+    const auto* const source_values
+        = reinterpret_cast<const uint16_t*>(source_bytes.data());
+    const MetaValue value = make_u16_array(
+        arena, std::span<const uint16_t>(source_values, expected.size()));
+
+    EXPECT_EQ(value.kind, MetaValueKind::Empty);
+    EXPECT_TRUE(arena.limit_exceeded());
+    EXPECT_EQ(arena.bytes().size(), sizeof(expected));
+    EXPECT_EQ(std::memcmp(arena.span(source_span).data(), expected.data(),
+                          sizeof(expected)),
+              0);
 }
 
 static MetaStore

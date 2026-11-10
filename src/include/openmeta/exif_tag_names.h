@@ -28,7 +28,13 @@ enum class ExifTagNamePolicy : uint8_t {
  *
  * The IFD token matches the decoder output (e.g. `"ifd0"`, `"exififd"`, `"gpsifd"`).
  *
- * \return An empty view for unknown tags.
+ * The returned view does not own its characters. Registry names have static
+ * storage duration. Synthesized vendor placeholder names use thread-local
+ * scratch storage; treat those views as valid only until the next call to
+ * either name lookup function on the same thread. Such a view does not outlive
+ * that thread.
+ *
+ * \return An empty view for unknown tags without a synthesized vendor name.
  */
 std::string_view
 exif_tag_name(std::string_view ifd, uint16_t tag) noexcept;
@@ -39,6 +45,9 @@ exif_tag_name(std::string_view ifd, uint16_t tag) noexcept;
  * Canonical names come from the static tag registry or a validated private-table
  * field context. Compatibility policy may also use decode-time contextual
  * variants for ambiguous MakerNote tags.
+ *
+ * The returned view follows the same non-owning storage and synthesized
+ * placeholder lifetime rules documented for `exif_tag_name`.
  */
 std::string_view
 exif_entry_name(const MetaStore& store, const Entry& entry,

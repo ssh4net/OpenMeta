@@ -115,8 +115,9 @@ struct ExifDecodeResult final {
 struct ExifRandomAccessScratch final {
     /// Structural read cache. At least 20 bytes are required for BigTIFF.
     std::span<std::byte> read_window;
-    /// Reusable storage for one out-of-line value or the combined GeoTIFF
-    /// parameter payloads. Insufficient capacity is reported, never allocated.
+    /// Reusable storage for out-of-line values and nested MakerNote reads.
+    /// Must not overlap read_window. Insufficient capacity is reported,
+    /// never allocated; a nested read may need space in addition to its parent.
     std::span<std::byte> value;
     RandomAccessReadWindowOptions window_options;
 };
@@ -125,8 +126,9 @@ struct ExifRandomAccessScratch final {
 struct ExifRandomAccessDecodeResult final {
     ExifDecodeResult decode;
     RandomAccessReadState input;
-    /// Largest value-buffer requirement observed when caller scratch was too
-    /// small. Zero means no value was skipped for this reason.
+    /// Largest total value-buffer capacity needed when caller scratch was too
+    /// small, including any parent MakerNote retained during nested reads.
+    /// Zero means no value was skipped for this reason.
     uint64_t value_scratch_needed = 0U;
     /// Nested vendor payloads or derived subtables not fully decoded by the
     /// callback-backed path. Zero is required before claiming nested parity.

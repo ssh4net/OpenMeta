@@ -3,9 +3,67 @@
 #include "openmeta/meta_key.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 
 namespace openmeta {
+
+struct ArenaStringAlias final {
+    bool aliases = false;
+    size_t offset = 0U;
+};
+
+
+static bool
+capture_arena_string_alias(const ByteArena& arena, std::string_view text,
+                           ArenaStringAlias* out) noexcept
+{
+    if (!out) {
+        return false;
+    }
+    *out = ArenaStringAlias {};
+    if (text.empty()) {
+        return true;
+    }
+    if (!text.data()) {
+        return false;
+    }
+
+    const std::span<const std::byte> bytes = arena.bytes();
+    if (bytes.empty()) {
+        return true;
+    }
+
+    const std::uintptr_t arena_begin
+        = reinterpret_cast<std::uintptr_t>(bytes.data());
+    const std::uintptr_t source_begin
+        = reinterpret_cast<std::uintptr_t>(text.data());
+    const std::uintmax_t source_end_room
+        = static_cast<std::uintmax_t>(
+            std::numeric_limits<std::uintptr_t>::max() - source_begin);
+    if (static_cast<std::uintmax_t>(text.size()) > source_end_room) {
+        return false;
+    }
+
+    if (source_begin >= arena_begin) {
+        const std::uintptr_t distance = source_begin - arena_begin;
+        if (static_cast<std::uintmax_t>(distance)
+            <= static_cast<std::uintmax_t>(bytes.size())) {
+            const size_t source_offset = static_cast<size_t>(distance);
+            if (text.size() > bytes.size() - source_offset) {
+                return false;
+            }
+            out->aliases = true;
+            out->offset  = source_offset;
+        }
+        return true;
+    }
+
+    const std::uintptr_t distance = arena_begin - source_begin;
+    return static_cast<std::uintmax_t>(text.size())
+           <= static_cast<std::uintmax_t>(distance);
+}
 
 static int
 compare_bytes(std::span<const std::byte> a,
@@ -131,7 +189,20 @@ make_xmp_property_key(ByteArena& arena, std::string_view schema_ns,
 {
     MetaKey key;
     key.kind                            = MetaKeyKind::XmpProperty;
-    key.data.xmp_property.schema_ns     = arena.append_string(schema_ns);
+    key.data.xmp_property.schema_ns     = ByteSpan {};
+    key.data.xmp_property.property_path = ByteSpan {};
+
+    ArenaStringAlias path_alias;
+    if (!capture_arena_string_alias(arena, property_path, &path_alias)) {
+        return key;
+    }
+    key.data.xmp_property.schema_ns = arena.append_string(schema_ns);
+    if (path_alias.aliases) {
+        const std::span<const std::byte> bytes = arena.bytes();
+        property_path = std::string_view(
+            reinterpret_cast<const char*>(bytes.data() + path_alias.offset),
+            property_path.size());
+    }
     key.data.xmp_property.property_path = arena.append_string(property_path);
     return key;
 }
@@ -235,8 +306,21 @@ make_png_text_key(ByteArena& arena, std::string_view keyword,
 {
     MetaKey key;
     key.kind                  = MetaKeyKind::PngText;
+    key.data.png_text.keyword = ByteSpan {};
+    key.data.png_text.field   = ByteSpan {};
+
+    ArenaStringAlias field_alias;
+    if (!capture_arena_string_alias(arena, field, &field_alias)) {
+        return key;
+    }
     key.data.png_text.keyword = arena.append_string(keyword);
-    key.data.png_text.field   = arena.append_string(field);
+    if (field_alias.aliases) {
+        const std::span<const std::byte> bytes = arena.bytes();
+        field = std::string_view(
+            reinterpret_cast<const char*>(bytes.data() + field_alias.offset),
+            field.size());
+    }
+    key.data.png_text.field = arena.append_string(field);
     return key;
 }
 

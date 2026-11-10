@@ -97,6 +97,8 @@ namespace exif_internal {
         const RandomAccessSourceRange* range = nullptr;
         RandomAccessReadWindow window;
         std::span<std::byte> value_scratch;
+        // Bytes of the caller's value scratch retained by outer decoders.
+        uint64_t value_scratch_reserved = 0U;
         RandomAccessReadLimits limits;
         RandomAccessReadWindowOptions window_options;
         ExifRandomAccessDecodeResult* result = nullptr;
@@ -107,6 +109,9 @@ namespace exif_internal {
         // public ExifIfdRef slots counted by ifds_needed/ifds_written.
         uint32_t private_ifds_visited = 0U;
     };
+
+    void record_source_value_scratch_needed(SourceTiffReader* source,
+                                            uint64_t size) noexcept;
 
     enum class SourceIfdValueExpansionStatus : uint8_t {
         NotApplicable,

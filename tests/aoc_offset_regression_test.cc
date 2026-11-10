@@ -161,7 +161,7 @@ namespace {
     callback_decode(ReadState& state, size_t origin, MetaStore& store,
                     const ExifDecodeOptions& options,
                     const RandomAccessReadLimits& limits = {},
-                    size_t value_capacity                = 160U)
+                    size_t value_capacity                = 320U)
     {
         const auto source
             = make_callback_random_access_source(state.bytes.size(), &state,
@@ -197,7 +197,7 @@ namespace {
         }
     }
 
-    TEST(AocOffsetRegression, CallbackUsesTiffOriginAndReusesSmallScratch)
+    TEST(AocOffsetRegression, CallbackUsesTiffOriginWithNestedScratch)
     {
         for (bool parent_le : { false, true }) {
             for (bool note_le : { false, true }) {
@@ -332,11 +332,11 @@ namespace {
         MetaStore store;
         ExifDecodeOptions options;
         options.decode_makernote = true;
-        const auto result        = callback_decode(state, 0U, store, options);
+        const auto result = callback_decode(state, 0U, store, options, {}, 160U);
         EXPECT_TRUE(result.input.ok());
         EXPECT_FALSE(result.complete());
         EXPECT_EQ(result.decode.status, ExifDecodeStatus::OutputTruncated);
-        EXPECT_EQ(result.value_scratch_needed, 180U);
+        EXPECT_EQ(result.value_scratch_needed, 160U + 180U);
         store.finalize();
         const Entry* e = entry(store, 0x0220U);
         ASSERT_NE(e, nullptr);

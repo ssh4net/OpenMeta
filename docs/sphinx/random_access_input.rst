@@ -206,9 +206,12 @@ TIFF/DNG decode
            openmeta::ExifDecodeOptions{}, limits);
 
 The structural window must hold at least 20 bytes for BigTIFF. Larger windows
-batch adjacent reads. The value scratch holds one out-of-line metadata value or
-the combined GeoTIFF parameter payloads. ``value_scratch_needed`` reports an
-insufficient buffer without hidden allocation.
+batch adjacent reads. It must not overlap the value scratch. The value scratch
+holds out-of-line metadata values or the combined GeoTIFF parameter payloads.
+Nested MakerNote reads may also need space while the parent MakerNote remains
+in the buffer. ``value_scratch_needed`` reports the largest total capacity
+observed so far; a retry may reveal a larger requirement. OpenMeta does not
+allocate a replacement.
 
 Container scan
 --------------
