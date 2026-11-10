@@ -573,9 +573,16 @@ namespace {
                                                      std::span<char>(
                                                          sub_ifd_buf));
                     if (!lensdata_ifd.empty()) {
+                        // Emitting LensInfo can grow the arena and invalidate
+                        // raw_src. Resolve the stored offset again before use.
+                        const std::span<const std::byte> lensdata_src
+                            = store.arena().span(raw_span);
+                        if (lensdata_src.size() < lensdata_off + lensdata_len) {
+                            continue;
+                        }
                         decode_pentax_u8_table(lensdata_ifd,
-                                               raw_src.subspan(lensdata_off,
-                                                               lensdata_len),
+                                               lensdata_src.subspan(lensdata_off,
+                                                                    lensdata_len),
                                                store, options, status_out);
                     }
                 }
